@@ -194,10 +194,6 @@ kairo:object:<multihash>
 kairo:statement:<multihash>
 ```
 
-Older examples in this document may use obsolete draft forms such as
-`obj_<multihash>` or `kai:object:<multihash>`. Treat those as compatibility
-spellings and normalize them to `object:<id>` or `kairo:object:<id>`.
-
 Git revisions SHOULD use explicit Git-flavored identifiers:
 
 ```text

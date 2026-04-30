@@ -4,10 +4,9 @@ This document describes the basic federation model for Kairo.
 
 Federation is the part of Kairo that allows independent nodes to discover Objects, Providers, statements, build results, environment plans, and other archival knowledge without relying on a single central service.
 
-Identifier examples in this document should follow `IDENTIFIERS.md`. External
+Identifier examples in this document must follow `IDENTIFIERS.md`. External
 federation references use the `kairo:` namespace, such as
-`kairo:object:<id>`. Older `kai:` and `obj_...` examples are obsolete draft
-spellings.
+`kairo:object:<id>`.
 
 This document should be read alongside `PROJECT_LAYOUT.md`, especially the sections describing:
 

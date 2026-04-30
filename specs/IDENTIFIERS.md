@@ -357,12 +357,11 @@ Implementations must ensure path safety.
 
 ---
 
-## 12. Compatibility
+## 12. Unsupported Forms
 
-Earlier drafts used compact prefixed IDs such as `obj_...`, `stmt_...`,
-`snap_...`, `blob_...`, and `actor_...`. These are obsolete draft spellings.
-Importers may accept them only as a compatibility feature and should normalize
-them to the forms in this document.
+The identifier forms in this document are the only supported forms for the
+initial implementation. Implementations must reject unrecognized prefixes or
+alternate spellings rather than accepting and normalizing them.
 
 ---
 
@@ -371,7 +370,7 @@ them to the forms in this document.
 1. Bare ID payload validation.
 2. Typed-reference parser.
 3. External `kairo:` reference parser.
-4. Normalization between external and internal references.
+4. Conversion between external and internal references.
 5. Deterministic ID generation where required.
 6. Random ID generation for runtime entities.
 7. Collision handling strategy.

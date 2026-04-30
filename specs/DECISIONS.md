@@ -14,8 +14,8 @@ later dated decision explicitly replaces them.
 
 Decision: the CLI binary is `kairo`.
 
-Rationale: `CLI.md`, `WORKSPACE.md`, `PACKAGE.md`, and most command examples use
-`kairo`. Earlier references to `kai` are treated as obsolete shorthand.
+Rationale: `CLI.md`, `WORKSPACE.md`, `PACKAGE.md`, and command examples use
+`kairo`. The shorter `kai` spelling is not supported.
 
 Affected specs:
 
@@ -99,9 +99,8 @@ Untyped CLI arguments, federation tokens, package references, logs, and
 cross-system links should use typed references.
 
 Rationale: field names such as `object`, `snapshot`, and `actor` already provide
-type context. Repeating `obj_`, `snap_`, or `actor_` inside those fields adds
-noise. URI-style external references provide clearer archival and federation
-semantics than compact ad hoc prefixes.
+type context, so the ID payload should not repeat the type. URI-style external
+references provide clear archival and federation semantics.
 
 Affected specs:
 
