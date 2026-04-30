@@ -7,6 +7,15 @@ Draft specification.
 This document defines serialization, schema versioning, and compatibility rules
 for all Kairo data structures (objects, statements, snapshots, API DTOs, packages).
 
+Detailed schema artifacts live under `schemas/`:
+
+- `schemas/canonical/` documents canonical bytes used for hashes, identities,
+  and signatures.
+- `schemas/json/` documents JSON interchange shapes for APIs, packages, and
+  external tools.
+
+Canonical schemas and JSON schemas are related but distinct.
+
 ---
 
 ## 1. Purpose
@@ -111,6 +120,9 @@ When deterministic encoding is required:
 3. UTF-8 encoding
 4. Stable number formatting
 5. Stable boolean/null representation
+
+Canonical JSON is not currently the default statement hash input. Statement and
+Object identity canonical bytes are documented in `schemas/canonical/`.
 
 ---
 

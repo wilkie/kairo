@@ -139,10 +139,35 @@ Statements MUST be canonicalized before hashing.
 
 Requirements:
 
-- deterministic key ordering
-- stable encoding
-- no insignificant whitespace
-- consistent number/string representation
+- deterministic field order
+- stable binary primitive encodings
+- length-prefixed strings and bytes
+- explicit option/list encodings
+- no dependence on JSON object key ordering
+
+Canonical forms are documented under:
+
+```text
+schemas/canonical/
+```
+
+The canonical schema for `ObjectGenesis` v1 is:
+
+```text
+schemas/canonical/object-genesis-v1.md
+```
+
+JSON interchange schemas belong under:
+
+```text
+schemas/json/
+```
+
+JSON interchange schemas describe external representation. They are not the
+canonical hash input unless a canonical schema explicitly says so.
+
+External clients that verify IDs or signatures must implement the relevant
+canonical schema exactly.
 
 ---
 
