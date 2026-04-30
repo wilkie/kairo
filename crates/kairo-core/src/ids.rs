@@ -1,6 +1,8 @@
 use std::fmt;
 use std::str::FromStr;
 
+use sha2::{Digest, Sha256};
+
 use crate::IdError;
 
 const MAX_ID_LEN: usize = 256;
@@ -33,6 +35,62 @@ fn validate_id_payload(value: &str) -> Result<(), IdError> {
     }
 
     Ok(())
+}
+
+fn id_payload_from_bytes(domain: &[u8], bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+
+    id_payload_from_sha256_digest(digest.into())
+}
+
+fn id_payload_from_sha256_digest(digest: [u8; 32]) -> String {
+    let mut multihash = Vec::with_capacity(SHA2_256_MULTIHASH_LEN);
+    multihash.push(SHA2_256_MULTIHASH_CODE);
+    multihash.push(SHA2_256_DIGEST_LEN);
+    multihash.extend(digest);
+
+    let mut payload = String::with_capacity(1 + 46);
+    payload.push(char::from(BASE58BTC_PREFIX));
+    payload.push_str(&encode_base58btc(&multihash));
+    payload
+}
+
+fn encode_base58btc(bytes: &[u8]) -> String {
+    let mut digits = Vec::<u8>::new();
+
+    for byte in bytes {
+        let mut carry = u32::from(*byte);
+
+        for digit in digits.iter_mut().rev() {
+            carry += u32::from(*digit) << 8;
+            *digit = base58_digit(carry % 58);
+            carry /= 58;
+        }
+
+        while carry > 0 {
+            let next = base58_digit(carry % 58);
+            digits.insert(0, next);
+            carry /= 58;
+        }
+    }
+
+    for _ in bytes.iter().take_while(|byte| **byte == 0) {
+        digits.insert(0, 0);
+    }
+
+    digits
+        .into_iter()
+        .map(|digit| char::from(BASE58_ALPHABET[usize::from(digit)]))
+        .collect()
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn base58_digit(value: u32) -> u8 {
+    debug_assert!(value < 58);
+    value as u8
 }
 
 fn decode_base58btc(encoded: &[u8]) -> Result<Vec<u8>, IdError> {
@@ -87,6 +145,14 @@ macro_rules! id_type {
                 let value = value.into();
                 validate_id_payload(&value)?;
                 Ok(Self(value))
+            }
+
+            pub fn from_bytes(domain: &[u8], bytes: &[u8]) -> Self {
+                Self(id_payload_from_bytes(domain, bytes))
+            }
+
+            pub fn from_sha256_digest(digest: [u8; 32]) -> Self {
+                Self(id_payload_from_sha256_digest(digest))
             }
 
             pub fn as_str(&self) -> &str {
@@ -149,5 +215,21 @@ mod tests {
             ObjectId::new("z6MkObject123"),
             Err(IdError::InvalidEncoding)
         );
+    }
+
+    #[test]
+    fn generates_payload_from_sha256_digest() {
+        let id = ObjectId::from_sha256_digest([0; 32]);
+        assert_eq!(
+            id.to_string(),
+            "zQmNLei78zWmzUdbeRB3CiUfAizWUrbeeZh5K1rhAQKCh51"
+        );
+        assert_eq!(ObjectId::new(id.to_string()), Ok(id));
+    }
+
+    #[test]
+    fn generates_payload_from_domain_and_bytes() {
+        let id = ObjectId::from_bytes(b"kairo.test.v1", b"payload");
+        assert_eq!(ObjectId::new(id.to_string()), Ok(id));
     }
 }
