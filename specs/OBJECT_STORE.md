@@ -83,7 +83,7 @@ A Kairo Object identifier is derived from or cryptographically bound to the
 Object's genesis statement.
 
 ```text
-ObjectId payload = <encoded multihash(canonical(ObjectGenesis))>
+ObjectId payload = z<base58btc(multihash_sha2_256(canonical(ObjectGenesis)))>
 Object reference = object:<id>
 External Object reference = kairo:object:<id>
 ```
@@ -91,9 +91,9 @@ External Object reference = kairo:object:<id>
 Example:
 
 ```text
-z6Mkq4...
-object:z6Mkq4...
-kairo:object:z6Mkq4...
+zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk
+object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk
+kairo:object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk
 ```
 
 The Object ID is not a Git commit hash and is not derived from a mutable name.
@@ -166,7 +166,7 @@ Object ID hashing SHOULD use a domain separator.
 Conceptually:
 
 ```text
-ObjectId = multihash("kairo.object.genesis.v1" || canonical_genesis_bytes)
+ObjectId = multibase_base58btc(multihash_sha2_256("kairo.object.genesis.v1" || canonical_genesis_bytes))
 ```
 
 The exact canonicalization and hashing rules must be specified by the statement layer.
@@ -175,24 +175,25 @@ Domain separation prevents the same canonical bytes from accidentally being inte
 
 ---
 
-## Hash Agility
+## Hash Format
 
-Kairo-native stable identifiers SHOULD use multihash-compatible ID payloads.
+Kairo-native stable identifiers MUST use SHA-256 multihash payloads encoded with
+multibase base58btc as defined by `IDENTIFIERS.md`.
+
 Typed fields store bare payloads. Standalone references use the typed reference
 forms defined by `IDENTIFIERS.md`.
 
 Examples:
 
 ```text
-object:<multihash>
-statement:<multihash>
-blob:<multihash>
-plan:<multihash>
-build:<multihash>
-resolution:<multihash>
-kairo:object:<multihash>
-kairo:statement:<multihash>
+object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk
+statement:zQmaFrbQVbbdb1HSDQFdPjhtB4XPZMhmyazswWUp57qpwr9
+blob:zQmfBE2w2UqKJhGZAxK4ZWb4JuCrvxnN9P4YKuvzfbPSvD5
+kairo:object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk
+kairo:statement:zQmaFrbQVbbdb1HSDQFdPjhtB4XPZMhmyazswWUp57qpwr9
 ```
+
+Other multihash algorithms are not valid for canonical Kairo IDs in v1.
 
 Git revisions SHOULD use explicit Git-flavored identifiers:
 
@@ -491,7 +492,7 @@ A node validating a revision should verify:
 
 ```text
 1. ObjectGenesis statement exists.
-2. ObjectId equals multihash(canonical ObjectGenesis).
+2. ObjectId equals `z<base58btc(multihash_sha2_256(canonical ObjectGenesis))>`.
 3. ObjectGenesis signature is valid.
 4. Ownership/delegation/revocation statements establish authorized Actors.
 5. ObjectRevision/ObjectRef/VersionTag statement binds ObjectId to revision.
@@ -791,10 +792,10 @@ statement-log checkpoints
 large generated files
 ```
 
-Blob identifiers should use Kairo-native multihash IDs:
+Blob identifiers should use Kairo-native SHA-256 multihash IDs:
 
 ```text
-kairo:blob:<multihash>
+kairo:blob:z<base58btc(multihash_sha2_256(blob bytes))>
 ```
 
 Clients MUST verify blob hashes after transfer.
@@ -956,7 +957,7 @@ The first implementation should support:
 
 ```text
 1. ObjectGenesis statements
-2. ObjectId payload = <encoded multihash(canonical ObjectGenesis)>
+2. ObjectId payload = z<base58btc(multihash_sha2_256(canonical ObjectGenesis))>
 3. Git SHA-256 revisions for new Objects
 4. Git SHA-1 revisions for legacy imports
 5. ObjectRevision statements
@@ -987,7 +988,7 @@ Kairo Objects use immutable genesis-based identity and content-addressed revisio
 The fundamental model is:
 
 ```text
-ObjectId payload = <encoded multihash(canonical ObjectGenesis)>
+ObjectId payload = z<base58btc(multihash_sha2_256(canonical ObjectGenesis))>
 Object reference = object:<id>
 External Object reference = kairo:object:<id>
 Revision = git:<hash-algorithm>:<commit>

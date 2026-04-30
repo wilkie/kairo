@@ -37,10 +37,10 @@ An ID payload is the opaque encoded value:
 Examples:
 
 ```text
-z6MkObject...
-z6MkStatement...
-z6MkSnapshot...
-z6MkBlob...
+zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk
+zQmaFrbQVbbdb1HSDQFdPjhtB4XPZMhmyazswWUp57qpwr9
+zQmPrz1SBNXD1XAPCaWrTtpBbEZHGevtUoWY8ibihamaApZ
+zQmfBE2w2UqKJhGZAxK4ZWb4JuCrvxnN9P4YKuvzfbPSvD5
 ```
 
 A typed reference adds semantic type context:
@@ -216,9 +216,9 @@ External reference:
 kairo:blob:z6MkBlob...
 ```
 
-Blob IDs must be content-addressed. The encoding must preserve the hash
-algorithm, for example by using multihash. Implementations must not infer the
-hash algorithm from digest length.
+Blob IDs must be content-addressed. In v1, Kairo-native Blob IDs use the same
+SHA-256 multihash payload format as other stable IDs. Implementations must not
+infer the hash algorithm from digest length.
 
 ### 4.5 ActorId
 
@@ -256,14 +256,23 @@ derivation.
 
 ## 5. Encoding
 
-The `<id>` payload should be:
+The `<id>` payload for Kairo-native stable IDs must be:
 
-- base32, base58, or base64url
-- URL-safe
-- filesystem-safe
-- case-normalized by spec
+```text
+z<base58btc(multihash_sha2_256_digest)>
+```
 
-Recommended: multibase/multihash-compatible base58btc or base32 without padding.
+Requirements:
+
+1. The first character must be the multibase base58btc prefix `z`.
+2. The decoded bytes must be a multihash.
+3. The multihash algorithm code must be `sha2-256`.
+4. The digest length must be 32 bytes.
+5. Implementations must reject other multihash algorithms for canonical Kairo IDs
+   in v1.
+
+This fixes canonical identity to one string for a given digest while still
+making the hash algorithm self-describing.
 
 ---
 

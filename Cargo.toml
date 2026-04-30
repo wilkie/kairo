@@ -1,0 +1,40 @@
+[workspace]
+members = [
+    "crates/kairo-core",
+    "crates/kairo-identity",
+    "crates/kairo-object",
+    "crates/kairo-statement",
+    "crates/kairo-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/kairo"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unsafe_code = "forbid"
+unused_crate_dependencies = "warn"
+
+[workspace.lints.clippy]
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+dbg_macro = "deny"
+expect_used = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+large_enum_variant = "warn"
+large_stack_arrays = "warn"
+manual_assert = "warn"
+manual_ok_or = "warn"
+match_same_arms = "warn"
+panic = "warn"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+unwrap_used = "deny"
