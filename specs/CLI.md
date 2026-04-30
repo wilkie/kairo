@@ -1,0 +1,987 @@
+# CLI.md
+
+## Status
+
+Draft specification.
+
+This document defines the Kairo command-line interface. The CLI is the primary
+operator and developer interface for interacting with local Kairo stores, the
+Kairo daemon, object snapshots, builds, runs, federation, and diagnostics.
+
+This specification is intentionally prescriptive enough to guide implementation.
+
+---
+
+## 1. Purpose
+
+The Kairo CLI provides a human- and script-friendly interface to Kairo.
+
+The CLI is responsible for:
+
+1. Starting and stopping the local daemon.
+2. Inspecting objects and snapshots.
+3. Verifying snapshots.
+4. Importing and exporting object data.
+5. Fetching and synchronizing objects through the daemon/federation layer.
+6. Building snapshots.
+7. Running snapshots.
+8. Reproducing snapshots.
+9. Managing pins.
+10. Displaying store, daemon, federation, and runtime status.
+11. Providing stable machine-readable output for automation.
+
+The CLI is not responsible for:
+
+1. Defining object semantics.
+2. Defining statement interpretation.
+3. Defining validation rules.
+4. Implementing federation protocols.
+5. Implementing daemon scheduling.
+6. Executing unplanned object content directly.
+
+---
+
+## 2. Dependency Relationship
+
+The CLI depends on:
+
+- `CORE_LIBRARY.md`
+- `STORE.md`
+- `DAEMON.md`
+- `FEDERATION.md`
+- `OBJECT.md`
+- `STATEMENTS.md`
+- `BUILD.md`
+- `PLANNER.md`
+
+The CLI must use daemon/core results as the source of truth.
+
+The CLI must not independently reinterpret:
+
+- Statement authority
+- Snapshot validity
+- Effective object state
+- Build plans
+- Run plans
+- Conflict semantics
+
+---
+
+## 3. Operating Modes
+
+The CLI should support two operating modes:
+
+1. Daemon mode
+2. Direct/local mode
+
+### 3.1 Daemon mode
+
+Daemon mode is the default for commands that require:
+
+- Federation
+- Background tasks
+- Runtime execution
+- Build execution
+- Long-running operations
+- Shared local store coordination
+- Web-client-compatible state
+
+In daemon mode, the CLI communicates with the daemon API.
+
+### 3.2 Direct/local mode
+
+Direct/local mode uses the core library and store directly.
+
+Direct mode may be used for:
+
+- Offline validation
+- CI workflows
+- Store inspection
+- Local archive verification
+- Bootstrapping before daemon startup
+- Recovery and diagnostics
+
+Direct mode must not bypass core validation semantics.
+
+### 3.3 Mode selection
+
+The CLI should support:
+
+```text
+--daemon
+--direct
+--offline
+--store <path>
+```
+
+If no mode is specified:
+
+1. Prefer daemon mode if a daemon is available.
+2. Fall back to direct mode only for commands that are safe and supported without the daemon.
+3. Report a clear error for commands that require the daemon.
+
+---
+
+## 4. Global Command Shape
+
+The binary name should be:
+
+```text
+kairo
+```
+
+Global options:
+
+```text
+kairo [GLOBAL_OPTIONS] <command> [COMMAND_OPTIONS]
+```
+
+Recommended global options:
+
+```text
+--config <path>
+--store <path>
+--daemon-url <url>
+--daemon
+--direct
+--offline
+--format <human|json|ndjson>
+--quiet
+--verbose
+--debug
+--no-color
+--color <auto|always|never>
+--yes
+--no
+--help
+--version
+```
+
+### 4.1 Output formats
+
+The CLI must support:
+
+- `human`
+- `json`
+
+The CLI should support:
+
+- `ndjson` for streaming task and event output.
+
+Human output is intended for terminals.
+
+JSON output is intended for scripts and must be stable.
+
+### 4.2 Color
+
+Color must not be required to understand output.
+
+When `--no-color` or `--color never` is used, all semantic information must remain visible as text.
+
+---
+
+## 5. Object and Snapshot References
+
+Commands should accept object references in a consistent form.
+
+Examples:
+
+```text
+kairo inspect <object-ref>
+kairo verify <snapshot-ref>
+kairo build <snapshot-ref>
+```
+
+Reference kinds:
+
+1. Object reference, such as `object:z6MkObject...`
+2. Object name, if resolvable
+3. Snapshot reference, such as `object:z6MkObject...:snapshot:z6MkSnapshot...`
+4. Object reference plus frontier selector
+5. Local path
+6. External Kairo reference, such as `kairo:object:z6MkObject...`
+7. Imported archive path
+
+The CLI must resolve ambiguous references explicitly.
+
+If a name resolves to multiple objects, the CLI must not guess unless a deterministic disambiguation flag is provided.
+
+---
+
+## 6. Validation Status Rendering
+
+The CLI must preserve core validation statuses.
+
+Statuses:
+
+```text
+valid
+invalid
+conflicted
+indeterminate
+unverified
+```
+
+### 6.1 Human rendering
+
+Recommended visual labels:
+
+```text
+VALID
+INVALID
+CONFLICTED
+INDETERMINATE
+UNVERIFIED
+```
+
+The CLI must distinguish:
+
+- Core validation status
+- Daemon policy decision
+- Operational task status
+
+Example:
+
+```text
+Validation: VALID
+Policy:     REQUIRES APPROVAL
+Task:       RUNNING
+```
+
+### 6.2 JSON rendering
+
+JSON output must include structured fields:
+
+```json
+{
+  "validation": {
+    "status": "valid",
+    "purpose": "run",
+    "issues": []
+  },
+  "policy": {
+    "decision": "allow"
+  }
+}
+```
+
+---
+
+## 7. Exit Codes
+
+The CLI must use stable exit codes.
+
+Recommended exit codes:
+
+```text
+0   success
+1   general error
+2   invalid command-line usage
+3   not found
+4   validation invalid
+5   validation conflicted
+6   validation indeterminate
+7   policy denied
+8   user cancelled
+9   daemon unavailable
+10  store error
+11  federation error
+12  runtime error
+13  unsupported feature
+14  internal error
+```
+
+For commands that primarily report validation status, validation failures should map to the corresponding validation exit codes.
+
+For commands that complete operationally but discover an invalid snapshot, the CLI should return the validation status code rather than generic failure.
+
+---
+
+## 8. Commands Overview
+
+Recommended top-level commands:
+
+```text
+kairo init
+kairo daemon
+kairo import
+kairo export
+kairo inspect
+kairo verify
+kairo fetch
+kairo sync
+kairo build
+kairo run
+kairo reproduce
+kairo pin
+kairo unpin
+kairo list
+kairo status
+kairo task
+kairo store
+kairo federation
+kairo policy
+kairo config
+```
+
+---
+
+## 9. `kairo init`
+
+Initializes a local Kairo store or workspace.
+
+Usage:
+
+```text
+kairo init [path] [--store <path>] [--bare]
+```
+
+Responsibilities:
+
+1. Create local store structure.
+2. Initialize config if needed.
+3. Initialize metadata.
+4. Refuse to overwrite existing non-empty data unless `--force` is supplied.
+
+Must not fetch or execute remote data.
+
+---
+
+## 10. `kairo daemon`
+
+Manages the daemon process.
+
+Subcommands:
+
+```text
+kairo daemon start
+kairo daemon stop
+kairo daemon restart
+kairo daemon status
+kairo daemon logs
+```
+
+### 10.1 `daemon start`
+
+Starts the daemon.
+
+Options:
+
+```text
+--foreground
+--background
+--config <path>
+--store <path>
+```
+
+### 10.2 `daemon status`
+
+Must report:
+
+- Running/not running
+- API endpoint
+- Store path
+- Federation status
+- Runtime status
+- Active task count
+- Version
+
+---
+
+## 11. `kairo import`
+
+Imports object data into the local store.
+
+Usage:
+
+```text
+kairo import <path-or-url> [--pin] [--verify] [--format <human|json>]
+```
+
+Import may accept:
+
+- Directory
+- Archive/package
+- Object file
+- Snapshot closure file
+- Blob bundle
+- Remote URL, if daemon/federation policy allows
+
+Import must:
+
+1. Ingest data without executing it.
+2. Preserve provenance where available.
+3. Report import success separately from validation success.
+4. Optionally verify after import when `--verify` is supplied.
+
+Import success does not imply snapshot validity.
+
+---
+
+## 12. `kairo export`
+
+Exports object or snapshot data.
+
+Usage:
+
+```text
+kairo export <object-or-snapshot-ref> --output <path> [OPTIONS]
+```
+
+Options:
+
+```text
+--snapshot
+--full-log
+--closure <inspect|build|run|reproduce|archive-mirror>
+--include-blobs
+--include-dependencies
+```
+
+Export must not alter object semantics.
+
+---
+
+## 13. `kairo inspect`
+
+Displays object or snapshot information.
+
+Usage:
+
+```text
+kairo inspect <object-or-snapshot-ref> [OPTIONS]
+```
+
+Options:
+
+```text
+--snapshot <snapshot-ref>
+--latest
+--purpose <inspect|build|run|reproduce>
+--format <human|json>
+--show-statements
+--show-artifacts
+--show-builds
+--show-runs
+--show-dependencies
+```
+
+Process:
+
+1. Resolve object/snapshot reference.
+2. Acquire inspect snapshot closure.
+3. Call daemon/core inspect flow.
+4. Display effective object metadata and validation status.
+
+Inspect may show unverified previews, but must label them as unverified or indeterminate.
+
+---
+
+## 14. `kairo verify`
+
+Validates a snapshot.
+
+Usage:
+
+```text
+kairo verify <snapshot-ref> [--purpose <inspect|build|run|reproduce|archive-mirror>]
+```
+
+Process:
+
+1. Resolve snapshot reference.
+2. Acquire closure for requested purpose.
+3. Call core validation through daemon or direct mode.
+4. Print validation status and issues.
+
+The CLI must return validation-specific exit codes.
+
+---
+
+## 15. `kairo fetch`
+
+Fetches object data from federation or a remote source.
+
+Usage:
+
+```text
+kairo fetch <object-ref-or-locator> [OPTIONS]
+```
+
+Options:
+
+```text
+--snapshot <snapshot-ref>
+--purpose <inspect|build|run|reproduce>
+--with-blobs
+--with-dependencies
+--pin
+```
+
+Fetch must:
+
+1. Request remote data through daemon/federation.
+2. Store fetched data locally.
+3. Avoid execution.
+4. Report whether the requested closure is complete, partial, or unavailable.
+
+Fetch does not imply validity.
+
+---
+
+## 16. `kairo sync`
+
+Synchronizes local object data with federation.
+
+Usage:
+
+```text
+kairo sync [object-ref] [OPTIONS]
+```
+
+Options:
+
+```text
+--pull
+--push
+--all
+--statements
+--blobs
+--closures
+--dry-run
+```
+
+Sync must obey daemon publication and ingestion policy.
+
+Sync must not execute object content.
+
+---
+
+## 17. `kairo build`
+
+Builds a snapshot.
+
+Usage:
+
+```text
+kairo build <snapshot-ref> [OPTIONS]
+```
+
+Options:
+
+```text
+--target <target>
+--environment <environment>
+--output <path>
+--plan-only
+--reproduce
+--yes
+--format <human|json|ndjson>
+```
+
+Process:
+
+1. Resolve snapshot reference.
+2. Acquire build closure.
+3. Validate snapshot for `Build`.
+4. Ask core for build plan.
+5. Ask daemon policy whether build is allowed.
+6. If `--plan-only`, print plan and stop.
+7. Otherwise dispatch build to daemon runtime/build executor.
+8. Track task progress.
+9. Report outputs.
+
+The CLI must not invoke arbitrary build commands outside daemon/core planning.
+
+If validation is not `valid`, build must not execute.
+
+---
+
+## 18. `kairo run`
+
+Runs a snapshot.
+
+Usage:
+
+```text
+kairo run <snapshot-ref> [OPTIONS]
+```
+
+Options:
+
+```text
+--entrypoint <name>
+--environment <environment>
+--plan-only
+--cap <capability>
+--deny-cap <capability>
+--yes
+--format <human|json|ndjson>
+```
+
+Process:
+
+1. Resolve snapshot reference.
+2. Acquire run closure.
+3. Validate snapshot for `Run`.
+4. Ask core for run plan.
+5. Display requested runtime capabilities when interactive.
+6. Ask daemon policy whether run is allowed.
+7. If required, ask user approval.
+8. If `--plan-only`, print plan and stop.
+9. Dispatch run to daemon runtime executor.
+10. Attach to output or print task ID.
+
+If validation is not `valid`, run must not execute.
+
+---
+
+## 19. `kairo reproduce`
+
+Reproduces a snapshot.
+
+Usage:
+
+```text
+kairo reproduce <snapshot-ref> [OPTIONS]
+```
+
+Options:
+
+```text
+--plan-only
+--strict
+--output <path>
+--format <human|json|ndjson>
+```
+
+Process:
+
+1. Acquire reproduce closure.
+2. Validate snapshot for `Reproduce`.
+3. Produce build/run plans as required.
+4. Enforce stricter reproducibility policy.
+5. Execute only if validation and policy allow.
+
+Reproduce should report:
+
+- Input hashes
+- Dependency snapshot IDs
+- Environment identifiers
+- Reproducibility warnings
+- Output hashes
+
+---
+
+## 20. `kairo pin` and `kairo unpin`
+
+Manages local retention pins.
+
+Usage:
+
+```text
+kairo pin <object-or-snapshot-ref> [OPTIONS]
+kairo unpin <object-or-snapshot-ref> [OPTIONS]
+```
+
+Options:
+
+```text
+--recursive
+--with-blobs
+--with-dependencies
+--reason <text>
+```
+
+Pins prevent garbage collection according to `STORE.md` and `DAEMON.md`.
+
+Pinning does not imply validation.
+
+---
+
+## 21. `kairo list`
+
+Lists local objects, snapshots, tasks, or other records.
+
+Usage:
+
+```text
+kairo list objects
+kairo list snapshots <object-ref>
+kairo list tasks
+kairo list pins
+```
+
+List commands must support JSON output for automation.
+
+---
+
+## 22. `kairo status`
+
+Displays local system status.
+
+Usage:
+
+```text
+kairo status
+```
+
+Must include:
+
+- Daemon status
+- Store path/status
+- Federation status
+- Runtime executor status
+- Active task summary
+- Version information
+
+---
+
+## 23. `kairo task`
+
+Inspects or controls daemon tasks.
+
+Subcommands:
+
+```text
+kairo task list
+kairo task show <task-id>
+kairo task logs <task-id>
+kairo task cancel <task-id>
+kairo task wait <task-id>
+```
+
+Task status must be distinct from validation status.
+
+`task wait` should return the exit code corresponding to the task result when possible.
+
+---
+
+## 24. `kairo store`
+
+Store diagnostics and maintenance.
+
+Subcommands:
+
+```text
+kairo store status
+kairo store verify
+kairo store gc
+kairo store rebuild-index
+kairo store path
+```
+
+Store maintenance commands must not alter object semantics.
+
+Garbage collection must respect pins and active tasks.
+
+---
+
+## 25. `kairo federation`
+
+Federation diagnostics and controls.
+
+Subcommands:
+
+```text
+kairo federation status
+kairo federation peers
+kairo federation search <query>
+kairo federation publish <object-ref>
+kairo federation unpublish <object-ref>
+```
+
+Federation commands require daemon/federation support unless a direct federation client is explicitly implemented.
+
+Search results must be labeled as unverified until core validation occurs.
+
+---
+
+## 26. `kairo policy`
+
+Policy inspection and management.
+
+Subcommands:
+
+```text
+kairo policy show
+kairo policy check <snapshot-ref> --purpose <build|run|reproduce>
+kairo policy approve <request-id>
+kairo policy deny <request-id>
+```
+
+Policy status must be distinct from core validation status.
+
+---
+
+## 27. `kairo config`
+
+Configuration inspection and editing.
+
+Subcommands:
+
+```text
+kairo config show
+kairo config path
+kairo config validate
+```
+
+Editing commands may be added later, but must avoid unsafe mutation without confirmation.
+
+---
+
+## 28. Safety Prompts
+
+The CLI must ask for explicit confirmation before:
+
+1. Running object content when policy requires approval.
+2. Granting runtime capabilities not already approved.
+3. Publishing local/private data to federation.
+4. Deleting or garbage-collecting unpinned data when user-visible.
+5. Overwriting export destinations unless `--force` is supplied.
+6. Migrating a store without backup when migration is destructive.
+
+`--yes` may bypass prompts only where safe and policy permits.
+
+`--yes` must not bypass daemon policy denial.
+
+---
+
+## 29. Offline Behavior
+
+`--offline` means:
+
+1. Do not contact federation.
+2. Do not fetch remote data.
+3. Use local store only.
+4. Return indeterminate/not-found when required data is missing.
+
+Offline mode must not silently fall back to network access.
+
+---
+
+## 30. Machine-readable Output
+
+JSON output must be stable and versioned.
+
+Recommended envelope:
+
+```json
+{
+  "schema": "kairo.cli.result.v1",
+  "command": "verify",
+  "ok": true,
+  "result": {}
+}
+```
+
+Errors should use:
+
+```json
+{
+  "schema": "kairo.cli.error.v1",
+  "ok": false,
+  "error": {
+    "code": "validation_indeterminate",
+    "message": "Snapshot closure is incomplete",
+    "details": {}
+  }
+}
+```
+
+NDJSON output should emit one JSON object per line for task progress.
+
+---
+
+## 31. Human Output Requirements
+
+Human output should be:
+
+1. Clear.
+2. Stable enough for documentation.
+3. Not relied upon for scripting.
+4. Explicit about validation, policy, and task state.
+5. Concise by default, detailed with `--verbose`.
+
+Human output must not hide warnings that affect safety or validity.
+
+---
+
+## 32. Error Handling
+
+The CLI must distinguish:
+
+- Command-line usage error
+- Daemon unavailable
+- Store error
+- Federation error
+- Core validation status
+- Policy denial
+- Runtime failure
+- User cancellation
+- Unsupported feature
+
+Errors should include actionable hints when possible.
+
+Example:
+
+```text
+Validation: INDETERMINATE
+Reason: Missing authority statement 2b7...
+Hint: Run `kairo fetch <object> --purpose run --with-dependencies`
+```
+
+---
+
+## 33. Scripting Compatibility
+
+Commands intended for automation must:
+
+1. Support `--format json`.
+2. Use stable exit codes.
+3. Avoid interactive prompts unless explicitly requested.
+4. Fail instead of prompting when stdin is not a TTY, unless `--yes` or an explicit approval option is supplied.
+5. Avoid progress spinners in non-human output.
+
+---
+
+## 34. Security Requirements
+
+The CLI must:
+
+1. Never execute fetched/imported content implicitly.
+2. Clearly display runtime capabilities before run/build when interactive.
+3. Not present unverified data as verified.
+4. Not leak private local paths in remote/federation commands unless requested.
+5. Respect daemon policy decisions.
+6. Avoid shell injection when invoking local helpers.
+7. Avoid using human output for security-sensitive machine parsing.
+
+---
+
+## 35. Implementation Checklist
+
+A conforming initial CLI implementation should provide:
+
+1. Global option parser.
+2. Daemon connection logic.
+3. Direct/local mode for basic validation.
+4. JSON output envelope.
+5. Stable exit codes.
+6. `init`.
+7. `daemon status`.
+8. `inspect`.
+9. `verify`.
+10. `import`.
+11. `fetch`.
+12. `build --plan-only`.
+13. `run --plan-only`.
+14. `task list/show/wait`.
+15. `pin` and `unpin`.
+16. `status`.
+17. Clear validation/policy/task rendering.
+18. Non-interactive scripting behavior.
+
+---
+
+End of `CLI.md`.
