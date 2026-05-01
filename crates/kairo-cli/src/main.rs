@@ -7,11 +7,15 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use clap::{Parser, Subcommand};
 use kairo_identity::json::ActorGenesisJson;
-use kairo_identity::{ActorGenesisBody, ActorId, PublicKey};
+use kairo_identity::{ActorGenesisBody, MemoryActorResolver, PublicKey};
 use kairo_object::{
     validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
 };
 use kairo_statement::json::ObjectRevisionStatementJson;
+use kairo_statement::verify::{
+    verify_envelope_statement, ActorResolution, SignatureStatus, TrustEvaluation,
+    VerificationReport,
+};
 use kairo_statement::ObjectRevisionBody;
 
 #[derive(Debug, Parser)]
@@ -170,22 +174,18 @@ fn run_revision_command(command: RevisionCommand) -> Result<String, CliError> {
         } => {
             let statement = read_object_revision_statement(statement)?;
             let actor_genesis = read_actor_genesis(actor_genesis)?;
-            let actor_id = actor_genesis.actor_id();
-            if statement.signature().actor() != &actor_id {
-                return Err(CliError::ActorGenesisMismatch {
-                    expected: statement.signature().actor().clone(),
-                    actual: actor_id,
-                });
+            let mut resolver = MemoryActorResolver::new();
+            resolver.insert(actor_genesis);
+            let report = verify_envelope_statement(&statement, &resolver);
+
+            if report.is_cryptographically_valid() {
+                Ok(format_verification_report(
+                    statement.unsigned().body(),
+                    &report,
+                ))
+            } else {
+                Err(CliError::VerificationFailed(Box::new(report)))
             }
-
-            statement
-                .verify_signature(actor_genesis.initial_key())
-                .map_err(CliError::VerifyStatementSignature)?;
-
-            Ok(format_revision_actor_genesis_valid(
-                statement.unsigned().body(),
-                statement.signature(),
-            ))
         }
     }
 }
@@ -329,17 +329,92 @@ fn format_revision_signature_valid(
     )
 }
 
-fn format_revision_actor_genesis_valid(
+fn format_verification_report(
     revision: &ObjectRevisionBody,
-    signature: &kairo_statement::Signature,
+    report: &VerificationReport,
 ) -> String {
     format!(
-        "valid revision actor genesis\nobject = {}\nrevision = {}\nactor = {}\nkey_id = {}\nsignature = valid\n",
+        "valid revision actor genesis\n\
+         object = {}\n\
+         revision = {}\n\
+         actor = {}\n\
+         statement_id = {}\n\
+         signature = {}\n\
+         actor_resolution = {}\n\
+         trust = {}\n",
         revision.object(),
         revision.revision().as_str(),
-        signature.actor(),
-        signature.key_id()
+        report.envelope_actor,
+        report.statement_id,
+        format_signature_status(&report.signature),
+        format_actor_resolution(&report.actor),
+        format_trust(&report.trust),
     )
+}
+
+fn format_signature_status(status: &SignatureStatus) -> &'static str {
+    match status {
+        SignatureStatus::Valid => "valid",
+        SignatureStatus::Invalid => "invalid",
+        SignatureStatus::UnsupportedAlgorithm(_) => "unsupported-algorithm",
+        SignatureStatus::Malformed { .. } => "malformed",
+        SignatureStatus::AlgorithmMismatch => "algorithm-mismatch",
+        SignatureStatus::NotEvaluated => "not-evaluated",
+    }
+}
+
+fn format_actor_resolution(resolution: &ActorResolution) -> &'static str {
+    match resolution {
+        ActorResolution::Resolved => "resolved",
+        ActorResolution::NotFound => "not-found",
+        ActorResolution::ResolverUnavailable(_) => "resolver-unavailable",
+        ActorResolution::SignatureActorMismatch => "signature-actor-mismatch",
+    }
+}
+
+fn format_trust(trust: &TrustEvaluation) -> &'static str {
+    match trust {
+        TrustEvaluation::Unevaluated => "unevaluated",
+    }
+}
+
+fn describe_verification_failure(report: &VerificationReport) -> String {
+    let mut parts = Vec::new();
+    match &report.actor {
+        ActorResolution::Resolved => {}
+        ActorResolution::NotFound => parts.push(format!(
+            "actor {} could not be resolved",
+            report.envelope_actor
+        )),
+        ActorResolution::ResolverUnavailable(reason) => {
+            parts.push(format!("actor resolver unavailable: {reason}"));
+        }
+        ActorResolution::SignatureActorMismatch => parts.push(format!(
+            "signature actor {} does not match envelope actor {}",
+            report.signature_actor, report.envelope_actor
+        )),
+    }
+    match &report.signature {
+        SignatureStatus::Valid | SignatureStatus::NotEvaluated => {}
+        SignatureStatus::Invalid => parts.push("signature did not verify".to_owned()),
+        SignatureStatus::UnsupportedAlgorithm(algorithm) => {
+            parts.push(format!("unsupported signature algorithm {algorithm}"));
+        }
+        SignatureStatus::Malformed {
+            expected_len,
+            actual_len,
+        } => parts.push(format!(
+            "malformed signature length {actual_len}; expected {expected_len}"
+        )),
+        SignatureStatus::AlgorithmMismatch => {
+            parts.push("signature algorithm does not match resolved key".to_owned());
+        }
+    }
+    if parts.is_empty() {
+        "verification failed".to_owned()
+    } else {
+        parts.join("; ")
+    }
 }
 
 fn help_text() -> String {
@@ -371,10 +446,7 @@ enum CliError {
     ParseStatement(kairo_statement::json::StatementJsonError),
     ValidateRevisionManifest(kairo_object::RevisionManifestError),
     VerifyStatementSignature(kairo_statement::StatementSignatureError),
-    ActorGenesisMismatch {
-        expected: ActorId,
-        actual: ActorId,
-    },
+    VerificationFailed(Box<VerificationReport>),
     MissingPublicKey,
     ConflictingPublicKeyInputs,
     InvalidPublicKeyBase64,
@@ -402,11 +474,8 @@ impl fmt::Display for CliError {
             Self::ParseStatement(error) => write!(f, "{error}"),
             Self::ValidateRevisionManifest(error) => write!(f, "{error}"),
             Self::VerifyStatementSignature(error) => write!(f, "{error}"),
-            Self::ActorGenesisMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "statement actor {expected} does not match actor genesis id {actual}"
-                )
+            Self::VerificationFailed(report) => {
+                write!(f, "{}", describe_verification_failure(report))
             }
             Self::MissingPublicKey => f.write_str("missing --public-key or --public-key-file"),
             Self::ConflictingPublicKeyInputs => {
@@ -433,7 +502,7 @@ impl Error for CliError {
             Self::ParseStatement(error) => Some(error),
             Self::ValidateRevisionManifest(error) => Some(error),
             Self::VerifyStatementSignature(error) => Some(error),
-            Self::ActorGenesisMismatch { .. }
+            Self::VerificationFailed(_)
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64
@@ -648,20 +717,24 @@ mod tests {
         let output = actor_genesis.ok().and_then(|actor_genesis| {
             let statement =
                 signed_revision_statement_for_actor(actor_genesis.actor_id().to_string())?;
-            statement
-                .verify_signature(actor_genesis.initial_key())
-                .ok()
-                .map(|_| {
-                    format_revision_actor_genesis_valid(
-                        statement.unsigned().body(),
-                        statement.signature(),
-                    )
-                })
+            let mut resolver = MemoryActorResolver::new();
+            resolver.insert(actor_genesis);
+            let report = verify_envelope_statement(&statement, &resolver);
+            if report.is_cryptographically_valid() {
+                Some(format_verification_report(
+                    statement.unsigned().body(),
+                    &report,
+                ))
+            } else {
+                None
+            }
         });
 
         assert!(
             matches!(output, Some(output) if output.contains("valid revision actor genesis")
             && output.contains("signature = valid")
+            && output.contains("actor_resolution = resolved")
+            && output.contains("trust = unevaluated")
             && output.contains("actor = z"))
         );
     }
@@ -698,6 +771,7 @@ mod tests {
             version: 1,
             actor: actor_id.clone(),
             subject: format!("object:{OBJECT_ID}"),
+            created_at: "2026-05-01T14:32:07Z".to_owned(),
             body: ObjectRevisionBodyJson {
                 object: OBJECT_ID.to_owned(),
                 revision: "git:sha256:revision".to_owned(),
@@ -742,6 +816,7 @@ mod tests {
                 algorithm: "ed25519".to_owned(),
                 bytes: STANDARD.encode(signing_key().verifying_key().to_bytes()),
             },
+            created_at: "2026-05-01T14:32:07Z".to_owned(),
             nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
         }
     }

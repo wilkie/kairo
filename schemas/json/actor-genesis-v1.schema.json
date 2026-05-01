@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/actor-genesis-v1.schema.json",
   "title": "Kairo ActorGenesis v1",
   "type": "object",
-  "required": ["type", "version", "actor_kind", "initial_key", "nonce"],
+  "required": ["type", "version", "actor_kind", "initial_key", "created_at", "nonce"],
   "properties": {
     "type": {
       "const": "ActorGenesis"
@@ -29,6 +29,11 @@
         }
       },
       "additionalProperties": false
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). No fractional seconds; no offsets other than Z."
     },
     "nonce": {
       "type": "string",

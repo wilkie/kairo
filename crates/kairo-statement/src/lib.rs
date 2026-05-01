@@ -1,6 +1,7 @@
 //! Signed statement envelope primitives.
 
 pub mod json;
+pub mod verify;
 
 use std::error::Error;
 use std::fmt;
@@ -8,7 +9,7 @@ use std::fmt;
 use kairo_core::canonical::{
     encode_bytes, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };
-use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId};
+use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_identity::{
     verify_signature as verify_identity_signature, PublicKey, SignatureBytes,
     SignatureVerificationError, VerifiedSignature,
@@ -24,11 +25,17 @@ pub struct StatementEnvelope {
     id: StatementId,
     actor: ActorId,
     subject: KairoRef,
+    created_at: Timestamp,
 }
 
 impl StatementEnvelope {
-    pub fn new(id: StatementId, actor: ActorId, subject: KairoRef) -> Self {
-        Self { id, actor, subject }
+    pub fn new(id: StatementId, actor: ActorId, subject: KairoRef, created_at: Timestamp) -> Self {
+        Self {
+            id,
+            actor,
+            subject,
+            created_at,
+        }
     }
 
     pub fn id(&self) -> &StatementId {
@@ -42,6 +49,10 @@ impl StatementEnvelope {
     pub fn subject(&self) -> &KairoRef {
         &self.subject
     }
+
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
+    }
 }
 
 pub trait StatementBody: CanonicalEncode {
@@ -53,14 +64,16 @@ pub trait StatementBody: CanonicalEncode {
 pub struct UnsignedStatement<B> {
     actor: ActorId,
     subject: KairoRef,
+    created_at: Timestamp,
     body: B,
 }
 
 impl<B> UnsignedStatement<B> {
-    pub fn new(actor: ActorId, subject: KairoRef, body: B) -> Self {
+    pub fn new(actor: ActorId, subject: KairoRef, created_at: Timestamp, body: B) -> Self {
         Self {
             actor,
             subject,
+            created_at,
             body,
         }
     }
@@ -71,6 +84,10 @@ impl<B> UnsignedStatement<B> {
 
     pub fn subject(&self) -> &KairoRef {
         &self.subject
+    }
+
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
     }
 
     pub fn body(&self) -> &B {
@@ -90,6 +107,7 @@ impl<B: StatementBody> CanonicalEncode for UnsignedStatement<B> {
         encode_u8(out, B::VERSION);
         encode_str(out, self.actor.as_str());
         encode_str(out, &self.subject.to_string());
+        self.created_at.encode_canonical(out);
         self.body.encode_canonical(out);
     }
 }
@@ -140,6 +158,7 @@ impl<B: StatementBody> SignedStatement<B> {
 pub struct ObjectGenesisBody {
     object_kind: ObjectKind,
     created_by: ActorId,
+    created_at: Timestamp,
     nonce: [u8; 32],
     initial_revision: Option<RevisionId>,
 }
@@ -148,12 +167,14 @@ impl ObjectGenesisBody {
     pub fn new(
         object_kind: ObjectKind,
         created_by: ActorId,
+        created_at: Timestamp,
         nonce: [u8; 32],
         initial_revision: Option<RevisionId>,
     ) -> Self {
         Self {
             object_kind,
             created_by,
+            created_at,
             nonce,
             initial_revision,
         }
@@ -165,6 +186,10 @@ impl ObjectGenesisBody {
 
     pub fn created_by(&self) -> &ActorId {
         &self.created_by
+    }
+
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
     }
 
     pub fn nonce(&self) -> &[u8; 32] {
@@ -186,6 +211,7 @@ impl CanonicalEncode for ObjectGenesisBody {
         encode_u8(out, 1);
         encode_str(out, self.object_kind.as_str());
         encode_str(out, self.created_by.as_str());
+        self.created_at.encode_canonical(out);
         encode_bytes(out, &self.nonce);
         encode_option(out, self.initial_revision.as_ref(), |out, revision| {
             encode_str(out, revision.as_str());
@@ -419,10 +445,15 @@ mod tests {
         ActorId::new(ACTOR_ID)
     }
 
+    fn timestamp() -> Timestamp {
+        Timestamp::from_seconds(1_700_000_000)
+    }
+
     fn genesis_with_nonce(nonce: [u8; 32]) -> Result<ObjectGenesisBody, kairo_core::IdError> {
         Ok(ObjectGenesisBody::new(
             ObjectKind::software(),
             actor_id()?,
+            timestamp(),
             nonce,
             None,
         ))
@@ -478,6 +509,7 @@ mod tests {
         Ok(UnsignedStatement::new(
             actor_id()?,
             object_ref()?,
+            timestamp(),
             TestBody {
                 value: value.to_owned(),
             },
@@ -500,7 +532,12 @@ mod tests {
     fn unsigned_object_revision(
         body: ObjectRevisionBody,
     ) -> Result<UnsignedStatement<ObjectRevisionBody>, kairo_core::IdError> {
-        Ok(UnsignedStatement::new(actor_id()?, object_ref()?, body))
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            timestamp(),
+            body,
+        ))
     }
 
     #[test]
@@ -529,6 +566,7 @@ mod tests {
             ObjectGenesisBody::new(
                 ObjectKind::software(),
                 actor_id,
+                timestamp(),
                 [7; 32],
                 Some(RevisionId::new("git:sha256:abc123")),
             )
@@ -538,6 +576,47 @@ mod tests {
         assert!(
             matches!((without_revision, with_revision), (Ok(without_revision), Ok(with_revision)) if without_revision != with_revision)
         );
+    }
+
+    #[test]
+    fn object_genesis_created_at_changes_object_id() {
+        let first = genesis_with_nonce([7; 32]).map(|genesis| genesis.object_id());
+        let second = actor_id().map(|actor_id| {
+            ObjectGenesisBody::new(
+                ObjectKind::software(),
+                actor_id,
+                Timestamp::from_seconds(timestamp().seconds() + 1),
+                [7; 32],
+                None,
+            )
+            .object_id()
+        });
+
+        assert!(matches!((first, second), (Ok(first), Ok(second)) if first != second));
+    }
+
+    #[test]
+    fn object_revision_created_at_changes_statement_id() -> Result<(), kairo_core::IdError> {
+        let body = || {
+            object_revision_body(
+                vec![RevisionId::new("git:sha256:parent")],
+                BlobId::from_sha256_digest([1; 32]),
+            )
+        };
+        let first = body()
+            .and_then(unsigned_object_revision)
+            .map(|s| s.statement_id());
+        let second_body = body()?;
+        let second = UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+            second_body,
+        )
+        .statement_id();
+
+        assert!(matches!(first, Ok(first) if first != second));
+        Ok(())
     }
 
     #[test]

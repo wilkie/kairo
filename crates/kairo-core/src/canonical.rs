@@ -21,6 +21,10 @@ pub fn encode_u32(out: &mut Vec<u8>, value: u32) {
     out.extend(value.to_be_bytes());
 }
 
+pub fn encode_i64(out: &mut Vec<u8>, value: i64) {
+    out.extend(value.to_be_bytes());
+}
+
 pub fn encode_bytes(out: &mut Vec<u8>, value: &[u8]) {
     encode_len(out, value.len());
     out.extend(value);
@@ -73,6 +77,22 @@ mod tests {
         encode_u32(&mut bytes, 0x1234_5678);
 
         assert_eq!(bytes, vec![0x7f, 0x12, 0x34, 0x12, 0x34, 0x56, 0x78]);
+    }
+
+    #[test]
+    fn encodes_i64_big_endian() {
+        let mut bytes = Vec::new();
+        encode_i64(&mut bytes, 0x0102_0304_0506_0708);
+
+        assert_eq!(bytes, vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+    }
+
+    #[test]
+    fn encodes_negative_i64_big_endian() {
+        let mut bytes = Vec::new();
+        encode_i64(&mut bytes, -1);
+
+        assert_eq!(bytes, vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
     }
 
     #[test]

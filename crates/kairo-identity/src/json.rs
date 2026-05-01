@@ -3,6 +3,7 @@ use std::fmt;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use kairo_core::{Timestamp, TimestampError};
 use serde::{Deserialize, Serialize};
 
 use crate::{ActorGenesisBody, ActorKind, PublicKey};
@@ -24,6 +25,7 @@ pub enum ActorGenesisJsonError {
         actual: usize,
     },
     InvalidNonceHex,
+    InvalidCreatedAt(TimestampError),
 }
 
 impl fmt::Display for ActorGenesisJsonError {
@@ -49,11 +51,19 @@ impl fmt::Display for ActorGenesisJsonError {
                 write!(f, "invalid public key length {actual}; expected {expected}")
             }
             Self::InvalidNonceHex => f.write_str("invalid ActorGenesis nonce hex"),
+            Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
         }
     }
 }
 
-impl Error for ActorGenesisJsonError {}
+impl Error for ActorGenesisJsonError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::InvalidCreatedAt(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActorGenesisJson {
@@ -62,6 +72,7 @@ pub struct ActorGenesisJson {
     pub version: u8,
     pub actor_kind: String,
     pub initial_key: PublicKeyJson,
+    pub created_at: String,
     pub nonce: String,
 }
 
@@ -69,9 +80,15 @@ impl ActorGenesisJson {
     pub fn to_body(&self) -> Result<ActorGenesisBody, ActorGenesisJsonError> {
         ensure_shape(&self.statement_type, self.version)?;
 
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(ActorGenesisJsonError::InvalidCreatedAt)?;
+
         Ok(ActorGenesisBody::new(
             ActorKind::new(self.actor_kind.clone()),
             self.initial_key.to_public_key()?,
+            created_at,
             decode_nonce_hex(&self.nonce)?,
         ))
     }
@@ -198,7 +215,30 @@ mod tests {
                 algorithm: "ed25519".to_owned(),
                 bytes: STANDARD.encode(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()),
             },
+            created_at: "2026-05-01T14:32:07Z".to_owned(),
             nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
         }
+    }
+
+    #[test]
+    fn rejects_invalid_created_at() {
+        let mut dto = actor_genesis_dto();
+        dto.created_at = "not a timestamp".to_owned();
+
+        assert!(matches!(
+            dto.to_body(),
+            Err(ActorGenesisJsonError::InvalidCreatedAt(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_non_utc_offset_in_created_at() {
+        let mut dto = actor_genesis_dto();
+        dto.created_at = "2026-05-01T14:32:07+00:00".to_owned();
+
+        assert!(matches!(
+            dto.to_body(),
+            Err(ActorGenesisJsonError::InvalidCreatedAt(_))
+        ));
     }
 }

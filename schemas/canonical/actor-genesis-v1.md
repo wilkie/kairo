@@ -46,6 +46,7 @@ Fields are encoded in this exact order:
 | version `1` | `u8` |
 | `actor_kind` | `string` |
 | `initial_key` | `PublicKey` |
+| `created_at` | `Timestamp` (`i64` epoch seconds) |
 | `nonce` | `bytes`, exactly 32 bytes |
 
 `PublicKey` is encoded as:
@@ -90,6 +91,7 @@ canonical_actor_genesis =
   u8(1) ||
   string(actor_kind) ||
   canonical_public_key ||
+  i64_be(created_at_epoch_seconds) ||
   bytes(nonce)
 
 actor_id =
@@ -104,6 +106,10 @@ actor_id =
 - A valid signature proves control of a key, not local trust in the actor.
 - Actor authority and key-active status are evaluated by later actor and policy
   rules.
+- `created_at` is the actor's self-claim of when the genesis statement was made.
+  It is not a trusted observation. Canonical bytes are the `i64` Unix epoch
+  seconds (big-endian); JSON interchange uses strict RFC 3339 UTC seconds with
+  the literal `Z` suffix and no fractional seconds.
 
 ## Test Vectors
 

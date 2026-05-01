@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/object-revision-v1.schema.json",
   "title": "Kairo ObjectRevision Statement v1",
   "type": "object",
-  "required": ["type", "version", "actor", "subject", "body", "signature"],
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
   "properties": {
     "type": {
       "const": "ObjectRevision"
@@ -18,6 +18,11 @@
     "subject": {
       "type": "string",
       "pattern": "^object:z[1-9A-HJ-NP-Za-km-z]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). No fractional seconds; no offsets other than Z."
     },
     "body": {
       "type": "object",

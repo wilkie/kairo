@@ -264,6 +264,36 @@ Invalid signatures make statements invalid.
 
 Missing key data may make validation indeterminate.
 
+### 6.2 Verification result model
+
+Statement verification produces a structured `VerificationReport` with three
+**independent** dimensions. None of them imply or override the others:
+
+- **Signature status** — whether the cryptographic signature verified against
+  the resolved key. Possible values include `Valid`, `Invalid`,
+  `UnsupportedAlgorithm`, `Malformed`, `AlgorithmMismatch`, and `NotEvaluated`
+  (when the actor could not be resolved).
+- **Actor resolution** — whether the actor declared on the statement was
+  resolvable. Possible values include `Resolved`, `NotFound`,
+  `ResolverUnavailable` (transient/operational), and `SignatureActorMismatch`
+  (the signature's actor field disagrees with the envelope's actor field).
+- **Trust evaluation** — local trust policy. The MVP value is always
+  `Unevaluated`; `kairo-trust` will populate this later (see TODO §10).
+
+Rules:
+
+1. A `Valid` signature does not imply trust. A statement with a valid
+   signature from an unknown or untrusted actor is still cryptographically
+   valid, not authoritative.
+2. Trust never overrides cryptographic validity. A trusted actor with an
+   `Invalid` signature is still invalid.
+3. `ResolverUnavailable` is operational, not semantic. Callers should retry
+   or report it differently from `NotFound`.
+4. The MVP version of the report is filled by `verify_envelope_statement` in
+   `kairo-statement::verify`, using an `ActorResolver` (see §8). The shape is
+   stable: future trust evaluation populates the existing field rather than
+   changing the report.
+
 ---
 
 ## 7. Actor Chains

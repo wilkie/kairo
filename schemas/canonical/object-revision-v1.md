@@ -48,6 +48,7 @@ policy requirements before trusting the claim.
   "version": 1,
   "actor": "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t",
   "subject": "object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
+  "created_at": "2026-05-01T14:32:07Z",
   "body": {
     "object": "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
     "revision": "git:sha256:revision",
@@ -74,6 +75,7 @@ The shared unsigned statement envelope is encoded before the body:
 | version `1` | `u8` |
 | `actor` | `ActorId` payload as `string` |
 | `subject` | internal Kairo reference as `string` |
+| `created_at` | `Timestamp` (`i64` epoch seconds) |
 | `body` | body fields below |
 
 ## Canonical Body Fields
@@ -115,6 +117,7 @@ canonical_unsigned_statement =
   u8(1) ||
   string(actor) ||
   string(subject) ||
+  i64_be(created_at_epoch_seconds) ||
   canonical_body
 
 statement_id =
@@ -130,6 +133,10 @@ statement_id =
 - `parents` preserves the storage layer's parent order. Reordering parents
   changes the `StatementId`.
 - `manifest_hash` identifies the canonical manifest for the revision.
+- `created_at` is the actor's self-claim of when the statement was made.
+  Canonical bytes are `i64` Unix epoch seconds (big-endian); JSON interchange
+  uses strict RFC 3339 UTC seconds with the literal `Z` suffix and no
+  fractional seconds. It is not a trusted observation.
 - To validate revision content against this statement, parse the revision's
   `kairo.toml` as `ObjectManifest` v1, compute its canonical `BlobId`, and
   require it to equal `manifest_hash`. If the manifest declares `[kairo].object`,

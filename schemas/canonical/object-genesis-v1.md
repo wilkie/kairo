@@ -43,6 +43,7 @@ Fields are encoded in this exact order:
 | version `1` | `u8` |
 | `object_kind` | `string` |
 | `created_by` | `ActorId` payload as `string` |
+| `created_at` | `Timestamp` (`i64` epoch seconds) |
 | `nonce` | `bytes`, exactly 32 bytes |
 | `initial_revision` | `option<string>` |
 
@@ -59,8 +60,12 @@ The following must not be included in Object ID canonical bytes:
 - current owner
 - version names
 - federation metadata
-- received-at timestamps
+- received-at timestamps from federation peers
 - local trust decisions
+
+`created_at` is included; it is the actor's self-claim of when the object
+lineage was created and is part of identity. `received-at` timestamps from
+federation peers are NOT.
 
 ## Rust-Equivalent Pseudocode
 
@@ -70,6 +75,7 @@ canonical_bytes =
   u8(1) ||
   string(object_kind) ||
   string(created_by) ||
+  i64_be(created_at_epoch_seconds) ||
   bytes(nonce) ||
   option(initial_revision, string)
 
@@ -82,10 +88,12 @@ object_id =
 ## Notes
 
 - `created_by` is the bare `ActorId` payload.
+- `created_at` is the `i64` Unix epoch seconds (big-endian) for the actor's
+  self-claimed creation moment. JSON interchange uses strict RFC 3339 UTC
+  seconds with the literal `Z` suffix and no fractional seconds.
 - `initial_revision`, when present, is a storage revision string such as
   `git:sha256:<commit>`.
 - The nonce must be 32 bytes.
-- Timestamps are excluded from v1 identity material.
 - Re-signing the same `ObjectGenesis` body must not change the Object ID.
 - `created_by` records origin authority, not permanent ownership. Current
   ownership is represented by later authorized statements.

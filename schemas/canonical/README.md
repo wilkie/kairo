@@ -27,10 +27,12 @@ Unless a statement-specific document says otherwise:
 | `u8` | one byte |
 | `u16` | unsigned big-endian |
 | `u32` | unsigned big-endian |
+| `i64` | signed big-endian, two's complement |
 | `bytes` | `u32 length || bytes` |
 | `string` | UTF-8 bytes encoded as `bytes` |
 | `option<T>` | `0x00` for none, `0x01 || T` for some |
 | `list<T>` | `u32 count || item...` |
+| `Timestamp` | `i64` Unix epoch seconds |
 
 Kairo-native IDs inside canonical bytes are encoded as their bare ID payload
 strings, not as `object:<id>` or `kairo:object:<id>` references, unless a field

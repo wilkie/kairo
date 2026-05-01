@@ -3,7 +3,7 @@ use std::fmt;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use kairo_core::{ActorId, BlobId, KairoRef, ObjectId};
+use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, Timestamp, TimestampError};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -27,6 +27,7 @@ pub enum StatementJsonError {
     InvalidBlob(kairo_core::IdError),
     InvalidNonceHex,
     InvalidSignatureBase64,
+    InvalidCreatedAt(TimestampError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -47,6 +48,7 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidBlob(error) => write!(f, "invalid blob id: {error}"),
             Self::InvalidNonceHex => f.write_str("invalid ObjectGenesis nonce hex"),
             Self::InvalidSignatureBase64 => f.write_str("invalid signature base64"),
+            Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
         }
     }
 }
@@ -58,6 +60,7 @@ impl Error for StatementJsonError {
             | Self::InvalidObject(error)
             | Self::InvalidSubject(error)
             | Self::InvalidBlob(error) => Some(error),
+            Self::InvalidCreatedAt(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -111,15 +114,22 @@ impl ObjectGenesisStatementJson {
 pub struct ObjectGenesisBodyJson {
     pub object_kind: String,
     pub created_by: String,
+    pub created_at: String,
     pub nonce: String,
     pub initial_revision: Option<String>,
 }
 
 impl ObjectGenesisBodyJson {
     pub fn to_body(&self) -> Result<ObjectGenesisBody, StatementJsonError> {
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
         Ok(ObjectGenesisBody::new(
             ObjectKind::new(self.object_kind.clone()),
             ActorId::new(self.created_by.clone()).map_err(StatementJsonError::InvalidActor)?,
+            created_at,
             decode_nonce_hex(&self.nonce)?,
             self.initial_revision.clone().map(RevisionId::new),
         ))
@@ -133,6 +143,7 @@ pub struct ObjectRevisionStatementJson {
     pub version: u8,
     pub actor: String,
     pub subject: String,
+    pub created_at: String,
     pub body: ObjectRevisionBodyJson,
     pub signature: SignatureJson,
 }
@@ -141,11 +152,17 @@ impl ObjectRevisionStatementJson {
     pub fn to_statement(&self) -> Result<SignedStatement<ObjectRevisionBody>, StatementJsonError> {
         ensure_statement_shape(&self.statement_type, self.version, "ObjectRevision", 1)?;
 
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
         let unsigned = UnsignedStatement::new(
             ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
             self.subject
                 .parse::<KairoRef>()
                 .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
             self.body.to_body()?,
         );
 
@@ -234,6 +251,8 @@ mod tests {
     const OBJECT_ID: &str = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
     const BLOB_ID: &str = "zQmfBE2w2UqKJhGZAxK4ZWb4JuCrvxnN9P4YKuvzfbPSvD5";
 
+    const CREATED_AT: &str = "2026-05-01T14:32:07Z";
+
     #[test]
     fn parses_object_revision_json_to_canonical_statement() {
         let json = format!(
@@ -242,6 +261,7 @@ mod tests {
               "version": 1,
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
               "body": {{
                 "object": "{OBJECT_ID}",
                 "revision": "git:sha256:revision",
@@ -278,6 +298,7 @@ mod tests {
               "version": 1,
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
               "body": {{
                 "object": "{OBJECT_ID}",
                 "revision": "git:sha256:revision",
@@ -308,6 +329,7 @@ mod tests {
                 "revision": "git:sha256:revision",
                 "object": "{OBJECT_ID}"
               }},
+              "created_at": "{CREATED_AT}",
               "subject": "object:{OBJECT_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -333,6 +355,7 @@ mod tests {
               "body": {{
                 "object_kind": "software",
                 "created_by": "{ACTOR_ID}",
+                "created_at": "{CREATED_AT}",
                 "nonce": "0707070707070707070707070707070707070707070707070707070707070707",
                 "initial_revision": "git:sha256:revision"
               }},
@@ -370,11 +393,23 @@ mod tests {
         let body = ObjectGenesisBodyJson {
             object_kind: "software".to_owned(),
             created_by: ACTOR_ID.to_owned(),
+            created_at: CREATED_AT.to_owned(),
             nonce: "not-hex".to_owned(),
             initial_revision: None,
         };
 
         assert_eq!(body.to_body(), Err(StatementJsonError::InvalidNonceHex));
+    }
+
+    #[test]
+    fn rejects_invalid_created_at_in_revision() {
+        let mut dto = revision_dto();
+        dto.created_at = "not a timestamp".to_owned();
+
+        assert!(matches!(
+            dto.to_statement(),
+            Err(StatementJsonError::InvalidCreatedAt(_))
+        ));
     }
 
     #[test]
@@ -456,6 +491,7 @@ mod tests {
               "body": {{
                 "object_kind": "software",
                 "created_by": "{ACTOR_ID}",
+                "created_at": "{CREATED_AT}",
                 "nonce": "0707070707070707070707070707070707070707070707070707070707070707",
                 "initial_revision": null
               }},
@@ -476,6 +512,7 @@ mod tests {
               "version": 1,
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
               "body": {{
                 "object": "{OBJECT_ID}",
                 "revision": "git:sha256:revision",
@@ -499,6 +536,7 @@ mod tests {
             version: 1,
             actor: ACTOR_ID.to_owned(),
             subject: format!("object:{OBJECT_ID}"),
+            created_at: CREATED_AT.to_owned(),
             body: ObjectRevisionBodyJson {
                 object: OBJECT_ID.to_owned(),
                 revision: "git:sha256:revision".to_owned(),
@@ -525,9 +563,14 @@ mod tests {
             true,
         );
 
+        let created_at = CREATED_AT
+            .parse::<Timestamp>()
+            .map_err(|_| kairo_core::IdError::InvalidEncoding)?;
+
         Ok(UnsignedStatement::new(
             ActorId::new(ACTOR_ID)?,
             format!("object:{OBJECT_ID}").parse()?,
+            created_at,
             body,
         ))
     }

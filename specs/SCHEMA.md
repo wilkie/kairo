@@ -96,7 +96,7 @@ Not allowed:
 
 ## 5. Serialization Format
 
-Primary format:
+Primary interchange format:
 
 ```text
 JSON (UTF-8)
@@ -109,20 +109,31 @@ Rules:
 3. Numbers must not exceed JSON safe limits unless encoded as strings
 4. Binary data must be referenced (blobs), not embedded
 
+JSON is the **interchange** format. JSON bytes are never the hash or signature
+input for Kairo identities. All hashing and signing operate on the canonical
+binary form documented under `schemas/canonical/`. See section 6.
+
 ---
 
-## 6. Canonical JSON (for deterministic use)
+## 6. Canonical Form vs JSON Interchange
 
-When deterministic encoding is required:
+Kairo separates two roles cleanly:
 
-1. Object keys sorted lexicographically
-2. No insignificant whitespace
-3. UTF-8 encoding
-4. Stable number formatting
-5. Stable boolean/null representation
+- **Canonical bytes** (under `schemas/canonical/`) are the only input to any
+  Kairo hash, identity derivation, or signature. They are domain-tagged and
+  produced by the deterministic length-prefixed binary encoding implemented in
+  `kairo-core::canonical`.
+- **JSON interchange** (under `schemas/json/`) is the wire format for APIs,
+  packages, files, and external tooling. JSON is parsed into typed Rust models;
+  those models then produce canonical bytes for hashing or signing.
 
-Canonical JSON is not currently the default statement hash input. Statement and
-Object identity canonical bytes are documented in `schemas/canonical/`.
+Implementations MUST NOT hash JSON text, TOML text, or any other interchange
+representation. If two implementations disagree about what bytes to hash, the
+canonical document under `schemas/canonical/` is authoritative.
+
+Canonical JSON (sorted keys, no whitespace, stable numbers) is reserved for
+external interoperability use cases that explicitly require deterministic JSON.
+It is not Kairo's identity or signature input.
 
 ---
 
@@ -189,17 +200,26 @@ Example:
 
 ## 11. Time Format
 
-All timestamps must use:
+JSON interchange timestamps use **RFC 3339 / ISO 8601** with these strict
+rules:
 
-```text
-RFC 3339 / ISO 8601 UTC
-```
+1. UTC only; the offset MUST be the literal `Z` suffix.
+2. Second granularity; fractional seconds MUST NOT be included.
+3. Date-time form `YYYY-MM-DDTHH:MM:SSZ` with a literal `T` separator.
 
 Example:
 
 ```text
 2026-04-30T00:00:00Z
 ```
+
+Parsers MUST reject offsets other than `Z`, fractional seconds, and any other
+RFC 3339 variant. This restriction exists so an interchange string maps to
+exactly one canonical i64 epoch-seconds value.
+
+The canonical binary form of a timestamp is `i64` Unix epoch seconds, big-
+endian. This is what enters hash and signature inputs; the JSON form is for
+interchange only.
 
 ---
 

@@ -26,7 +26,10 @@ Each statement has:
 
 ### 2.1 Statement Hash
 
-The statement hash is computed from a canonical representation of the statement content.
+The statement hash is computed from a canonical representation of the statement
+content. The canonical form is the domain-tagged length-prefixed binary
+encoding documented under `schemas/canonical/`. JSON is interchange only and is
+never the hash input. See `SCHEMA.md` section 6.
 
 Rules:
 
@@ -51,6 +54,7 @@ UnsignedStatement {
   version,
   actor,
   subject,
+  created_at,
   body
 } -> StatementId
 SignedStatement {
@@ -58,6 +62,14 @@ SignedStatement {
   signature
 }
 ```
+
+Every signed statement carries `created_at` on the envelope. Genesis bodies
+that derive identity (`ActorGenesisBody`, `ObjectGenesisBody`) carry their own
+`created_at` in the body itself, since their canonical bytes are hashed
+standalone to derive `ActorId` / `ObjectId`. `created_at` is RFC 3339 / UTC /
+`Z` / second-granularity in JSON and `i64` Unix epoch seconds, big-endian, in
+canonical bytes. The timestamp is the actor's self-claim of when the statement
+was made; it is not a trusted observation.
 
 Adding a statement type should require defining only its body fields and
 canonical body encoding. The unsigned/signed statement envelope process is
@@ -268,6 +280,24 @@ Trust is derived from:
 - observed outcomes
 - reproducibility
 - social consensus
+
+### 6.1 Verification result model
+
+Statement verification returns a structured `VerificationReport` with three
+independent dimensions: **signature status**, **actor resolution**, and
+**trust evaluation**. The full model is defined in `ACTORS.md` §6.2; the
+critical rules are:
+
+- Cryptographic validity (signature + actor resolution) and trust evaluation
+  are independent. A valid signature does not imply trust; trust does not
+  override invalid signatures.
+- The MVP fills `trust = Unevaluated`; the report shape stays stable when
+  `kairo-trust` lands.
+- `ResolverUnavailable` is operational and must be reported distinctly from
+  `NotFound`.
+
+The Rust implementation lives in `kairo-statement::verify` and is consumed by
+the CLI's `revision verify-actor-genesis` command.
 
 ---
 

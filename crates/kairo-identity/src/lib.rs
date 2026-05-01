@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use ed25519_dalek::{Verifier, VerifyingKey};
 use kairo_core::canonical::{encode_bytes, encode_str, encode_u8, CanonicalEncode};
 pub use kairo_core::ActorId;
-use kairo_core::BlobId;
+use kairo_core::{BlobId, Timestamp};
 
 /// Canonical ActorGenesis v1 encoding is documented at
 /// `schemas/canonical/actor-genesis-v1.md`.
@@ -21,14 +21,21 @@ const ACTOR_KEY_DOMAIN: &[u8] = b"kairo.actor.key.v1";
 pub struct ActorGenesisBody {
     actor_kind: ActorKind,
     initial_key: PublicKey,
+    created_at: Timestamp,
     nonce: [u8; 32],
 }
 
 impl ActorGenesisBody {
-    pub fn new(actor_kind: ActorKind, initial_key: PublicKey, nonce: [u8; 32]) -> Self {
+    pub fn new(
+        actor_kind: ActorKind,
+        initial_key: PublicKey,
+        created_at: Timestamp,
+        nonce: [u8; 32],
+    ) -> Self {
         Self {
             actor_kind,
             initial_key,
+            created_at,
             nonce,
         }
     }
@@ -39,6 +46,10 @@ impl ActorGenesisBody {
 
     pub fn initial_key(&self) -> &PublicKey {
         &self.initial_key
+    }
+
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
     }
 
     pub fn nonce(&self) -> &[u8; 32] {
@@ -56,6 +67,7 @@ impl CanonicalEncode for ActorGenesisBody {
         encode_u8(out, 1);
         encode_str(out, self.actor_kind.as_str());
         self.initial_key.encode_canonical(out);
+        self.created_at.encode_canonical(out);
         encode_bytes(out, &self.nonce);
     }
 }
@@ -323,28 +335,46 @@ mod tests {
         PublicKey::ed25519(signing_key().verifying_key().to_bytes())
     }
 
+    fn timestamp() -> Timestamp {
+        Timestamp::from_seconds(1_700_000_000)
+    }
+
     #[test]
     fn same_actor_genesis_produces_same_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
-        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
 
         assert_eq!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_nonce_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
-        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), [10; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let second =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [10; 32]);
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_key_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
         let second_key =
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
-        let second = ActorGenesisBody::new(ActorKind::person(), second_key, [9; 32]);
+        let second = ActorGenesisBody::new(ActorKind::person(), second_key, timestamp(), [9; 32]);
+
+        assert_ne!(first.actor_id(), second.actor_id());
+    }
+
+    #[test]
+    fn actor_genesis_created_at_changes_actor_id() {
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let second = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+            [9; 32],
+        );
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
@@ -393,7 +423,8 @@ mod tests {
 
     #[test]
     fn memory_resolver_finds_actor_genesis_by_derived_actor_id() {
-        let genesis = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -404,14 +435,16 @@ mod tests {
     fn memory_resolver_returns_none_for_missing_actor() {
         let resolver = MemoryActorResolver::new();
         let missing_actor =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]).actor_id();
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32])
+                .actor_id();
 
         assert_eq!(resolver.actor_genesis(&missing_actor), Ok(None));
     }
 
     #[test]
     fn memory_resolver_resolves_initial_key() {
-        let genesis = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
