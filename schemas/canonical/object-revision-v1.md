@@ -58,8 +58,8 @@ policy requirements before trusting the claim.
   "signature": {
     "actor": "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t",
     "key_id": "primary",
-    "algorithm": "example",
-    "bytes": "..."
+    "algorithm": "ed25519",
+    "bytes": "base64-signature"
   }
 }
 ```

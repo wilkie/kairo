@@ -82,6 +82,7 @@ Signature semantics:
 - signature = Sign(statement_hash)
 - proves authorship
 - does not imply correctness
+- JSON signature bytes use standard base64 encoding.
 
 ---
 

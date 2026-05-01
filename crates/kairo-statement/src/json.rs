@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId};
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +26,7 @@ pub enum StatementJsonError {
     InvalidSubject(kairo_core::IdError),
     InvalidBlob(kairo_core::IdError),
     InvalidNonceHex,
+    InvalidSignatureBase64,
 }
 
 impl fmt::Display for StatementJsonError {
@@ -43,6 +46,7 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidSubject(error) => write!(f, "invalid subject reference: {error}"),
             Self::InvalidBlob(error) => write!(f, "invalid blob id: {error}"),
             Self::InvalidNonceHex => f.write_str("invalid ObjectGenesis nonce hex"),
+            Self::InvalidSignatureBase64 => f.write_str("invalid signature base64"),
         }
     }
 }
@@ -56,7 +60,8 @@ impl Error for StatementJsonError {
             | Self::InvalidBlob(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
-            | Self::InvalidNonceHex => None,
+            | Self::InvalidNonceHex
+            | Self::InvalidSignatureBase64 => None,
         }
     }
 }
@@ -75,7 +80,9 @@ impl SignatureJson {
             ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
             self.key_id.clone(),
             self.algorithm.clone(),
-            self.bytes.as_bytes().to_vec(),
+            STANDARD
+                .decode(&self.bytes)
+                .map_err(|_| StatementJsonError::InvalidSignatureBase64)?,
         ))
     }
 }
@@ -246,7 +253,7 @@ mod tests {
                 "actor": "{ACTOR_ID}",
                 "key_id": "primary",
                 "algorithm": "example",
-                "bytes": "signature"
+                "bytes": "c2lnbmF0dXJl"
               }}
             }}"#
         );
@@ -282,14 +289,14 @@ mod tests {
                 "actor": "{ACTOR_ID}",
                 "key_id": "primary",
                 "algorithm": "example",
-                "bytes": "signature-one"
+                "bytes": "c2lnbmF0dXJlLW9uZQ=="
               }}
             }}"#
         );
         let second = format!(
             r#"{{
               "signature": {{
-                "bytes": "signature-two",
+                "bytes": "c2lnbmF0dXJlLXR3bw==",
                 "algorithm": "example",
                 "key_id": "secondary",
                 "actor": "{ACTOR_ID}"
@@ -333,7 +340,7 @@ mod tests {
                 "actor": "{ACTOR_ID}",
                 "key_id": "primary",
                 "algorithm": "example",
-                "bytes": "signature"
+                "bytes": "c2lnbmF0dXJl"
               }}
             }}"#
         );
@@ -347,8 +354,8 @@ mod tests {
 
     #[test]
     fn object_genesis_json_signature_does_not_affect_object_id() {
-        let first = genesis_json("signature-one");
-        let second = genesis_json("signature-two");
+        let first = genesis_json("c2lnbmF0dXJlLW9uZQ==");
+        let second = genesis_json("c2lnbmF0dXJlLXR3bw==");
 
         let first_id = parse_object_genesis_json(&first).map(|statement| statement.object_id());
         let second_id = parse_object_genesis_json(&second).map(|statement| statement.object_id());
@@ -368,6 +375,17 @@ mod tests {
         };
 
         assert_eq!(body.to_body(), Err(StatementJsonError::InvalidNonceHex));
+    }
+
+    #[test]
+    fn rejects_invalid_signature_base64() {
+        let mut dto = revision_dto();
+        dto.signature.bytes = "not base64!".to_owned();
+
+        assert_eq!(
+            dto.to_statement(),
+            Err(StatementJsonError::InvalidSignatureBase64)
+        );
     }
 
     #[test]
@@ -407,7 +425,7 @@ mod tests {
 
     #[test]
     fn parsed_object_revision_canonical_bytes_match_direct_statement() {
-        let json = revision_json("signature");
+        let json = revision_json("c2lnbmF0dXJl");
         let parsed = parse_object_revision_json(&json).map(|statement| statement.signed_bytes());
         let direct = direct_revision_statement().map(|statement| statement.canonical_bytes());
 
@@ -492,7 +510,7 @@ mod tests {
                 actor: ACTOR_ID.to_owned(),
                 key_id: "primary".to_owned(),
                 algorithm: "example".to_owned(),
-                bytes: "signature".to_owned(),
+                bytes: "c2lnbmF0dXJl".to_owned(),
             },
         }
     }

@@ -370,7 +370,7 @@ mod tests {
                 actor: ACTOR_ID.to_owned(),
                 key_id: "primary".to_owned(),
                 algorithm: "example".to_owned(),
-                bytes: "signature".to_owned(),
+                bytes: "c2lnbmF0dXJl".to_owned(),
             },
         }
     }

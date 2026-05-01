@@ -2,10 +2,17 @@
 
 pub mod json;
 
+use std::error::Error;
+use std::fmt;
+
 use kairo_core::canonical::{
     encode_bytes, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId};
+use kairo_identity::{
+    verify_signature as verify_identity_signature, PublicKey, SignatureBytes,
+    SignatureVerificationError, VerifiedSignature,
+};
 
 /// Canonical ObjectGenesis body v1 encoding is documented at
 /// `schemas/canonical/object-genesis-v1.md`.
@@ -117,6 +124,15 @@ impl<B: StatementBody> SignedStatement<B> {
 
     pub fn signed_bytes(&self) -> Vec<u8> {
         self.unsigned.canonical_bytes()
+    }
+
+    pub fn verify_signature(
+        &self,
+        public_key: &PublicKey,
+    ) -> Result<VerifiedSignature, StatementSignatureError> {
+        let signature = self.signature.to_signature_bytes()?;
+        verify_identity_signature(public_key, &self.signed_bytes(), &signature)
+            .map_err(StatementSignatureError::Verification)
     }
 }
 
@@ -309,6 +325,53 @@ impl Signature {
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
     }
+
+    pub fn to_signature_bytes(&self) -> Result<SignatureBytes, StatementSignatureError> {
+        match self.algorithm.as_str() {
+            "ed25519" => {
+                let bytes = <[u8; 64]>::try_from(self.bytes.as_slice()).map_err(|_| {
+                    StatementSignatureError::InvalidSignatureLength {
+                        expected: 64,
+                        actual: self.bytes.len(),
+                    }
+                })?;
+                Ok(SignatureBytes::ed25519(bytes))
+            }
+            algorithm => Err(StatementSignatureError::UnsupportedAlgorithm(
+                algorithm.to_owned(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatementSignatureError {
+    UnsupportedAlgorithm(String),
+    InvalidSignatureLength { expected: usize, actual: usize },
+    Verification(SignatureVerificationError),
+}
+
+impl fmt::Display for StatementSignatureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedAlgorithm(algorithm) => {
+                write!(f, "unsupported signature algorithm {algorithm}")
+            }
+            Self::InvalidSignatureLength { expected, actual } => {
+                write!(f, "invalid signature length {actual}; expected {expected}")
+            }
+            Self::Verification(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl Error for StatementSignatureError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Verification(error) => Some(error),
+            Self::UnsupportedAlgorithm(_) | Self::InvalidSignatureLength { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -344,7 +407,9 @@ impl RevisionId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
     use kairo_core::canonical::encode_str;
+    use kairo_identity::PublicKey;
 
     const ACTOR_ID: &str = "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t";
     const OBJECT_ID: &str = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
@@ -377,6 +442,18 @@ mod tests {
 
     fn blob_id() -> Result<BlobId, kairo_core::IdError> {
         BlobId::new(BLOB_ID)
+    }
+
+    fn signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[7; 32])
+    }
+
+    fn public_key() -> PublicKey {
+        PublicKey::ed25519(signing_key().verifying_key().to_bytes())
+    }
+
+    fn other_public_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes())
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -594,5 +671,93 @@ mod tests {
 
         assert_eq!(first, second);
         Ok(())
+    }
+
+    #[test]
+    fn verifies_object_revision_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_object_revision(object_revision_body(
+            vec![RevisionId::new("git:sha256:parent")],
+            blob_id()?,
+        )?)?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_object_revision_signature_after_body_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let signed_unsigned = unsigned_object_revision(object_revision_body(
+            vec![RevisionId::new("git:sha256:parent")],
+            blob_id()?,
+        )?)?;
+        let changed_unsigned = unsigned_object_revision(object_revision_body(
+            vec![RevisionId::new("git:sha256:different-parent")],
+            blob_id()?,
+        )?)?;
+        let signature = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(changed_unsigned, signature);
+
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_changed_object_revision_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_object_revision(object_revision_body(
+            vec![RevisionId::new("git:sha256:parent")],
+            blob_id()?,
+        )?)?;
+        let mut signature = ed25519_signature(&unsigned)?;
+        signature.bytes[0] ^= 1;
+        let signed = SignedStatement::new(unsigned, signature);
+
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_wrong_object_revision_public_key() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_object_revision(object_revision_body(
+            vec![RevisionId::new("git:sha256:parent")],
+            blob_id()?,
+        )?)?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+
+        assert!(matches!(
+            signed.verify_signature(&other_public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    fn ed25519_signature<B: StatementBody>(
+        unsigned: &UnsignedStatement<B>,
+    ) -> Result<Signature, kairo_core::IdError> {
+        let signature = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        Ok(Signature::new(
+            actor_id()?,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature.to_vec(),
+        ))
     }
 }

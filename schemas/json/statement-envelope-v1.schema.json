@@ -38,11 +38,14 @@
         },
         "algorithm": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Signature algorithm identifier. The MVP algorithm is ed25519."
         },
         "bytes": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "contentEncoding": "base64",
+          "description": "Raw signature bytes encoded with standard base64."
         }
       },
       "additionalProperties": false
