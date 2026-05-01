@@ -42,6 +42,27 @@ but does not change statement identity.
 The signed ObjectGenesis statement proves the origin claim, but the signature
 envelope is excluded from Object ID material.
 
+Conceptually, new statement types should follow this generic shape:
+
+```text
+StatementBody -> canonical body fields
+UnsignedStatement {
+  type,
+  version,
+  actor,
+  subject,
+  body
+} -> StatementId
+SignedStatement {
+  unsigned_statement,
+  signature
+}
+```
+
+Adding a statement type should require defining only its body fields and
+canonical body encoding. The unsigned/signed statement envelope process is
+shared.
+
 ---
 
 ## 3. Signature Model
@@ -66,7 +87,49 @@ Signature semantics:
 
 ## 4. Statement Types
 
-### 4.1 Build Statement
+### 4.1 ObjectGenesis Statement
+
+Creates stable Object lineage identity. `ObjectGenesis` is signed, but its
+signature is excluded from the Object ID hash so the same genesis body can be
+re-signed without changing the Object ID.
+
+The canonical ObjectGenesis v1 form is documented in:
+
+```text
+schemas/canonical/object-genesis-v1.md
+```
+
+### 4.2 ObjectRevision Statement
+
+Records that an actor claims a storage revision belongs to a specific Kairo
+Object lineage. For Git-backed objects, this binds an immutable commit and its
+parent relationship to an Object without relying on mutable branch or tag names.
+
+Example:
+
+```json
+{
+  "type": "ObjectRevision",
+  "version": 1,
+  "actor": "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t",
+  "subject": "object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
+  "body": {
+    "object": "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
+    "revision": "git:sha256:revision",
+    "parents": ["git:sha256:parent"],
+    "manifest_hash": "zQmfBE2w2UqKJhGZAxK4ZWb4JuCrvxnN9P4YKuvzfbPSvD5",
+    "attests_reachable_history": true
+  }
+}
+```
+
+The canonical ObjectRevision v1 form is documented in:
+
+```text
+schemas/canonical/object-revision-v1.md
+```
+
+### 4.3 Build Statement
 
 Records a successful build:
 
@@ -88,7 +151,7 @@ Records a successful build:
 
 ---
 
-### 4.2 Provides Statement
+### 4.4 Provides Statement
 
 Declares a capability:
 
@@ -105,7 +168,7 @@ Declares a capability:
 
 ---
 
-### 4.3 Observation Statement
+### 4.5 Observation Statement
 
 Records observed behavior:
 
@@ -124,7 +187,7 @@ Records observed behavior:
 
 ---
 
-### 4.4 Inference Statement
+### 4.6 Inference Statement
 
 Records inferred properties:
 
@@ -163,6 +226,12 @@ The canonical schema for `ObjectGenesis` v1 is:
 
 ```text
 schemas/canonical/object-genesis-v1.md
+```
+
+The canonical schema for `ObjectRevision` v1 is:
+
+```text
+schemas/canonical/object-revision-v1.md
 ```
 
 JSON interchange schemas belong under:

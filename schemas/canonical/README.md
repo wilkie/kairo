@@ -39,3 +39,4 @@ is explicitly a standalone reference.
 ## Documents
 
 - `object-genesis-v1.md`
+- `object-revision-v1.md`
