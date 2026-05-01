@@ -1,0 +1,364 @@
+//! Local keystore for Kairo signing keys.
+//!
+//! This crate is **MVP only, not production key management.** Secret material
+//! is stored as JSON on disk, protected by file-system permissions (0600 on
+//! Unix). Passphrase encryption, OS-keychain integration, HSM/PKCS11 support,
+//! and key rotation are explicit non-goals for the MVP and will land later as
+//! separate work.
+//!
+//! The crate provides a [`Keystore`] trait and one concrete implementation,
+//! [`FilesystemKeystore`], rooted at a directory. Keys are written one file
+//! per actor at `<root>/<actor-id>.json` using the `kairo.key.private.v1`
+//! schema. No sharding — at MVP scale a user has a handful of keys.
+//!
+//! Errors mirror `kairo-store`'s model so callers can distinguish:
+//!
+//! - [`KeystoreError::Missing`] — semantic, the key file is absent.
+//! - [`KeystoreError::Corrupt`] — fixity failure (cross-reference mismatch,
+//!   parse error, schema mismatch).
+//! - [`KeystoreError::Unavailable`] — operational/transient I/O failure.
+
+mod error;
+mod json;
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+use kairo_core::ActorId;
+use kairo_identity::{KeyId, SecretSigningKey};
+
+pub use error::{CorruptReason, KeystoreError};
+pub use json::PrivateKeyJson;
+
+const JSON_SUFFIX: &str = ".json";
+
+/// Persistence interface for secret signing keys, indexed by [`ActorId`].
+pub trait Keystore {
+    fn put_signing_key(
+        &self,
+        actor_id: &ActorId,
+        secret: &SecretSigningKey,
+    ) -> Result<KeyId, KeystoreError>;
+
+    fn get_signing_key(&self, actor_id: &ActorId) -> Result<SecretSigningKey, KeystoreError>;
+
+    fn has_signing_key(&self, actor_id: &ActorId) -> Result<bool, KeystoreError>;
+}
+
+/// Filesystem-backed keystore rooted at a single directory.
+///
+/// On open, the directory is created if missing. On Unix the directory is set
+/// to mode `0700` and key files to mode `0600`. Other platforms are
+/// best-effort (no mode is set).
+#[derive(Debug, Clone)]
+pub struct FilesystemKeystore {
+    root: PathBuf,
+}
+
+impl FilesystemKeystore {
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self, KeystoreError> {
+        let root = root.into();
+        fs::create_dir_all(&root)?;
+        set_dir_permissions(&root)?;
+        Ok(Self { root })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn path_for(&self, actor_id: &ActorId) -> PathBuf {
+        self.root.join(format!("{actor_id}{JSON_SUFFIX}"))
+    }
+}
+
+impl Keystore for FilesystemKeystore {
+    fn put_signing_key(
+        &self,
+        actor_id: &ActorId,
+        secret: &SecretSigningKey,
+    ) -> Result<KeyId, KeystoreError> {
+        let path = self.path_for(actor_id);
+
+        if path.exists() {
+            return Err(KeystoreError::Corrupt {
+                id: actor_id.to_string(),
+                reason: CorruptReason::AlreadyExists,
+            });
+        }
+
+        let json = PrivateKeyJson::from_secret(actor_id, secret);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(|error| KeystoreError::Corrupt {
+            id: actor_id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        atomic_write(&path, &bytes)?;
+        set_file_permissions(&path)?;
+        Ok(secret.public_key().key_id())
+    }
+
+    fn get_signing_key(&self, actor_id: &ActorId) -> Result<SecretSigningKey, KeystoreError> {
+        let path = self.path_for(actor_id);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(KeystoreError::Missing);
+            }
+            Err(error) => return Err(KeystoreError::Unavailable(error)),
+        };
+
+        let json: PrivateKeyJson =
+            serde_json::from_slice(&bytes).map_err(|error| KeystoreError::Corrupt {
+                id: actor_id.to_string(),
+                reason: CorruptReason::Parse(error.to_string()),
+            })?;
+
+        json.to_secret(actor_id)
+    }
+
+    fn has_signing_key(&self, actor_id: &ActorId) -> Result<bool, KeystoreError> {
+        let path = self.path_for(actor_id);
+        match fs::metadata(&path) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(KeystoreError::Unavailable(error)),
+        }
+    }
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), KeystoreError> {
+    let parent = match path.parent() {
+        Some(parent) => parent,
+        None => {
+            return Err(KeystoreError::Unavailable(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path has no parent",
+            )));
+        }
+    };
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("anon");
+    let tmp = parent.join(format!(".{file_name}.tmp"));
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_dir_permissions(path: &Path) -> Result<(), KeystoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = fs::Permissions::from_mode(0o700);
+    fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_dir_permissions(_path: &Path) -> Result<(), KeystoreError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_file_permissions(path: &Path) -> Result<(), KeystoreError> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = fs::Permissions::from_mode(0o600);
+    fs::set_permissions(path, perms)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_file_permissions(_path: &Path) -> Result<(), KeystoreError> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use kairo_core::Timestamp;
+    use kairo_identity::{ActorGenesisBody, ActorKind, SecretSigningKey};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn fresh_secret() -> SecretSigningKey {
+        SecretSigningKey::ed25519([7; 32])
+    }
+
+    fn fresh_actor_id(secret: &SecretSigningKey) -> ActorId {
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            secret.public_key(),
+            Timestamp::from_seconds(1_700_000_000),
+            [9; 32],
+        )
+        .actor_id()
+    }
+
+    fn open_temp() -> Result<(TempDir, FilesystemKeystore), Box<dyn std::error::Error>> {
+        let dir = TempDir::new()?;
+        let keystore = FilesystemKeystore::open(dir.path())?;
+        Ok((dir, keystore))
+    }
+
+    #[test]
+    fn round_trips_signing_key() -> TestResult {
+        let (_dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+
+        let key_id = keystore.put_signing_key(&actor_id, &secret)?;
+        assert_eq!(key_id, secret.public_key().key_id());
+
+        let loaded = keystore.get_signing_key(&actor_id)?;
+        assert_eq!(loaded.seed_bytes(), secret.seed_bytes());
+        assert_eq!(loaded.public_key(), secret.public_key());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_returns_missing() -> TestResult {
+        let (_dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        assert!(matches!(
+            keystore.get_signing_key(&actor_id),
+            Err(KeystoreError::Missing)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn has_signing_key_reports_presence() -> TestResult {
+        let (_dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+
+        assert!(!keystore.has_signing_key(&actor_id)?);
+        keystore.put_signing_key(&actor_id, &secret)?;
+        assert!(keystore.has_signing_key(&actor_id)?);
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_to_overwrite() -> TestResult {
+        let (_dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        assert!(matches!(
+            keystore.put_signing_key(&actor_id, &secret),
+            Err(KeystoreError::Corrupt {
+                reason: CorruptReason::AlreadyExists,
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn loaded_key_signs_identically() -> TestResult {
+        let (_dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        let loaded = keystore.get_signing_key(&actor_id)?;
+        let payload = b"kairo payload";
+        assert_eq!(loaded.sign(payload), secret.sign(payload));
+        Ok(())
+    }
+
+    #[test]
+    fn tampered_actor_id_field_is_corrupt() -> TestResult {
+        let (dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        let path = dir.path().join(format!("{actor_id}.json"));
+        let raw = fs::read_to_string(&path)?;
+        // Replace stored actor_id with a different one (still well-formed) so
+        // the cross-reference fails on load.
+        let other_actor = fresh_actor_id(&SecretSigningKey::ed25519([8; 32]));
+        let tampered = raw.replace(actor_id.as_str(), other_actor.as_str());
+        fs::write(&path, tampered)?;
+
+        assert!(matches!(
+            keystore.get_signing_key(&actor_id),
+            Err(KeystoreError::Corrupt {
+                reason: CorruptReason::ActorIdMismatch { .. },
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn tampered_key_id_field_is_corrupt() -> TestResult {
+        let (dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        let path = dir.path().join(format!("{actor_id}.json"));
+        let mut json: PrivateKeyJson = serde_json::from_slice(&fs::read(&path)?)?;
+        // Replace stored key_id with a derivation from a different secret;
+        // when the keystore re-derives, it'll mismatch.
+        let other_key_id = SecretSigningKey::ed25519([8; 32])
+            .public_key()
+            .key_id()
+            .to_string();
+        json.key_id = other_key_id;
+        fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
+
+        assert!(matches!(
+            keystore.get_signing_key(&actor_id),
+            Err(KeystoreError::Corrupt {
+                reason: CorruptReason::KeyIdMismatch { .. },
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn unparseable_file_is_corrupt() -> TestResult {
+        let (dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        fs::write(dir.path().join(format!("{actor_id}.json")), b"not json")?;
+
+        assert!(matches!(
+            keystore.get_signing_key(&actor_id),
+            Err(KeystoreError::Corrupt {
+                reason: CorruptReason::Parse(_),
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn key_file_has_restricted_permissions() -> TestResult {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        let path = dir.path().join(format!("{actor_id}.json"));
+        let mode = fs::metadata(&path)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        Ok(())
+    }
+}

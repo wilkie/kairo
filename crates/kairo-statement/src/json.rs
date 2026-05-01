@@ -88,6 +88,15 @@ impl SignatureJson {
                 .map_err(|_| StatementJsonError::InvalidSignatureBase64)?,
         ))
     }
+
+    pub fn from_signature(signature: &Signature) -> Self {
+        Self {
+            actor: signature.actor().to_string(),
+            key_id: signature.key_id().to_owned(),
+            algorithm: signature.algorithm().to_owned(),
+            bytes: STANDARD.encode(signature.bytes()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +180,19 @@ impl ObjectRevisionStatementJson {
             self.signature.to_signature()?,
         ))
     }
+
+    pub fn from_statement(statement: &SignedStatement<ObjectRevisionBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ObjectRevision".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ObjectRevisionBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +213,20 @@ impl ObjectRevisionBodyJson {
             BlobId::new(self.manifest_hash.clone()).map_err(StatementJsonError::InvalidBlob)?,
             self.attests_reachable_history,
         ))
+    }
+
+    pub fn from_body(body: &ObjectRevisionBody) -> Self {
+        Self {
+            object: body.object().to_string(),
+            revision: body.revision().as_str().to_owned(),
+            parents: body
+                .parents()
+                .iter()
+                .map(|revision| revision.as_str().to_owned())
+                .collect(),
+            manifest_hash: body.manifest_hash().to_string(),
+            attests_reachable_history: body.attests_reachable_history(),
+        }
     }
 }
 

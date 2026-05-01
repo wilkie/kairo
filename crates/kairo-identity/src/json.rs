@@ -92,6 +92,17 @@ impl ActorGenesisJson {
             decode_nonce_hex(&self.nonce)?,
         ))
     }
+
+    pub fn from_body(body: &ActorGenesisBody) -> Self {
+        Self {
+            statement_type: "ActorGenesis".to_owned(),
+            version: 1,
+            actor_kind: body.actor_kind().as_str().to_owned(),
+            initial_key: PublicKeyJson::from_public_key(body.initial_key()),
+            created_at: body.created_at().to_string(),
+            nonce: encode_nonce_hex(body.nonce()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +130,30 @@ impl PublicKeyJson {
                 algorithm.to_owned(),
             )),
         }
+    }
+
+    pub fn from_public_key(public_key: &PublicKey) -> Self {
+        Self {
+            algorithm: public_key.algorithm().as_str().to_owned(),
+            bytes: STANDARD.encode(public_key.bytes()),
+        }
+    }
+}
+
+fn encode_nonce_hex(nonce: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in nonce {
+        out.push(hex_char(byte >> 4));
+        out.push(hex_char(byte & 0x0f));
+    }
+    out
+}
+
+fn hex_char(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'a' + (value - 10)),
+        _ => '?',
     }
 }
 

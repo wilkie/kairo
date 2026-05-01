@@ -1,22 +1,22 @@
 [package]
-name = "kairo-identity"
+name = "kairo-store"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-base64 = "=0.21.7"
-ed25519-dalek = "=2.1.1"
-getrandom = "0.2"
 kairo-core = { path = "../kairo-core" }
-serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
+kairo-identity = { path = "../kairo-identity" }
+kairo-statement = { path = "../kairo-statement" }
 serde_json = "1"
 
+[dev-dependencies]
+ed25519-dalek = "2"
+tempfile = "3"
+
 [lib]
-name = "kairo_identity"
+name = "kairo_store"
 path = "src/lib.rs"
 
 [lints]

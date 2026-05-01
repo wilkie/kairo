@@ -7,7 +7,7 @@ use std::fmt;
 
 use std::collections::BTreeMap;
 
-use ed25519_dalek::{Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 use kairo_core::canonical::{encode_bytes, encode_str, encode_u8, CanonicalEncode};
 pub use kairo_core::ActorId;
 use kairo_core::{BlobId, Timestamp};
@@ -170,6 +170,84 @@ impl CanonicalEncode for PublicKey {
         encode_bytes(out, &self.bytes);
     }
 }
+
+/// A secret signing key.
+///
+/// Holds the raw seed/scalar bytes. The `Debug` impl deliberately redacts the
+/// secret material; `seed_bytes()` exposes it for serialization or storage.
+/// Callers should treat the result of `seed_bytes()` as sensitive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretSigningKey {
+    algorithm: SignatureAlgorithm,
+    seed: [u8; 32],
+}
+
+impl SecretSigningKey {
+    pub fn ed25519(seed: [u8; 32]) -> Self {
+        Self {
+            algorithm: SignatureAlgorithm::Ed25519,
+            seed,
+        }
+    }
+
+    /// Generate a fresh ed25519 key using OS randomness.
+    pub fn generate_ed25519() -> Result<Self, KeyGenerationError> {
+        let mut seed = [0_u8; 32];
+        getrandom::getrandom(&mut seed).map_err(|error| KeyGenerationError {
+            reason: error.to_string(),
+        })?;
+        Ok(Self::ed25519(seed))
+    }
+
+    pub fn algorithm(&self) -> SignatureAlgorithm {
+        self.algorithm
+    }
+
+    /// Returns the raw seed bytes. **Sensitive.**
+    pub fn seed_bytes(&self) -> &[u8; 32] {
+        &self.seed
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        match self.algorithm {
+            SignatureAlgorithm::Ed25519 => {
+                let signing = SigningKey::from_bytes(&self.seed);
+                PublicKey::ed25519(signing.verifying_key().to_bytes())
+            }
+        }
+    }
+
+    pub fn sign(&self, payload: &[u8]) -> SignatureBytes {
+        match self.algorithm {
+            SignatureAlgorithm::Ed25519 => {
+                let signing = SigningKey::from_bytes(&self.seed);
+                SignatureBytes::ed25519(signing.sign(payload).to_bytes())
+            }
+        }
+    }
+}
+
+impl fmt::Debug for SecretSigningKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretSigningKey")
+            .field("algorithm", &self.algorithm)
+            .field("seed", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyGenerationError {
+    pub reason: String,
+}
+
+impl fmt::Display for KeyGenerationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "key generation failed: {}", self.reason)
+    }
+}
+
+impl Error for KeyGenerationError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureBytes {
@@ -419,6 +497,40 @@ mod tests {
             verify_signature(&public_key(), payload, &SignatureBytes::ed25519(signature)),
             Err(SignatureVerificationError::InvalidSignature)
         );
+    }
+
+    #[test]
+    fn secret_signing_key_round_trips_public_key() {
+        let secret = SecretSigningKey::ed25519([7; 32]);
+        assert_eq!(secret.public_key(), public_key());
+    }
+
+    #[test]
+    fn secret_signing_key_signs_and_verifies() {
+        let secret = SecretSigningKey::ed25519([7; 32]);
+        let payload = b"kairo payload";
+        let signature = secret.sign(payload);
+        assert_eq!(
+            verify_signature(&secret.public_key(), payload, &signature),
+            Ok(VerifiedSignature)
+        );
+    }
+
+    #[test]
+    fn secret_signing_key_debug_redacts_seed() {
+        let secret = SecretSigningKey::ed25519([7; 32]);
+        let rendered = format!("{secret:?}");
+        assert!(rendered.contains("redacted"));
+        assert!(!rendered.contains("7, 7, 7"));
+    }
+
+    #[test]
+    fn generate_ed25519_returns_valid_key() {
+        let secret = SecretSigningKey::generate_ed25519();
+        assert!(matches!(
+            secret,
+            Ok(secret) if matches!(secret.algorithm(), SignatureAlgorithm::Ed25519)
+        ));
     }
 
     #[test]

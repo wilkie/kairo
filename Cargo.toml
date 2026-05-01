@@ -4,6 +4,8 @@ members = [
     "crates/kairo-identity",
     "crates/kairo-object",
     "crates/kairo-statement",
+    "crates/kairo-store",
+    "crates/kairo-keystore",
     "crates/kairo-cli",
 ]
 resolver = "2"
