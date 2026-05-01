@@ -264,6 +264,34 @@ Invalid signatures make statements invalid.
 
 Missing key data may make validation indeterminate.
 
+### 6.1.1 Genesis statements are not symmetric
+
+`ActorGenesis` and `ObjectGenesis` are treated **differently** with respect to
+signatures, on purpose:
+
+- **`ActorGenesis` carries no signature.** The body contains the actor's
+  initial public key, and the body's canonical bytes derive the `ActorId`.
+  Possession of the matching private key is enforced on every later signed
+  statement, not on the genesis itself. A self-signed genesis would be
+  circular and adds no security: an attacker without the private key who
+  publishes a body with a stolen public key produces a different `ActorId`
+  (different `actor_kind` / `nonce` / `created_at`), and that `ActorId` is
+  inert because they still cannot sign as it. There is no impersonation
+  vector to close.
+
+- **`ObjectGenesis` carries a signature.** The body says "actor X created
+  object lineage Y at time T," invoking external authority. The signature
+  is required to authenticate the binding from the actor to the object
+  claim. The signature is **not** part of `ObjectId` material (so the same
+  body can be re-signed without changing identity), but verifying the
+  signature against the actor's resolved key is required to trust the
+  claim.
+
+When introducing a new statement type, ask: does the body's content-
+addressed identity already authenticate the claim, or does the claim invoke
+external authority? Self-attesting bodies can be unsigned; bodies that bind
+an actor to a claim about something else MUST be signed.
+
 ### 6.2 Verification result model
 
 Statement verification produces a structured `VerificationReport` with three
