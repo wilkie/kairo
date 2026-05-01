@@ -1,0 +1,8 @@
+[kairo]
+schema = 1
+kind = "software"
+name = "hello-kairo"
+summary = "Minimal example object used in the end-to-end MVP walkthrough."
+
+[content]
+kind = "tree"

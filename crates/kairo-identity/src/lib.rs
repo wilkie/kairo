@@ -192,11 +192,7 @@ impl SecretSigningKey {
 
     /// Generate a fresh ed25519 key using OS randomness.
     pub fn generate_ed25519() -> Result<Self, KeyGenerationError> {
-        let mut seed = [0_u8; 32];
-        getrandom::getrandom(&mut seed).map_err(|error| KeyGenerationError {
-            reason: error.to_string(),
-        })?;
-        Ok(Self::ed25519(seed))
+        Ok(Self::ed25519(generate_random_bytes()?))
     }
 
     pub fn algorithm(&self) -> SignatureAlgorithm {
@@ -248,6 +244,22 @@ impl fmt::Display for KeyGenerationError {
 }
 
 impl Error for KeyGenerationError {}
+
+/// Generate 32 fresh random bytes from the OS RNG.
+///
+/// Suitable for genesis nonces and other places where a fresh per-record
+/// uniqueness token is needed.
+pub fn generate_nonce() -> Result<[u8; 32], KeyGenerationError> {
+    generate_random_bytes()
+}
+
+fn generate_random_bytes() -> Result<[u8; 32], KeyGenerationError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|error| KeyGenerationError {
+        reason: error.to_string(),
+    })?;
+    Ok(bytes)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignatureBytes {

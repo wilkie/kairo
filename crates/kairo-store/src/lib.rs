@@ -28,11 +28,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use kairo_core::{ActorId, BlobId, StatementId};
+use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
-use kairo_statement::json::ObjectRevisionStatementJson;
-use kairo_statement::{ObjectRevisionBody, SignedStatement};
+use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
+use kairo_statement::{ObjectGenesisStatement, ObjectRevisionBody, SignedStatement};
 
 pub use error::{CorruptReason, StoreError};
 
@@ -40,6 +40,7 @@ const STORE_VERSION: &str = "1";
 const VERSION_FILE: &str = "version.txt";
 
 const ACTORS_DIR: &str = "actors";
+const OBJECTS_DIR: &str = "objects";
 const STATEMENTS_DIR: &str = "statements";
 const BLOBS_DIR: &str = "blobs";
 
@@ -50,6 +51,24 @@ const BLOB_SUFFIX: &str = "";
 pub trait ActorStore {
     fn put_actor(&self, genesis: &ActorGenesisBody) -> Result<ActorId, StoreError>;
     fn get_actor(&self, id: &ActorId) -> Result<ActorGenesisBody, StoreError>;
+}
+
+/// Persistence interface for object-level identity-deriving records.
+///
+/// `ObjectGenesisStatement` is identity-deriving: its body's canonical bytes
+/// derive the `ObjectId`. Stored under `<root>/objects/<XX>/<YY>/<id>.json`,
+/// parallel to actors.
+///
+/// The store does **not** verify the genesis signature on read. Callers that
+/// need that guarantee should run signature verification separately when a
+/// `Verifiable` trait lands.
+pub trait ObjectStore {
+    fn put_object_genesis(
+        &self,
+        statement: &ObjectGenesisStatement,
+    ) -> Result<ObjectId, StoreError>;
+
+    fn get_object_genesis(&self, id: &ObjectId) -> Result<ObjectGenesisStatement, StoreError>;
 }
 
 /// Persistence interface for envelope-wrapped signed statements.
@@ -160,6 +179,42 @@ impl ActorStore for FilesystemStore {
             });
         }
         Ok(body)
+    }
+}
+
+impl ObjectStore for FilesystemStore {
+    fn put_object_genesis(
+        &self,
+        statement: &ObjectGenesisStatement,
+    ) -> Result<ObjectId, StoreError> {
+        let id = statement.object_id();
+        let json = ObjectGenesisStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(OBJECTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+        Ok(id)
+    }
+
+    fn get_object_genesis(&self, id: &ObjectId) -> Result<ObjectGenesisStatement, StoreError> {
+        let path = self.shard_path(OBJECTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ObjectGenesisStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let statement = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = statement.object_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(statement)
     }
 }
 
@@ -275,7 +330,8 @@ mod tests {
     use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey};
     use kairo_statement::verify::{verify_envelope_statement, ActorResolution, SignatureStatus};
     use kairo_statement::{
-        ObjectRevisionBody, RevisionId, Signature, SignedStatement, UnsignedStatement,
+        ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, RevisionId,
+        Signature, SignedStatement, UnsignedStatement,
     };
     use tempfile::TempDir;
 
@@ -481,6 +537,109 @@ mod tests {
         let actor_id = fresh_genesis().actor_id();
         let resolved = ActorResolver::actor_genesis(&store, &actor_id)?;
         assert!(resolved.is_none());
+        Ok(())
+    }
+
+    fn signed_object_genesis(actor: ActorId) -> ObjectGenesisStatement {
+        let body = ObjectGenesisBody::new(
+            ObjectKind::software(),
+            actor.clone(),
+            timestamp(),
+            [42; 32],
+            None,
+        );
+        let signature_bytes = signing_key().sign(&body.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        ObjectGenesisStatement::new(body, signature)
+    }
+
+    #[test]
+    fn round_trips_object_genesis() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor_id = fresh_genesis().actor_id();
+        let statement = signed_object_genesis(actor_id);
+        let id = store.put_object_genesis(&statement)?;
+        assert_eq!(id, statement.object_id());
+        let loaded = store.get_object_genesis(&id)?;
+        assert_eq!(loaded.object_id(), statement.object_id());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_object_genesis_returns_missing() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor_id = fresh_genesis().actor_id();
+        let id = signed_object_genesis(actor_id).object_id();
+        assert!(matches!(
+            store.get_object_genesis(&id),
+            Err(StoreError::Missing)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn tampered_object_genesis_is_corrupt() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor_id = fresh_genesis().actor_id();
+        let statement = signed_object_genesis(actor_id.clone());
+        let id = store.put_object_genesis(&statement)?;
+
+        // Replace the file with a different ObjectGenesis whose body derives a
+        // different ObjectId.
+        let other_body = ObjectGenesisBody::new(
+            ObjectKind::software(),
+            actor_id.clone(),
+            timestamp(),
+            [99; 32],
+            None,
+        );
+        let other_signature = Signature::new(
+            actor_id,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signing_key()
+                .sign(&other_body.canonical_bytes())
+                .to_bytes()
+                .to_vec(),
+        );
+        let other_statement = ObjectGenesisStatement::new(other_body, other_signature);
+
+        let path = shard::shard_path(dir.path(), OBJECTS_DIR, id.as_str(), JSON_SUFFIX)
+            .map_err(|error| error.to_string())?;
+        let json = ObjectGenesisStatementJson::from_statement(&other_statement);
+        fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
+
+        assert!(matches!(
+            store.get_object_genesis(&id),
+            Err(StoreError::Corrupt {
+                reason: CorruptReason::HashMismatch { .. },
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn object_genesis_path_is_sharded() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor_id = fresh_genesis().actor_id();
+        let statement = signed_object_genesis(actor_id);
+        let id = store.put_object_genesis(&statement)?;
+
+        let shard1 = &id.as_str()[3..5];
+        let shard2 = &id.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(OBJECTS_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{id}.json"));
+        assert!(expected.exists(), "expected sharded path {expected:?}");
         Ok(())
     }
 }

@@ -331,9 +331,12 @@ dependencies = [
  "ed25519-dalek",
  "kairo-core",
  "kairo-identity",
+ "kairo-keystore",
  "kairo-object",
  "kairo-statement",
+ "kairo-store",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

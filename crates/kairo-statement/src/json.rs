@@ -117,6 +117,15 @@ impl ObjectGenesisStatementJson {
             self.signature.to_signature()?,
         ))
     }
+
+    pub fn from_statement(statement: &crate::ObjectGenesisStatement) -> Self {
+        Self {
+            statement_type: "ObjectGenesis".to_owned(),
+            version: 1,
+            body: ObjectGenesisBodyJson::from_body(statement.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +151,35 @@ impl ObjectGenesisBodyJson {
             decode_nonce_hex(&self.nonce)?,
             self.initial_revision.clone().map(RevisionId::new),
         ))
+    }
+
+    pub fn from_body(body: &ObjectGenesisBody) -> Self {
+        Self {
+            object_kind: body.object_kind().as_str().to_owned(),
+            created_by: body.created_by().to_string(),
+            created_at: body.created_at().to_string(),
+            nonce: encode_nonce_hex(body.nonce()),
+            initial_revision: body
+                .initial_revision()
+                .map(|revision| revision.as_str().to_owned()),
+        }
+    }
+}
+
+fn encode_nonce_hex(nonce: &[u8; 32]) -> String {
+    let mut out = String::with_capacity(64);
+    for byte in nonce {
+        out.push(hex_char(byte >> 4));
+        out.push(hex_char(byte & 0x0f));
+    }
+    out
+}
+
+fn hex_char(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'a' + (value - 10)),
+        _ => '?',
     }
 }
 

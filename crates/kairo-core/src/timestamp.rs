@@ -19,6 +19,20 @@ impl Timestamp {
     pub const fn seconds(&self) -> i64 {
         self.0
     }
+
+    /// Current wall-clock time as Unix epoch seconds.
+    ///
+    /// Saturates on absurd clock states (year ~292 billion AD or earlier than
+    /// the Unix epoch by more seconds than `i64` can express).
+    pub fn now() -> Self {
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => Self(i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)),
+            Err(error) => {
+                let secs = i64::try_from(error.duration().as_secs()).unwrap_or(i64::MAX);
+                Self(-secs)
+            }
+        }
+    }
 }
 
 impl CanonicalEncode for Timestamp {

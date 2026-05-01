@@ -7,15 +7,18 @@ repository.workspace = true
 
 [dependencies]
 base64 = "=0.21.7"
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive", "env"] }
+kairo-core = { path = "../kairo-core" }
 kairo-identity = { path = "../kairo-identity" }
+kairo-keystore = { path = "../kairo-keystore" }
 kairo-object = { path = "../kairo-object" }
 kairo-statement = { path = "../kairo-statement" }
+kairo-store = { path = "../kairo-store" }
 serde_json = "1"
 
 [dev-dependencies]
 ed25519-dalek = "=2.1.1"
-kairo-core = { path = "../kairo-core" }
+tempfile = "3"
 
 [[bin]]
 name = "kairo"

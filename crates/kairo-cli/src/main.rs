@@ -6,8 +6,13 @@ use std::process::ExitCode;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use clap::{Parser, Subcommand};
+use kairo_core::canonical::CanonicalEncode;
+use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
-use kairo_identity::{ActorGenesisBody, MemoryActorResolver, PublicKey};
+use kairo_identity::{
+    generate_nonce, ActorGenesisBody, ActorKind, MemoryActorResolver, PublicKey, SecretSigningKey,
+};
+use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::{
     validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
 };
@@ -16,11 +21,23 @@ use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, TrustEvaluation,
     VerificationReport,
 };
-use kairo_statement::ObjectRevisionBody;
+use kairo_statement::{
+    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, RevisionId,
+    Signature, SignedStatement, UnsignedStatement,
+};
+use kairo_store::{ActorStore, FilesystemStore, ObjectStore, StatementStore};
 
 #[derive(Debug, Parser)]
 #[command(name = "kairo", version)]
 struct Cli {
+    /// Override the store root (default ~/.kairo).
+    #[arg(long, env = "KAIRO_STORE", global = true)]
+    store: Option<PathBuf>,
+
+    /// Override the keystore directory (default <store>/keys).
+    #[arg(long, env = "KAIRO_KEYS", global = true)]
+    keys: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -37,6 +54,11 @@ enum Command {
         #[command(subcommand)]
         command: ManifestCommand,
     },
+    /// Work with Objects.
+    Object {
+        #[command(subcommand)]
+        command: ObjectSubcommand,
+    },
     /// Work with Object revisions.
     Revision {
         #[command(subcommand)]
@@ -50,6 +72,28 @@ enum ActorCommand {
     Id {
         #[arg(long)]
         genesis: PathBuf,
+    },
+    /// Generate a fresh actor (keypair + ActorGenesis) and persist it.
+    Create {
+        /// Actor kind, e.g. person, project, organization, service.
+        #[arg(long)]
+        kind: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ObjectSubcommand {
+    /// Create a new ObjectGenesis statement signed by the given actor.
+    Create {
+        /// Actor whose key signs the genesis statement.
+        #[arg(long)]
+        actor: String,
+        /// Object kind, e.g. software, dataset, image.
+        #[arg(long)]
+        kind: String,
+        /// Optional initial storage revision (e.g. git:sha256:<commit>).
+        #[arg(long)]
+        initial_revision: Option<String>,
     },
 }
 
@@ -92,6 +136,23 @@ enum RevisionCommand {
         #[arg(long)]
         actor_genesis: PathBuf,
     },
+    /// Create a signed ObjectRevision statement and persist it to the store.
+    Create {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        object: String,
+        #[arg(long)]
+        revision: String,
+        #[arg(long, default_value = "kairo.toml")]
+        manifest: PathBuf,
+        /// Storage parent revision (may be repeated for multi-parent statements).
+        #[arg(long = "parent")]
+        parents: Vec<String>,
+        /// Suppress the default `attests_reachable_history = true` claim.
+        #[arg(long)]
+        no_attests_reachable_history: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -108,19 +169,158 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<String, CliError> {
+    let paths = StorePaths::resolve(cli.store, cli.keys)?;
     match cli.command {
-        Some(Command::Actor { command }) => run_actor_command(command),
+        Some(Command::Actor { command }) => run_actor_command(command, &paths),
         Some(Command::Manifest { command }) => run_manifest_command(command),
-        Some(Command::Revision { command }) => run_revision_command(command),
+        Some(Command::Object { command }) => run_object_command(command, &paths),
+        Some(Command::Revision { command }) => run_revision_command(command, &paths),
         None => Ok(help_text()),
     }
 }
 
-fn run_actor_command(command: ActorCommand) -> Result<String, CliError> {
+#[derive(Debug, Clone)]
+struct StorePaths {
+    store: PathBuf,
+    keys: PathBuf,
+}
+
+impl StorePaths {
+    fn resolve(store: Option<PathBuf>, keys: Option<PathBuf>) -> Result<Self, CliError> {
+        let store = match store {
+            Some(path) => path,
+            None => default_store_root()?,
+        };
+        let keys = keys.unwrap_or_else(|| store.join("keys"));
+        Ok(Self { store, keys })
+    }
+}
+
+fn default_store_root() -> Result<PathBuf, CliError> {
+    match std::env::var_os("HOME") {
+        Some(home) => Ok(PathBuf::from(home).join(".kairo")),
+        None => Err(CliError::HomeNotSet),
+    }
+}
+
+fn open_store(paths: &StorePaths) -> Result<FilesystemStore, CliError> {
+    FilesystemStore::open(&paths.store).map_err(|error| CliError::OpenStore {
+        path: paths.store.clone(),
+        source: error,
+    })
+}
+
+fn open_keystore(paths: &StorePaths) -> Result<FilesystemKeystore, CliError> {
+    FilesystemKeystore::open(&paths.keys).map_err(|error| CliError::OpenKeystore {
+        path: paths.keys.clone(),
+        source: error,
+    })
+}
+
+fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
         ActorCommand::Id { genesis } => {
             let genesis = read_actor_genesis(genesis)?;
             Ok(format!("{}\n", genesis.actor_id()))
+        }
+        ActorCommand::Create { kind } => {
+            let store = open_store(paths)?;
+            let keystore = open_keystore(paths)?;
+
+            let secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+            let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
+
+            let body = ActorGenesisBody::new(
+                ActorKind::new(kind),
+                secret.public_key(),
+                Timestamp::now(),
+                nonce,
+            );
+            let actor_id = body.actor_id();
+
+            keystore
+                .put_signing_key(&actor_id, &secret)
+                .map_err(|error| CliError::WriteKey {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+            store
+                .put_actor(&body)
+                .map_err(|error| CliError::WriteActor {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+
+            Ok(format!(
+                "created actor\nactor = {actor_id}\nkey_id = {}\nstore = {}\nkeys = {}\n",
+                secret.public_key().key_id(),
+                paths.store.display(),
+                paths.keys.display()
+            ))
+        }
+    }
+}
+
+fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        ObjectSubcommand::Create {
+            actor,
+            kind,
+            initial_revision,
+        } => {
+            let actor_id = ActorId::new(actor.clone())
+                .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+            let store = open_store(paths)?;
+            let keystore = open_keystore(paths)?;
+
+            let actor_body = store
+                .get_actor(&actor_id)
+                .map_err(|error| CliError::ReadActor {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+            let secret =
+                keystore
+                    .get_signing_key(&actor_id)
+                    .map_err(|error| CliError::ReadKey {
+                        actor: actor_id.clone(),
+                        source: error,
+                    })?;
+            if &secret.public_key() != actor_body.initial_key() {
+                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+            }
+
+            let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
+            let body = ObjectGenesisBody::new(
+                ObjectKind::new(kind),
+                actor_id.clone(),
+                Timestamp::now(),
+                nonce,
+                initial_revision.map(RevisionId::new),
+            );
+            let object_id = body.object_id();
+
+            let signature_bytes = secret.sign(&body.canonical_bytes());
+            let signature = Signature::new(
+                actor_id.clone(),
+                secret.public_key().key_id().to_string(),
+                "ed25519",
+                signature_bytes.bytes().to_vec(),
+            );
+            let statement = ObjectGenesisStatement::new(body, signature);
+
+            store
+                .put_object_genesis(&statement)
+                .map_err(|error| CliError::WriteObjectGenesis {
+                    object: object_id.clone(),
+                    source: error,
+                })?;
+
+            Ok(format!(
+                "created object\nobject = {object_id}\ncreated_by = {actor_id}\nstore = {}\n",
+                paths.store.display()
+            ))
         }
     }
 }
@@ -138,7 +338,7 @@ fn run_manifest_command(command: ManifestCommand) -> Result<String, CliError> {
     }
 }
 
-fn run_revision_command(command: RevisionCommand) -> Result<String, CliError> {
+fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
         RevisionCommand::ValidateManifest {
             statement,
@@ -186,6 +386,90 @@ fn run_revision_command(command: RevisionCommand) -> Result<String, CliError> {
             } else {
                 Err(CliError::VerificationFailed(Box::new(report)))
             }
+        }
+        RevisionCommand::Create {
+            actor,
+            object,
+            revision,
+            manifest,
+            parents,
+            no_attests_reachable_history,
+        } => {
+            let actor_id = ActorId::new(actor.clone())
+                .map_err(|source| CliError::ParseActorId { actor, source })?;
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+
+            let store = open_store(paths)?;
+            let keystore = open_keystore(paths)?;
+
+            let actor_body = store
+                .get_actor(&actor_id)
+                .map_err(|error| CliError::ReadActor {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+            let secret =
+                keystore
+                    .get_signing_key(&actor_id)
+                    .map_err(|error| CliError::ReadKey {
+                        actor: actor_id.clone(),
+                        source: error,
+                    })?;
+            if &secret.public_key() != actor_body.initial_key() {
+                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+            }
+
+            let parsed_manifest = read_manifest(manifest)?;
+            let manifest_hash = parsed_manifest.manifest_hash();
+
+            if let Some(declared) = parsed_manifest.kairo().object() {
+                if declared != &object_id {
+                    return Err(CliError::ManifestObjectMismatch {
+                        manifest_object: declared.clone(),
+                        cli_object: object_id,
+                    });
+                }
+            }
+
+            let body = ObjectRevisionBody::new(
+                object_id.clone(),
+                RevisionId::new(revision),
+                parents.into_iter().map(RevisionId::new).collect(),
+                manifest_hash,
+                !no_attests_reachable_history,
+            );
+
+            let subject: KairoRef = format!("object:{object_id}").parse().map_err(|source| {
+                CliError::BuildSubjectRef {
+                    object: object_id.clone(),
+                    source,
+                }
+            })?;
+
+            let unsigned =
+                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+
+            let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+            let signature = Signature::new(
+                actor_id.clone(),
+                secret.public_key().key_id().to_string(),
+                "ed25519",
+                signature_bytes.bytes().to_vec(),
+            );
+            let signed = SignedStatement::new(unsigned, signature);
+            let statement_id = signed.statement_id();
+
+            store
+                .put_object_revision(&signed)
+                .map_err(|error| CliError::WriteRevision {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+
+            Ok(format!(
+                "created revision\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\n"
+            ))
         }
     }
 }
@@ -418,7 +702,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo --help\n  kairo --version\n  kairo actor id --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path>\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path>\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -447,6 +731,59 @@ enum CliError {
     ValidateRevisionManifest(kairo_object::RevisionManifestError),
     VerifyStatementSignature(kairo_statement::StatementSignatureError),
     VerificationFailed(Box<VerificationReport>),
+    HomeNotSet,
+    OpenStore {
+        path: PathBuf,
+        source: kairo_store::StoreError,
+    },
+    OpenKeystore {
+        path: PathBuf,
+        source: kairo_keystore::KeystoreError,
+    },
+    GenerateKey(kairo_identity::KeyGenerationError),
+    WriteKey {
+        actor: ActorId,
+        source: kairo_keystore::KeystoreError,
+    },
+    WriteActor {
+        actor: ActorId,
+        source: kairo_store::StoreError,
+    },
+    ReadActor {
+        actor: ActorId,
+        source: kairo_store::StoreError,
+    },
+    ReadKey {
+        actor: ActorId,
+        source: kairo_keystore::KeystoreError,
+    },
+    KeyDoesNotMatchActor {
+        actor: ActorId,
+    },
+    ParseActorId {
+        actor: String,
+        source: kairo_core::IdError,
+    },
+    ParseObjectId {
+        object: String,
+        source: kairo_core::IdError,
+    },
+    WriteObjectGenesis {
+        object: ObjectId,
+        source: kairo_store::StoreError,
+    },
+    WriteRevision {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    ManifestObjectMismatch {
+        manifest_object: ObjectId,
+        cli_object: ObjectId,
+    },
+    BuildSubjectRef {
+        object: ObjectId,
+        source: kairo_core::IdError,
+    },
     MissingPublicKey,
     ConflictingPublicKeyInputs,
     InvalidPublicKeyBase64,
@@ -477,6 +814,60 @@ impl fmt::Display for CliError {
             Self::VerificationFailed(report) => {
                 write!(f, "{}", describe_verification_failure(report))
             }
+            Self::HomeNotSet => f.write_str(
+                "HOME environment variable is not set; use --store to specify a store root",
+            ),
+            Self::OpenStore { path, source } => {
+                write!(f, "failed to open store at {}: {source}", path.display())
+            }
+            Self::OpenKeystore { path, source } => {
+                write!(f, "failed to open keystore at {}: {source}", path.display())
+            }
+            Self::GenerateKey(error) => write!(f, "{error}"),
+            Self::WriteKey { actor, source } => {
+                write!(f, "failed to write key for actor {actor}: {source}")
+            }
+            Self::WriteActor { actor, source } => {
+                write!(f, "failed to write actor {actor}: {source}")
+            }
+            Self::ReadActor { actor, source } => {
+                write!(f, "failed to read actor {actor}: {source}")
+            }
+            Self::ReadKey { actor, source } => {
+                write!(f, "failed to read key for actor {actor}: {source}")
+            }
+            Self::KeyDoesNotMatchActor { actor } => write!(
+                f,
+                "stored key for actor {actor} does not match the actor's initial public key"
+            ),
+            Self::ParseActorId { actor, source } => {
+                write!(f, "invalid actor id {actor}: {source}")
+            }
+            Self::ParseObjectId { object, source } => {
+                write!(f, "invalid object id {object}: {source}")
+            }
+            Self::WriteObjectGenesis { object, source } => {
+                write!(f, "failed to write object genesis {object}: {source}")
+            }
+            Self::WriteRevision { statement, source } => {
+                write!(
+                    f,
+                    "failed to write revision statement {statement}: {source}"
+                )
+            }
+            Self::ManifestObjectMismatch {
+                manifest_object,
+                cli_object,
+            } => write!(
+                f,
+                "manifest declares object {manifest_object} but --object is {cli_object}"
+            ),
+            Self::BuildSubjectRef { object, source } => {
+                write!(
+                    f,
+                    "could not build subject reference for object {object}: {source}"
+                )
+            }
             Self::MissingPublicKey => f.write_str("missing --public-key or --public-key-file"),
             Self::ConflictingPublicKeyInputs => {
                 f.write_str("use only one of --public-key or --public-key-file")
@@ -502,7 +893,23 @@ impl Error for CliError {
             Self::ParseStatement(error) => Some(error),
             Self::ValidateRevisionManifest(error) => Some(error),
             Self::VerifyStatementSignature(error) => Some(error),
+            Self::OpenStore { source, .. }
+            | Self::WriteActor { source, .. }
+            | Self::ReadActor { source, .. } => Some(source),
+            Self::OpenKeystore { source, .. }
+            | Self::WriteKey { source, .. }
+            | Self::ReadKey { source, .. } => Some(source),
+            Self::WriteObjectGenesis { source, .. } | Self::WriteRevision { source, .. } => {
+                Some(source)
+            }
+            Self::ParseActorId { source, .. }
+            | Self::ParseObjectId { source, .. }
+            | Self::BuildSubjectRef { source, .. } => Some(source),
+            Self::GenerateKey(error) => Some(error),
             Self::VerificationFailed(_)
+            | Self::HomeNotSet
+            | Self::KeyDoesNotMatchActor { .. }
+            | Self::ManifestObjectMismatch { .. }
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64
@@ -563,7 +970,7 @@ mod tests {
 
         assert!(matches!(
             cli,
-            Ok(Cli {
+            Ok(Cli { store: None, keys: None,
                 command: Some(Command::Manifest {
                     command: ManifestCommand::Hash { path }
                 })
@@ -577,7 +984,7 @@ mod tests {
 
         assert!(matches!(
             cli,
-            Ok(Cli {
+            Ok(Cli { store: None, keys: None,
                 command: Some(Command::Manifest {
                     command: ManifestCommand::Inspect { path }
                 })
@@ -599,7 +1006,7 @@ mod tests {
 
         assert!(matches!(
             cli,
-            Ok(Cli {
+            Ok(Cli { store: None, keys: None,
                 command: Some(Command::Revision {
                     command: RevisionCommand::ValidateManifest {
                         statement,
@@ -643,7 +1050,7 @@ mod tests {
 
         assert!(matches!(
             cli,
-            Ok(Cli {
+            Ok(Cli { store: None, keys: None,
                 command: Some(Command::Revision {
                     command: RevisionCommand::VerifySignature {
                         statement,
@@ -661,7 +1068,7 @@ mod tests {
 
         assert!(matches!(
             cli,
-            Ok(Cli {
+            Ok(Cli { store: None, keys: None,
                 command: Some(Command::Actor {
                     command: ActorCommand::Id { genesis }
                 })
@@ -683,7 +1090,7 @@ mod tests {
 
         assert!(matches!(
             cli,
-            Ok(Cli {
+            Ok(Cli { store: None, keys: None,
                 command: Some(Command::Revision {
                     command: RevisionCommand::VerifyActorGenesis {
                         statement,
@@ -823,5 +1230,115 @@ mod tests {
 
     fn signing_key() -> SigningKey {
         SigningKey::from_bytes(&[7; 32])
+    }
+
+    #[test]
+    fn end_to_end_actor_object_revision_against_tempdir() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_dir = tempfile::TempDir::new()?;
+        let manifest_path = manifest_dir.path().join("kairo.toml");
+        let bare_manifest = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [content]
+            kind = "tree"
+        "#;
+        std::fs::write(&manifest_path, bare_manifest)?;
+
+        // 1. Create a fresh actor.
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+
+        // 2. Create an object lineage.
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: Some("git:sha256:abc".to_owned()),
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+
+        // 3. Create a signed revision pointing at that object.
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: "git:sha256:def".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec!["git:sha256:abc".to_owned()],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        assert!(revision_output.contains("created revision"));
+        assert!(revision_output.contains(&actor_id));
+        assert!(revision_output.contains(&object_id));
+
+        // 4. Read back from the store and verify the signature against the
+        //    persisted ActorGenesis through the generic verifier.
+        use kairo_statement::verify::ActorResolution;
+        let store = open_store(&StorePaths {
+            store: store_dir.path().to_path_buf(),
+            keys: store_dir.path().join("keys"),
+        })?;
+        let actor_id_typed = ActorId::new(actor_id)?;
+        let _genesis = store.get_actor(&actor_id_typed)?;
+
+        // The revision should be readable by its statement id (we don't have
+        // direct access to it here, but the parse_field above pinned the
+        // round-trip to a successful write).
+        let signed =
+            first_statement_on_disk(store_dir.path())?.ok_or("no revision statement on disk")?;
+        let report = kairo_statement::verify::verify_envelope_statement(&signed, &store);
+        assert_eq!(report.actor, ActorResolution::Resolved);
+        assert!(report.is_cryptographically_valid());
+
+        Ok(())
+    }
+
+    fn first_statement_on_disk(
+        store_root: &std::path::Path,
+    ) -> Result<Option<SignedStatement<ObjectRevisionBody>>, Box<dyn std::error::Error>> {
+        let statements_dir = store_root.join("statements");
+        for level1 in std::fs::read_dir(&statements_dir)? {
+            let level1 = level1?;
+            for level2 in std::fs::read_dir(level1.path())? {
+                let level2 = level2?;
+                if let Some(entry) = std::fs::read_dir(level2.path())?.next() {
+                    let path = entry?.path();
+                    let json: ObjectRevisionStatementJson =
+                        serde_json::from_slice(&std::fs::read(&path)?)?;
+                    let signed = json.to_statement().map_err(|error| error.to_string())?;
+                    return Ok(Some(signed));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn parse_field(text: &str, prefix: &str) -> Result<String, Box<dyn std::error::Error>> {
+        text.lines()
+            .find_map(|line| line.strip_prefix(prefix).map(str::to_owned))
+            .ok_or_else(|| format!("missing field {prefix:?} in {text:?}").into())
     }
 }
