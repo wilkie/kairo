@@ -3,7 +3,10 @@ use std::fmt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 use clap::{Parser, Subcommand};
+use kairo_identity::PublicKey;
 use kairo_object::{
     validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
 };
@@ -53,6 +56,15 @@ enum RevisionCommand {
         statement: PathBuf,
         #[arg(long, default_value = "kairo.toml")]
         manifest: PathBuf,
+    },
+    /// Verify an ObjectRevision JSON statement signature with a raw ed25519 public key.
+    VerifySignature {
+        #[arg(long)]
+        statement: PathBuf,
+        #[arg(long, conflicts_with = "public_key_file")]
+        public_key: Option<String>,
+        #[arg(long, conflicts_with = "public_key")]
+        public_key_file: Option<PathBuf>,
     },
 }
 
@@ -104,6 +116,22 @@ fn run_revision_command(command: RevisionCommand) -> Result<String, CliError> {
 
             Ok(format_revision_manifest_valid(revision, &manifest))
         }
+        RevisionCommand::VerifySignature {
+            statement,
+            public_key,
+            public_key_file,
+        } => {
+            let statement = read_object_revision_statement(statement)?;
+            let public_key = read_public_key(public_key, public_key_file)?;
+            statement
+                .verify_signature(&public_key)
+                .map_err(CliError::VerifyStatementSignature)?;
+
+            Ok(format_revision_signature_valid(
+                statement.unsigned().body(),
+                statement.signature(),
+            ))
+        }
     }
 }
 
@@ -127,6 +155,34 @@ fn read_object_revision_statement(
     let dto: ObjectRevisionStatementJson =
         serde_json::from_str(&input).map_err(CliError::ParseStatementJson)?;
     dto.to_statement().map_err(CliError::ParseStatement)
+}
+
+fn read_public_key(
+    public_key: Option<String>,
+    public_key_file: Option<PathBuf>,
+) -> Result<PublicKey, CliError> {
+    let encoded = match (public_key, public_key_file) {
+        (Some(public_key), None) => public_key,
+        (None, Some(path)) => {
+            std::fs::read_to_string(&path).map_err(|source| CliError::ReadPublicKey {
+                path: path.clone(),
+                source,
+            })?
+        }
+        (None, None) => return Err(CliError::MissingPublicKey),
+        (Some(_), Some(_)) => return Err(CliError::ConflictingPublicKeyInputs),
+    };
+
+    let bytes = STANDARD
+        .decode(encoded.trim())
+        .map_err(|_| CliError::InvalidPublicKeyBase64)?;
+    let bytes =
+        <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| CliError::InvalidPublicKeyLength {
+            expected: 32,
+            actual: bytes.len(),
+        })?;
+
+    Ok(PublicKey::ed25519(bytes))
 }
 
 fn format_manifest_inspection(manifest: &ObjectManifest) -> String {
@@ -194,8 +250,21 @@ fn format_revision_manifest_valid(
     )
 }
 
+fn format_revision_signature_valid(
+    revision: &ObjectRevisionBody,
+    signature: &kairo_statement::Signature,
+) -> String {
+    format!(
+        "valid revision signature\nobject = {}\nrevision = {}\nactor = {}\nkey_id = {}\nsignature = valid\n",
+        revision.object(),
+        revision.revision().as_str(),
+        signature.actor(),
+        signature.key_id()
+    )
+}
+
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo --help\n  kairo --version\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo --help\n  kairo --version\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -209,21 +278,44 @@ enum CliError {
         path: PathBuf,
         source: std::io::Error,
     },
+    ReadPublicKey {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     ParseStatementJson(serde_json::Error),
     ParseStatement(kairo_statement::json::StatementJsonError),
     ValidateRevisionManifest(kairo_object::RevisionManifestError),
+    VerifyStatementSignature(kairo_statement::StatementSignatureError),
+    MissingPublicKey,
+    ConflictingPublicKeyInputs,
+    InvalidPublicKeyBase64,
+    InvalidPublicKeyLength {
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReadManifest { path, source } | Self::ReadStatement { path, source } => {
+            Self::ReadManifest { path, source }
+            | Self::ReadStatement { path, source }
+            | Self::ReadPublicKey { path, source } => {
                 write!(f, "failed to read {}: {source}", path.display())
             }
             Self::ParseManifest(error) => write!(f, "{error}"),
             Self::ParseStatementJson(error) => write!(f, "invalid statement JSON: {error}"),
             Self::ParseStatement(error) => write!(f, "{error}"),
             Self::ValidateRevisionManifest(error) => write!(f, "{error}"),
+            Self::VerifyStatementSignature(error) => write!(f, "{error}"),
+            Self::MissingPublicKey => f.write_str("missing --public-key or --public-key-file"),
+            Self::ConflictingPublicKeyInputs => {
+                f.write_str("use only one of --public-key or --public-key-file")
+            }
+            Self::InvalidPublicKeyBase64 => f.write_str("invalid public key base64"),
+            Self::InvalidPublicKeyLength { expected, actual } => {
+                write!(f, "invalid public key length {actual}; expected {expected}")
+            }
         }
     }
 }
@@ -231,11 +323,18 @@ impl fmt::Display for CliError {
 impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::ReadManifest { source, .. } | Self::ReadStatement { source, .. } => Some(source),
+            Self::ReadManifest { source, .. }
+            | Self::ReadStatement { source, .. }
+            | Self::ReadPublicKey { source, .. } => Some(source),
             Self::ParseManifest(error) => Some(error),
             Self::ParseStatementJson(error) => Some(error),
             Self::ParseStatement(error) => Some(error),
             Self::ValidateRevisionManifest(error) => Some(error),
+            Self::VerifyStatementSignature(error) => Some(error),
+            Self::MissingPublicKey
+            | Self::ConflictingPublicKeyInputs
+            | Self::InvalidPublicKeyBase64
+            | Self::InvalidPublicKeyLength { .. } => None,
         }
     }
 }
@@ -243,6 +342,10 @@ impl Error for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use ed25519_dalek::{Signer, SigningKey};
+    use kairo_core::canonical::CanonicalEncode;
     use kairo_statement::json::{
         ObjectRevisionBodyJson, ObjectRevisionStatementJson, SignatureJson,
     };
@@ -353,6 +456,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parses_revision_verify_signature_command() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "revision",
+            "verify-signature",
+            "--statement",
+            "revision.json",
+            "--public-key",
+            "ZmFrZQ==",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Revision {
+                    command: RevisionCommand::VerifySignature {
+                        statement,
+                        public_key: Some(public_key),
+                        public_key_file: None
+                    }
+                })
+            }) if statement.as_os_str() == "revision.json" && public_key == "ZmFrZQ=="
+        ));
+    }
+
+    #[test]
+    fn verifies_revision_signature_for_output() {
+        let statement = signed_revision_statement();
+        let public_key = PublicKey::ed25519(signing_key().verifying_key().to_bytes());
+        let output = statement.and_then(|statement| {
+            statement.verify_signature(&public_key).ok().map(|_| {
+                format_revision_signature_valid(statement.unsigned().body(), statement.signature())
+            })
+        });
+
+        assert!(
+            matches!(output, Some(output) if output.contains("valid revision signature")
+            && output.contains("signature = valid")
+            && output.contains("key_id = z"))
+        );
+    }
+
+    #[test]
+    fn reads_inline_public_key_base64() {
+        let encoded = STANDARD.encode(signing_key().verifying_key().to_bytes());
+        let public_key = read_public_key(Some(encoded), None);
+
+        assert!(
+            matches!(public_key, Ok(public_key) if public_key.bytes() == &signing_key().verifying_key().to_bytes())
+        );
+    }
+
     fn revision_dto(manifest_hash: String) -> ObjectRevisionStatementJson {
         ObjectRevisionStatementJson {
             statement_type: "ObjectRevision".to_owned(),
@@ -373,5 +529,22 @@ mod tests {
                 bytes: "c2lnbmF0dXJl".to_owned(),
             },
         }
+    }
+
+    fn signed_revision_statement() -> Option<kairo_statement::SignedStatement<ObjectRevisionBody>> {
+        let manifest = ObjectManifest::parse_toml(MANIFEST).ok()?;
+        let mut dto = revision_dto(manifest.manifest_hash().to_string());
+        let unsigned = dto.to_statement().ok()?.unsigned().clone();
+        let signature = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        dto.signature.algorithm = "ed25519".to_owned();
+        dto.signature.key_id = PublicKey::ed25519(signing_key().verifying_key().to_bytes())
+            .key_id()
+            .to_string();
+        dto.signature.bytes = STANDARD.encode(signature);
+        dto.to_statement().ok()
+    }
+
+    fn signing_key() -> SigningKey {
+        SigningKey::from_bytes(&[7; 32])
     }
 }

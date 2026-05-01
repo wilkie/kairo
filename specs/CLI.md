@@ -217,6 +217,7 @@ direct local commands for deterministic validation primitives.
 kairo manifest hash [path]
 kairo manifest inspect [path]
 kairo revision validate-manifest --statement <object-revision.json> [--manifest <kairo.toml>]
+kairo revision verify-signature --statement <object-revision.json> (--public-key <base64>|--public-key-file <path>)
 ```
 
 `manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
@@ -231,8 +232,12 @@ hash.
 1. `ObjectRevision.manifest_hash` equals the canonical manifest hash.
 2. `[kairo].object`, when present, equals `ObjectRevision.object`.
 
-These commands do not validate signatures, actor authority, Git commit
-availability, parent commit consistency, or snapshot closure completeness.
+`revision verify-signature` parses an `ObjectRevision` JSON statement and checks
+its ed25519 signature against raw public key bytes encoded as standard base64.
+
+These commands do not validate actor authority, actor key-active status, Git
+commit availability, parent commit consistency, or snapshot closure
+completeness.
 
 ---
 

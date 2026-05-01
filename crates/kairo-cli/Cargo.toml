@@ -6,10 +6,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64 = "=0.21.7"
 clap = { version = "4.4", features = ["derive"] }
+kairo-identity = { path = "../kairo-identity" }
 kairo-object = { path = "../kairo-object" }
 kairo-statement = { path = "../kairo-statement" }
 serde_json = "1"
+
+[dev-dependencies]
+ed25519-dalek = "=2.1.1"
+kairo-core = { path = "../kairo-core" }
 
 [[bin]]
 name = "kairo"
