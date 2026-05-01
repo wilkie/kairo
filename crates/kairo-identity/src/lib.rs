@@ -5,6 +5,8 @@ pub mod json;
 use std::error::Error;
 use std::fmt;
 
+use std::collections::BTreeMap;
+
 use ed25519_dalek::{Verifier, VerifyingKey};
 use kairo_core::canonical::{encode_bytes, encode_str, encode_u8, CanonicalEncode};
 pub use kairo_core::ActorId;
@@ -202,6 +204,66 @@ pub fn verify_signature(
     }
 }
 
+pub trait ActorResolver {
+    fn actor_genesis(&self, actor: &ActorId)
+        -> Result<Option<ActorGenesisBody>, ActorResolveError>;
+
+    fn initial_key(&self, actor: &ActorId) -> Result<Option<PublicKey>, ActorResolveError> {
+        Ok(self
+            .actor_genesis(actor)?
+            .map(|genesis| genesis.initial_key().clone()))
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MemoryActorResolver {
+    actors: BTreeMap<ActorId, ActorGenesisBody>,
+}
+
+impl MemoryActorResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert(&mut self, genesis: ActorGenesisBody) -> ActorId {
+        let actor_id = genesis.actor_id();
+        self.actors.insert(actor_id.clone(), genesis);
+        actor_id
+    }
+
+    pub fn len(&self) -> usize {
+        self.actors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.actors.is_empty()
+    }
+}
+
+impl ActorResolver for MemoryActorResolver {
+    fn actor_genesis(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Option<ActorGenesisBody>, ActorResolveError> {
+        Ok(self.actors.get(actor).cloned())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorResolveError {
+    Unavailable(String),
+}
+
+impl fmt::Display for ActorResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(reason) => write!(f, "actor resolver unavailable: {reason}"),
+        }
+    }
+}
+
+impl Error for ActorResolveError {}
+
 fn verify_ed25519(
     public_key: &[u8; 32],
     payload: &[u8],
@@ -327,5 +389,32 @@ mod tests {
             verify_signature(&public_key(), payload, &SignatureBytes::ed25519(signature)),
             Err(SignatureVerificationError::InvalidSignature)
         );
+    }
+
+    #[test]
+    fn memory_resolver_finds_actor_genesis_by_derived_actor_id() {
+        let genesis = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis.clone());
+
+        assert_eq!(resolver.actor_genesis(&actor_id), Ok(Some(genesis)));
+    }
+
+    #[test]
+    fn memory_resolver_returns_none_for_missing_actor() {
+        let resolver = MemoryActorResolver::new();
+        let missing_actor =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]).actor_id();
+
+        assert_eq!(resolver.actor_genesis(&missing_actor), Ok(None));
+    }
+
+    #[test]
+    fn memory_resolver_resolves_initial_key() {
+        let genesis = ActorGenesisBody::new(ActorKind::person(), public_key(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis.clone());
+
+        assert_eq!(resolver.initial_key(&actor_id), Ok(Some(public_key())));
     }
 }

@@ -283,7 +283,35 @@ Actor chains prove continuity of a signer’s participation in an object.
 
 ---
 
-## 8. Root Authority
+## 8. Actor Resolution
+
+Actor verification depends on resolving actor identity data:
+
+```text
+ActorId -> ActorGenesis
+ActorId -> active keys
+```
+
+The identity layer defines this as a resolver interface rather than as a
+specific storage layout. Implementations may resolve actors from:
+
+- in-memory package contents
+- local stores
+- daemon indexes
+- federation caches
+- archival bundles
+- future databases
+
+The MVP resolver only needs to resolve `ActorGenesis` by derived `ActorId` and
+return the genesis initial key. This is sufficient to verify statements signed
+by the actor's root key. Later key rotation, revocation, delegation, and
+authority checks extend the same resolver boundary.
+
+Missing actor data makes validation indeterminate rather than trusted.
+
+---
+
+## 9. Root Authority
 
 Every object must have a root authority.
 
@@ -308,13 +336,13 @@ authority through valid grants and delegations.
 
 ---
 
-## 9. Actor Capabilities
+## 10. Actor Capabilities
 
 Actor capabilities define which statement kinds an actor may issue.
 
 These are different from runtime capabilities in `CAPABILITIES.md`.
 
-### 9.1 Capability fields
+### 10.1 Capability fields
 
 Recommended structure:
 
@@ -329,7 +357,7 @@ pub struct ActorCapability {
 }
 ```
 
-### 9.2 Authority scope
+### 10.2 Authority scope
 
 Capability scope may include:
 
@@ -345,7 +373,7 @@ pub enum AuthorityScope {
 }
 ```
 
-### 9.3 Standard actor capabilities
+### 10.3 Standard actor capabilities
 
 Recommended standard capabilities:
 
@@ -368,7 +396,7 @@ actor.key.revoke
 actor.metadata.write
 ```
 
-### 9.4 Delegation
+### 10.4 Delegation
 
 A capability may be delegable.
 
@@ -377,7 +405,7 @@ another actor.
 
 Delegation chains must be explicit.
 
-### 9.5 Constraints
+### 10.5 Constraints
 
 Capability constraints may include:
 
@@ -397,7 +425,7 @@ Local policy may impose additional constraints.
 
 ---
 
-## 10. Grants
+## 11. Grants
 
 A grant is a signed statement that gives a capability to another actor.
 
@@ -417,7 +445,7 @@ valid authority path exists.
 
 ---
 
-## 11. Revocation
+## 12. Revocation
 
 Revocation removes or limits actor authority.
 
@@ -430,7 +458,7 @@ Revocation may target:
 - Specific statement authority
 - Actor participation in an object
 
-### 11.1 Default revocation behavior
+### 12.1 Default revocation behavior
 
 By default:
 
@@ -440,7 +468,7 @@ By default:
 4. Revocation must itself be authorized.
 5. Revocation must identify its target precisely.
 
-### 11.2 Retroactive revocation
+### 12.2 Retroactive revocation
 
 Retroactive revocation is allowed only if defined by a specific statement kind and
 requires stronger authority than ordinary revocation.
@@ -455,7 +483,7 @@ Use cases may include:
 
 Retroactive revocation must be explicit and visible in validation results.
 
-### 11.3 Key revocation
+### 12.3 Key revocation
 
 Revoking a signing key means future statements signed by that key are invalid
 after the revocation point.
@@ -465,7 +493,7 @@ explicitly declared.
 
 ---
 
-## 12. Key Rotation
+## 13. Key Rotation
 
 Actors must support signing-key rotation.
 
@@ -476,7 +504,7 @@ Key rotation should be represented by signed statements:
 3. Optionally require overlap signatures from both keys.
 4. Preserve audit trail.
 
-### 12.1 Rotation validity
+### 13.1 Rotation validity
 
 A key rotation is valid if:
 
@@ -484,7 +512,7 @@ A key rotation is valid if:
 2. A designated recovery key signs the rotation, or
 3. A valid actor governance rule authorizes the rotation.
 
-### 12.2 Recovery keys
+### 13.2 Recovery keys
 
 Actors may define recovery keys.
 
@@ -501,7 +529,7 @@ unless explicitly granted.
 
 ---
 
-## 13. Multi-Signature and Governance
+## 14. Multi-Signature and Governance
 
 Some actors, especially organizations or archives, may require multi-signature
 governance.
@@ -523,7 +551,7 @@ Local policy may require stricter governance than the actor itself declares.
 
 ---
 
-## 14. Actor Metadata and Presentation
+## 15. Actor Metadata and Presentation
 
 Actor metadata is useful for display but must not be confused with authority.
 
@@ -551,7 +579,7 @@ Search may index actor metadata, but search results remain unverified until vali
 
 ---
 
-## 15. Actor Attestations
+## 16. Actor Attestations
 
 Actors may issue attestations about other actors.
 
@@ -568,7 +596,7 @@ authority unless the object authority graph gives them that role.
 
 ---
 
-## 16. Actor vs Local User
+## 17. Actor vs Local User
 
 An actor is a Kairo identity.
 
@@ -582,7 +610,7 @@ The daemon should manage local actor keys securely.
 
 ---
 
-## 17. Key Storage
+## 18. Key Storage
 
 Private key storage is outside the semantic core but must be addressed by daemon
 or tooling.
@@ -598,7 +626,7 @@ Recommended requirements:
 
 ---
 
-## 18. Actor Import and Export
+## 19. Actor Import and Export
 
 Packages may include actor-related statements and metadata.
 
@@ -610,7 +638,7 @@ Actor statements must preserve signatures exactly.
 
 ---
 
-## 19. API Representation
+## 20. API Representation
 
 Actor DTOs should include:
 
@@ -642,7 +670,7 @@ API responses must distinguish:
 
 ---
 
-## 20. CLI Mapping
+## 21. CLI Mapping
 
 Recommended commands may include:
 
@@ -660,7 +688,7 @@ Trust commands modify local policy, not actor semantics.
 
 ---
 
-## 21. Web Client Mapping
+## 22. Web Client Mapping
 
 The web client should display:
 
@@ -676,7 +704,7 @@ The web client must not present local trust as cryptographic validity.
 
 ---
 
-## 22. Validation Outcomes
+## 23. Validation Outcomes
 
 Actor-related validation may produce:
 
@@ -695,7 +723,7 @@ These must be represented as structured validation issues.
 
 ---
 
-## 23. Security Requirements
+## 24. Security Requirements
 
 Actor systems must:
 
@@ -716,7 +744,7 @@ Actor systems must:
 
 ---
 
-## 24. Implementation Checklist
+## 25. Implementation Checklist
 
 A conforming initial implementation should provide:
 
