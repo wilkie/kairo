@@ -198,6 +198,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "kairo-object",
+ "kairo-statement",
+ "serde_json",
 ]
 
 [[package]]

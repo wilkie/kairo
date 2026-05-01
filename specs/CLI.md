@@ -208,6 +208,34 @@ If a name resolves to multiple objects, the CLI must not guess unless a determin
 
 ---
 
+### 5.1 Early Direct Validation Commands
+
+Before daemon-backed object and snapshot workflows exist, the CLI may expose
+direct local commands for deterministic validation primitives.
+
+```text
+kairo manifest hash [path]
+kairo manifest inspect [path]
+kairo revision validate-manifest --statement <object-revision.json> [--manifest <kairo.toml>]
+```
+
+`manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
+`BlobId`.
+
+`manifest inspect` prints parsed manifest fields and the same canonical manifest
+hash.
+
+`revision validate-manifest` parses an `ObjectRevision` JSON statement and a
+`kairo.toml` file, then verifies:
+
+1. `ObjectRevision.manifest_hash` equals the canonical manifest hash.
+2. `[kairo].object`, when present, equals `ObjectRevision.object`.
+
+These commands do not validate signatures, actor authority, Git commit
+availability, parent commit consistency, or snapshot closure completeness.
+
+---
+
 ## 6. Validation Status Rendering
 
 The CLI must preserve core validation statuses.

@@ -8,6 +8,8 @@ repository.workspace = true
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
 kairo-object = { path = "../kairo-object" }
+kairo-statement = { path = "../kairo-statement" }
+serde_json = "1"
 
 [[bin]]
 name = "kairo"
