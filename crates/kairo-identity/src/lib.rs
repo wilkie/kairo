@@ -1,5 +1,7 @@
 //! Actor identity and signature primitives.
 
+pub mod json;
+
 use std::error::Error;
 use std::fmt;
 

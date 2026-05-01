@@ -9,6 +9,7 @@ canonical hash inputs unless a canonical schema document explicitly says so.
 Documents:
 
 - `statement-envelope-v1.schema.json`
+- `actor-genesis-v1.schema.json`
 - `object-genesis-v1.schema.json`
 - `object-revision-v1.schema.json`
 

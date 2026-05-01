@@ -25,6 +25,7 @@ schemas/
   json/
     README.md
     statement-envelope-v1.schema.json
+    actor-genesis-v1.schema.json
     object-genesis-v1.schema.json
     object-revision-v1.schema.json
 ```

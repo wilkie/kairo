@@ -6,8 +6,13 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64 = "=0.21.7"
 ed25519-dalek = "=2.1.1"
 kairo-core = { path = "../kairo-core" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
 
 [lib]
 name = "kairo_identity"

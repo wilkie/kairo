@@ -6,7 +6,8 @@ use std::process::ExitCode;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use clap::{Parser, Subcommand};
-use kairo_identity::PublicKey;
+use kairo_identity::json::ActorGenesisJson;
+use kairo_identity::{ActorGenesisBody, ActorId, PublicKey};
 use kairo_object::{
     validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
 };
@@ -22,6 +23,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Work with actors.
+    Actor {
+        #[command(subcommand)]
+        command: ActorCommand,
+    },
     /// Work with kairo.toml manifests.
     Manifest {
         #[command(subcommand)]
@@ -31,6 +37,15 @@ enum Command {
     Revision {
         #[command(subcommand)]
         command: RevisionCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ActorCommand {
+    /// Derive an ActorId from an ActorGenesis JSON document.
+    Id {
+        #[arg(long)]
+        genesis: PathBuf,
     },
 }
 
@@ -66,6 +81,13 @@ enum RevisionCommand {
         #[arg(long, conflicts_with = "public_key")]
         public_key_file: Option<PathBuf>,
     },
+    /// Verify an ObjectRevision signature against an ActorGenesis initial key.
+    VerifyActorGenesis {
+        #[arg(long)]
+        statement: PathBuf,
+        #[arg(long)]
+        actor_genesis: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -83,9 +105,19 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<String, CliError> {
     match cli.command {
+        Some(Command::Actor { command }) => run_actor_command(command),
         Some(Command::Manifest { command }) => run_manifest_command(command),
         Some(Command::Revision { command }) => run_revision_command(command),
         None => Ok(help_text()),
+    }
+}
+
+fn run_actor_command(command: ActorCommand) -> Result<String, CliError> {
+    match command {
+        ActorCommand::Id { genesis } => {
+            let genesis = read_actor_genesis(genesis)?;
+            Ok(format!("{}\n", genesis.actor_id()))
+        }
     }
 }
 
@@ -132,6 +164,29 @@ fn run_revision_command(command: RevisionCommand) -> Result<String, CliError> {
                 statement.signature(),
             ))
         }
+        RevisionCommand::VerifyActorGenesis {
+            statement,
+            actor_genesis,
+        } => {
+            let statement = read_object_revision_statement(statement)?;
+            let actor_genesis = read_actor_genesis(actor_genesis)?;
+            let actor_id = actor_genesis.actor_id();
+            if statement.signature().actor() != &actor_id {
+                return Err(CliError::ActorGenesisMismatch {
+                    expected: statement.signature().actor().clone(),
+                    actual: actor_id,
+                });
+            }
+
+            statement
+                .verify_signature(actor_genesis.initial_key())
+                .map_err(CliError::VerifyStatementSignature)?;
+
+            Ok(format_revision_actor_genesis_valid(
+                statement.unsigned().body(),
+                statement.signature(),
+            ))
+        }
     }
 }
 
@@ -155,6 +210,17 @@ fn read_object_revision_statement(
     let dto: ObjectRevisionStatementJson =
         serde_json::from_str(&input).map_err(CliError::ParseStatementJson)?;
     dto.to_statement().map_err(CliError::ParseStatement)
+}
+
+fn read_actor_genesis(path: PathBuf) -> Result<ActorGenesisBody, CliError> {
+    let input = std::fs::read_to_string(&path).map_err(|source| CliError::ReadActorGenesis {
+        path: path.clone(),
+        source,
+    })?;
+
+    let dto: ActorGenesisJson =
+        serde_json::from_str(&input).map_err(CliError::ParseActorGenesisJson)?;
+    dto.to_body().map_err(CliError::ParseActorGenesis)
 }
 
 fn read_public_key(
@@ -263,8 +329,21 @@ fn format_revision_signature_valid(
     )
 }
 
+fn format_revision_actor_genesis_valid(
+    revision: &ObjectRevisionBody,
+    signature: &kairo_statement::Signature,
+) -> String {
+    format!(
+        "valid revision actor genesis\nobject = {}\nrevision = {}\nactor = {}\nkey_id = {}\nsignature = valid\n",
+        revision.object(),
+        revision.revision().as_str(),
+        signature.actor(),
+        signature.key_id()
+    )
+}
+
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo --help\n  kairo --version\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n".to_owned()
+    "kairo\n\nUsage:\n  kairo --help\n  kairo --version\n  kairo actor id --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path>\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -282,10 +361,20 @@ enum CliError {
         path: PathBuf,
         source: std::io::Error,
     },
+    ReadActorGenesis {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    ParseActorGenesisJson(serde_json::Error),
+    ParseActorGenesis(kairo_identity::json::ActorGenesisJsonError),
     ParseStatementJson(serde_json::Error),
     ParseStatement(kairo_statement::json::StatementJsonError),
     ValidateRevisionManifest(kairo_object::RevisionManifestError),
     VerifyStatementSignature(kairo_statement::StatementSignatureError),
+    ActorGenesisMismatch {
+        expected: ActorId,
+        actual: ActorId,
+    },
     MissingPublicKey,
     ConflictingPublicKeyInputs,
     InvalidPublicKeyBase64,
@@ -300,14 +389,25 @@ impl fmt::Display for CliError {
         match self {
             Self::ReadManifest { path, source }
             | Self::ReadStatement { path, source }
-            | Self::ReadPublicKey { path, source } => {
+            | Self::ReadPublicKey { path, source }
+            | Self::ReadActorGenesis { path, source } => {
                 write!(f, "failed to read {}: {source}", path.display())
             }
             Self::ParseManifest(error) => write!(f, "{error}"),
+            Self::ParseActorGenesisJson(error) => {
+                write!(f, "invalid actor genesis JSON: {error}")
+            }
+            Self::ParseActorGenesis(error) => write!(f, "{error}"),
             Self::ParseStatementJson(error) => write!(f, "invalid statement JSON: {error}"),
             Self::ParseStatement(error) => write!(f, "{error}"),
             Self::ValidateRevisionManifest(error) => write!(f, "{error}"),
             Self::VerifyStatementSignature(error) => write!(f, "{error}"),
+            Self::ActorGenesisMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "statement actor {expected} does not match actor genesis id {actual}"
+                )
+            }
             Self::MissingPublicKey => f.write_str("missing --public-key or --public-key-file"),
             Self::ConflictingPublicKeyInputs => {
                 f.write_str("use only one of --public-key or --public-key-file")
@@ -325,13 +425,16 @@ impl Error for CliError {
         match self {
             Self::ReadManifest { source, .. }
             | Self::ReadStatement { source, .. }
-            | Self::ReadPublicKey { source, .. } => Some(source),
+            | Self::ReadPublicKey { source, .. }
+            | Self::ReadActorGenesis { source, .. } => Some(source),
             Self::ParseManifest(error) => Some(error),
-            Self::ParseStatementJson(error) => Some(error),
+            Self::ParseActorGenesisJson(error) | Self::ParseStatementJson(error) => Some(error),
+            Self::ParseActorGenesis(error) => Some(error),
             Self::ParseStatement(error) => Some(error),
             Self::ValidateRevisionManifest(error) => Some(error),
             Self::VerifyStatementSignature(error) => Some(error),
-            Self::MissingPublicKey
+            Self::ActorGenesisMismatch { .. }
+            | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64
             | Self::InvalidPublicKeyLength { .. } => None,
@@ -346,6 +449,7 @@ mod tests {
     use base64::Engine;
     use ed25519_dalek::{Signer, SigningKey};
     use kairo_core::canonical::CanonicalEncode;
+    use kairo_identity::json::{ActorGenesisJson, PublicKeyJson};
     use kairo_statement::json::{
         ObjectRevisionBodyJson, ObjectRevisionStatementJson, SignatureJson,
     };
@@ -483,6 +587,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_actor_id_command() {
+        let cli = Cli::try_parse_from(["kairo", "actor", "id", "--genesis", "actor.json"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Actor {
+                    command: ActorCommand::Id { genesis }
+                })
+            }) if genesis.as_os_str() == "actor.json"
+        ));
+    }
+
+    #[test]
+    fn parses_revision_verify_actor_genesis_command() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "revision",
+            "verify-actor-genesis",
+            "--statement",
+            "revision.json",
+            "--actor-genesis",
+            "actor.json",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Revision {
+                    command: RevisionCommand::VerifyActorGenesis {
+                        statement,
+                        actor_genesis
+                    }
+                })
+            }) if statement.as_os_str() == "revision.json" && actor_genesis.as_os_str() == "actor.json"
+        ));
+    }
+
+    #[test]
     fn verifies_revision_signature_for_output() {
         let statement = signed_revision_statement();
         let public_key = PublicKey::ed25519(signing_key().verifying_key().to_bytes());
@@ -500,6 +643,39 @@ mod tests {
     }
 
     #[test]
+    fn formats_actor_genesis_verified_revision_output() {
+        let actor_genesis = actor_genesis_dto().to_body();
+        let output = actor_genesis.ok().and_then(|actor_genesis| {
+            let statement =
+                signed_revision_statement_for_actor(actor_genesis.actor_id().to_string())?;
+            statement
+                .verify_signature(actor_genesis.initial_key())
+                .ok()
+                .map(|_| {
+                    format_revision_actor_genesis_valid(
+                        statement.unsigned().body(),
+                        statement.signature(),
+                    )
+                })
+        });
+
+        assert!(
+            matches!(output, Some(output) if output.contains("valid revision actor genesis")
+            && output.contains("signature = valid")
+            && output.contains("actor = z"))
+        );
+    }
+
+    #[test]
+    fn actor_genesis_id_output_is_actor_id() {
+        let output = actor_genesis_dto()
+            .to_body()
+            .map(|actor_genesis| format!("{}\n", actor_genesis.actor_id()));
+
+        assert!(matches!(output, Ok(output) if output.starts_with('z') && output.ends_with('\n')));
+    }
+
+    #[test]
     fn reads_inline_public_key_base64() {
         let encoded = STANDARD.encode(signing_key().verifying_key().to_bytes());
         let public_key = read_public_key(Some(encoded), None);
@@ -510,10 +686,17 @@ mod tests {
     }
 
     fn revision_dto(manifest_hash: String) -> ObjectRevisionStatementJson {
+        revision_dto_for_actor(ACTOR_ID.to_owned(), manifest_hash)
+    }
+
+    fn revision_dto_for_actor(
+        actor_id: String,
+        manifest_hash: String,
+    ) -> ObjectRevisionStatementJson {
         ObjectRevisionStatementJson {
             statement_type: "ObjectRevision".to_owned(),
             version: 1,
-            actor: ACTOR_ID.to_owned(),
+            actor: actor_id.clone(),
             subject: format!("object:{OBJECT_ID}"),
             body: ObjectRevisionBodyJson {
                 object: OBJECT_ID.to_owned(),
@@ -523,7 +706,7 @@ mod tests {
                 attests_reachable_history: true,
             },
             signature: SignatureJson {
-                actor: ACTOR_ID.to_owned(),
+                actor: actor_id,
                 key_id: "primary".to_owned(),
                 algorithm: "example".to_owned(),
                 bytes: "c2lnbmF0dXJl".to_owned(),
@@ -532,8 +715,14 @@ mod tests {
     }
 
     fn signed_revision_statement() -> Option<kairo_statement::SignedStatement<ObjectRevisionBody>> {
+        signed_revision_statement_for_actor(ACTOR_ID.to_owned())
+    }
+
+    fn signed_revision_statement_for_actor(
+        actor_id: String,
+    ) -> Option<kairo_statement::SignedStatement<ObjectRevisionBody>> {
         let manifest = ObjectManifest::parse_toml(MANIFEST).ok()?;
-        let mut dto = revision_dto(manifest.manifest_hash().to_string());
+        let mut dto = revision_dto_for_actor(actor_id, manifest.manifest_hash().to_string());
         let unsigned = dto.to_statement().ok()?.unsigned().clone();
         let signature = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
         dto.signature.algorithm = "ed25519".to_owned();
@@ -542,6 +731,19 @@ mod tests {
             .to_string();
         dto.signature.bytes = STANDARD.encode(signature);
         dto.to_statement().ok()
+    }
+
+    fn actor_genesis_dto() -> ActorGenesisJson {
+        ActorGenesisJson {
+            statement_type: "ActorGenesis".to_owned(),
+            version: 1,
+            actor_kind: "person".to_owned(),
+            initial_key: PublicKeyJson {
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD.encode(signing_key().verifying_key().to_bytes()),
+            },
+            nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
+        }
     }
 
     fn signing_key() -> SigningKey {
