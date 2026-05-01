@@ -124,6 +124,27 @@ ActorId != KeyId
 A key proves it is authorized to speak for an actor. The actor itself is the stable
 semantic identity.
 
+In v1, `ActorId` is derived from a canonical `ActorGenesis` body:
+
+```text
+ActorGenesis {
+  actor_kind,
+  initial_public_key,
+  nonce
+}
+```
+
+The initial public key roots the actor, but the actor ID is not simply
+`hash(public_key)`. The nonce allows distinct actors to intentionally start with
+the same key without sharing identity, and the canonical genesis body provides
+version/domain separation.
+
+The canonical ActorGenesis v1 form is documented in:
+
+```text
+schemas/canonical/actor-genesis-v1.md
+```
+
 ### 4.2 Actor metadata
 
 Actor metadata may include:
@@ -160,10 +181,10 @@ The chosen representation must preserve:
 
 Kairo should support a modern signature algorithm.
 
-Recommended default:
+Required MVP algorithm:
 
 ```text
-Ed25519
+ed25519
 ```
 
 Future algorithms may be supported through explicit algorithm identifiers.
@@ -175,10 +196,12 @@ A key should have a stable key ID.
 Recommended form:
 
 ```text
-key_<encoded>
+<encoded>
 ```
 
-A key ID should be derived from the public key material and algorithm.
+A key ID should be derived from the public key material and algorithm. It uses
+the same Kairo-native SHA-256 multihash/base58btc payload format as other IDs,
+but it is not an `ActorId`.
 
 ### 5.3 Key record
 

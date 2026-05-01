@@ -38,6 +38,7 @@ is explicitly a standalone reference.
 
 ## Documents
 
+- `actor-genesis-v1.md`
 - `object-manifest-v1.md`
 - `object-genesis-v1.md`
 - `object-revision-v1.md`
