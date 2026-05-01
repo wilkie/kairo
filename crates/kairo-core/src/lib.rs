@@ -1,5 +1,6 @@
 //! Core Kairo primitives shared across crates.
 
+pub mod canonical;
 pub mod error;
 pub mod ids;
 pub mod refs;

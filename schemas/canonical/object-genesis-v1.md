@@ -20,7 +20,7 @@ kairo.object.genesis.v1
 
 ## Derived ID
 
-`ObjectGenesis` derives an `ObjectId`.
+The unsigned `ObjectGenesis` body derives an `ObjectId`.
 
 ```text
 ObjectId = z<base58btc(multihash_sha2_256(domain || canonical_bytes))>
@@ -28,9 +28,10 @@ ObjectId = z<base58btc(multihash_sha2_256(domain || canonical_bytes))>
 
 ## Purpose
 
-`ObjectGenesis` creates stable Object lineage identity. It is intentionally
-minimal so mutable descriptive facts can change without changing Object
-identity.
+`ObjectGenesis` creates stable Object lineage identity. It is signed as a
+statement, but the signature is not part of the Object ID hash. The unsigned
+body is intentionally minimal so mutable descriptive facts can change without
+changing Object identity.
 
 ## Canonical Fields
 
@@ -50,6 +51,7 @@ Fields are encoded in this exact order:
 The following must not be included in Object ID canonical bytes:
 
 - signature
+- signature envelope
 - display name
 - description
 - tags
@@ -84,6 +86,9 @@ object_id =
   `git:sha256:<commit>`.
 - The nonce must be 32 bytes.
 - Timestamps are excluded from v1 identity material.
+- Re-signing the same `ObjectGenesis` body must not change the Object ID.
+- `created_by` records origin authority, not permanent ownership. Current
+  ownership is represented by later authorized statements.
 
 ## Test Vectors
 

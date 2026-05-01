@@ -1,8 +1,9 @@
 //! Signed statement envelope primitives.
 
+use kairo_core::canonical::{encode_bytes, encode_option, encode_str, encode_u8, CanonicalEncode};
 use kairo_core::{ActorId, KairoRef, ObjectId, StatementId};
 
-/// Canonical ObjectGenesis v1 encoding is documented at
+/// Canonical ObjectGenesis body v1 encoding is documented at
 /// `schemas/canonical/object-genesis-v1.md`.
 const OBJECT_GENESIS_DOMAIN: &[u8] = b"kairo.object.genesis.v1";
 
@@ -32,14 +33,14 @@ impl StatementEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObjectGenesis {
+pub struct ObjectGenesisBody {
     object_kind: ObjectKind,
     created_by: ActorId,
     nonce: [u8; 32],
     initial_revision: Option<RevisionId>,
 }
 
-impl ObjectGenesis {
+impl ObjectGenesisBody {
     pub fn new(
         object_kind: ObjectKind,
         created_by: ActorId,
@@ -70,27 +71,89 @@ impl ObjectGenesis {
         self.initial_revision.as_ref()
     }
 
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        encode_bytes(&mut bytes, b"ObjectGenesis");
-        encode_u8(&mut bytes, 1);
-        encode_str(&mut bytes, self.object_kind.as_str());
-        encode_str(&mut bytes, self.created_by.as_str());
-        encode_bytes(&mut bytes, &self.nonce);
+    pub fn object_id(&self) -> ObjectId {
+        ObjectId::from_bytes(OBJECT_GENESIS_DOMAIN, &self.canonical_bytes())
+    }
+}
 
-        match &self.initial_revision {
-            Some(revision) => {
-                encode_u8(&mut bytes, 1);
-                encode_str(&mut bytes, revision.as_str());
-            }
-            None => encode_u8(&mut bytes, 0),
-        }
+impl CanonicalEncode for ObjectGenesisBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_bytes(out, b"ObjectGenesis");
+        encode_u8(out, 1);
+        encode_str(out, self.object_kind.as_str());
+        encode_str(out, self.created_by.as_str());
+        encode_bytes(out, &self.nonce);
+        encode_option(out, self.initial_revision.as_ref(), |out, revision| {
+            encode_str(out, revision.as_str());
+        });
+    }
+}
 
-        bytes
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectGenesisStatement {
+    body: ObjectGenesisBody,
+    signature: Signature,
+}
+
+impl ObjectGenesisStatement {
+    pub fn new(body: ObjectGenesisBody, signature: Signature) -> Self {
+        Self { body, signature }
+    }
+
+    pub fn body(&self) -> &ObjectGenesisBody {
+        &self.body
+    }
+
+    pub fn signature(&self) -> &Signature {
+        &self.signature
     }
 
     pub fn object_id(&self) -> ObjectId {
-        ObjectId::from_bytes(OBJECT_GENESIS_DOMAIN, &self.canonical_bytes())
+        self.body.object_id()
+    }
+
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        self.body.canonical_bytes()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    actor: ActorId,
+    key_id: String,
+    algorithm: String,
+    bytes: Vec<u8>,
+}
+
+impl Signature {
+    pub fn new(
+        actor: ActorId,
+        key_id: impl Into<String>,
+        algorithm: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self {
+            actor,
+            key_id: key_id.into(),
+            algorithm: algorithm.into(),
+            bytes,
+        }
+    }
+
+    pub fn actor(&self) -> &ActorId {
+        &self.actor
+    }
+
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    pub fn algorithm(&self) -> &str {
+        &self.algorithm
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
@@ -124,21 +187,6 @@ impl RevisionId {
     }
 }
 
-fn encode_u8(bytes: &mut Vec<u8>, value: u8) {
-    bytes.push(value);
-}
-
-fn encode_str(bytes: &mut Vec<u8>, value: &str) {
-    encode_bytes(bytes, value.as_bytes());
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn encode_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
-    debug_assert!(value.len() <= u32::MAX as usize);
-    bytes.extend((value.len() as u32).to_be_bytes());
-    bytes.extend(value);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,13 +197,17 @@ mod tests {
         ActorId::new(ACTOR_ID)
     }
 
-    fn genesis_with_nonce(nonce: [u8; 32]) -> Result<ObjectGenesis, kairo_core::IdError> {
-        Ok(ObjectGenesis::new(
+    fn genesis_with_nonce(nonce: [u8; 32]) -> Result<ObjectGenesisBody, kairo_core::IdError> {
+        Ok(ObjectGenesisBody::new(
             ObjectKind::software(),
             actor_id()?,
             nonce,
             None,
         ))
+    }
+
+    fn signature(key_id: &str, bytes: Vec<u8>) -> Result<Signature, kairo_core::IdError> {
+        Ok(Signature::new(actor_id()?, key_id, "test", bytes))
     }
 
     #[test]
@@ -181,7 +233,7 @@ mod tests {
     fn initial_revision_changes_object_id() {
         let without_revision = genesis_with_nonce([7; 32]).map(|genesis| genesis.object_id());
         let with_revision = actor_id().map(|actor_id| {
-            ObjectGenesis::new(
+            ObjectGenesisBody::new(
                 ObjectKind::software(),
                 actor_id,
                 [7; 32],
@@ -202,5 +254,19 @@ mod tests {
         assert!(
             matches!(object_id, Ok(object_id) if ObjectId::new(object_id.to_string()) == Ok(object_id.clone()))
         );
+    }
+
+    #[test]
+    fn signature_does_not_change_object_id() {
+        let body = genesis_with_nonce([7; 32]);
+        let first = body
+            .clone()
+            .and_then(|body| signature("key-1", vec![1, 2, 3]).map(|signature| (body, signature)))
+            .map(|(body, signature)| ObjectGenesisStatement::new(body, signature).object_id());
+        let second = body
+            .and_then(|body| signature("key-2", vec![4, 5, 6]).map(|signature| (body, signature)))
+            .map(|(body, signature)| ObjectGenesisStatement::new(body, signature).object_id());
+
+        assert_eq!(first, second);
     }
 }

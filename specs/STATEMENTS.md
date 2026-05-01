@@ -34,6 +34,14 @@ Rules:
 - excludes the signature itself
 - identical content → identical hash
 
+For ordinary signed statements, the `StatementId` is derived from the unsigned
+canonical statement. The signature proves authorship of those canonical bytes
+but does not change statement identity.
+
+`ObjectGenesis` is special because its unsigned body derives the `ObjectId`.
+The signed ObjectGenesis statement proves the origin claim, but the signature
+envelope is excluded from Object ID material.
+
 ---
 
 ## 3. Signature Model

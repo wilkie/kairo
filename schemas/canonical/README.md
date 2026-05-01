@@ -3,6 +3,9 @@
 Canonical schema documents define exact bytes used for Kairo identity, hashing,
 and signature inputs.
 
+The Rust implementation of the shared primitive encodings lives in
+`crates/kairo-core/src/canonical.rs`.
+
 All canonical documents must define:
 
 1. Type name.
