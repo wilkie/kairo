@@ -149,6 +149,9 @@ manifest_hash =
   `snapshot`.
 - `manifest_hash` in `ObjectRevision` should equal the `BlobId` derived by this
   document.
+- If `[kairo].object` is present, revision validation requires it to match the
+  `ObjectRevision.object` field. If it is absent, the signed revision statement
+  remains the source of the object binding.
 
 ## Test Vectors
 

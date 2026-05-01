@@ -119,6 +119,11 @@ schemas/canonical/object-manifest-v1.md
 `ObjectRevision.manifest_hash` refers to the `BlobId` derived from that
 canonical manifest form, not to raw TOML bytes.
 
+When validating an `ObjectRevision` against revision content, Kairo MUST parse
+the revision's `kairo.toml`, compute the canonical manifest hash, and require it
+to equal `ObjectRevision.manifest_hash`. If `[kairo].object` is present, it MUST
+match the `ObjectRevision.object` field.
+
 ### 4.1 Kairo Metadata
 
 ```toml

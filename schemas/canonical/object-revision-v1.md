@@ -130,6 +130,10 @@ statement_id =
 - `parents` preserves the storage layer's parent order. Reordering parents
   changes the `StatementId`.
 - `manifest_hash` identifies the canonical manifest for the revision.
+- To validate revision content against this statement, parse the revision's
+  `kairo.toml` as `ObjectManifest` v1, compute its canonical `BlobId`, and
+  require it to equal `manifest_hash`. If the manifest declares `[kairo].object`,
+  it must equal `object`.
 - A valid signature proves only that the actor made the claim. It does not
   prove that the claim should be trusted.
 

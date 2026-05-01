@@ -7,6 +7,7 @@ use kairo_core::canonical::{
     encode_list, encode_option, encode_str, encode_u32, encode_u8, CanonicalEncode,
 };
 use kairo_core::{BlobId, ObjectId, SnapshotId};
+use kairo_statement::ObjectRevisionBody;
 use serde::Deserialize;
 
 /// Canonical ObjectManifest v1 encoding is documented at
@@ -46,6 +47,30 @@ impl ObjectManifest {
     pub fn manifest_hash(&self) -> BlobId {
         BlobId::from_bytes(OBJECT_MANIFEST_DOMAIN, &self.canonical_bytes())
     }
+}
+
+pub fn validate_revision_manifest(
+    revision: &ObjectRevisionBody,
+    manifest: &ObjectManifest,
+) -> Result<(), RevisionManifestError> {
+    let actual_manifest_hash = manifest.manifest_hash();
+    if revision.manifest_hash() != &actual_manifest_hash {
+        return Err(RevisionManifestError::ManifestHashMismatch {
+            expected: revision.manifest_hash().clone(),
+            actual: actual_manifest_hash,
+        });
+    }
+
+    if let Some(declared_object) = manifest.kairo().object() {
+        if revision.object() != declared_object {
+            return Err(RevisionManifestError::DeclaredObjectMismatch {
+                expected: revision.object().clone(),
+                actual: declared_object.clone(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 impl CanonicalEncode for ObjectManifest {
@@ -293,6 +318,36 @@ impl Error for ManifestError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RevisionManifestError {
+    ManifestHashMismatch {
+        expected: BlobId,
+        actual: BlobId,
+    },
+    DeclaredObjectMismatch {
+        expected: ObjectId,
+        actual: ObjectId,
+    },
+}
+
+impl fmt::Display for RevisionManifestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ManifestHashMismatch { expected, actual } => {
+                write!(f, "revision manifest hash {expected} does not match parsed manifest hash {actual}")
+            }
+            Self::DeclaredObjectMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "revision object {expected} does not match manifest-declared object {actual}"
+                )
+            }
+        }
+    }
+}
+
+impl Error for RevisionManifestError {}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawObjectManifest {
@@ -454,6 +509,7 @@ fn ensure_non_empty(field: &'static str, value: &str) -> Result<(), ManifestErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kairo_statement::RevisionId;
 
     const OBJECT_ID: &str = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
     const SNAPSHOT_ID: &str = "zQmPrz1SBNXD1XAPCaWrTtpBbEZHGevtUoWY8ibihamaApZ";
@@ -760,5 +816,85 @@ mod tests {
         assert!(
             matches!(manifest.map(|manifest| manifest.manifest_hash()), Ok(hash) if BlobId::new(hash.to_string()) == Ok(hash.clone()))
         );
+    }
+
+    #[test]
+    fn validates_revision_manifest_hash_and_declared_object(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = ObjectManifest::parse_toml(&manifest_toml(Some(OBJECT_ID)))?;
+        let revision = object_revision(ObjectId::new(OBJECT_ID)?, manifest.manifest_hash());
+
+        assert_eq!(validate_revision_manifest(&revision, &manifest), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn validates_revision_manifest_without_declared_object(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = ObjectManifest::parse_toml(&manifest_toml(None))?;
+        let revision = object_revision(ObjectId::new(OBJECT_ID)?, manifest.manifest_hash());
+
+        assert_eq!(validate_revision_manifest(&revision, &manifest), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_revision_manifest_hash_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = ObjectManifest::parse_toml(&manifest_toml(Some(OBJECT_ID)))?;
+        let revision = object_revision(
+            ObjectId::new(OBJECT_ID)?,
+            BlobId::from_sha256_digest([3; 32]),
+        );
+
+        assert!(matches!(
+            validate_revision_manifest(&revision, &manifest),
+            Err(RevisionManifestError::ManifestHashMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_revision_manifest_declared_object_mismatch() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let manifest = ObjectManifest::parse_toml(&manifest_toml(Some(OBJECT_ID)))?;
+        let revision = object_revision(
+            ObjectId::from_sha256_digest([4; 32]),
+            manifest.manifest_hash(),
+        );
+
+        assert!(matches!(
+            validate_revision_manifest(&revision, &manifest),
+            Err(RevisionManifestError::DeclaredObjectMismatch { .. })
+        ));
+        Ok(())
+    }
+
+    fn object_revision(object: ObjectId, manifest_hash: BlobId) -> ObjectRevisionBody {
+        ObjectRevisionBody::new(
+            object,
+            RevisionId::new("git:sha256:revision"),
+            vec![RevisionId::new("git:sha256:parent")],
+            manifest_hash,
+            true,
+        )
+    }
+
+    fn manifest_toml(object: Option<&str>) -> String {
+        let object_line = object
+            .map(|object| format!("object = \"{object}\""))
+            .unwrap_or_default();
+
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            {object_line}
+            kind = "software"
+            name = "Example"
+
+            [content]
+            kind = "tree"
+            "#
+        )
     }
 }
