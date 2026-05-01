@@ -374,7 +374,9 @@ dependencies = [
 name = "kairo-object"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "kairo-core",
+ "kairo-identity",
  "kairo-statement",
  "serde",
  "toml",

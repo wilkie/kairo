@@ -299,6 +299,54 @@ critical rules are:
 The Rust implementation lives in `kairo-statement::verify` and is consumed by
 the CLI's `revision verify-actor-genesis` command.
 
+### 6.2 ObjectRevision validation report
+
+Signature verification only proves "actor X attested to these bytes." It does
+not prove the bytes are coherent with the rest of the system. A separate
+**`ObjectRevisionValidationReport`** answers four independent statement-layer
+questions about a signed revision; each is reported in its own field rather
+than collapsed into a single boolean:
+
+- **`object_consistency`** — does `revision.object` match the `ObjectId`
+  derived from the resolved `ObjectGenesis`? Variants:
+  - `Consistent` — the resolved genesis derives the same id.
+  - `Mismatch { expected, actual }` — different ids; the wrong genesis was
+    supplied or one record is corrupt.
+  - `GenesisNotProvided` — no genesis was supplied; **indeterminate**.
+- **`manifest_binding`** — does `revision.manifest_hash` match the canonical
+  hash of the parsed `kairo.toml`, and does any declared `[kairo].object`
+  agree with `revision.object`?
+  - `Bound` — both hold.
+  - `HashMismatch { expected, actual }` — declared hash differs from the
+    actual canonical hash.
+  - `DeclaredObjectMismatch { expected, actual }` — manifest names a
+    different object than the revision binds to.
+  - `ManifestNotProvided` — no manifest was supplied; **indeterminate**.
+- **`parents`** — `NoParents` (initial revision) or `Declared { count }`.
+  The statement layer cannot prove that the named parents exist; that
+  belongs to the content (Git) layer.
+- **`content`** — always `Indeterminate` in the MVP. A future content-layer
+  check (TODO §11) verifies that `revision`, `parents`, and the working
+  tree's manifest match the local Git repository.
+
+What each revision field actually proves once validated:
+
+- **`revision`** — the actor stands behind a specific storage revision id.
+  The statement layer takes it as opaque; coherence with Git is content-layer
+  work.
+- **`parents`** — claimed predecessors of `revision`. Statement-layer
+  validation only counts them; content-layer validation checks them against
+  Git commit parents.
+- **`manifest_hash`** — the actor pinned a specific canonical manifest at
+  the time of signing. Validation against a parsed `kairo.toml` proves
+  the working manifest is the one the revision was signed for.
+
+`ObjectRevisionValidationReport` and `validate_object_revision` live in
+`kairo-object`. The validator is **pure** (no I/O); the caller decides how
+to fetch the genesis and manifest, which is why missing inputs are reported
+as `*NotProvided` (indeterminate) rather than as failure. The store-backed
+`kairo verify object` command (TODO §8) will become the primary caller.
+
 ---
 
 ## 7. Statement Graph

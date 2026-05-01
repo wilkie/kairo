@@ -217,9 +217,17 @@ direct local commands for deterministic validation primitives.
 kairo manifest hash [path]
 kairo manifest inspect [path]
 kairo actor id --genesis <actor-genesis.json>
+kairo actor create --kind <kind>
+kairo actor import --genesis <actor-genesis.json>
+kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]
+kairo object import --statement <object-genesis.json>
+kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]
+kairo revision import --statement <object-revision.json>
+kairo revision inspect --statement <statement-id> [--json]
+kairo revision list --object <object-id>
 kairo revision validate-manifest --statement <object-revision.json> [--manifest <kairo.toml>]
 kairo revision verify-signature --statement <object-revision.json> (--public-key <base64>|--public-key-file <path>)
-kairo revision verify-actor-genesis --statement <object-revision.json> --actor-genesis <actor-genesis.json>
+kairo revision verify-actor-genesis --statement <object-revision.json> --actor-genesis <actor-genesis.json> [--json]
 ```
 
 `manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
@@ -245,6 +253,25 @@ its ed25519 signature against raw public key bytes encoded as standard base64.
 
 1. The derived `ActorId` equals `signature.actor`.
 2. The statement signature verifies against the actor genesis initial key.
+
+`--json` emits a stable JSON `VerificationReport`; the human form prints the
+three independent dimensions (signature, actor resolution, trust).
+
+`actor create` generates a fresh keypair, signs and persists the resulting
+`ActorGenesis`, and stores the secret in the keystore. `object create` and
+`revision create` load the actor's stored key, sign the corresponding body,
+and persist the statement to the local store.
+
+`actor import`, `object import`, and `revision import` ingest pre-existing
+JSON records into the local store. Each command re-derives the canonical
+identity (`ActorId`, `ObjectId`, `StatementId`) from the parsed body and
+uses that as the storage key, so import is fixity-checked: a tampered body
+ends up at a different id than its filename or original location.
+
+`revision inspect --statement <id>` reads a stored revision by `StatementId`
+and prints its body fields. `--json` emits a stable JSON shape suitable for
+automation. `revision list --object <id>` scans the local store for
+revisions whose `body.object` matches and prints one summary per match.
 
 These commands do not validate actor authority, actor key-active status, Git
 commit availability, parent commit consistency, or snapshot closure

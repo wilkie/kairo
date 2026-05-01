@@ -6,8 +6,8 @@ use std::fmt;
 use kairo_core::canonical::{
     encode_list, encode_option, encode_str, encode_u32, encode_u8, CanonicalEncode,
 };
-use kairo_core::{BlobId, ObjectId, SnapshotId};
-use kairo_statement::ObjectRevisionBody;
+use kairo_core::{BlobId, ObjectId, SnapshotId, StatementId};
+use kairo_statement::{ObjectGenesisStatement, ObjectRevisionBody, SignedStatement};
 use serde::Deserialize;
 
 /// Canonical ObjectManifest v1 encoding is documented at
@@ -71,6 +71,155 @@ pub fn validate_revision_manifest(
     }
 
     Ok(())
+}
+
+/// Structured outcome of validating a signed `ObjectRevision` against any
+/// companion data that has already been fetched.
+///
+/// Each dimension is reported independently — a manifest mismatch does not
+/// invalidate the object-id check, etc. Companion data that the caller did
+/// not (or could not) supply is reported as `*NotProvided`, which the
+/// caller treats as indeterminate. Git/content-layer checks always remain
+/// indeterminate in the MVP — see TODO §11.
+///
+/// This validator is pure: it does no I/O. The caller (today the CLI;
+/// tomorrow `kairo verify object` in TODO §8) decides how to resolve the
+/// `ObjectGenesis` and read the manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectRevisionValidationReport {
+    pub statement_id: StatementId,
+    pub object_consistency: ObjectConsistencyCheck,
+    pub manifest_binding: ManifestBindingCheck,
+    pub parents: ParentReferenceCheck,
+    pub content: ContentLayerCheck,
+}
+
+impl ObjectRevisionValidationReport {
+    /// True when both checks the statement layer can answer succeeded:
+    /// object id matches the resolved genesis, and the manifest hash binds
+    /// to the parsed manifest. Returns false when either check is
+    /// indeterminate; callers that want to treat indeterminate as "ok unless
+    /// proven otherwise" should inspect the fields directly.
+    pub fn is_statement_layer_consistent(&self) -> bool {
+        matches!(self.object_consistency, ObjectConsistencyCheck::Consistent)
+            && matches!(self.manifest_binding, ManifestBindingCheck::Bound)
+    }
+}
+
+/// Whether the revision's `object` field matches the supplied `ObjectGenesis`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectConsistencyCheck {
+    /// Genesis derives the same `ObjectId` as the revision binds to.
+    Consistent,
+    /// Genesis derives a different `ObjectId` than the revision claims.
+    /// Indicates either a wrong genesis was supplied or one of the records
+    /// is corrupt.
+    Mismatch {
+        expected: ObjectId,
+        actual: ObjectId,
+    },
+    /// No genesis was supplied; consistency cannot be evaluated.
+    GenesisNotProvided,
+}
+
+/// Whether the revision's `manifest_hash` matches the supplied manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestBindingCheck {
+    /// `manifest_hash` matches and any declared `[kairo].object` agrees with
+    /// the revision's object.
+    Bound,
+    /// Manifest's canonical hash differs from `revision.manifest_hash`.
+    HashMismatch { expected: BlobId, actual: BlobId },
+    /// Manifest's `[kairo].object` declares a different object than the
+    /// revision binds to. (The hash matched.)
+    DeclaredObjectMismatch {
+        expected: ObjectId,
+        actual: ObjectId,
+    },
+    /// No manifest was supplied; binding cannot be evaluated.
+    ManifestNotProvided,
+}
+
+/// Statement-layer report on declared parent revisions.
+///
+/// At the statement layer there is nothing to verify about parents beyond
+/// their presence. Confirming that each parent revision actually exists
+/// requires the content layer (git) and is part of TODO §11.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParentReferenceCheck {
+    /// Revision declares no parents — an initial revision.
+    NoParents,
+    /// Revision declares one or more parents. Their existence is not
+    /// proven at the statement layer.
+    Declared { count: usize },
+}
+
+/// Content-layer (Git) check.
+///
+/// MVP value: always `Indeterminate`. TODO §11 will make this a real check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentLayerCheck {
+    Indeterminate,
+}
+
+/// Validate a signed `ObjectRevision` statement against optional companion
+/// data and return a structured report.
+///
+/// Pass `Some(genesis)` when the caller has resolved the `ObjectGenesis` for
+/// `revision.object()`; otherwise pass `None`. Likewise for the manifest.
+/// The function never fails: missing inputs are reported as
+/// `GenesisNotProvided` / `ManifestNotProvided`.
+pub fn validate_object_revision(
+    statement: &SignedStatement<ObjectRevisionBody>,
+    object_genesis: Option<&ObjectGenesisStatement>,
+    manifest: Option<&ObjectManifest>,
+) -> ObjectRevisionValidationReport {
+    let revision = statement.unsigned().body();
+    let statement_id = statement.statement_id();
+
+    let object_consistency = match object_genesis {
+        Some(genesis) => {
+            let derived = genesis.object_id();
+            if &derived == revision.object() {
+                ObjectConsistencyCheck::Consistent
+            } else {
+                ObjectConsistencyCheck::Mismatch {
+                    expected: revision.object().clone(),
+                    actual: derived,
+                }
+            }
+        }
+        None => ObjectConsistencyCheck::GenesisNotProvided,
+    };
+
+    let manifest_binding = match manifest {
+        Some(manifest) => match validate_revision_manifest(revision, manifest) {
+            Ok(()) => ManifestBindingCheck::Bound,
+            Err(RevisionManifestError::ManifestHashMismatch { expected, actual }) => {
+                ManifestBindingCheck::HashMismatch { expected, actual }
+            }
+            Err(RevisionManifestError::DeclaredObjectMismatch { expected, actual }) => {
+                ManifestBindingCheck::DeclaredObjectMismatch { expected, actual }
+            }
+        },
+        None => ManifestBindingCheck::ManifestNotProvided,
+    };
+
+    let parents = if revision.parents().is_empty() {
+        ParentReferenceCheck::NoParents
+    } else {
+        ParentReferenceCheck::Declared {
+            count: revision.parents().len(),
+        }
+    };
+
+    ObjectRevisionValidationReport {
+        statement_id,
+        object_consistency,
+        manifest_binding,
+        parents,
+        content: ContentLayerCheck::Indeterminate,
+    }
 }
 
 impl CanonicalEncode for ObjectManifest {
@@ -896,5 +1045,268 @@ mod tests {
             kind = "tree"
             "#
         )
+    }
+
+    mod revision_validation {
+        use super::*;
+        use ed25519_dalek::{Signer, SigningKey};
+        use kairo_core::{ActorId, KairoRef, Timestamp};
+        use kairo_identity::PublicKey;
+        use kairo_statement::{
+            ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, Signature, SignedStatement,
+            UnsignedStatement,
+        };
+
+        const ACTOR_ID: &str = "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t";
+
+        fn timestamp() -> Timestamp {
+            Timestamp::from_seconds(1_700_000_000)
+        }
+
+        fn signing_key() -> SigningKey {
+            SigningKey::from_bytes(&[7; 32])
+        }
+
+        fn actor_id() -> Result<ActorId, kairo_core::IdError> {
+            ActorId::new(ACTOR_ID)
+        }
+
+        fn genesis_for_object(
+            nonce: [u8; 32],
+        ) -> Result<ObjectGenesisStatement, kairo_core::IdError> {
+            let body = ObjectGenesisBody::new(
+                ObjectKind::software(),
+                actor_id()?,
+                timestamp(),
+                nonce,
+                None,
+            );
+            let signature_bytes = signing_key().sign(&body.canonical_bytes()).to_bytes();
+            let signature = Signature::new(
+                actor_id()?,
+                PublicKey::ed25519(signing_key().verifying_key().to_bytes())
+                    .key_id()
+                    .to_string(),
+                "ed25519",
+                signature_bytes.to_vec(),
+            );
+            Ok(ObjectGenesisStatement::new(body, signature))
+        }
+
+        fn signed_revision(
+            object: ObjectId,
+            parents: Vec<RevisionId>,
+            manifest_hash: BlobId,
+        ) -> Result<SignedStatement<ObjectRevisionBody>, Box<dyn std::error::Error>> {
+            let body = ObjectRevisionBody::new(
+                object.clone(),
+                RevisionId::new("git:sha256:revision"),
+                parents,
+                manifest_hash,
+                true,
+            );
+            let subject: KairoRef = format!("object:{object}").parse()?;
+            let unsigned = UnsignedStatement::new(actor_id()?, subject, timestamp(), body);
+            let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+            let signature = Signature::new(
+                actor_id()?,
+                PublicKey::ed25519(signing_key().verifying_key().to_bytes())
+                    .key_id()
+                    .to_string(),
+                "ed25519",
+                signature_bytes.to_vec(),
+            );
+            Ok(SignedStatement::new(unsigned, signature))
+        }
+
+        fn manifest_with_object(object: Option<&str>) -> Result<ObjectManifest, ManifestError> {
+            ObjectManifest::parse_toml(&manifest_toml(object))
+        }
+
+        #[test]
+        fn report_is_consistent_with_matching_genesis_and_manifest(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let object_id = genesis.object_id();
+            let manifest = manifest_with_object(Some(object_id.as_str()))?;
+            let signed = signed_revision(
+                object_id.clone(),
+                vec![RevisionId::new("git:sha256:parent")],
+                manifest.manifest_hash(),
+            )?;
+
+            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest));
+
+            assert_eq!(report.statement_id, signed.statement_id());
+            assert_eq!(
+                report.object_consistency,
+                ObjectConsistencyCheck::Consistent
+            );
+            assert_eq!(report.manifest_binding, ManifestBindingCheck::Bound);
+            assert_eq!(report.parents, ParentReferenceCheck::Declared { count: 1 });
+            assert_eq!(report.content, ContentLayerCheck::Indeterminate);
+            assert!(report.is_statement_layer_consistent());
+            Ok(())
+        }
+
+        #[test]
+        fn no_parents_reports_initial_revision() -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let object_id = genesis.object_id();
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(object_id, vec![], manifest.manifest_hash())?;
+
+            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest));
+
+            assert_eq!(report.parents, ParentReferenceCheck::NoParents);
+            Ok(())
+        }
+
+        #[test]
+        fn missing_genesis_reports_indeterminate() -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let object_id = genesis.object_id();
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                object_id,
+                vec![RevisionId::new("git:sha256:parent")],
+                manifest.manifest_hash(),
+            )?;
+
+            let report = validate_object_revision(&signed, None, Some(&manifest));
+
+            assert_eq!(
+                report.object_consistency,
+                ObjectConsistencyCheck::GenesisNotProvided
+            );
+            assert_eq!(report.manifest_binding, ManifestBindingCheck::Bound);
+            assert!(!report.is_statement_layer_consistent());
+            Ok(())
+        }
+
+        #[test]
+        fn missing_manifest_reports_indeterminate() -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let object_id = genesis.object_id();
+            let signed = signed_revision(
+                object_id,
+                vec![RevisionId::new("git:sha256:parent")],
+                BlobId::from_sha256_digest([1; 32]),
+            )?;
+
+            let report = validate_object_revision(&signed, Some(&genesis), None);
+
+            assert_eq!(
+                report.object_consistency,
+                ObjectConsistencyCheck::Consistent
+            );
+            assert_eq!(
+                report.manifest_binding,
+                ManifestBindingCheck::ManifestNotProvided
+            );
+            assert!(!report.is_statement_layer_consistent());
+            Ok(())
+        }
+
+        #[test]
+        fn wrong_genesis_reports_object_mismatch() -> Result<(), Box<dyn std::error::Error>> {
+            // Build a revision bound to genesis A's object, then validate
+            // against genesis B (different nonce → different object id).
+            let genesis_a = genesis_for_object([42; 32])?;
+            let object_a = genesis_a.object_id();
+            let genesis_b = genesis_for_object([99; 32])?;
+            let object_b = genesis_b.object_id();
+            assert_ne!(object_a, object_b);
+
+            let signed = signed_revision(
+                object_a.clone(),
+                vec![],
+                BlobId::from_sha256_digest([1; 32]),
+            )?;
+
+            let report = validate_object_revision(&signed, Some(&genesis_b), None);
+
+            assert!(matches!(
+                report.object_consistency,
+                ObjectConsistencyCheck::Mismatch { ref expected, ref actual }
+                    if expected == &object_a && actual == &object_b
+            ));
+            assert!(!report.is_statement_layer_consistent());
+            Ok(())
+        }
+
+        #[test]
+        fn manifest_hash_mismatch_reported() -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let object_id = genesis.object_id();
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(object_id, vec![], BlobId::from_sha256_digest([1; 32]))?;
+
+            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest));
+
+            assert!(matches!(
+                report.manifest_binding,
+                ManifestBindingCheck::HashMismatch { .. }
+            ));
+            assert_eq!(
+                report.object_consistency,
+                ObjectConsistencyCheck::Consistent
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn declared_object_mismatch_reported() -> Result<(), Box<dyn std::error::Error>> {
+            // Manifest declares object A; revision binds to a fabricated
+            // object id (which then fails the manifest-declared object check
+            // even though we don't have a genesis for it).
+            let revision_object = ObjectId::from_sha256_digest([4; 32]);
+            let manifest_object = ObjectId::new(OBJECT_ID)?;
+            assert_ne!(revision_object, manifest_object);
+
+            let manifest = manifest_with_object(Some(manifest_object.as_str()))?;
+            let signed =
+                signed_revision(revision_object.clone(), vec![], manifest.manifest_hash())?;
+
+            let report = validate_object_revision(&signed, None, Some(&manifest));
+
+            assert!(matches!(
+                report.manifest_binding,
+                ManifestBindingCheck::DeclaredObjectMismatch { ref expected, ref actual }
+                    if expected == &revision_object && actual == &manifest_object
+            ));
+            // No genesis was supplied, so object consistency is indeterminate.
+            assert_eq!(
+                report.object_consistency,
+                ObjectConsistencyCheck::GenesisNotProvided
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn dimensions_are_independent() -> Result<(), Box<dyn std::error::Error>> {
+            // Wrong genesis AND wrong manifest hash: each should report its
+            // own failure rather than masking the other.
+            let genesis_a = genesis_for_object([42; 32])?;
+            let genesis_b = genesis_for_object([99; 32])?;
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                genesis_a.object_id(),
+                vec![],
+                BlobId::from_sha256_digest([2; 32]),
+            )?;
+
+            let report = validate_object_revision(&signed, Some(&genesis_b), Some(&manifest));
+
+            assert!(matches!(
+                report.object_consistency,
+                ObjectConsistencyCheck::Mismatch { .. }
+            ));
+            assert!(matches!(
+                report.manifest_binding,
+                ManifestBindingCheck::HashMismatch { .. }
+            ));
+            Ok(())
+        }
     }
 }

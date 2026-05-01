@@ -16,7 +16,7 @@ use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::{
     validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
 };
-use kairo_statement::json::ObjectRevisionStatementJson;
+use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, TrustEvaluation,
     VerificationReport,
@@ -79,6 +79,11 @@ enum ActorCommand {
         #[arg(long)]
         kind: String,
     },
+    /// Import an ActorGenesis JSON document into the local store.
+    Import {
+        #[arg(long)]
+        genesis: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -94,6 +99,11 @@ enum ObjectSubcommand {
         /// Optional initial storage revision (e.g. git:sha256:<commit>).
         #[arg(long)]
         initial_revision: Option<String>,
+    },
+    /// Import a signed ObjectGenesis statement JSON into the local store.
+    Import {
+        #[arg(long)]
+        statement: PathBuf,
     },
 }
 
@@ -135,6 +145,9 @@ enum RevisionCommand {
         statement: PathBuf,
         #[arg(long)]
         actor_genesis: PathBuf,
+        /// Emit a stable JSON representation of the verification report.
+        #[arg(long)]
+        json: bool,
     },
     /// Create a signed ObjectRevision statement and persist it to the store.
     Create {
@@ -152,6 +165,26 @@ enum RevisionCommand {
         /// Suppress the default `attests_reachable_history = true` claim.
         #[arg(long)]
         no_attests_reachable_history: bool,
+    },
+    /// Import a signed ObjectRevision statement JSON into the local store.
+    Import {
+        #[arg(long)]
+        statement: PathBuf,
+    },
+    /// Print the body fields of a stored ObjectRevision statement.
+    Inspect {
+        /// StatementId to inspect.
+        #[arg(long)]
+        statement: String,
+        /// Emit a stable JSON representation.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List ObjectRevision statements stored locally for an object.
+    List {
+        /// Filter to revisions whose body.object matches this id.
+        #[arg(long)]
+        object: String,
     },
 }
 
@@ -223,6 +256,20 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
             let genesis = read_actor_genesis(genesis)?;
             Ok(format!("{}\n", genesis.actor_id()))
         }
+        ActorCommand::Import { genesis } => {
+            let body = read_actor_genesis(genesis)?;
+            let store = open_store(paths)?;
+            let actor_id = store
+                .put_actor(&body)
+                .map_err(|error| CliError::WriteActor {
+                    actor: body.actor_id(),
+                    source: error,
+                })?;
+            Ok(format!(
+                "imported actor\nactor = {actor_id}\nstore = {}\n",
+                paths.store.display()
+            ))
+        }
         ActorCommand::Create { kind } => {
             let store = open_store(paths)?;
             let keystore = open_keystore(paths)?;
@@ -263,6 +310,21 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
 
 fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
+        ObjectSubcommand::Import { statement } => {
+            let signed = read_object_genesis_statement(statement)?;
+            let store = open_store(paths)?;
+            let object_id = store.put_object_genesis(&signed).map_err(|error| {
+                CliError::WriteObjectGenesis {
+                    object: signed.object_id(),
+                    source: error,
+                }
+            })?;
+            Ok(format!(
+                "imported object genesis\nobject = {object_id}\ncreated_by = {}\nstore = {}\n",
+                signed.body().created_by(),
+                paths.store.display()
+            ))
+        }
         ObjectSubcommand::Create {
             actor,
             kind,
@@ -371,6 +433,7 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
         RevisionCommand::VerifyActorGenesis {
             statement,
             actor_genesis,
+            json,
         } => {
             let statement = read_object_revision_statement(statement)?;
             let actor_genesis = read_actor_genesis(actor_genesis)?;
@@ -378,7 +441,12 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
             resolver.insert(actor_genesis);
             let report = verify_envelope_statement(&statement, &resolver);
 
-            if report.is_cryptographically_valid() {
+            if json {
+                Ok(format_verification_report_json(
+                    statement.unsigned().body(),
+                    &report,
+                ))
+            } else if report.is_cryptographically_valid() {
                 Ok(format_verification_report(
                     statement.unsigned().body(),
                     &report,
@@ -471,6 +539,47 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
                 "created revision\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\n"
             ))
         }
+        RevisionCommand::Import { statement } => {
+            let signed = read_object_revision_statement(statement)?;
+            let store = open_store(paths)?;
+            let statement_id =
+                store
+                    .put_object_revision(&signed)
+                    .map_err(|error| CliError::WriteRevision {
+                        statement: signed.statement_id(),
+                        source: error,
+                    })?;
+            let body = signed.unsigned().body();
+            Ok(format!(
+                "imported revision\nstatement = {statement_id}\nobject = {}\nactor = {}\nstore = {}\n",
+                body.object(),
+                signed.unsigned().actor(),
+                paths.store.display()
+            ))
+        }
+        RevisionCommand::Inspect { statement, json } => {
+            let statement_id = kairo_core::StatementId::new(statement.clone())
+                .map_err(|source| CliError::ParseStatementId { statement, source })?;
+            let store = open_store(paths)?;
+            let signed = store.get_object_revision(&statement_id).map_err(|error| {
+                CliError::ReadRevision {
+                    statement: statement_id.clone(),
+                    source: error,
+                }
+            })?;
+            if json {
+                Ok(format_revision_inspect_json(&signed))
+            } else {
+                Ok(format_revision_inspect(&signed))
+            }
+        }
+        RevisionCommand::List { object } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+            let revisions = list_object_revisions(&store, &object_id)?;
+            Ok(format_revision_list(&object_id, &revisions))
+        }
     }
 }
 
@@ -492,6 +601,17 @@ fn read_object_revision_statement(
     })?;
 
     let dto: ObjectRevisionStatementJson =
+        serde_json::from_str(&input).map_err(CliError::ParseStatementJson)?;
+    dto.to_statement().map_err(CliError::ParseStatement)
+}
+
+fn read_object_genesis_statement(path: PathBuf) -> Result<ObjectGenesisStatement, CliError> {
+    let input = std::fs::read_to_string(&path).map_err(|source| CliError::ReadStatement {
+        path: path.clone(),
+        source,
+    })?;
+
+    let dto: ObjectGenesisStatementJson =
         serde_json::from_str(&input).map_err(CliError::ParseStatementJson)?;
     dto.to_statement().map_err(CliError::ParseStatement)
 }
@@ -613,6 +733,145 @@ fn format_revision_signature_valid(
     )
 }
 
+fn list_object_revisions(
+    store: &FilesystemStore,
+    object: &ObjectId,
+) -> Result<Vec<SignedStatement<ObjectRevisionBody>>, CliError> {
+    let statements_dir = store.root().join("statements");
+    let mut found = Vec::new();
+    let level1 = match std::fs::read_dir(&statements_dir) {
+        Ok(level1) => level1,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(found),
+        Err(error) => {
+            return Err(CliError::ScanStatements {
+                path: statements_dir,
+                source: error,
+            });
+        }
+    };
+    for shard1 in level1 {
+        let shard1 = shard1.map_err(|source| CliError::ScanStatements {
+            path: statements_dir.clone(),
+            source,
+        })?;
+        if !shard1.path().is_dir() {
+            continue;
+        }
+        for shard2 in
+            std::fs::read_dir(shard1.path()).map_err(|source| CliError::ScanStatements {
+                path: shard1.path(),
+                source,
+            })?
+        {
+            let shard2 = shard2.map_err(|source| CliError::ScanStatements {
+                path: shard1.path(),
+                source,
+            })?;
+            if !shard2.path().is_dir() {
+                continue;
+            }
+            for entry in
+                std::fs::read_dir(shard2.path()).map_err(|source| CliError::ScanStatements {
+                    path: shard2.path(),
+                    source,
+                })?
+            {
+                let entry = entry.map_err(|source| CliError::ScanStatements {
+                    path: shard2.path(),
+                    source,
+                })?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    continue;
+                }
+                let bytes = std::fs::read(&path).map_err(|source| CliError::ScanStatements {
+                    path: path.clone(),
+                    source,
+                })?;
+                let dto: ObjectRevisionStatementJson =
+                    serde_json::from_slice(&bytes).map_err(CliError::ParseStatementJson)?;
+                let signed = dto.to_statement().map_err(CliError::ParseStatement)?;
+                if signed.unsigned().body().object() == object {
+                    found.push(signed);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn format_revision_inspect(signed: &SignedStatement<ObjectRevisionBody>) -> String {
+    let body = signed.unsigned().body();
+    let mut output = String::new();
+    output.push_str(&format!("statement = {}\n", signed.statement_id()));
+    output.push_str(&format!("actor = {}\n", signed.unsigned().actor()));
+    output.push_str(&format!(
+        "created_at = {}\n",
+        signed.unsigned().created_at()
+    ));
+    output.push_str(&format!("object = {}\n", body.object()));
+    output.push_str(&format!("revision = {}\n", body.revision().as_str()));
+    output.push_str(&format!("manifest_hash = {}\n", body.manifest_hash()));
+    output.push_str(&format!(
+        "attests_reachable_history = {}\n",
+        body.attests_reachable_history()
+    ));
+    output.push_str(&format!("parents = {}\n", body.parents().len()));
+    for parent in body.parents() {
+        output.push_str(&format!("  parent {}\n", parent.as_str()));
+    }
+    output.push_str(&format!(
+        "signature.key_id = {}\n",
+        signed.signature().key_id()
+    ));
+    output.push_str(&format!(
+        "signature.algorithm = {}\n",
+        signed.signature().algorithm()
+    ));
+    output
+}
+
+fn format_revision_inspect_json(signed: &SignedStatement<ObjectRevisionBody>) -> String {
+    let body = signed.unsigned().body();
+    let value = serde_json::json!({
+        "statement_id": signed.statement_id().to_string(),
+        "actor": signed.unsigned().actor().to_string(),
+        "created_at": signed.unsigned().created_at().to_string(),
+        "object": body.object().to_string(),
+        "revision": body.revision().as_str(),
+        "parents": body.parents().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        "manifest_hash": body.manifest_hash().to_string(),
+        "attests_reachable_history": body.attests_reachable_history(),
+        "signature": {
+            "actor": signed.signature().actor().to_string(),
+            "key_id": signed.signature().key_id(),
+            "algorithm": signed.signature().algorithm(),
+        }
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
+fn format_revision_list(
+    object: &ObjectId,
+    revisions: &[SignedStatement<ObjectRevisionBody>],
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("object = {object}\n"));
+    output.push_str(&format!("revisions = {}\n", revisions.len()));
+    for signed in revisions {
+        let body = signed.unsigned().body();
+        output.push_str(&format!(
+            "  {} revision={} actor={}\n",
+            signed.statement_id(),
+            body.revision().as_str(),
+            signed.unsigned().actor()
+        ));
+    }
+    output
+}
+
 fn format_verification_report(
     revision: &ObjectRevisionBody,
     report: &VerificationReport,
@@ -634,6 +893,66 @@ fn format_verification_report(
         format_actor_resolution(&report.actor),
         format_trust(&report.trust),
     )
+}
+
+fn format_verification_report_json(
+    revision: &ObjectRevisionBody,
+    report: &VerificationReport,
+) -> String {
+    let mut signature = serde_json::Map::new();
+    signature.insert(
+        "status".to_owned(),
+        serde_json::Value::String(format_signature_status(&report.signature).to_owned()),
+    );
+    match &report.signature {
+        SignatureStatus::UnsupportedAlgorithm(algorithm) => {
+            signature.insert(
+                "algorithm".to_owned(),
+                serde_json::Value::String(algorithm.clone()),
+            );
+        }
+        SignatureStatus::Malformed {
+            expected_len,
+            actual_len,
+        } => {
+            signature.insert(
+                "expected_len".to_owned(),
+                serde_json::Value::Number((*expected_len).into()),
+            );
+            signature.insert(
+                "actual_len".to_owned(),
+                serde_json::Value::Number((*actual_len).into()),
+            );
+        }
+        _ => {}
+    }
+
+    let mut actor = serde_json::Map::new();
+    actor.insert(
+        "status".to_owned(),
+        serde_json::Value::String(format_actor_resolution(&report.actor).to_owned()),
+    );
+    if let ActorResolution::ResolverUnavailable(reason) = &report.actor {
+        actor.insert(
+            "reason".to_owned(),
+            serde_json::Value::String(reason.clone()),
+        );
+    }
+
+    let value = serde_json::json!({
+        "statement_id": report.statement_id.to_string(),
+        "envelope_actor": report.envelope_actor.to_string(),
+        "signature_actor": report.signature_actor.to_string(),
+        "object": revision.object().to_string(),
+        "revision": revision.revision().as_str(),
+        "signature": serde_json::Value::Object(signature),
+        "actor": serde_json::Value::Object(actor),
+        "trust": format_trust(&report.trust),
+        "cryptographically_valid": report.is_cryptographically_valid(),
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
 }
 
 fn format_signature_status(status: &SignatureStatus) -> &'static str {
@@ -702,7 +1021,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path>\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -775,6 +1094,18 @@ enum CliError {
     WriteRevision {
         statement: kairo_core::StatementId,
         source: kairo_store::StoreError,
+    },
+    ReadRevision {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    ParseStatementId {
+        statement: String,
+        source: kairo_core::IdError,
+    },
+    ScanStatements {
+        path: PathBuf,
+        source: std::io::Error,
     },
     ManifestObjectMismatch {
         manifest_object: ObjectId,
@@ -855,6 +1186,19 @@ impl fmt::Display for CliError {
                     "failed to write revision statement {statement}: {source}"
                 )
             }
+            Self::ReadRevision { statement, source } => {
+                write!(f, "failed to read revision statement {statement}: {source}")
+            }
+            Self::ParseStatementId { statement, source } => {
+                write!(f, "invalid statement id {statement}: {source}")
+            }
+            Self::ScanStatements { path, source } => {
+                write!(
+                    f,
+                    "failed to scan statements at {}: {source}",
+                    path.display()
+                )
+            }
             Self::ManifestObjectMismatch {
                 manifest_object,
                 cli_object,
@@ -886,7 +1230,8 @@ impl Error for CliError {
             Self::ReadManifest { source, .. }
             | Self::ReadStatement { source, .. }
             | Self::ReadPublicKey { source, .. }
-            | Self::ReadActorGenesis { source, .. } => Some(source),
+            | Self::ReadActorGenesis { source, .. }
+            | Self::ScanStatements { source, .. } => Some(source),
             Self::ParseManifest(error) => Some(error),
             Self::ParseActorGenesisJson(error) | Self::ParseStatementJson(error) => Some(error),
             Self::ParseActorGenesis(error) => Some(error),
@@ -895,15 +1240,16 @@ impl Error for CliError {
             Self::VerifyStatementSignature(error) => Some(error),
             Self::OpenStore { source, .. }
             | Self::WriteActor { source, .. }
-            | Self::ReadActor { source, .. } => Some(source),
+            | Self::ReadActor { source, .. }
+            | Self::WriteObjectGenesis { source, .. }
+            | Self::WriteRevision { source, .. }
+            | Self::ReadRevision { source, .. } => Some(source),
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
             | Self::ReadKey { source, .. } => Some(source),
-            Self::WriteObjectGenesis { source, .. } | Self::WriteRevision { source, .. } => {
-                Some(source)
-            }
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
+            | Self::ParseStatementId { source, .. }
             | Self::BuildSubjectRef { source, .. } => Some(source),
             Self::GenerateKey(error) => Some(error),
             Self::VerificationFailed(_)
@@ -1094,7 +1440,8 @@ mod tests {
                 command: Some(Command::Revision {
                     command: RevisionCommand::VerifyActorGenesis {
                         statement,
-                        actor_genesis
+                        actor_genesis,
+                        json: false,
                     }
                 })
             }) if statement.as_os_str() == "revision.json" && actor_genesis.as_os_str() == "actor.json"
@@ -1340,5 +1687,296 @@ mod tests {
         text.lines()
             .find_map(|line| line.strip_prefix(prefix).map(str::to_owned))
             .ok_or_else(|| format!("missing field {prefix:?} in {text:?}").into())
+    }
+
+    #[test]
+    fn parses_actor_import_command() {
+        let cli = Cli::try_parse_from(["kairo", "actor", "import", "--genesis", "actor.json"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Import { genesis }
+                })
+            }) if genesis.as_os_str() == "actor.json"
+        ));
+    }
+
+    #[test]
+    fn parses_object_import_command() {
+        let cli = Cli::try_parse_from(["kairo", "object", "import", "--statement", "obj.json"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Object {
+                    command: ObjectSubcommand::Import { statement }
+                })
+            }) if statement.as_os_str() == "obj.json"
+        ));
+    }
+
+    #[test]
+    fn parses_revision_import_command() {
+        let cli = Cli::try_parse_from(["kairo", "revision", "import", "--statement", "r.json"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Revision {
+                    command: RevisionCommand::Import { statement }
+                })
+            }) if statement.as_os_str() == "r.json"
+        ));
+    }
+
+    #[test]
+    fn parses_revision_inspect_command() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "revision",
+            "inspect",
+            "--statement",
+            "zQmStatement",
+            "--json",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Revision {
+                    command: RevisionCommand::Inspect {
+                        statement,
+                        json: true,
+                    }
+                })
+            }) if statement == "zQmStatement"
+        ));
+    }
+
+    #[test]
+    fn parses_revision_list_command() {
+        let cli = Cli::try_parse_from(["kairo", "revision", "list", "--object", "zQmObject"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Revision {
+                    command: RevisionCommand::List { object }
+                })
+            }) if object == "zQmObject"
+        ));
+    }
+
+    #[test]
+    fn parses_revision_verify_actor_genesis_with_json() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "revision",
+            "verify-actor-genesis",
+            "--statement",
+            "r.json",
+            "--actor-genesis",
+            "a.json",
+            "--json",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Revision {
+                    command: RevisionCommand::VerifyActorGenesis {
+                        statement: _,
+                        actor_genesis: _,
+                        json: true,
+                    }
+                })
+            })
+        ));
+    }
+
+    #[test]
+    fn end_to_end_import_inspect_list() -> Result<(), Box<dyn std::error::Error>> {
+        // Drive the create flow into a temp store, then use the import / inspect /
+        // list commands to round-trip.
+        let store_dir = tempfile::TempDir::new()?;
+        let other_dir = tempfile::TempDir::new()?;
+        let manifest_dir = tempfile::TempDir::new()?;
+        let manifest_path = manifest_dir.path().join("kairo.toml");
+        let bare_manifest = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [content]
+            kind = "tree"
+        "#;
+        std::fs::write(&manifest_path, bare_manifest)?;
+
+        // 1. Create actor + object + revision in store_dir.
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: "git:sha256:def".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let statement_id = parse_field(&revision_output, "statement = ")?;
+
+        // 2. Re-find the on-disk JSONs in store_dir's actors/objects/statements
+        //    directories so we can re-import them into a fresh store.
+        let actor_json = find_one(&store_dir.path().join("actors"), "json")?;
+        let object_json = find_one(&store_dir.path().join("objects"), "json")?;
+        let statement_json = find_one(&store_dir.path().join("statements"), "json")?;
+
+        // 3. Import them all into a fresh store via the CLI.
+        let imported_actor = run(Cli {
+            store: Some(other_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Import {
+                    genesis: actor_json,
+                },
+            }),
+        })?;
+        assert!(imported_actor.contains("imported actor"));
+        assert!(imported_actor.contains(&actor_id));
+
+        let imported_object = run(Cli {
+            store: Some(other_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Import {
+                    statement: object_json,
+                },
+            }),
+        })?;
+        assert!(imported_object.contains("imported object genesis"));
+        assert!(imported_object.contains(&object_id));
+
+        let imported_revision = run(Cli {
+            store: Some(other_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Import {
+                    statement: statement_json,
+                },
+            }),
+        })?;
+        assert!(imported_revision.contains("imported revision"));
+        assert!(imported_revision.contains(&statement_id));
+
+        // 4. Inspect the revision in the new store.
+        let inspect_text = run(Cli {
+            store: Some(other_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Inspect {
+                    statement: statement_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(inspect_text.contains(&statement_id));
+        assert!(inspect_text.contains(&object_id));
+        assert!(inspect_text.contains("revision = git:sha256:def"));
+
+        let inspect_json = run(Cli {
+            store: Some(other_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Inspect {
+                    statement: statement_id.clone(),
+                    json: true,
+                },
+            }),
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&inspect_json)?;
+        assert_eq!(parsed["statement_id"], statement_id);
+        assert_eq!(parsed["object"], object_id);
+        assert_eq!(parsed["revision"], "git:sha256:def");
+
+        // 5. List revisions for that object.
+        let list_text = run(Cli {
+            store: Some(other_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::List {
+                    object: object_id.clone(),
+                },
+            }),
+        })?;
+        assert!(list_text.contains("revisions = 1"));
+        assert!(list_text.contains(&statement_id));
+
+        Ok(())
+    }
+
+    fn find_one(
+        root: &std::path::Path,
+        extension: &str,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        for level1 in std::fs::read_dir(root)? {
+            let level1 = level1?;
+            if !level1.path().is_dir() {
+                continue;
+            }
+            for level2 in std::fs::read_dir(level1.path())? {
+                let level2 = level2?;
+                if !level2.path().is_dir() {
+                    continue;
+                }
+                if let Some(entry) = std::fs::read_dir(level2.path())?.next() {
+                    let path = entry?.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some(extension) {
+                        return Ok(path);
+                    }
+                }
+            }
+        }
+        Err(format!("no {extension} file found under {}", root.display()).into())
     }
 }

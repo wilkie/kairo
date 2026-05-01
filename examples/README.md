@@ -38,12 +38,17 @@ kairo revision create \
   --object "$OBJECT" \
   --revision git:sha256:0000000000000000000000000000000000000000000000000000000000000001 \
   --parent  git:sha256:0000000000000000000000000000000000000000000000000000000000000000
-# → prints `statement = zQm…`
+# → prints `statement = zQm…` (record this)
+STATEMENT=zQm...
 
 # 4. Inspect the manifest hash bound by the revision.
 kairo manifest inspect
 
-# 5. Verify the most recent revision statement against the actor's genesis.
+# 5. Inspect and list the revision through the store.
+kairo revision inspect --statement "$STATEMENT"
+kairo revision list --object "$OBJECT"
+
+# 6. Verify the most recent revision statement against the actor's genesis.
 #    (For now this command takes file paths; the upcoming store-backed
 #    `kairo verify` will resolve them automatically.)
 STATEMENT_FILE="$(find "$KAIRO_STORE/statements" -name '*.json' | head -n 1)"
@@ -51,6 +56,21 @@ ACTOR_FILE="$(find "$KAIRO_STORE/actors" -name '*.json' | head -n 1)"
 kairo revision verify-actor-genesis \
   --statement "$STATEMENT_FILE" \
   --actor-genesis "$ACTOR_FILE"
+
+# 7. (Optional) Verify with --json for machine-readable output.
+kairo revision verify-actor-genesis \
+  --statement "$STATEMENT_FILE" \
+  --actor-genesis "$ACTOR_FILE" --json
+
+# 8. (Optional) Re-import the records into a fresh store to demonstrate
+#    fixity round-trips: the imported statement_id and object_id are
+#    derived from the canonical bytes of the parsed body, and must match
+#    what was originally created.
+export KAIRO_STORE_FRESH="$(mktemp -d)/kairo-store"
+kairo --store "$KAIRO_STORE_FRESH" actor import --genesis "$ACTOR_FILE"
+kairo --store "$KAIRO_STORE_FRESH" object import --statement \
+  "$(find "$KAIRO_STORE/objects" -name '*.json' | head -n 1)"
+kairo --store "$KAIRO_STORE_FRESH" revision import --statement "$STATEMENT_FILE"
 ```
 
 ### What this demonstrates

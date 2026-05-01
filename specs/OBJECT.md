@@ -75,6 +75,30 @@ It explicitly excludes:
 Two snapshots with identical Object ID, active statement frontier, and canonical
 effective state MUST have identical Snapshot IDs.
 
+### 2.4 What revision fields prove
+
+A signed `ObjectRevision` statement carries three identity-bearing fields,
+each with a precise meaning at the statement layer. None of them, by
+itself, says the revision is correct end-to-end — that requires the
+companion content (Git) layer.
+
+- **`object`** — the lineage the revision claims to belong to. Statement-
+  layer validation checks that the resolved `ObjectGenesis` derives this
+  same `ObjectId`.
+- **`revision`** — the storage revision id (e.g. `git:sha256:<commit>`).
+  The statement layer takes it as opaque. Confirming it exists in Git, and
+  that its parents match `parents`, is content-layer work (TODO §11).
+- **`parents`** — claimed predecessors of `revision`. The statement layer
+  records their presence; the content layer compares them to Git commit
+  parents.
+- **`manifest_hash`** — the canonical `kairo.toml` hash the actor pinned
+  at signing time. Statement-layer validation re-derives the hash from a
+  parsed manifest and compares.
+
+The structured `ObjectRevisionValidationReport` (see `STATEMENTS.md` §6.2)
+reports these checks independently, including a placeholder `content` field
+that stays indeterminate until the Git integration in TODO §11 fills it in.
+
 ---
 
 ## 3. Object Structure
