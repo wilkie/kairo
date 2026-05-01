@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+kairo-object = { path = "../kairo-object" }
+
 [[bin]]
 name = "kairo"
 path = "src/main.rs"
