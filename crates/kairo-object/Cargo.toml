@@ -7,6 +7,8 @@ repository.workspace = true
 
 [dependencies]
 kairo-core = { path = "../kairo-core" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
 
 [lib]
 name = "kairo_object"

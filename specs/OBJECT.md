@@ -110,24 +110,39 @@ Rules:
 
 Defines object metadata and interfaces.
 
-### 4.1 Descriptive Metadata
+### 4.1 Kairo Metadata
 
-[name]
-canonical = "Example"
-short = "example"
+```toml
+[kairo]
+schema = 1
+object = "z6MkObject..." # optional consistency check once initialized
+kind = "software"
+name = "Example"
+summary = "Example object."
+```
+
+The `object` field is optional during bootstrapping. When present, it is a
+consistency check against the signed `ObjectRevision` binding, not the source of
+authority for Object identity.
 
 ### 4.2 Content
 
+```toml
 [content]
 kind = "tree"
+```
 
 ### 4.3 Capabilities
 
+```toml
 [[provides]]
 provides = "data:exe:mz"
+version = "1.0.0"
+```
 
 ### 4.4 Dependencies
 
+```toml
 [[dependencies]]
 kind = "provides"
 provides = "lib:zlib:static"
@@ -141,6 +156,12 @@ version = "^4.1.0"
 kind = "object"
 object = "z6MkObject..."
 snapshot = "z6MkSnapshot..."
+```
+
+Object dependencies MUST specify exactly one selector:
+
+- `version` for a version requirement resolved by the planner
+- `snapshot` for an exact Object snapshot
 
 In `kairo.toml`, fields such as `object` and `snapshot` use bare ID payloads
 because the field names provide type context. Standalone references use typed
