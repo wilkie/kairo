@@ -110,6 +110,15 @@ Rules:
 
 Defines object metadata and interfaces.
 
+The normalized canonical form of `kairo.toml` is documented in:
+
+```text
+schemas/canonical/object-manifest-v1.md
+```
+
+`ObjectRevision.manifest_hash` refers to the `BlobId` derived from that
+canonical manifest form, not to raw TOML bytes.
+
 ### 4.1 Kairo Metadata
 
 ```toml

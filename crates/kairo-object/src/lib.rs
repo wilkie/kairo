@@ -3,8 +3,15 @@
 use std::error::Error;
 use std::fmt;
 
-use kairo_core::{ObjectId, SnapshotId};
+use kairo_core::canonical::{
+    encode_list, encode_option, encode_str, encode_u32, encode_u8, CanonicalEncode,
+};
+use kairo_core::{BlobId, ObjectId, SnapshotId};
 use serde::Deserialize;
+
+/// Canonical ObjectManifest v1 encoding is documented at
+/// `schemas/canonical/object-manifest-v1.md`.
+const OBJECT_MANIFEST_DOMAIN: &[u8] = b"kairo.object.manifest.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectManifest {
@@ -34,6 +41,27 @@ impl ObjectManifest {
 
     pub fn dependencies(&self) -> &[DependencyDeclaration] {
         &self.dependencies
+    }
+
+    pub fn manifest_hash(&self) -> BlobId {
+        BlobId::from_bytes(OBJECT_MANIFEST_DOMAIN, &self.canonical_bytes())
+    }
+}
+
+impl CanonicalEncode for ObjectManifest {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, "ObjectManifest");
+        encode_u8(out, 1);
+        self.kairo.encode_canonical(out);
+        encode_option(out, self.content.as_ref(), |out, content| {
+            content.encode_canonical(out);
+        });
+        encode_list(out, &self.provides, |out, provides| {
+            provides.encode_canonical(out);
+        });
+        encode_list(out, &self.dependencies, |out, dependency| {
+            dependency.encode_canonical(out);
+        });
     }
 }
 
@@ -68,6 +96,20 @@ impl KairoManifestSection {
     }
 }
 
+impl CanonicalEncode for KairoManifestSection {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_u32(out, self.schema);
+        encode_option(out, self.object.as_ref(), |out, object| {
+            encode_str(out, object.as_str());
+        });
+        encode_str(out, &self.kind);
+        encode_str(out, &self.name);
+        encode_option(out, self.summary.as_ref(), |out, summary| {
+            encode_str(out, summary);
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentSection {
     kind: String,
@@ -76,6 +118,12 @@ pub struct ContentSection {
 impl ContentSection {
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+}
+
+impl CanonicalEncode for ContentSection {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.kind);
     }
 }
 
@@ -95,10 +143,34 @@ impl ProvideDeclaration {
     }
 }
 
+impl CanonicalEncode for ProvideDeclaration {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.provides);
+        encode_option(out, self.version.as_ref(), |out, version| {
+            encode_str(out, version);
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DependencyDeclaration {
     Provides(ProvidesDependency),
     Object(ObjectDependency),
+}
+
+impl CanonicalEncode for DependencyDeclaration {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Provides(dependency) => {
+                encode_str(out, "provides");
+                dependency.encode_canonical(out);
+            }
+            Self::Object(dependency) => {
+                encode_str(out, "object");
+                dependency.encode_canonical(out);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +181,12 @@ pub struct ProvidesDependency {
 impl ProvidesDependency {
     pub fn provides(&self) -> &str {
         &self.provides
+    }
+}
+
+impl CanonicalEncode for ProvidesDependency {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.provides);
     }
 }
 
@@ -132,10 +210,32 @@ impl ObjectDependency {
     }
 }
 
+impl CanonicalEncode for ObjectDependency {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.object.as_str());
+        self.selector.encode_canonical(out);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObjectDependencySelector {
     Version(String),
     Snapshot(SnapshotId),
+}
+
+impl CanonicalEncode for ObjectDependencySelector {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Version(version) => {
+                encode_str(out, "version");
+                encode_str(out, version);
+            }
+            Self::Snapshot(snapshot) => {
+                encode_str(out, "snapshot");
+                encode_str(out, snapshot.as_str());
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -558,5 +658,107 @@ mod tests {
         );
 
         assert!(matches!(manifest, Err(ManifestError::UnsupportedSchema(2))));
+    }
+
+    #[test]
+    fn toml_key_order_does_not_affect_manifest_hash() {
+        let first = ObjectManifest::parse_toml(&format!(
+            r#"
+            [kairo]
+            schema = 1
+            object = "{OBJECT_ID}"
+            kind = "software"
+            name = "Example"
+            summary = "Example object."
+
+            [content]
+            kind = "tree"
+
+            [[provides]]
+            provides = "tool:make"
+            version = "3.81"
+
+            [[dependencies]]
+            kind = "object"
+            object = "{OBJECT_ID}"
+            version = "^4.1.0"
+            "#
+        ));
+        let second = ObjectManifest::parse_toml(&format!(
+            r#"
+            [[dependencies]]
+            version = "^4.1.0"
+            object = "{OBJECT_ID}"
+            kind = "object"
+
+            [[provides]]
+            version = "3.81"
+            provides = "tool:make"
+
+            [content]
+            kind = "tree"
+
+            [kairo]
+            summary = "Example object."
+            name = "Example"
+            kind = "software"
+            object = "{OBJECT_ID}"
+            schema = 1
+            "#
+        ));
+
+        assert!(
+            matches!((first, second), (Ok(first), Ok(second)) if first.manifest_hash() == second.manifest_hash())
+        );
+    }
+
+    #[test]
+    fn manifest_hash_changes_when_dependency_changes() {
+        let first = ObjectManifest::parse_toml(&format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [[dependencies]]
+            kind = "object"
+            object = "{OBJECT_ID}"
+            version = "^4.1.0"
+            "#
+        ));
+        let second = ObjectManifest::parse_toml(&format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [[dependencies]]
+            kind = "object"
+            object = "{OBJECT_ID}"
+            version = "^4.2.0"
+            "#
+        ));
+
+        assert!(
+            matches!((first, second), (Ok(first), Ok(second)) if first.manifest_hash() != second.manifest_hash())
+        );
+    }
+
+    #[test]
+    fn manifest_hash_is_valid_blob_id() {
+        let manifest = ObjectManifest::parse_toml(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+            "#,
+        );
+
+        assert!(
+            matches!(manifest.map(|manifest| manifest.manifest_hash()), Ok(hash) if BlobId::new(hash.to_string()) == Ok(hash.clone()))
+        );
     }
 }
