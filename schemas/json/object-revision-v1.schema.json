@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/object-revision-v1.schema.json",
+  "title": "Kairo ObjectRevision Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "body", "signature"],
+  "properties": {
+    "type": {
+      "const": "ObjectRevision"
+    },
+    "version": {
+      "const": 1
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+    },
+    "subject": {
+      "type": "string",
+      "pattern": "^object:z[1-9A-HJ-NP-Za-km-z]+$"
+    },
+    "body": {
+      "type": "object",
+      "required": [
+        "object",
+        "revision",
+        "parents",
+        "manifest_hash",
+        "attests_reachable_history"
+      ],
+      "properties": {
+        "object": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "manifest_hash": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+        },
+        "attests_reachable_history": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature"
+    }
+  },
+  "additionalProperties": false
+}

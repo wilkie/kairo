@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/object-genesis-v1.schema.json",
+  "title": "Kairo ObjectGenesis Statement v1",
+  "type": "object",
+  "required": ["type", "version", "body", "signature"],
+  "properties": {
+    "type": {
+      "const": "ObjectGenesis"
+    },
+    "version": {
+      "const": 1
+    },
+    "body": {
+      "type": "object",
+      "required": ["object_kind", "created_by", "nonce", "initial_revision"],
+      "properties": {
+        "object_kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_by": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Thirty-two random bytes encoded as lowercase hex."
+        },
+        "initial_revision": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature"
+    }
+  },
+  "additionalProperties": false
+}

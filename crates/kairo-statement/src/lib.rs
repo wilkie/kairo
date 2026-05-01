@@ -1,5 +1,7 @@
 //! Signed statement envelope primitives.
 
+pub mod json;
+
 use kairo_core::canonical::{
     encode_bytes, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };

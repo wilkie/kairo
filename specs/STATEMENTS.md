@@ -243,6 +243,14 @@ schemas/json/
 JSON interchange schemas describe external representation. They are not the
 canonical hash input unless a canonical schema explicitly says so.
 
+The JSON interchange schemas for the first statement types are:
+
+```text
+schemas/json/statement-envelope-v1.schema.json
+schemas/json/object-genesis-v1.schema.json
+schemas/json/object-revision-v1.schema.json
+```
+
 External clients that verify IDs or signatures must implement the relevant
 canonical schema exactly.
 
