@@ -7,12 +7,16 @@ use kairo_core::canonical::{
     encode_list, encode_option, encode_str, encode_u32, encode_u8, CanonicalEncode,
 };
 use kairo_core::{BlobId, ObjectId, SnapshotId, StatementId};
-use kairo_statement::{ObjectGenesisStatement, ObjectRevisionBody, SignedStatement};
+use kairo_statement::{ObjectGenesisStatement, ObjectRevisionBody, RevisionId, SignedStatement};
 use serde::Deserialize;
 
 /// Canonical ObjectManifest v1 encoding is documented at
 /// `schemas/canonical/object-manifest-v1.md`.
 const OBJECT_MANIFEST_DOMAIN: &[u8] = b"kairo.object.manifest.v1";
+
+/// Canonical Snapshot v1 encoding is documented at
+/// `schemas/canonical/snapshot-v1.md`.
+const SNAPSHOT_DOMAIN: &[u8] = b"kairo.snapshot.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectManifest {
@@ -221,6 +225,132 @@ pub fn validate_object_revision(
         content: ContentLayerCheck::Indeterminate,
     }
 }
+
+/// A deterministic, content-addressed picture of an object's effective
+/// state at a chosen statement frontier.
+///
+/// In the MVP the only contributing statement type is `ObjectRevision`, so
+/// the frontier is a single `StatementId` and the effective state is the
+/// `(revision, manifest_hash)` carried by that statement. As more statement
+/// types land (Builds, Provides, Observations, ...) they join the frontier
+/// alongside, and the canonical encoding extends without breaking this
+/// shape.
+///
+/// Identity inputs (anything in here changes the `SnapshotId`):
+///
+/// - `object` — the lineage this snapshot pictures.
+/// - `frontier` — sorted `StatementId`s that contribute. Sorting makes the
+///   id independent of the order the caller gathered them in.
+/// - `revision` — the storage `RevisionId` derived from the frontier.
+/// - `manifest_hash` — the canonical manifest hash derived from the
+///   frontier.
+///
+/// Excluded by design (per `OBJECT.md` §2.3):
+///
+/// - build artifacts
+/// - federation metadata
+/// - availability or trust information
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    object: ObjectId,
+    frontier: Vec<StatementId>,
+    revision: RevisionId,
+    manifest_hash: BlobId,
+}
+
+impl Snapshot {
+    /// Build a snapshot whose frontier is a single `ObjectRevision`
+    /// statement. The revision must bind to the supplied object id; if it
+    /// does not, returns `SnapshotError::ObjectMismatch` rather than
+    /// silently snapshotting the wrong lineage.
+    pub fn from_object_revision(
+        object: &ObjectId,
+        revision_statement: &SignedStatement<ObjectRevisionBody>,
+    ) -> Result<Self, SnapshotError> {
+        let body = revision_statement.unsigned().body();
+        if body.object() != object {
+            return Err(SnapshotError::ObjectMismatch {
+                requested: object.clone(),
+                revision_object: body.object().clone(),
+            });
+        }
+        Ok(Self {
+            object: object.clone(),
+            frontier: vec![revision_statement.statement_id()],
+            revision: body.revision().clone(),
+            manifest_hash: body.manifest_hash().clone(),
+        })
+    }
+
+    pub fn object(&self) -> &ObjectId {
+        &self.object
+    }
+
+    pub fn frontier(&self) -> &[StatementId] {
+        &self.frontier
+    }
+
+    pub fn revision(&self) -> &RevisionId {
+        &self.revision
+    }
+
+    pub fn manifest_hash(&self) -> &BlobId {
+        &self.manifest_hash
+    }
+
+    /// `SnapshotId = sha256(domain || canonical_bytes)`, base58btc
+    /// multihash. Two snapshots with identical canonical bytes derive the
+    /// same id; two with any difference derive different ids.
+    pub fn snapshot_id(&self) -> SnapshotId {
+        SnapshotId::from_bytes(SNAPSHOT_DOMAIN, &self.canonical_bytes())
+    }
+}
+
+impl CanonicalEncode for Snapshot {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, "Snapshot");
+        encode_u8(out, 1);
+        encode_str(out, self.object.as_str());
+
+        // Sort the frontier so the snapshot id is independent of how the
+        // caller assembled it. The MVP only ever has one entry, but sorting
+        // future-proofs.
+        let mut sorted: Vec<&StatementId> = self.frontier.iter().collect();
+        sorted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        encode_list(out, &sorted, |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+
+        encode_str(out, self.revision.as_str());
+        encode_str(out, self.manifest_hash.as_str());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapshotError {
+    /// The supplied revision binds to a different object than the snapshot
+    /// is being computed for.
+    ObjectMismatch {
+        requested: ObjectId,
+        revision_object: ObjectId,
+    },
+}
+
+impl fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ObjectMismatch {
+                requested,
+                revision_object,
+            } => write!(
+                f,
+                "snapshot requested for object {requested} but revision binds to {revision_object}"
+            ),
+        }
+    }
+}
+
+impl Error for SnapshotError {}
 
 impl CanonicalEncode for ObjectManifest {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
@@ -1306,6 +1436,170 @@ mod tests {
                 report.manifest_binding,
                 ManifestBindingCheck::HashMismatch { .. }
             ));
+            Ok(())
+        }
+    }
+
+    mod snapshot {
+        use super::*;
+        use ed25519_dalek::{Signer, SigningKey};
+        use kairo_core::{ActorId, KairoRef, Timestamp};
+        use kairo_identity::PublicKey;
+        use kairo_statement::{
+            ObjectGenesisBody, ObjectKind, Signature, SignedStatement, UnsignedStatement,
+        };
+
+        const ACTOR_ID: &str = "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t";
+
+        fn timestamp() -> Timestamp {
+            Timestamp::from_seconds(1_700_000_000)
+        }
+
+        fn signing_key() -> SigningKey {
+            SigningKey::from_bytes(&[7; 32])
+        }
+
+        fn actor_id() -> Result<ActorId, kairo_core::IdError> {
+            ActorId::new(ACTOR_ID)
+        }
+
+        fn signed_revision(
+            object: ObjectId,
+            revision: &str,
+            manifest_hash: BlobId,
+        ) -> Result<SignedStatement<ObjectRevisionBody>, Box<dyn std::error::Error>> {
+            let body = ObjectRevisionBody::new(
+                object.clone(),
+                RevisionId::new(revision),
+                vec![],
+                manifest_hash,
+                true,
+            );
+            let subject: KairoRef = format!("object:{object}").parse()?;
+            let unsigned = UnsignedStatement::new(actor_id()?, subject, timestamp(), body);
+            let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+            let signature = Signature::new(
+                actor_id()?,
+                PublicKey::ed25519(signing_key().verifying_key().to_bytes())
+                    .key_id()
+                    .to_string(),
+                "ed25519",
+                signature_bytes.to_vec(),
+            );
+            Ok(SignedStatement::new(unsigned, signature))
+        }
+
+        fn object_id_for(nonce: [u8; 32]) -> Result<ObjectId, kairo_core::IdError> {
+            let body = ObjectGenesisBody::new(
+                ObjectKind::software(),
+                actor_id()?,
+                timestamp(),
+                nonce,
+                None,
+            );
+            Ok(body.object_id())
+        }
+
+        #[test]
+        fn same_revision_produces_same_snapshot_id() -> Result<(), Box<dyn std::error::Error>> {
+            let object = object_id_for([42; 32])?;
+            let manifest_hash = BlobId::from_sha256_digest([1; 32]);
+            let signed = signed_revision(object.clone(), "git:sha256:rev", manifest_hash)?;
+
+            let first = Snapshot::from_object_revision(&object, &signed)?;
+            let second = Snapshot::from_object_revision(&object, &signed)?;
+
+            assert_eq!(first.snapshot_id(), second.snapshot_id());
+            Ok(())
+        }
+
+        #[test]
+        fn different_revision_changes_snapshot_id() -> Result<(), Box<dyn std::error::Error>> {
+            let object = object_id_for([42; 32])?;
+            let manifest_hash = BlobId::from_sha256_digest([1; 32]);
+            let first_rev =
+                signed_revision(object.clone(), "git:sha256:r1", manifest_hash.clone())?;
+            let second_rev = signed_revision(object.clone(), "git:sha256:r2", manifest_hash)?;
+
+            let first = Snapshot::from_object_revision(&object, &first_rev)?.snapshot_id();
+            let second = Snapshot::from_object_revision(&object, &second_rev)?.snapshot_id();
+
+            assert_ne!(first, second);
+            Ok(())
+        }
+
+        #[test]
+        fn different_manifest_hash_changes_snapshot_id() -> Result<(), Box<dyn std::error::Error>> {
+            let object = object_id_for([42; 32])?;
+            let first_rev = signed_revision(
+                object.clone(),
+                "git:sha256:rev",
+                BlobId::from_sha256_digest([1; 32]),
+            )?;
+            let second_rev = signed_revision(
+                object.clone(),
+                "git:sha256:rev",
+                BlobId::from_sha256_digest([2; 32]),
+            )?;
+
+            let first = Snapshot::from_object_revision(&object, &first_rev)?.snapshot_id();
+            let second = Snapshot::from_object_revision(&object, &second_rev)?.snapshot_id();
+
+            assert_ne!(first, second);
+            Ok(())
+        }
+
+        #[test]
+        fn different_object_changes_snapshot_id() -> Result<(), Box<dyn std::error::Error>> {
+            // Two distinct lineages, otherwise-identical revision content. The
+            // statement_ids differ (different object) so snapshot ids differ.
+            let object_a = object_id_for([42; 32])?;
+            let object_b = object_id_for([99; 32])?;
+            let manifest_hash = BlobId::from_sha256_digest([1; 32]);
+
+            let rev_a = signed_revision(object_a.clone(), "git:sha256:rev", manifest_hash.clone())?;
+            let rev_b = signed_revision(object_b.clone(), "git:sha256:rev", manifest_hash)?;
+
+            let snapshot_a = Snapshot::from_object_revision(&object_a, &rev_a)?.snapshot_id();
+            let snapshot_b = Snapshot::from_object_revision(&object_b, &rev_b)?.snapshot_id();
+
+            assert_ne!(snapshot_a, snapshot_b);
+            Ok(())
+        }
+
+        #[test]
+        fn rejects_revision_for_wrong_object() -> Result<(), Box<dyn std::error::Error>> {
+            let object_a = object_id_for([42; 32])?;
+            let object_b = object_id_for([99; 32])?;
+            let manifest_hash = BlobId::from_sha256_digest([1; 32]);
+            let rev_for_b = signed_revision(object_b.clone(), "git:sha256:rev", manifest_hash)?;
+
+            let result = Snapshot::from_object_revision(&object_a, &rev_for_b);
+
+            assert!(matches!(result, Err(SnapshotError::ObjectMismatch { .. })));
+            Ok(())
+        }
+
+        #[test]
+        fn snapshot_id_is_a_valid_snapshot_id_string() -> Result<(), Box<dyn std::error::Error>> {
+            let object = object_id_for([42; 32])?;
+            let manifest_hash = BlobId::from_sha256_digest([1; 32]);
+            let signed = signed_revision(object.clone(), "git:sha256:rev", manifest_hash)?;
+            let snapshot = Snapshot::from_object_revision(&object, &signed)?;
+            let id = snapshot.snapshot_id();
+            // Round-tripping through SnapshotId::new should not change the id.
+            assert_eq!(SnapshotId::new(id.to_string())?, id);
+            Ok(())
+        }
+
+        #[test]
+        fn frontier_carries_the_revision_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+            let object = object_id_for([42; 32])?;
+            let manifest_hash = BlobId::from_sha256_digest([1; 32]);
+            let signed = signed_revision(object.clone(), "git:sha256:rev", manifest_hash)?;
+            let snapshot = Snapshot::from_object_revision(&object, &signed)?;
+
+            assert_eq!(snapshot.frontier(), &[signed.statement_id()]);
             Ok(())
         }
     }

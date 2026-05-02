@@ -15,6 +15,7 @@ use kairo_identity::{
 use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::{
     validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
+    Snapshot, SnapshotError,
 };
 use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
 use kairo_statement::verify::{
@@ -68,6 +69,38 @@ enum Command {
     Branch {
         #[command(subcommand)]
         command: BranchCommand,
+    },
+    /// Compute a SnapshotId for an object's effective state.
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SnapshotCommand {
+    /// Resolve a snapshot for an object and print its SnapshotId.
+    ///
+    /// By default, follows the creator-actor's "head" branch. Override
+    /// resolution with --actor, --name, or pin the frontier directly with
+    /// --statement.
+    Compute {
+        /// Object whose snapshot to compute.
+        #[arg(long)]
+        object: String,
+        /// Pin the frontier to a specific ObjectRevision statement,
+        /// bypassing branch resolution. Conflicts with --actor and --name.
+        #[arg(long, conflicts_with_all = ["actor", "name"])]
+        statement: Option<String>,
+        /// Actor whose branch tip to follow. Defaults to ObjectGenesis.created_by.
+        #[arg(long)]
+        actor: Option<String>,
+        /// Branch name (defaults to "head").
+        #[arg(long, default_value = "head")]
+        name: String,
+        /// Emit a stable JSON representation.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -253,6 +286,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Object { command }) => run_object_command(command, &paths),
         Some(Command::Revision { command }) => run_revision_command(command, &paths),
         Some(Command::Branch { command }) => run_branch_command(command, &paths),
+        Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         None => Ok(help_text()),
     }
 }
@@ -808,6 +842,107 @@ fn format_branch_list(object: &ObjectId, tips: &[kairo_store::BranchTip]) -> Str
     output
 }
 
+fn run_snapshot_command(command: SnapshotCommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        SnapshotCommand::Compute {
+            object,
+            statement,
+            actor,
+            name,
+            json,
+        } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+
+            let revision_statement = match statement {
+                Some(statement) => {
+                    let statement_id = kairo_core::StatementId::new(statement.clone())
+                        .map_err(|source| CliError::ParseStatementId { statement, source })?;
+                    store.get_object_revision(&statement_id).map_err(|error| {
+                        CliError::ReadRevision {
+                            statement: statement_id,
+                            source: error,
+                        }
+                    })?
+                }
+                None => {
+                    let actor_id = match actor {
+                        Some(actor) => ActorId::new(actor.clone())
+                            .map_err(|source| CliError::ParseActorId { actor, source })?,
+                        None => {
+                            let genesis =
+                                store.get_object_genesis(&object_id).map_err(|error| {
+                                    CliError::ReadObjectGenesis {
+                                        object: object_id.clone(),
+                                        source: error,
+                                    }
+                                })?;
+                            genesis.body().created_by().clone()
+                        }
+                    };
+
+                    let branch = store
+                        .latest_branch(&actor_id, &object_id, &name)
+                        .map_err(CliError::ReadBranch)?
+                        .ok_or_else(|| CliError::BranchNotFound {
+                            actor: actor_id.clone(),
+                            object: object_id.clone(),
+                            name: name.clone(),
+                        })?;
+
+                    let revision_statement_id = branch.unsigned().body().revision().clone();
+                    store
+                        .get_object_revision(&revision_statement_id)
+                        .map_err(|error| CliError::ReadRevision {
+                            statement: revision_statement_id,
+                            source: error,
+                        })?
+                }
+            };
+
+            let snapshot = Snapshot::from_object_revision(&object_id, &revision_statement)
+                .map_err(CliError::ComputeSnapshot)?;
+
+            if json {
+                Ok(format_snapshot_json(&snapshot))
+            } else {
+                Ok(format_snapshot(&snapshot))
+            }
+        }
+    }
+}
+
+fn format_snapshot(snapshot: &Snapshot) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("snapshot = {}\n", snapshot.snapshot_id()));
+    output.push_str(&format!("object = {}\n", snapshot.object()));
+    output.push_str(&format!("revision = {}\n", snapshot.revision().as_str()));
+    output.push_str(&format!("manifest_hash = {}\n", snapshot.manifest_hash()));
+    output.push_str(&format!("frontier = {}\n", snapshot.frontier().len()));
+    for statement_id in snapshot.frontier() {
+        output.push_str(&format!("  {statement_id}\n"));
+    }
+    output
+}
+
+fn format_snapshot_json(snapshot: &Snapshot) -> String {
+    let value = serde_json::json!({
+        "snapshot_id": snapshot.snapshot_id().to_string(),
+        "object": snapshot.object().to_string(),
+        "revision": snapshot.revision().as_str(),
+        "manifest_hash": snapshot.manifest_hash().to_string(),
+        "frontier": snapshot
+            .frontier()
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
 fn read_manifest(path: PathBuf) -> Result<ObjectManifest, CliError> {
     let input = std::fs::read_to_string(&path).map_err(|source| CliError::ReadManifest {
         path: path.clone(),
@@ -1246,7 +1381,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -1350,6 +1485,7 @@ enum CliError {
         object: ObjectId,
         name: String,
     },
+    ComputeSnapshot(SnapshotError),
     ManifestObjectMismatch {
         manifest_object: ObjectId,
         cli_object: ObjectId,
@@ -1460,6 +1596,7 @@ impl fmt::Display for CliError {
                 f,
                 "no branch named {name} for actor {actor} on object {object}"
             ),
+            Self::ComputeSnapshot(error) => write!(f, "{error}"),
             Self::ManifestObjectMismatch {
                 manifest_object,
                 cli_object,
@@ -1508,6 +1645,7 @@ impl Error for CliError {
             | Self::WriteBranch { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
             Self::ReadBranch(error) => Some(error),
+            Self::ComputeSnapshot(error) => Some(error),
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
             | Self::ReadKey { source, .. } => Some(source),
@@ -2591,6 +2729,232 @@ kind = "tree"
         });
 
         assert!(matches!(result, Err(CliError::BranchObjectMismatch { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_snapshot_compute_defaults() {
+        let cli = Cli::try_parse_from(["kairo", "snapshot", "compute", "--object", "zObject"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Snapshot {
+                    command: SnapshotCommand::Compute {
+                        statement: None,
+                        actor: None,
+                        name,
+                        json: false,
+                        ..
+                    }
+                })
+            }) if name == "head"
+        ));
+    }
+
+    #[test]
+    fn parses_snapshot_compute_with_pinned_statement() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "snapshot",
+            "compute",
+            "--object",
+            "zObject",
+            "--statement",
+            "zStatement",
+            "--json",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Snapshot {
+                    command: SnapshotCommand::Compute {
+                        statement: Some(stmt),
+                        json: true,
+                        ..
+                    }
+                })
+            }) if stmt == "zStatement"
+        ));
+    }
+
+    #[test]
+    fn snapshot_compute_with_pinned_statement_and_actor_conflicts() {
+        // --statement conflicts with --actor and --name (which would
+        // otherwise route through branch resolution).
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "snapshot",
+            "compute",
+            "--object",
+            "zObject",
+            "--statement",
+            "zStatement",
+            "--actor",
+            "zActor",
+        ]);
+
+        assert!(cli.is_err());
+    }
+
+    #[test]
+    fn end_to_end_snapshot_via_branch() -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_dir = tempfile::TempDir::new()?;
+        let manifest_path = manifest_dir.path().join("kairo.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"[kairo]
+schema = 1
+kind = "software"
+name = "Example"
+
+[content]
+kind = "tree"
+"#,
+        )?;
+
+        let actor_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+        let object_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Object {
+                    command: ObjectSubcommand::Create {
+                        actor: actor_id.clone(),
+                        kind: "software".to_owned(),
+                        initial_revision: None,
+                    },
+                }),
+            })?,
+            "object = ",
+        )?;
+        let revision_statement = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Revision {
+                    command: RevisionCommand::Create {
+                        actor: actor_id.clone(),
+                        object: object_id.clone(),
+                        revision: "git:sha256:def".to_owned(),
+                        manifest: manifest_path.clone(),
+                        parents: vec![],
+                        no_attests_reachable_history: false,
+                    },
+                }),
+            })?,
+            "statement = ",
+        )?;
+
+        // No branch set yet — snapshot must fail with BranchNotFound.
+        let no_branch = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Snapshot {
+                command: SnapshotCommand::Compute {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: false,
+                },
+            }),
+        });
+        assert!(matches!(no_branch, Err(CliError::BranchNotFound { .. })));
+
+        // Pinning the statement directly should work without a branch.
+        let pinned = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Snapshot {
+                command: SnapshotCommand::Compute {
+                    object: object_id.clone(),
+                    statement: Some(revision_statement.clone()),
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: true,
+                },
+            }),
+        })?;
+        let pinned_json: serde_json::Value = serde_json::from_str(&pinned)?;
+        assert_eq!(pinned_json["object"], object_id);
+        assert_eq!(pinned_json["revision"], "git:sha256:def");
+        let pinned_id = pinned_json["snapshot_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(pinned_id.starts_with('z'));
+
+        // Set head to point at the revision so default-resolution works too.
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: revision_statement.clone(),
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        // Default-resolved snapshot should produce the same id as pinning.
+        let resolved = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Snapshot {
+                command: SnapshotCommand::Compute {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: true,
+                },
+            }),
+        })?;
+        let resolved_json: serde_json::Value = serde_json::from_str(&resolved)?;
+        assert_eq!(
+            resolved_json["snapshot_id"].as_str(),
+            Some(pinned_id.as_str())
+        );
+
+        // Human-readable form contains the snapshot id and frontier.
+        let human = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Snapshot {
+                command: SnapshotCommand::Compute {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(human.contains(&pinned_id));
+        assert!(human.contains("revision = git:sha256:def"));
+        assert!(human.contains("frontier = 1"));
+        assert!(human.contains(&revision_statement));
+
         Ok(())
     }
 }

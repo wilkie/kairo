@@ -17,7 +17,37 @@ A `Snapshot` is a selected state of an Object, defined by an Object ID and a
 statement frontier. Snapshots are the primary unit of validation, build planning,
 run planning, and reproduction.
 
-See `CORE_LIBRARY.md`.
+See `CORE_LIBRARY.md` and `OBJECT.md` §2.3.
+
+## Frontier
+
+A `frontier` is the set of currently-selected `StatementId`s whose canonical
+contributions, taken together, define an Object's effective Kairo state.
+
+A frontier is **selected**, not computed: it is named directly as a finite set
+of statement IDs rather than derived from graph topology. The selection rule
+in the MVP is "follow the actor's `ObjectBranch` for `(object, name)` to its
+`ObjectRevision`," producing a single-element frontier. Future statement types
+(`Provides`, `Build`, `Observation`, ...) join the frontier per facet, with at
+most one currently-active statement per facet.
+
+A frontier is **the basis for snapshot identity**: two nodes with the same
+frontier compute the same `SnapshotId`, regardless of which actor's branch
+they followed to get there or what local trust they assign. The frontier
+itself does not record the resolution path.
+
+What a frontier is not:
+
+- Not "the head." `head` is one named `ObjectBranch`; a frontier may compose
+  contributions from multiple statement types and (eventually) multiple
+  branches.
+- Not "all statements about the Object." That is history; the frontier is a
+  current cut.
+- Not "the leaves of the parent DAG." Leaves come from graph structure;
+  frontiers come from explicit selection. A stale leaf no one's branch points
+  at is not in the frontier.
+
+See `OBJECT.md` §2.3 and `schemas/canonical/snapshot-v1.md`.
 
 ## Statement
 

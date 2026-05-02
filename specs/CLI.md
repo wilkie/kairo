@@ -228,6 +228,10 @@ kairo revision list --object <object-id>
 kairo revision validate-manifest --statement <object-revision.json> [--manifest <kairo.toml>]
 kairo revision verify-signature --statement <object-revision.json> (--public-key <base64>|--public-key-file <path>)
 kairo revision verify-actor-genesis --statement <object-revision.json> --actor-genesis <actor-genesis.json> [--json]
+kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]
+kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]
+kairo branch list --object <id>
+kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]
 ```
 
 `manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
@@ -272,6 +276,26 @@ ends up at a different id than its filename or original location.
 and prints its body fields. `--json` emits a stable JSON shape suitable for
 automation. `revision list --object <id>` scans the local store for
 revisions whose `body.object` matches and prints one summary per match.
+
+`branch set` signs and persists an `ObjectBranch` statement that points the
+named branch at the given `ObjectRevision` `StatementId`. The branch must
+match the revision's object; the command refuses to create a dangling
+pointer. Pointer movement is **always explicit** — `revision create` is a
+low-level primitive and never advances any branch on its own.
+
+`branch show` resolves the latest `ObjectBranch` for `(actor, object, name)`.
+`--actor` defaults to `ObjectGenesis.created_by`; `--name` defaults to the
+conventional `"head"`. `branch list --object <id>` enumerates all known
+`(actor, name)` branch tips for the object.
+
+`snapshot compute --object <id>` resolves the chosen `ObjectRevision` and
+computes its `SnapshotId`. By default it follows the creator-actor's
+`"head"` branch; `--actor`, `--name`, and `--statement` override that
+resolution. `--statement <id>` pins the frontier directly and conflicts
+with `--actor` / `--name`. There is no implicit bootstrap from
+`ObjectGenesis.initial_revision` — sign at least one `ObjectRevision`
+(and, for the default-resolved form, set a branch) before computing a
+snapshot.
 
 These commands do not validate actor authority, actor key-active status, Git
 commit availability, parent commit consistency, or snapshot closure

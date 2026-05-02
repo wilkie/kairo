@@ -11,7 +11,10 @@ A minimal object lineage that demonstrates the MVP end-to-end flow:
 1. Create an actor (keypair + ActorGenesis).
 2. Create an object lineage (ObjectGenesis signed by that actor).
 3. Create a signed object revision pointing at the object's current state.
-4. Verify the revision against the actor's genesis through the generic
+4. Set the actor's `head` branch to that revision so it can be resolved by
+   name later.
+5. Compute a `SnapshotId` for the object's effective state.
+6. Verify the revision against the actor's genesis through the generic
    verifier.
 
 ### Run the walkthrough
@@ -48,7 +51,22 @@ kairo manifest inspect
 kairo revision inspect --statement "$STATEMENT"
 kairo revision list --object "$OBJECT"
 
-# 6. Verify the most recent revision statement against the actor's genesis.
+# 6a. Set head to point at the new revision. revision create is a low-level
+#     primitive and does not advance any branch on its own; pointer moves
+#     are always explicit.
+kairo branch set --actor "$ACTOR" --object "$OBJECT" --revision "$STATEMENT"
+# → prints `set branch ... name = head`
+kairo branch show --object "$OBJECT"
+kairo branch list --object "$OBJECT"
+
+# 6b. Compute the SnapshotId for object's effective state. By default this
+#     follows the creator-actor's "head" branch; --statement <id> pins the
+#     frontier directly.
+kairo snapshot compute --object "$OBJECT"
+# → prints `snapshot = zQm…`
+kairo snapshot compute --object "$OBJECT" --json
+
+# 7. Verify the most recent revision statement against the actor's genesis.
 #    (For now this command takes file paths; the upcoming store-backed
 #    `kairo verify` will resolve them automatically.)
 STATEMENT_FILE="$(find "$KAIRO_STORE/statements" -name '*.json' | head -n 1)"
@@ -57,7 +75,7 @@ kairo revision verify-actor-genesis \
   --statement "$STATEMENT_FILE" \
   --actor-genesis "$ACTOR_FILE"
 
-# 7. (Optional) Verify with --json for machine-readable output.
+# 7b. (Optional) Verify with --json for machine-readable output.
 kairo revision verify-actor-genesis \
   --statement "$STATEMENT_FILE" \
   --actor-genesis "$ACTOR_FILE" --json

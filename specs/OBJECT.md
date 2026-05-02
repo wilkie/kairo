@@ -57,23 +57,67 @@ establish Kairo authority unless signed Kairo statements bind them to an Object.
 A Snapshot ID uniquely identifies the **effective Kairo state** of an Object for
 a selected statement frontier.
 
-It is computed over:
+#### Frontier
+
+A **frontier** is the set of currently-selected `StatementId`s whose canonical
+contributions, taken together, define the Object's effective state. A
+frontier is *selected*, not derived: it is named directly as a finite set of
+statement IDs rather than computed from graph topology. The MVP selection
+rule is "follow the actor's `ObjectBranch` for `(object, name)` to its
+`ObjectRevision`," producing a single-element frontier; future statement
+types (`Provides`, `Build`, `Observation`, ...) join the frontier per facet,
+at most one currently-active statement per facet.
+
+The frontier is the basis for snapshot identity. Two nodes with the same
+frontier compute the same `SnapshotId`, regardless of which actor's branch
+they followed to get there or what local trust they assign.
+
+A frontier is **not** the head — `head` is one `ObjectBranch` name and a
+frontier may compose across multiple statement types and branches. Nor is it
+"all statements about the Object" (that is history, not a current cut). Nor
+is it "the leaves of the parent DAG" — leaves are structural; frontiers are
+explicit. See `GLOSSARY.md` for the canonical definition.
+
+#### Snapshot identity inputs
+
+A `SnapshotId` is computed over:
 
 - Object ID
-- active statement frontier
-- canonicalized effective metadata
-- artifact path mappings
-- referenced revision and blob IDs
-- purpose-specific closure metadata where required by `CORE_LIBRARY.md`
+- active statement frontier (sorted `StatementId`s)
+- referenced revision and manifest hash, derived from the frontier so the
+  snapshot is self-describing without re-fetching the underlying statements
+- (future) artifact path mappings, capability metadata, and any other
+  effective-state fields contributed by additional statement types as they
+  land
 
 It explicitly excludes:
 
 - build artifacts
 - federation metadata
 - availability or trust information
+- which actor's branch was used to resolve the frontier — snapshot identity
+  is over the frontier itself, not the resolution path
 
 Two snapshots with identical Object ID, active statement frontier, and canonical
 effective state MUST have identical Snapshot IDs.
+
+Canonical bytes and full derivation rules: `schemas/canonical/snapshot-v1.md`.
+
+#### MVP frontier
+
+In the MVP the only contributing statement type is `ObjectRevision`, so the
+frontier is a single `StatementId`. The default snapshot for an object is
+computed by:
+
+1. Resolving the latest `ObjectBranch` for `(actor, object, "head")` —
+   defaulting `actor` to `ObjectGenesis.created_by`.
+2. Following that branch to its `ObjectRevision` statement.
+3. Building a snapshot from `(object_id, [statement_id], revision_id, manifest_hash)`.
+
+Callers may bypass branch resolution by pinning a specific `ObjectRevision`
+`StatementId` directly. There is no implicit bootstrap from
+`ObjectGenesis.initial_revision` — without an `ObjectRevision` there is no
+manifest hash to bind, so no snapshot is yet defined.
 
 ### 2.4 What revision fields prove
 
