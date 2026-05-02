@@ -22,10 +22,10 @@ use kairo_statement::verify::{
     VerificationReport,
 };
 use kairo_statement::{
-    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, RevisionId,
-    Signature, SignedStatement, UnsignedStatement,
+    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    RevisionId, Signature, SignedStatement, UnsignedStatement,
 };
-use kairo_store::{ActorStore, FilesystemStore, ObjectStore, StatementStore};
+use kairo_store::{ActorStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore};
 
 #[derive(Debug, Parser)]
 #[command(name = "kairo", version)]
@@ -63,6 +63,50 @@ enum Command {
     Revision {
         #[command(subcommand)]
         command: RevisionCommand,
+    },
+    /// Work with named, mutable revision pointers (ObjectBranch).
+    Branch {
+        #[command(subcommand)]
+        command: BranchCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BranchCommand {
+    /// Sign a new ObjectBranch statement that points name at revision and
+    /// supersedes any earlier branch with the same (actor, object, name).
+    Set {
+        /// Actor whose key signs the branch update.
+        #[arg(long)]
+        actor: String,
+        /// Object whose lineage the branch belongs to.
+        #[arg(long)]
+        object: String,
+        /// StatementId of the ObjectRevision the branch points at.
+        #[arg(long)]
+        revision: String,
+        /// Branch name (defaults to "head").
+        #[arg(long, default_value = "head")]
+        name: String,
+    },
+    /// Resolve and print the current branch tip for (actor, object, name).
+    Show {
+        #[arg(long)]
+        object: String,
+        /// Actor whose branch tip to resolve. Defaults to ObjectGenesis.created_by.
+        #[arg(long)]
+        actor: Option<String>,
+        /// Branch name (defaults to "head").
+        #[arg(long, default_value = "head")]
+        name: String,
+        /// Emit a stable JSON representation.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all known (actor, name) branch tips for an object.
+    List {
+        #[arg(long)]
+        object: String,
     },
 }
 
@@ -208,6 +252,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Manifest { command }) => run_manifest_command(command),
         Some(Command::Object { command }) => run_object_command(command, &paths),
         Some(Command::Revision { command }) => run_revision_command(command, &paths),
+        Some(Command::Branch { command }) => run_branch_command(command, &paths),
         None => Ok(help_text()),
     }
 }
@@ -581,6 +626,186 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
             Ok(format_revision_list(&object_id, &revisions))
         }
     }
+}
+
+fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        BranchCommand::Set {
+            actor,
+            object,
+            revision,
+            name,
+        } => {
+            let actor_id = ActorId::new(actor.clone())
+                .map_err(|source| CliError::ParseActorId { actor, source })?;
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let revision_id = kairo_core::StatementId::new(revision.clone()).map_err(|source| {
+                CliError::ParseStatementId {
+                    statement: revision,
+                    source,
+                }
+            })?;
+
+            let store = open_store(paths)?;
+            let keystore = open_keystore(paths)?;
+
+            let actor_body = store
+                .get_actor(&actor_id)
+                .map_err(|error| CliError::ReadActor {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+            let secret =
+                keystore
+                    .get_signing_key(&actor_id)
+                    .map_err(|error| CliError::ReadKey {
+                        actor: actor_id.clone(),
+                        source: error,
+                    })?;
+            if &secret.public_key() != actor_body.initial_key() {
+                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+            }
+
+            // Confirm the revision exists locally and binds to the same
+            // object — fail fast rather than leaving a dangling branch.
+            let pointed = store.get_object_revision(&revision_id).map_err(|error| {
+                CliError::ReadRevision {
+                    statement: revision_id.clone(),
+                    source: error,
+                }
+            })?;
+            if pointed.unsigned().body().object() != &object_id {
+                return Err(CliError::BranchObjectMismatch {
+                    branch_object: object_id,
+                    revision_object: pointed.unsigned().body().object().clone(),
+                });
+            }
+
+            let body = ObjectBranchBody::new(object_id.clone(), name.clone(), revision_id.clone());
+            let subject: KairoRef = format!("object:{object_id}").parse().map_err(|source| {
+                CliError::BuildSubjectRef {
+                    object: object_id.clone(),
+                    source,
+                }
+            })?;
+            let unsigned =
+                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+            let signature = Signature::new(
+                actor_id.clone(),
+                secret.public_key().key_id().to_string(),
+                "ed25519",
+                signature_bytes.bytes().to_vec(),
+            );
+            let signed = SignedStatement::new(unsigned, signature);
+            let statement_id = signed.statement_id();
+
+            store
+                .put_object_branch(&signed)
+                .map_err(|error| CliError::WriteBranch {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+
+            Ok(format!(
+                "set branch\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\nname = {name}\nrevision = {revision_id}\n"
+            ))
+        }
+        BranchCommand::Show {
+            object,
+            actor,
+            name,
+            json,
+        } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+
+            let actor_id = match actor {
+                Some(actor) => ActorId::new(actor.clone())
+                    .map_err(|source| CliError::ParseActorId { actor, source })?,
+                None => {
+                    let genesis = store.get_object_genesis(&object_id).map_err(|error| {
+                        CliError::ReadObjectGenesis {
+                            object: object_id.clone(),
+                            source: error,
+                        }
+                    })?;
+                    genesis.body().created_by().clone()
+                }
+            };
+
+            let resolved = store
+                .latest_branch(&actor_id, &object_id, &name)
+                .map_err(CliError::ReadBranch)?;
+
+            match resolved {
+                Some(signed) => {
+                    if json {
+                        Ok(format_branch_show_json(&signed))
+                    } else {
+                        Ok(format_branch_show(&signed))
+                    }
+                }
+                None => Err(CliError::BranchNotFound {
+                    actor: actor_id,
+                    object: object_id,
+                    name,
+                }),
+            }
+        }
+        BranchCommand::List { object } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+            let tips = store
+                .list_branches(&object_id)
+                .map_err(CliError::ReadBranch)?;
+            Ok(format_branch_list(&object_id, &tips))
+        }
+    }
+}
+
+fn format_branch_show(signed: &SignedStatement<ObjectBranchBody>) -> String {
+    let body = signed.unsigned().body();
+    format!(
+        "statement = {}\nobject = {}\nactor = {}\nname = {}\nrevision = {}\ncreated_at = {}\n",
+        signed.statement_id(),
+        body.object(),
+        signed.unsigned().actor(),
+        body.name(),
+        body.revision(),
+        signed.unsigned().created_at()
+    )
+}
+
+fn format_branch_show_json(signed: &SignedStatement<ObjectBranchBody>) -> String {
+    let body = signed.unsigned().body();
+    let value = serde_json::json!({
+        "statement_id": signed.statement_id().to_string(),
+        "actor": signed.unsigned().actor().to_string(),
+        "object": body.object().to_string(),
+        "name": body.name(),
+        "revision": body.revision().to_string(),
+        "created_at": signed.unsigned().created_at().to_string(),
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
+fn format_branch_list(object: &ObjectId, tips: &[kairo_store::BranchTip]) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("object = {object}\n"));
+    output.push_str(&format!("branches = {}\n", tips.len()));
+    for tip in tips {
+        output.push_str(&format!(
+            "  actor={} name={} statement={} created_at={}\n",
+            tip.actor, tip.name, tip.statement_id, tip.created_at,
+        ));
+    }
+    output
 }
 
 fn read_manifest(path: PathBuf) -> Result<ObjectManifest, CliError> {
@@ -1021,7 +1246,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -1106,6 +1331,24 @@ enum CliError {
     ScanStatements {
         path: PathBuf,
         source: std::io::Error,
+    },
+    WriteBranch {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    ReadBranch(kairo_store::StoreError),
+    ReadObjectGenesis {
+        object: ObjectId,
+        source: kairo_store::StoreError,
+    },
+    BranchObjectMismatch {
+        branch_object: ObjectId,
+        revision_object: ObjectId,
+    },
+    BranchNotFound {
+        actor: ActorId,
+        object: ObjectId,
+        name: String,
     },
     ManifestObjectMismatch {
         manifest_object: ObjectId,
@@ -1199,6 +1442,24 @@ impl fmt::Display for CliError {
                     path.display()
                 )
             }
+            Self::WriteBranch { statement, source } => {
+                write!(f, "failed to write branch statement {statement}: {source}")
+            }
+            Self::ReadBranch(error) => write!(f, "failed to read branch: {error}"),
+            Self::ReadObjectGenesis { object, source } => {
+                write!(f, "failed to read object genesis {object}: {source}")
+            }
+            Self::BranchObjectMismatch {
+                branch_object,
+                revision_object,
+            } => write!(
+                f,
+                "branch declares object {branch_object} but the pointed-at revision binds to {revision_object}"
+            ),
+            Self::BranchNotFound { actor, object, name } => write!(
+                f,
+                "no branch named {name} for actor {actor} on object {object}"
+            ),
             Self::ManifestObjectMismatch {
                 manifest_object,
                 cli_object,
@@ -1243,7 +1504,10 @@ impl Error for CliError {
             | Self::ReadActor { source, .. }
             | Self::WriteObjectGenesis { source, .. }
             | Self::WriteRevision { source, .. }
-            | Self::ReadRevision { source, .. } => Some(source),
+            | Self::ReadRevision { source, .. }
+            | Self::WriteBranch { source, .. }
+            | Self::ReadObjectGenesis { source, .. } => Some(source),
+            Self::ReadBranch(error) => Some(error),
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
             | Self::ReadKey { source, .. } => Some(source),
@@ -1256,6 +1520,8 @@ impl Error for CliError {
             | Self::HomeNotSet
             | Self::KeyDoesNotMatchActor { .. }
             | Self::ManifestObjectMismatch { .. }
+            | Self::BranchObjectMismatch { .. }
+            | Self::BranchNotFound { .. }
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64
@@ -1978,5 +2244,353 @@ mod tests {
             }
         }
         Err(format!("no {extension} file found under {}", root.display()).into())
+    }
+
+    #[test]
+    fn parses_branch_set_default_name() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "branch",
+            "set",
+            "--actor",
+            "zActor",
+            "--object",
+            "zObject",
+            "--revision",
+            "zRev",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Branch {
+                    command: BranchCommand::Set { name, .. }
+                })
+            }) if name == "head"
+        ));
+    }
+
+    #[test]
+    fn parses_branch_set_with_explicit_name() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "branch",
+            "set",
+            "--actor",
+            "zActor",
+            "--object",
+            "zObject",
+            "--revision",
+            "zRev",
+            "--name",
+            "release",
+        ]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Branch {
+                    command: BranchCommand::Set { name, .. }
+                })
+            }) if name == "release"
+        ));
+    }
+
+    #[test]
+    fn parses_branch_show_defaults_to_head() {
+        let cli = Cli::try_parse_from(["kairo", "branch", "show", "--object", "zObject"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Branch {
+                    command: BranchCommand::Show {
+                        actor: None,
+                        name,
+                        json: false,
+                        ..
+                    }
+                })
+            }) if name == "head"
+        ));
+    }
+
+    #[test]
+    fn parses_branch_list_command() {
+        let cli = Cli::try_parse_from(["kairo", "branch", "list", "--object", "zObject"]);
+
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Branch {
+                    command: BranchCommand::List { object }
+                })
+            }) if object == "zObject"
+        ));
+    }
+
+    #[test]
+    fn end_to_end_branch_set_show_list() -> Result<(), Box<dyn std::error::Error>> {
+        // Drive create + revision into a temp store, then exercise branch
+        // set / show / list and prove that supersession moves the index.
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_dir = tempfile::TempDir::new()?;
+        let manifest_path = manifest_dir.path().join("kairo.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"[kairo]
+schema = 1
+kind = "software"
+name = "Example"
+
+[content]
+kind = "tree"
+"#,
+        )?;
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+
+        // Two revisions on the same object so we can supersede a branch tip.
+        let r1 = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: "git:sha256:r1".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let r1_statement = parse_field(&r1, "statement = ")?;
+
+        // Force a strictly greater created_at by pausing briefly. Timestamp
+        // resolution is whole seconds, so wait one full second to guarantee
+        // strict supersession.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let r2 = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: "git:sha256:r2".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec!["git:sha256:r1".to_owned()],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let r2_statement = parse_field(&r2, "statement = ")?;
+        assert_ne!(r1_statement, r2_statement);
+
+        // Set head to r1.
+        let set_r1 = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: r1_statement.clone(),
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+        assert!(set_r1.contains("set branch"));
+        assert!(set_r1.contains(&r1_statement));
+
+        // Show should currently return r1.
+        let show_r1 = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Show {
+                    object: object_id.clone(),
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(show_r1.contains(&r1_statement));
+
+        // Pause again so the supersession ordering is unambiguous at
+        // whole-second granularity.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        // Advance head to r2.
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: r2_statement.clone(),
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        // Show should now return r2.
+        let show_r2 = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Show {
+                    object: object_id.clone(),
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: true,
+                },
+            }),
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&show_r2)?;
+        assert_eq!(parsed["revision"], r2_statement);
+
+        // List should report exactly one branch tip for the object.
+        let list_text = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::List {
+                    object: object_id.clone(),
+                },
+            }),
+        })?;
+        assert!(list_text.contains("branches = 1"));
+        assert!(list_text.contains("name=head"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn branch_set_rejects_revision_for_wrong_object() -> Result<(), Box<dyn std::error::Error>> {
+        // Set up two distinct objects and try to point object A's branch at
+        // a revision that binds to object B. The branch set command must
+        // fail rather than create a dangling pointer.
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_dir = tempfile::TempDir::new()?;
+        let manifest_path = manifest_dir.path().join("kairo.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"[kairo]
+schema = 1
+kind = "software"
+name = "Example"
+
+[content]
+kind = "tree"
+"#,
+        )?;
+
+        let actor_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+
+        let object_a = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Object {
+                    command: ObjectSubcommand::Create {
+                        actor: actor_id.clone(),
+                        kind: "software".to_owned(),
+                        initial_revision: None,
+                    },
+                }),
+            })?,
+            "object = ",
+        )?;
+        let object_b = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Object {
+                    command: ObjectSubcommand::Create {
+                        actor: actor_id.clone(),
+                        kind: "software".to_owned(),
+                        initial_revision: Some("git:sha256:bootstrap".to_owned()),
+                    },
+                }),
+            })?,
+            "object = ",
+        )?;
+        assert_ne!(object_a, object_b);
+
+        let r_b = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_b.clone(),
+                    revision: "git:sha256:rb".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let r_b_statement = parse_field(&r_b, "statement = ")?;
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_a,
+                    revision: r_b_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        });
+
+        assert!(matches!(result, Err(CliError::BranchObjectMismatch { .. })));
+        Ok(())
     }
 }

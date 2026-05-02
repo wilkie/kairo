@@ -44,3 +44,4 @@ is explicitly a standalone reference.
 - `object-manifest-v1.md`
 - `object-genesis-v1.md`
 - `object-revision-v1.md`
+- `object-branch-v1.md`

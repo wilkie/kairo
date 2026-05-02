@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/object-branch-v1.schema.json",
+  "title": "Kairo ObjectBranch Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "properties": {
+    "type": {
+      "const": "ObjectBranch"
+    },
+    "version": {
+      "const": 1
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+    },
+    "subject": {
+      "type": "string",
+      "pattern": "^object:z[1-9A-HJ-NP-Za-km-z]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). No fractional seconds; no offsets other than Z."
+    },
+    "body": {
+      "type": "object",
+      "required": ["object", "name", "revision"],
+      "properties": {
+        "object": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Branch name. The string \"head\" is the conventional default but is not reserved."
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "StatementId of the pointed-at ObjectRevision."
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature"
+    }
+  },
+  "additionalProperties": false
+}

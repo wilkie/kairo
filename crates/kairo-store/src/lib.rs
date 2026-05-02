@@ -7,9 +7,15 @@
 //! Three independent traits split the responsibilities:
 //!
 //! - [`ActorStore`] — actor genesis bodies, indexed by [`ActorId`].
-//! - [`StatementStore`] — signed envelope statements (currently
-//!   `ObjectRevision`), indexed by [`StatementId`].
+//! - [`ObjectStore`] — signed `ObjectGenesis` statements, indexed by
+//!   [`ObjectId`].
+//! - [`StatementStore`] — signed envelope statements (`ObjectRevision`,
+//!   `ObjectBranch`), indexed by [`StatementId`].
 //! - [`BlobStore`] — raw bytes addressed by a caller-supplied [`BlobId`].
+//!
+//! [`BranchResolver`] resolves the current `(actor, object, name)`
+//! `ObjectBranch` tip via a per-object materialized index that
+//! `put_object_branch` keeps in sync.
 //!
 //! [`FilesystemStore`] implements all three. It also implements
 //! [`ActorResolver`] so `kairo-statement::verify` consumes a store directly.
@@ -21,6 +27,7 @@
 //! - Canonical-binary sidecars (`.canonical` files) preserving exact signed
 //!   bytes for federation/package exchange: revisit at TODO §9.
 
+mod branches;
 pub mod error;
 mod shard;
 
@@ -31,9 +38,14 @@ use std::path::{Path, PathBuf};
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
-use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
-use kairo_statement::{ObjectGenesisStatement, ObjectRevisionBody, SignedStatement};
+use kairo_statement::json::{
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+};
+use kairo_statement::{
+    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, SignedStatement,
+};
 
+pub use branches::BranchTip;
 pub use error::{CorruptReason, StoreError};
 
 const STORE_VERSION: &str = "1";
@@ -42,6 +54,7 @@ const VERSION_FILE: &str = "version.txt";
 const ACTORS_DIR: &str = "actors";
 const OBJECTS_DIR: &str = "objects";
 const STATEMENTS_DIR: &str = "statements";
+const BRANCHES_DIR: &str = "branches";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -73,9 +86,13 @@ pub trait ObjectStore {
 
 /// Persistence interface for envelope-wrapped signed statements.
 ///
-/// Today only `ObjectRevision` is supported. New statement types will add new
-/// methods alongside; do not collapse them into a single generic until the
-/// shape of the second statement type is known.
+/// Today `ObjectRevision` and `ObjectBranch` are supported. New statement
+/// types add new methods alongside; do not collapse them into a single
+/// generic until the shape of more statement types is known.
+///
+/// `put_object_branch` also updates the per-object branch tip index, so a
+/// later `BranchResolver::latest_branch` call returns the new tip without
+/// scanning all branch statements.
 pub trait StatementStore {
     fn put_object_revision(
         &self,
@@ -86,6 +103,36 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ObjectRevisionBody>, StoreError>;
+
+    fn put_object_branch(
+        &self,
+        statement: &SignedStatement<ObjectBranchBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_object_branch(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ObjectBranchBody>, StoreError>;
+}
+
+/// Resolver for the current `(actor, object, name)` branch tip.
+///
+/// Backed by the per-object tip index materialized in
+/// `<root>/branches/<XX>/<YY>/<object-id>.json`. The MVP implementation
+/// always queries the index; rebuilding the index from underlying
+/// statements is future work.
+pub trait BranchResolver {
+    /// Latest `ObjectBranch` statement for `(actor, object, name)`.
+    /// Returns `None` if no branch with that name has been published.
+    fn latest_branch(
+        &self,
+        actor: &ActorId,
+        object: &ObjectId,
+        name: &str,
+    ) -> Result<Option<SignedStatement<ObjectBranchBody>>, StoreError>;
+
+    /// All known `(actor, name)` branch tips for an object.
+    fn list_branches(&self, object: &ObjectId) -> Result<Vec<BranchTip>, StoreError>;
 }
 
 /// Persistence interface for raw byte blobs.
@@ -254,6 +301,148 @@ impl StatementStore for FilesystemStore {
             });
         }
         Ok(signed)
+    }
+
+    fn put_object_branch(
+        &self,
+        statement: &SignedStatement<ObjectBranchBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ObjectBranchStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let object = statement.unsigned().body().object();
+        let name = statement.unsigned().body().name();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_branch_index(object, actor, name, &id, created_at)?;
+
+        Ok(id)
+    }
+
+    fn get_object_branch(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ObjectBranchBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ObjectBranchStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+}
+
+impl FilesystemStore {
+    fn upsert_branch_index(
+        &self,
+        object: &ObjectId,
+        actor: &ActorId,
+        name: &str,
+        statement_id: &StatementId,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let path = self.shard_path(BRANCHES_DIR, object.as_str(), JSON_SUFFIX)?;
+        let mut index =
+            match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<branches::BranchIndexFile>(&bytes).map_err(
+                    |error| StoreError::Corrupt {
+                        id: object.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid branch index: {error}")),
+                    },
+                )?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    branches::BranchIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
+
+        let updated = index.upsert(actor, name, statement_id, created_at);
+        if updated {
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_branch_index(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Option<branches::BranchIndexFile>, StoreError> {
+        let path = self.shard_path(BRANCHES_DIR, object.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: branches::BranchIndexFile =
+                    serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                        id: object.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid branch index: {error}")),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+}
+
+impl BranchResolver for FilesystemStore {
+    fn latest_branch(
+        &self,
+        actor: &ActorId,
+        object: &ObjectId,
+        name: &str,
+    ) -> Result<Option<SignedStatement<ObjectBranchBody>>, StoreError> {
+        let Some(index) = self.read_branch_index(object)? else {
+            return Ok(None);
+        };
+        let Some(entry) = index.lookup(actor, name) else {
+            return Ok(None);
+        };
+        let statement_id =
+            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
+                id: entry.statement_id.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid statement id in branch index: {error}"
+                )),
+            })?;
+        let signed = self.get_object_branch(&statement_id)?;
+
+        if signed.unsigned().actor() != actor
+            || signed.unsigned().body().object() != object
+            || signed.unsigned().body().name() != name
+        {
+            return Err(StoreError::Corrupt {
+                id: statement_id.to_string(),
+                reason: CorruptReason::Parse(
+                    "branch index points at a statement with mismatched (actor, object, name)"
+                        .to_owned(),
+                ),
+            });
+        }
+
+        Ok(Some(signed))
+    }
+
+    fn list_branches(&self, object: &ObjectId) -> Result<Vec<BranchTip>, StoreError> {
+        let Some(index) = self.read_branch_index(object)? else {
+            return Ok(Vec::new());
+        };
+        index.into_tips(object)
     }
 }
 
@@ -640,6 +829,201 @@ mod tests {
             .join(shard2)
             .join(format!("{id}.json"));
         assert!(expected.exists(), "expected sharded path {expected:?}");
+        Ok(())
+    }
+
+    fn signed_branch(
+        actor: ActorId,
+        object: ObjectId,
+        name: &str,
+        revision: StatementId,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ObjectBranchBody>, Box<dyn std::error::Error>> {
+        let body = ObjectBranchBody::new(object.clone(), name, revision);
+        let subject: KairoRef = format!("object:{object}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn round_trips_object_branch() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let revision = StatementId::from_sha256_digest([0xAA; 32]);
+        let signed = signed_branch(actor, object, "head", revision, timestamp())?;
+        let id = store.put_object_branch(&signed)?;
+        let loaded = store.get_object_branch(&id)?;
+        assert_eq!(loaded, signed);
+        Ok(())
+    }
+
+    #[test]
+    fn latest_branch_returns_most_recent() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let earlier = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            Timestamp::from_seconds(timestamp().seconds()),
+        )?;
+        let later = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_branch(&earlier)?;
+        store.put_object_branch(&later)?;
+
+        let resolved = store.latest_branch(&actor, &object, "head")?;
+        assert_eq!(resolved, Some(later));
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_branch_after_later_does_not_supersede() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let later = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        let earlier = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            Timestamp::from_seconds(timestamp().seconds()),
+        )?;
+        // Insert later first, then an earlier write should not move the index.
+        store.put_object_branch(&later)?;
+        store.put_object_branch(&earlier)?;
+
+        let resolved = store.latest_branch(&actor, &object, "head")?;
+        assert_eq!(resolved, Some(later));
+        // But the earlier branch is still on disk by its statement id.
+        assert!(store.get_object_branch(&earlier.statement_id()).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_branch_returns_none() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let resolved = store.latest_branch(&actor, &object, "head")?;
+        assert!(resolved.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn branches_are_independent_per_name() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let head = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            timestamp(),
+        )?;
+        let release = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "release",
+            StatementId::from_sha256_digest([0xCC; 32]),
+            timestamp(),
+        )?;
+        store.put_object_branch(&head)?;
+        store.put_object_branch(&release)?;
+
+        assert_eq!(store.latest_branch(&actor, &object, "head")?, Some(head));
+        assert_eq!(
+            store.latest_branch(&actor, &object, "release")?,
+            Some(release)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_branches_returns_all_tips_for_object() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let head = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            timestamp(),
+        )?;
+        let release = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "release",
+            StatementId::from_sha256_digest([0xCC; 32]),
+            timestamp(),
+        )?;
+        store.put_object_branch(&head)?;
+        store.put_object_branch(&release)?;
+
+        let tips = store.list_branches(&object)?;
+        assert_eq!(tips.len(), 2);
+        let names: Vec<_> = tips.iter().map(|tip| tip.name.as_str()).collect();
+        assert!(names.contains(&"head"));
+        assert!(names.contains(&"release"));
+        Ok(())
+    }
+
+    #[test]
+    fn branch_index_path_is_sharded() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let signed = signed_branch(
+            actor,
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            timestamp(),
+        )?;
+        store.put_object_branch(&signed)?;
+
+        let shard1 = &object.as_str()[3..5];
+        let shard2 = &object.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(BRANCHES_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{object}.json"));
+        assert!(expected.exists(), "expected branch index at {expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn list_branches_for_unknown_object_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let object = ObjectId::new(OBJECT_ID)?;
+        let tips = store.list_branches(&object)?;
+        assert!(tips.is_empty());
         Ok(())
     }
 }

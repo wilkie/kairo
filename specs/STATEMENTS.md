@@ -112,6 +112,24 @@ The canonical ObjectGenesis v1 form is documented in:
 schemas/canonical/object-genesis-v1.md
 ```
 
+### 4.2a ObjectBranch Statement
+
+An `ObjectBranch` statement is a named, actor-scoped, mutable pointer at a
+specific `ObjectRevision` statement. Resolution rule: for
+`(actor, object, name)`, the current branch is whichever `ObjectBranch`
+statement signed by that actor for that pair has the greatest
+`(envelope.created_at, statement_id)`. Older `ObjectBranch` statements stay
+valid evidence of past claims; only the latest is load-bearing.
+
+`name = "head"` is the conventional default the CLI assumes when no name is
+given. It is not reserved at the protocol level.
+
+The canonical ObjectBranch v1 form is documented in:
+
+```text
+schemas/canonical/object-branch-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo

@@ -3,12 +3,12 @@ use std::fmt;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, Timestamp, TimestampError};
+use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, TimestampError};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ObjectGenesisBody, ObjectKind, ObjectRevisionBody, RevisionId, Signature, SignedStatement,
-    UnsignedStatement,
+    ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody, RevisionId, Signature,
+    SignedStatement, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +25,7 @@ pub enum StatementJsonError {
     InvalidObject(kairo_core::IdError),
     InvalidSubject(kairo_core::IdError),
     InvalidBlob(kairo_core::IdError),
+    InvalidStatement(kairo_core::IdError),
     InvalidNonceHex,
     InvalidSignatureBase64,
     InvalidCreatedAt(TimestampError),
@@ -46,6 +47,7 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidObject(error) => write!(f, "invalid object id: {error}"),
             Self::InvalidSubject(error) => write!(f, "invalid subject reference: {error}"),
             Self::InvalidBlob(error) => write!(f, "invalid blob id: {error}"),
+            Self::InvalidStatement(error) => write!(f, "invalid statement id: {error}"),
             Self::InvalidNonceHex => f.write_str("invalid ObjectGenesis nonce hex"),
             Self::InvalidSignatureBase64 => f.write_str("invalid signature base64"),
             Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
@@ -59,7 +61,8 @@ impl Error for StatementJsonError {
             Self::InvalidActor(error)
             | Self::InvalidObject(error)
             | Self::InvalidSubject(error)
-            | Self::InvalidBlob(error) => Some(error),
+            | Self::InvalidBlob(error)
+            | Self::InvalidStatement(error) => Some(error),
             Self::InvalidCreatedAt(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
@@ -264,6 +267,82 @@ impl ObjectRevisionBodyJson {
                 .collect(),
             manifest_hash: body.manifest_hash().to_string(),
             attests_reachable_history: body.attests_reachable_history(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectBranchStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ObjectBranchBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ObjectBranchStatementJson {
+    pub fn to_statement(&self) -> Result<SignedStatement<ObjectBranchBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "ObjectBranch", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ObjectBranchBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ObjectBranch".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ObjectBranchBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectBranchBodyJson {
+    pub object: String,
+    pub name: String,
+    pub revision: String,
+}
+
+impl ObjectBranchBodyJson {
+    pub fn to_body(&self) -> Result<ObjectBranchBody, StatementJsonError> {
+        Ok(ObjectBranchBody::new(
+            ObjectId::new(self.object.clone()).map_err(StatementJsonError::InvalidObject)?,
+            self.name.clone(),
+            StatementId::new(self.revision.clone())
+                .map_err(StatementJsonError::InvalidStatement)?,
+        ))
+    }
+
+    pub fn from_body(body: &ObjectBranchBody) -> Self {
+        Self {
+            object: body.object().to_string(),
+            name: body.name().to_owned(),
+            revision: body.revision().to_string(),
         }
     }
 }
@@ -647,5 +726,110 @@ mod tests {
             created_at,
             body,
         ))
+    }
+
+    fn revision_statement_id() -> StatementId {
+        StatementId::from_sha256_digest([0x11; 32])
+    }
+
+    fn branch_json(name: &str, signature: &str) -> String {
+        let revision = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ObjectBranch",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "object": "{OBJECT_ID}",
+                "name": "{name}",
+                "revision": "{revision}"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_branch_json(
+        json: &str,
+    ) -> Result<SignedStatement<ObjectBranchBody>, serde_json::Error> {
+        let dto: ObjectBranchStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_branch_json_to_canonical_statement() {
+        let statement = parse_branch_json(&branch_json("head", "c2lnbmF0dXJl"));
+        let expected_revision = revision_statement_id();
+
+        assert!(matches!(
+            statement,
+            Ok(statement) if statement.unsigned().body().name() == "head"
+                && statement.unsigned().body().revision() == &expected_revision
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_branch_statement_id() {
+        let first = branch_json("head", "c2lnbmF0dXJlLW9uZQ==");
+        let revision = revision_statement_id();
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2lnbmF0dXJlLXR3bw==",
+                "algorithm": "example",
+                "key_id": "secondary",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "revision": "{revision}",
+                "name": "head",
+                "object": "{OBJECT_ID}"
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "object:{OBJECT_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ObjectBranch"
+            }}"#
+        );
+
+        let first_id = parse_branch_json(&first).map(|statement| statement.statement_id());
+        let second_id = parse_branch_json(&second).map(|statement| statement.statement_id());
+
+        assert!(
+            matches!((first_id, second_id), (Ok(first_id), Ok(second_id)) if first_id == second_id)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_branch_revision_statement_id() {
+        let body = ObjectBranchBodyJson {
+            object: OBJECT_ID.to_owned(),
+            name: "head".to_owned(),
+            revision: "not-a-statement-id".to_owned(),
+        };
+
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidStatement(_))
+        ));
+    }
+
+    #[test]
+    fn branch_round_trips_through_from_statement() -> Result<(), Box<dyn std::error::Error>> {
+        let original = parse_branch_json(&branch_json("release", "c2lnbmF0dXJl"))?;
+        let dto = ObjectBranchStatementJson::from_statement(&original);
+        let round_tripped = dto.to_statement()?;
+
+        assert_eq!(original.statement_id(), round_tripped.statement_id());
+        Ok(())
     }
 }

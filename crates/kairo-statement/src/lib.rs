@@ -285,6 +285,62 @@ impl CanonicalEncode for ObjectRevisionBody {
     }
 }
 
+/// Canonical ObjectBranch body v1 encoding is documented at
+/// `schemas/canonical/object-branch-v1.md`.
+///
+/// An `ObjectBranch` is a named, actor-scoped, mutable pointer at a specific
+/// `ObjectRevision` statement. Resolution: for a given
+/// `(actor, object, name)`, the current branch is whichever `ObjectBranch`
+/// statement signed by that actor for that pair has the greatest
+/// `(envelope.created_at, statement_id)`. Older `ObjectBranch` statements
+/// stay valid evidence of past claims; only the latest is load-bearing for
+/// resolution.
+///
+/// `name` is free-form. The string `"head"` is the conventional default
+/// across the CLI but is not reserved at the protocol level — actors can
+/// publish branches with any name (`"release"`, `"audit"`, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectBranchBody {
+    object: ObjectId,
+    name: String,
+    revision: StatementId,
+}
+
+impl ObjectBranchBody {
+    pub fn new(object: ObjectId, name: impl Into<String>, revision: StatementId) -> Self {
+        Self {
+            object,
+            name: name.into(),
+            revision,
+        }
+    }
+
+    pub fn object(&self) -> &ObjectId {
+        &self.object
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn revision(&self) -> &StatementId {
+        &self.revision
+    }
+}
+
+impl StatementBody for ObjectBranchBody {
+    const TYPE: &'static str = "ObjectBranch";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ObjectBranchBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.object.as_str());
+        encode_str(out, &self.name);
+        encode_str(out, self.revision.as_str());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectGenesisStatement {
     body: ObjectGenesisBody,
@@ -838,5 +894,107 @@ mod tests {
             "ed25519",
             signature.to_vec(),
         ))
+    }
+
+    fn statement_id_one() -> StatementId {
+        StatementId::from_sha256_digest([0x11; 32])
+    }
+
+    fn statement_id_two() -> StatementId {
+        StatementId::from_sha256_digest([0x22; 32])
+    }
+
+    fn unsigned_object_branch(
+        name: &str,
+        revision: StatementId,
+    ) -> Result<UnsignedStatement<ObjectBranchBody>, kairo_core::IdError> {
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            timestamp(),
+            ObjectBranchBody::new(object_id()?, name, revision),
+        ))
+    }
+
+    #[test]
+    fn same_object_branch_body_produces_same_statement_id() -> Result<(), kairo_core::IdError> {
+        let first = unsigned_object_branch("head", statement_id_one())?;
+        let second = unsigned_object_branch("head", statement_id_one())?;
+
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn object_branch_name_changes_statement_id() -> Result<(), kairo_core::IdError> {
+        let first = unsigned_object_branch("head", statement_id_one())?;
+        let second = unsigned_object_branch("release", statement_id_one())?;
+
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn object_branch_revision_changes_statement_id() -> Result<(), kairo_core::IdError> {
+        let first = unsigned_object_branch("head", statement_id_one())?;
+        let second = unsigned_object_branch("head", statement_id_two())?;
+
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn object_branch_created_at_changes_statement_id() -> Result<(), kairo_core::IdError> {
+        let body = ObjectBranchBody::new(object_id()?, "head", statement_id_one());
+        let first = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), body.clone());
+        let later = UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+            body,
+        );
+
+        assert_ne!(first.statement_id(), later.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn object_branch_signature_does_not_change_statement_id() -> Result<(), kairo_core::IdError> {
+        let unsigned = unsigned_object_branch("head", statement_id_one())?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_object_branch_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_object_branch("head", statement_id_one())?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_object_branch_signature_after_body_change() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let signed_unsigned = unsigned_object_branch("head", statement_id_one())?;
+        let tampered = unsigned_object_branch("release", statement_id_one())?;
+        let signature = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, signature);
+
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
     }
 }

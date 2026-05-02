@@ -402,6 +402,7 @@ dependencies = [
  "kairo-core",
  "kairo-identity",
  "kairo-statement",
+ "serde",
  "serde_json",
  "tempfile",
 ]
