@@ -7,7 +7,8 @@ use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, Ti
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody, RevisionId, Signature,
+    ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
+    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
     SignedStatement, UnsignedStatement,
 };
 
@@ -29,6 +30,8 @@ pub enum StatementJsonError {
     InvalidNonceHex,
     InvalidSignatureBase64,
     InvalidCreatedAt(TimestampError),
+    InvalidVersion(SemverParseError),
+    InvalidTagShape(ObjectVersionTagShapeError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -51,6 +54,8 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidNonceHex => f.write_str("invalid ObjectGenesis nonce hex"),
             Self::InvalidSignatureBase64 => f.write_str("invalid signature base64"),
             Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
+            Self::InvalidVersion(error) => write!(f, "{error}"),
+            Self::InvalidTagShape(error) => write!(f, "{error}"),
         }
     }
 }
@@ -64,6 +69,8 @@ impl Error for StatementJsonError {
             | Self::InvalidBlob(error)
             | Self::InvalidStatement(error) => Some(error),
             Self::InvalidCreatedAt(error) => Some(error),
+            Self::InvalidVersion(error) => Some(error),
+            Self::InvalidTagShape(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -343,6 +350,98 @@ impl ObjectBranchBodyJson {
             object: body.object().to_string(),
             name: body.name().to_owned(),
             revision: body.revision().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectVersionTagStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ObjectVersionTagBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ObjectVersionTagStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ObjectVersionTagBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "ObjectVersionTag", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ObjectVersionTagBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ObjectVersionTag".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ObjectVersionTagBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectVersionTagBodyJson {
+    pub object: String,
+    pub version: String,
+    pub target: Option<String>,
+    pub supersedes: Option<String>,
+}
+
+impl ObjectVersionTagBodyJson {
+    pub fn to_body(&self) -> Result<ObjectVersionTagBody, StatementJsonError> {
+        let object =
+            ObjectId::new(self.object.clone()).map_err(StatementJsonError::InvalidObject)?;
+        let semver_version =
+            SemverVersion::parse(&self.version).map_err(StatementJsonError::InvalidVersion)?;
+        let target = match &self.target {
+            Some(value) => Some(
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
+        let supersedes = match &self.supersedes {
+            Some(value) => Some(
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
+        ObjectVersionTagBody::new(object, semver_version, target, supersedes)
+            .map_err(StatementJsonError::InvalidTagShape)
+    }
+
+    pub fn from_body(body: &ObjectVersionTagBody) -> Self {
+        Self {
+            object: body.object().to_string(),
+            version: body.version().as_str().to_owned(),
+            target: body.target().map(|id| id.to_string()),
+            supersedes: body.supersedes().map(|id| id.to_string()),
         }
     }
 }
@@ -830,6 +929,177 @@ mod tests {
         let round_tripped = dto.to_statement()?;
 
         assert_eq!(original.statement_id(), round_tripped.statement_id());
+        Ok(())
+    }
+
+    fn version_tag_bind_json(version: &str, signature: &str) -> String {
+        let target = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ObjectVersionTag",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "object": "{OBJECT_ID}",
+                "version": "{version}",
+                "target": "{target}",
+                "supersedes": null
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn version_tag_revoke_json(version: &str, signature: &str) -> String {
+        let supersedes = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ObjectVersionTag",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "object": "{OBJECT_ID}",
+                "version": "{version}",
+                "target": null,
+                "supersedes": "{supersedes}"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_version_tag_json(
+        json: &str,
+    ) -> Result<SignedStatement<ObjectVersionTagBody>, serde_json::Error> {
+        let dto: ObjectVersionTagStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_version_tag_bind_json_to_canonical_statement() {
+        let statement = parse_version_tag_json(&version_tag_bind_json("1.2.3", "c2lnbmF0dXJl"));
+        let expected_target = revision_statement_id();
+        assert!(matches!(
+            statement,
+            Ok(statement) if statement.unsigned().body().version().as_str() == "1.2.3"
+                && statement.unsigned().body().target() == Some(&expected_target)
+                && statement.unsigned().body().supersedes().is_none()
+        ));
+    }
+
+    #[test]
+    fn parses_version_tag_revoke_json_to_canonical_statement() {
+        let statement = parse_version_tag_json(&version_tag_revoke_json("1.2.3", "c2lnbmF0dXJl"));
+        let expected_supersedes = revision_statement_id();
+        assert!(matches!(
+            statement,
+            Ok(statement) if statement.unsigned().body().is_revocation()
+                && statement.unsigned().body().supersedes() == Some(&expected_supersedes)
+        ));
+    }
+
+    #[test]
+    fn rejects_version_tag_with_invalid_semver() {
+        let body = ObjectVersionTagBodyJson {
+            object: OBJECT_ID.to_owned(),
+            version: "not.semver".to_owned(),
+            target: Some(revision_statement_id().to_string()),
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidVersion(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_version_tag_with_revoke_and_no_supersedes() {
+        let body = ObjectVersionTagBodyJson {
+            object: OBJECT_ID.to_owned(),
+            version: "1.2.3".to_owned(),
+            target: None,
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidTagShape(
+                ObjectVersionTagShapeError::RevokeWithoutSupersedes
+            ))
+        ));
+    }
+
+    #[test]
+    fn rejects_version_tag_with_invalid_target_statement_id() {
+        let body = ObjectVersionTagBodyJson {
+            object: OBJECT_ID.to_owned(),
+            version: "1.2.3".to_owned(),
+            target: Some("not-a-statement-id".to_owned()),
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidStatement(_))
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_version_tag_statement_id() {
+        let first = version_tag_bind_json("1.2.3", "c2lnbmF0dXJlLW9uZQ==");
+        let target = revision_statement_id();
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2lnbmF0dXJlLXR3bw==",
+                "algorithm": "example",
+                "key_id": "secondary",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "supersedes": null,
+                "target": "{target}",
+                "version": "1.2.3",
+                "object": "{OBJECT_ID}"
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "object:{OBJECT_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ObjectVersionTag"
+            }}"#
+        );
+        let first_id = parse_version_tag_json(&first).map(|s| s.statement_id());
+        let second_id = parse_version_tag_json(&second).map(|s| s.statement_id());
+        assert!(
+            matches!((first_id, second_id), (Ok(first_id), Ok(second_id)) if first_id == second_id)
+        );
+    }
+
+    #[test]
+    fn version_tag_round_trips_through_from_statement() -> Result<(), Box<dyn std::error::Error>> {
+        let bind = parse_version_tag_json(&version_tag_bind_json("1.2.3", "c2lnbmF0dXJl"))?;
+        let dto = ObjectVersionTagStatementJson::from_statement(&bind);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(bind.statement_id(), round_tripped.statement_id());
+
+        let revoke = parse_version_tag_json(&version_tag_revoke_json("1.2.3", "c2lnbmF0dXJl"))?;
+        let dto = ObjectVersionTagStatementJson::from_statement(&revoke);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(revoke.statement_id(), round_tripped.statement_id());
         Ok(())
     }
 }

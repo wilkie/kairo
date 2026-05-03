@@ -288,6 +288,33 @@ low-level primitive and never advances any branch on its own.
 conventional `"head"`. `branch list --object <id>` enumerates all known
 `(actor, name)` branch tips for the object.
 
+`tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>`
+signs and persists an `ObjectVersionTag` that binds the semver string to
+the given `ObjectRevision`. The CLI auto-computes the `supersedes`
+pointer: if the actor has a prior tag for that `(object, version)`, the
+new statement supersedes it; otherwise it is the genesis tag. The
+revision must bind to the same object as the tag; the command refuses
+to create a dangling pointer.
+
+`tag revoke --actor <id> --object <id> --version <semver>` signs an
+`ObjectVersionTag` whose `target` is `null`, withdrawing the version for
+that actor. Revocation requires a prior tag — the CLI sets `supersedes`
+to the actor's current head and errors if there is none.
+
+`tag show --object <id> [--actor <id>] --version <semver>` resolves the
+current head for `(actor, object, version)` and prints whether it is a
+bind or a revoke. `tag list --object <id>` enumerates known
+`(actor, version)` heads. `tag history --object <id> [--actor <id>]
+--version <semver>` walks the `supersedes` chain backwards from the head
+(newest first); a missing predecessor is reported as indeterminate
+rather than failing.
+
+Tag pointers are mutable. Consumers that need build reproducibility
+must record the resolved `StatementId` (or `SnapshotId`) — not the
+version string — in their lockfile equivalent. Two resolvers can
+disagree on `(actor, object, version)` if they have seen different
+subsets of the actor's tag history; this is by design.
+
 `snapshot compute --object <id>` resolves the chosen `ObjectRevision` and
 computes its `SnapshotId`. By default it follows the creator-actor's
 `"head"` branch; `--actor`, `--name`, and `--statement` override that

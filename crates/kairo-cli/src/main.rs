@@ -24,9 +24,12 @@ use kairo_statement::verify::{
 };
 use kairo_statement::{
     ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-    RevisionId, Signature, SignedStatement, UnsignedStatement,
+    ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion,
+    Signature, SignedStatement, UnsignedStatement,
 };
-use kairo_store::{ActorStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore};
+use kairo_store::{
+    ActorStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore, VersionTagResolver,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "kairo", version)]
@@ -70,10 +73,77 @@ enum Command {
         #[command(subcommand)]
         command: BranchCommand,
     },
+    /// Work with semver-named release pointers (ObjectVersionTag).
+    Tag {
+        #[command(subcommand)]
+        command: TagCommand,
+    },
     /// Compute a SnapshotId for an object's effective state.
     Snapshot {
         #[command(subcommand)]
         command: SnapshotCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TagCommand {
+    /// Sign a new ObjectVersionTag binding version to revision. If the
+    /// actor has previously published a tag for (object, version), the
+    /// new statement supersedes it; otherwise it is the genesis tag.
+    Bind {
+        /// Actor whose key signs the tag.
+        #[arg(long)]
+        actor: String,
+        /// Object whose lineage the tag belongs to.
+        #[arg(long)]
+        object: String,
+        /// Strict semver 2.0.0 version string (e.g. 1.2.3, 1.2.3-rc.1).
+        #[arg(long)]
+        version: String,
+        /// StatementId of the ObjectRevision the tag points at.
+        #[arg(long)]
+        revision: String,
+    },
+    /// Sign a new ObjectVersionTag that withdraws (actor, object, version).
+    /// Requires a prior tag to revoke; the supersedes pointer is auto-set
+    /// to the actor's current head for that version.
+    Revoke {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        object: String,
+        #[arg(long)]
+        version: String,
+    },
+    /// Resolve and print the current tag head for (actor, object, version).
+    Show {
+        #[arg(long)]
+        object: String,
+        /// Actor whose tag to resolve. Defaults to ObjectGenesis.created_by.
+        #[arg(long)]
+        actor: Option<String>,
+        #[arg(long)]
+        version: String,
+        /// Emit a stable JSON representation.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all known (actor, version) tag heads for an object.
+    List {
+        #[arg(long)]
+        object: String,
+    },
+    /// Walk the supersedes chain backwards from the current head, newest
+    /// first. Missing chain links are reported as indeterminate.
+    History {
+        #[arg(long)]
+        object: String,
+        #[arg(long)]
+        actor: Option<String>,
+        #[arg(long)]
+        version: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -286,6 +356,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Object { command }) => run_object_command(command, &paths),
         Some(Command::Revision { command }) => run_revision_command(command, &paths),
         Some(Command::Branch { command }) => run_branch_command(command, &paths),
+        Some(Command::Tag { command }) => run_tag_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         None => Ok(help_text()),
     }
@@ -842,6 +913,444 @@ fn format_branch_list(object: &ObjectId, tips: &[kairo_store::BranchTip]) -> Str
     output
 }
 
+fn run_tag_command(command: TagCommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        TagCommand::Bind {
+            actor,
+            object,
+            version,
+            revision,
+        } => {
+            let actor_id = ActorId::new(actor.clone())
+                .map_err(|source| CliError::ParseActorId { actor, source })?;
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let semver = SemverVersion::parse(&version).map_err(CliError::ParseSemver)?;
+            let revision_id = kairo_core::StatementId::new(revision.clone()).map_err(|source| {
+                CliError::ParseStatementId {
+                    statement: revision,
+                    source,
+                }
+            })?;
+
+            let store = open_store(paths)?;
+            let keystore = open_keystore(paths)?;
+
+            let actor_body = store
+                .get_actor(&actor_id)
+                .map_err(|error| CliError::ReadActor {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+            let secret =
+                keystore
+                    .get_signing_key(&actor_id)
+                    .map_err(|error| CliError::ReadKey {
+                        actor: actor_id.clone(),
+                        source: error,
+                    })?;
+            if &secret.public_key() != actor_body.initial_key() {
+                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+            }
+
+            // Confirm the revision exists locally and binds to the same
+            // object — fail fast rather than leaving a dangling tag.
+            let pointed = store.get_object_revision(&revision_id).map_err(|error| {
+                CliError::ReadRevision {
+                    statement: revision_id.clone(),
+                    source: error,
+                }
+            })?;
+            if pointed.unsigned().body().object() != &object_id {
+                return Err(CliError::TagObjectMismatch {
+                    tag_object: object_id,
+                    revision_object: pointed.unsigned().body().object().clone(),
+                });
+            }
+
+            // Auto-chain: if the actor already has a head for this version,
+            // supersede it; otherwise this is the genesis tag.
+            let supersedes = store
+                .latest_version_tag(&actor_id, &object_id, semver.as_str())
+                .map_err(CliError::ReadVersionTag)?
+                .map(|signed| signed.statement_id());
+
+            let body = ObjectVersionTagBody::new(
+                object_id.clone(),
+                semver.clone(),
+                Some(revision_id.clone()),
+                supersedes.clone(),
+            )
+            .map_err(CliError::TagShape)?;
+            let subject: KairoRef = format!("object:{object_id}").parse().map_err(|source| {
+                CliError::BuildSubjectRef {
+                    object: object_id.clone(),
+                    source,
+                }
+            })?;
+            let unsigned =
+                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+            let signature = Signature::new(
+                actor_id.clone(),
+                secret.public_key().key_id().to_string(),
+                "ed25519",
+                signature_bytes.bytes().to_vec(),
+            );
+            let signed = SignedStatement::new(unsigned, signature);
+            let statement_id = signed.statement_id();
+
+            store
+                .put_object_version_tag(&signed)
+                .map_err(|error| CliError::WriteVersionTag {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+
+            let supersedes_line = match supersedes {
+                Some(id) => format!("supersedes = {id}\n"),
+                None => "supersedes = (genesis)\n".to_owned(),
+            };
+            Ok(format!(
+                "bind tag\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\nversion = {}\ntarget = {revision_id}\n{supersedes_line}",
+                semver.as_str()
+            ))
+        }
+        TagCommand::Revoke {
+            actor,
+            object,
+            version,
+        } => {
+            let actor_id = ActorId::new(actor.clone())
+                .map_err(|source| CliError::ParseActorId { actor, source })?;
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let semver = SemverVersion::parse(&version).map_err(CliError::ParseSemver)?;
+
+            let store = open_store(paths)?;
+            let keystore = open_keystore(paths)?;
+
+            let actor_body = store
+                .get_actor(&actor_id)
+                .map_err(|error| CliError::ReadActor {
+                    actor: actor_id.clone(),
+                    source: error,
+                })?;
+            let secret =
+                keystore
+                    .get_signing_key(&actor_id)
+                    .map_err(|error| CliError::ReadKey {
+                        actor: actor_id.clone(),
+                        source: error,
+                    })?;
+            if &secret.public_key() != actor_body.initial_key() {
+                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+            }
+
+            // Revocation requires a prior tag to chain off of.
+            let prior = store
+                .latest_version_tag(&actor_id, &object_id, semver.as_str())
+                .map_err(CliError::ReadVersionTag)?
+                .ok_or_else(|| CliError::RevokeWithoutPriorTag {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    version: semver.as_str().to_owned(),
+                })?;
+            let supersedes_id = prior.statement_id();
+
+            let body = ObjectVersionTagBody::new(
+                object_id.clone(),
+                semver.clone(),
+                None,
+                Some(supersedes_id.clone()),
+            )
+            .map_err(CliError::TagShape)?;
+            let subject: KairoRef = format!("object:{object_id}").parse().map_err(|source| {
+                CliError::BuildSubjectRef {
+                    object: object_id.clone(),
+                    source,
+                }
+            })?;
+            let unsigned =
+                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+            let signature = Signature::new(
+                actor_id.clone(),
+                secret.public_key().key_id().to_string(),
+                "ed25519",
+                signature_bytes.bytes().to_vec(),
+            );
+            let signed = SignedStatement::new(unsigned, signature);
+            let statement_id = signed.statement_id();
+
+            store
+                .put_object_version_tag(&signed)
+                .map_err(|error| CliError::WriteVersionTag {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+
+            Ok(format!(
+                "revoke tag\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\nversion = {}\ntarget = (revoked)\nsupersedes = {supersedes_id}\n",
+                semver.as_str()
+            ))
+        }
+        TagCommand::Show {
+            object,
+            actor,
+            version,
+            json,
+        } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let semver = SemverVersion::parse(&version).map_err(CliError::ParseSemver)?;
+            let store = open_store(paths)?;
+
+            let actor_id = match actor {
+                Some(actor) => ActorId::new(actor.clone())
+                    .map_err(|source| CliError::ParseActorId { actor, source })?,
+                None => {
+                    let genesis = store.get_object_genesis(&object_id).map_err(|error| {
+                        CliError::ReadObjectGenesis {
+                            object: object_id.clone(),
+                            source: error,
+                        }
+                    })?;
+                    genesis.body().created_by().clone()
+                }
+            };
+
+            let resolved = store
+                .latest_version_tag(&actor_id, &object_id, semver.as_str())
+                .map_err(CliError::ReadVersionTag)?;
+
+            match resolved {
+                Some(signed) => {
+                    if json {
+                        Ok(format_tag_show_json(&signed))
+                    } else {
+                        Ok(format_tag_show(&signed))
+                    }
+                }
+                None => Err(CliError::TagNotFound {
+                    actor: actor_id,
+                    object: object_id,
+                    version: semver.as_str().to_owned(),
+                }),
+            }
+        }
+        TagCommand::List { object } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+            let heads = store
+                .list_version_tags(&object_id)
+                .map_err(CliError::ReadVersionTag)?;
+            Ok(format_tag_list(&object_id, &heads))
+        }
+        TagCommand::History {
+            object,
+            actor,
+            version,
+            json,
+        } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let semver = SemverVersion::parse(&version).map_err(CliError::ParseSemver)?;
+            let store = open_store(paths)?;
+
+            let actor_id = match actor {
+                Some(actor) => ActorId::new(actor.clone())
+                    .map_err(|source| CliError::ParseActorId { actor, source })?,
+                None => {
+                    let genesis = store.get_object_genesis(&object_id).map_err(|error| {
+                        CliError::ReadObjectGenesis {
+                            object: object_id.clone(),
+                            source: error,
+                        }
+                    })?;
+                    genesis.body().created_by().clone()
+                }
+            };
+
+            let head = store
+                .latest_version_tag(&actor_id, &object_id, semver.as_str())
+                .map_err(CliError::ReadVersionTag)?
+                .ok_or_else(|| CliError::TagNotFound {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    version: semver.as_str().to_owned(),
+                })?;
+
+            let chain = walk_tag_chain(&store, head)?;
+            if json {
+                Ok(format_tag_history_json(&actor_id, &object_id, semver.as_str(), &chain))
+            } else {
+                Ok(format_tag_history(&actor_id, &object_id, semver.as_str(), &chain))
+            }
+        }
+    }
+}
+
+/// One link in a version tag history walk. `Indeterminate` marks the
+/// point where the chain leaves the local store.
+#[derive(Debug)]
+enum TagChainLink {
+    Statement(Box<SignedStatement<ObjectVersionTagBody>>),
+    Indeterminate { missing: kairo_core::StatementId },
+}
+
+fn walk_tag_chain(
+    store: &FilesystemStore,
+    head: SignedStatement<ObjectVersionTagBody>,
+) -> Result<Vec<TagChainLink>, CliError> {
+    let mut chain = Vec::new();
+    let mut next = Some(head);
+    while let Some(signed) = next {
+        let supersedes = signed.unsigned().body().supersedes().cloned();
+        chain.push(TagChainLink::Statement(Box::new(signed)));
+        match supersedes {
+            Some(prior_id) => match store.get_object_version_tag(&prior_id) {
+                Ok(prior) => next = Some(prior),
+                Err(kairo_store::StoreError::Missing) => {
+                    chain.push(TagChainLink::Indeterminate { missing: prior_id });
+                    next = None;
+                }
+                Err(error) => return Err(CliError::ReadVersionTag(error)),
+            },
+            None => next = None,
+        }
+    }
+    Ok(chain)
+}
+
+fn format_tag_show(signed: &SignedStatement<ObjectVersionTagBody>) -> String {
+    let body = signed.unsigned().body();
+    let target = match body.target() {
+        Some(id) => id.to_string(),
+        None => "(revoked)".to_owned(),
+    };
+    let supersedes = match body.supersedes() {
+        Some(id) => id.to_string(),
+        None => "(genesis)".to_owned(),
+    };
+    format!(
+        "statement = {}\nobject = {}\nactor = {}\nversion = {}\ntarget = {target}\nsupersedes = {supersedes}\ncreated_at = {}\n",
+        signed.statement_id(),
+        body.object(),
+        signed.unsigned().actor(),
+        body.version().as_str(),
+        signed.unsigned().created_at(),
+    )
+}
+
+fn format_tag_show_json(signed: &SignedStatement<ObjectVersionTagBody>) -> String {
+    let body = signed.unsigned().body();
+    let value = serde_json::json!({
+        "statement_id": signed.statement_id().to_string(),
+        "actor": signed.unsigned().actor().to_string(),
+        "object": body.object().to_string(),
+        "version": body.version().as_str(),
+        "target": body.target().map(|id| id.to_string()),
+        "supersedes": body.supersedes().map(|id| id.to_string()),
+        "is_revocation": body.is_revocation(),
+        "created_at": signed.unsigned().created_at().to_string(),
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
+fn format_tag_list(object: &ObjectId, heads: &[kairo_store::VersionTagHead]) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("object = {object}\n"));
+    output.push_str(&format!("tags = {}\n", heads.len()));
+    for head in heads {
+        output.push_str(&format!(
+            "  actor={} version={} statement={} created_at={}\n",
+            head.actor, head.version, head.statement_id, head.created_at,
+        ));
+    }
+    output
+}
+
+fn format_tag_history(
+    actor: &ActorId,
+    object: &ObjectId,
+    version: &str,
+    chain: &[TagChainLink],
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("object = {object}\n"));
+    output.push_str(&format!("actor = {actor}\n"));
+    output.push_str(&format!("version = {version}\n"));
+    output.push_str("history (newest -> oldest):\n");
+    for (idx, link) in chain.iter().enumerate() {
+        let n = idx + 1;
+        match link {
+            TagChainLink::Statement(signed) => {
+                let body = signed.unsigned().body();
+                let kind = if body.is_revocation() { "revoke" } else { "bind" };
+                let target = match body.target() {
+                    Some(id) => format!(" target={id}"),
+                    None => String::new(),
+                };
+                let supersedes = match body.supersedes() {
+                    Some(id) => format!(" supersedes={id}"),
+                    None => " (genesis)".to_owned(),
+                };
+                output.push_str(&format!(
+                    "  {n}. statement={} created_at={} kind={kind}{target}{supersedes}\n",
+                    signed.statement_id(),
+                    signed.unsigned().created_at(),
+                ));
+            }
+            TagChainLink::Indeterminate { missing } => {
+                output.push_str(&format!(
+                    "  {n}. (missing) statement={missing} — chain truncated; import the predecessor to continue\n"
+                ));
+            }
+        }
+    }
+    output
+}
+
+fn format_tag_history_json(
+    actor: &ActorId,
+    object: &ObjectId,
+    version: &str,
+    chain: &[TagChainLink],
+) -> String {
+    let entries: Vec<_> = chain
+        .iter()
+        .map(|link| match link {
+            TagChainLink::Statement(signed) => {
+                let body = signed.unsigned().body();
+                serde_json::json!({
+                    "kind": if body.is_revocation() { "revoke" } else { "bind" },
+                    "statement_id": signed.statement_id().to_string(),
+                    "target": body.target().map(|id| id.to_string()),
+                    "supersedes": body.supersedes().map(|id| id.to_string()),
+                    "created_at": signed.unsigned().created_at().to_string(),
+                })
+            }
+            TagChainLink::Indeterminate { missing } => serde_json::json!({
+                "kind": "indeterminate",
+                "missing_statement_id": missing.to_string(),
+            }),
+        })
+        .collect();
+    let value = serde_json::json!({
+        "actor": actor.to_string(),
+        "object": object.to_string(),
+        "version": version,
+        "history": entries,
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
 fn run_snapshot_command(command: SnapshotCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
         SnapshotCommand::Compute {
@@ -1381,7 +1890,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -1484,6 +1993,27 @@ enum CliError {
         actor: ActorId,
         object: ObjectId,
         name: String,
+    },
+    ParseSemver(SemverParseError),
+    TagShape(ObjectVersionTagShapeError),
+    WriteVersionTag {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    ReadVersionTag(kairo_store::StoreError),
+    TagObjectMismatch {
+        tag_object: ObjectId,
+        revision_object: ObjectId,
+    },
+    TagNotFound {
+        actor: ActorId,
+        object: ObjectId,
+        version: String,
+    },
+    RevokeWithoutPriorTag {
+        actor: ActorId,
+        object: ObjectId,
+        version: String,
     },
     ComputeSnapshot(SnapshotError),
     ManifestObjectMismatch {
@@ -1596,6 +2126,35 @@ impl fmt::Display for CliError {
                 f,
                 "no branch named {name} for actor {actor} on object {object}"
             ),
+            Self::ParseSemver(error) => write!(f, "{error}"),
+            Self::TagShape(error) => write!(f, "{error}"),
+            Self::WriteVersionTag { statement, source } => {
+                write!(f, "failed to write version tag statement {statement}: {source}")
+            }
+            Self::ReadVersionTag(error) => write!(f, "failed to read version tag: {error}"),
+            Self::TagObjectMismatch {
+                tag_object,
+                revision_object,
+            } => write!(
+                f,
+                "tag declares object {tag_object} but the pointed-at revision binds to {revision_object}"
+            ),
+            Self::TagNotFound {
+                actor,
+                object,
+                version,
+            } => write!(
+                f,
+                "no tag for version {version} from actor {actor} on object {object}"
+            ),
+            Self::RevokeWithoutPriorTag {
+                actor,
+                object,
+                version,
+            } => write!(
+                f,
+                "cannot revoke version {version} on object {object}: actor {actor} has no prior tag for it"
+            ),
             Self::ComputeSnapshot(error) => write!(f, "{error}"),
             Self::ManifestObjectMismatch {
                 manifest_object,
@@ -1643,8 +2202,11 @@ impl Error for CliError {
             | Self::WriteRevision { source, .. }
             | Self::ReadRevision { source, .. }
             | Self::WriteBranch { source, .. }
+            | Self::WriteVersionTag { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
-            Self::ReadBranch(error) => Some(error),
+            Self::ReadBranch(error) | Self::ReadVersionTag(error) => Some(error),
+            Self::ParseSemver(error) => Some(error),
+            Self::TagShape(error) => Some(error),
             Self::ComputeSnapshot(error) => Some(error),
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
@@ -1660,6 +2222,9 @@ impl Error for CliError {
             | Self::ManifestObjectMismatch { .. }
             | Self::BranchObjectMismatch { .. }
             | Self::BranchNotFound { .. }
+            | Self::TagObjectMismatch { .. }
+            | Self::TagNotFound { .. }
+            | Self::RevokeWithoutPriorTag { .. }
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64

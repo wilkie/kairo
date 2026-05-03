@@ -130,6 +130,36 @@ The canonical ObjectBranch v1 form is documented in:
 schemas/canonical/object-branch-v1.md
 ```
 
+### 4.2b ObjectVersionTag Statement
+
+An `ObjectVersionTag` statement binds a strict semver 2.0.0 string to a
+specific `ObjectRevision` statement (a *bind*) or withdraws a previously
+published binding (a *revoke*). Like `ObjectBranch` it is actor-scoped
+and resolves latest-wins on `(actor, object, version)`. Two differences
+from `ObjectBranch`:
+
+1. The version name must parse as semver 2.0.0; the future dependency
+   resolver consumes these strings.
+2. Every non-genesis tag carries an explicit `supersedes` pointer at the
+   prior `ObjectVersionTag` it replaces, so the rebind / revoke history
+   is reconstructable without inferring from `created_at` order. The
+   genesis tag for `(actor, object, version)` has `supersedes = null`
+   and must be a bind; a revoke with no chain reference is a shape
+   violation.
+
+Because tags are mutable, **consumers that need build reproducibility
+must record the resolved `StatementId` (or `SnapshotId`)** in their
+lockfile equivalent. The version string alone is not a stable handle —
+the actor may rebind or revoke it, and different resolvers may end up at
+different revisions for the same `(actor, object, version)` depending on
+what statements they have seen.
+
+The canonical ObjectVersionTag v1 form is documented in:
+
+```text
+schemas/canonical/object-version-tag-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo

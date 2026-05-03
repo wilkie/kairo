@@ -9,6 +9,7 @@ use std::fmt;
 use kairo_core::canonical::{
     encode_bytes, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };
+use semver::Version as SemverVersionInner;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_identity::{
     verify_signature as verify_identity_signature, PublicKey, SignatureBytes,
@@ -340,6 +341,146 @@ impl CanonicalEncode for ObjectBranchBody {
         encode_str(out, self.revision.as_str());
     }
 }
+
+/// A strict semver 2.0.0 version string, normalized to its canonical
+/// `Display` form so that `01.2.3` and similar non-canonical inputs are
+/// rejected rather than silently encoded into statement bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemverVersion(String);
+
+impl SemverVersion {
+    pub fn parse(value: impl AsRef<str>) -> Result<Self, SemverParseError> {
+        let input = value.as_ref();
+        let parsed = SemverVersionInner::parse(input).map_err(|error| SemverParseError {
+            input: input.to_owned(),
+            message: error.to_string(),
+        })?;
+        Ok(Self(parsed.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemverParseError {
+    pub input: String,
+    pub message: String,
+}
+
+impl fmt::Display for SemverParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid semver version {:?}: {}", self.input, self.message)
+    }
+}
+
+impl Error for SemverParseError {}
+
+/// Canonical ObjectVersionTag body v1 encoding is documented at
+/// `schemas/canonical/object-version-tag-v1.md`.
+///
+/// An `ObjectVersionTag` binds a strict semver string to a specific
+/// `ObjectRevision` statement (`target = Some`) or revokes a previously
+/// published binding (`target = None`). It is actor-scoped and resolves
+/// latest-wins on `(actor, object, version)`, identical to
+/// `ObjectBranch`.
+///
+/// Every non-genesis tag carries an explicit `supersedes` pointer at the
+/// prior tag in its chain so the rebind / revoke history is
+/// reconstructable without inferring from timestamp order. The genesis
+/// tag for `(actor, object, version)` has `supersedes = None` and must
+/// be a bind (`target = Some`); a revoke with no chain reference is a
+/// shape violation.
+///
+/// The store (not this body) enforces that `supersedes`, when present,
+/// resolves to an existing `ObjectVersionTag` for the same `(actor,
+/// object, version)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectVersionTagBody {
+    object: ObjectId,
+    version: SemverVersion,
+    target: Option<StatementId>,
+    supersedes: Option<StatementId>,
+}
+
+impl ObjectVersionTagBody {
+    pub fn new(
+        object: ObjectId,
+        version: SemverVersion,
+        target: Option<StatementId>,
+        supersedes: Option<StatementId>,
+    ) -> Result<Self, ObjectVersionTagShapeError> {
+        if target.is_none() && supersedes.is_none() {
+            return Err(ObjectVersionTagShapeError::RevokeWithoutSupersedes);
+        }
+        Ok(Self {
+            object,
+            version,
+            target,
+            supersedes,
+        })
+    }
+
+    pub fn object(&self) -> &ObjectId {
+        &self.object
+    }
+
+    pub fn version(&self) -> &SemverVersion {
+        &self.version
+    }
+
+    pub fn target(&self) -> Option<&StatementId> {
+        self.target.as_ref()
+    }
+
+    pub fn supersedes(&self) -> Option<&StatementId> {
+        self.supersedes.as_ref()
+    }
+
+    pub fn is_revocation(&self) -> bool {
+        self.target.is_none()
+    }
+
+    pub fn is_genesis(&self) -> bool {
+        self.supersedes.is_none()
+    }
+}
+
+impl StatementBody for ObjectVersionTagBody {
+    const TYPE: &'static str = "ObjectVersionTag";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ObjectVersionTagBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.object.as_str());
+        encode_str(out, self.version.as_str());
+        encode_option(out, self.target.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+        encode_option(out, self.supersedes.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectVersionTagShapeError {
+    RevokeWithoutSupersedes,
+}
+
+impl fmt::Display for ObjectVersionTagShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RevokeWithoutSupersedes => f.write_str(
+                "ObjectVersionTag with target=null must reference a prior tag via supersedes",
+            ),
+        }
+    }
+}
+
+impl Error for ObjectVersionTagShapeError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectGenesisStatement {
@@ -989,6 +1130,178 @@ mod tests {
         let signature = ed25519_signature(&signed_unsigned)?;
         let signed = SignedStatement::new(tampered, signature);
 
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    fn unsigned_version_tag(
+        version: &str,
+        target: Option<StatementId>,
+        supersedes: Option<StatementId>,
+    ) -> Result<UnsignedStatement<ObjectVersionTagBody>, Box<dyn std::error::Error>> {
+        let body = ObjectVersionTagBody::new(
+            object_id()?,
+            SemverVersion::parse(version)?,
+            target,
+            supersedes,
+        )?;
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            timestamp(),
+            body,
+        ))
+    }
+
+    #[test]
+    fn semver_version_rejects_non_semver_input() {
+        let parsed = SemverVersion::parse("not.semver");
+        assert!(matches!(parsed, Err(SemverParseError { .. })));
+    }
+
+    #[test]
+    fn semver_version_rejects_leading_zeros() {
+        let parsed = SemverVersion::parse("01.2.3");
+        assert!(matches!(parsed, Err(SemverParseError { .. })));
+    }
+
+    #[test]
+    fn semver_version_accepts_prerelease_and_build() {
+        let parsed = SemverVersion::parse("1.2.3-rc.1+build.5");
+        assert!(matches!(parsed, Ok(v) if v.as_str() == "1.2.3-rc.1+build.5"));
+    }
+
+    #[test]
+    fn version_tag_body_rejects_revoke_without_supersedes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body =
+            ObjectVersionTagBody::new(object_id()?, SemverVersion::parse("1.2.3")?, None, None);
+        assert_eq!(
+            body.err(),
+            Some(ObjectVersionTagShapeError::RevokeWithoutSupersedes)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_body_accepts_genesis_bind() -> Result<(), Box<dyn std::error::Error>> {
+        let body = ObjectVersionTagBody::new(
+            object_id()?,
+            SemverVersion::parse("1.2.3")?,
+            Some(statement_id_one()),
+            None,
+        )?;
+        assert!(body.is_genesis());
+        assert!(!body.is_revocation());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_body_accepts_successor_revoke() -> Result<(), Box<dyn std::error::Error>> {
+        let body = ObjectVersionTagBody::new(
+            object_id()?,
+            SemverVersion::parse("1.2.3")?,
+            None,
+            Some(statement_id_one()),
+        )?;
+        assert!(!body.is_genesis());
+        assert!(body.is_revocation());
+        Ok(())
+    }
+
+    #[test]
+    fn same_version_tag_body_produces_same_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let second = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_version_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let second = unsigned_version_tag("1.2.4", Some(statement_id_one()), None)?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_target_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let second = unsigned_version_tag("1.2.3", Some(statement_id_two()), None)?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_revoke_differs_from_bind() -> Result<(), Box<dyn std::error::Error>> {
+        let bind = unsigned_version_tag("1.2.3", Some(statement_id_one()), Some(statement_id_two()))?;
+        let revoke = unsigned_version_tag("1.2.3", None, Some(statement_id_two()))?;
+        assert_ne!(bind.statement_id(), revoke.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_supersedes_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let genesis = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let successor = unsigned_version_tag(
+            "1.2.3",
+            Some(statement_id_one()),
+            Some(statement_id_two()),
+        )?;
+        assert_ne!(genesis.statement_id(), successor.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_created_at_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let body =
+            ObjectVersionTagBody::new(object_id()?, SemverVersion::parse("1.2.3")?, Some(statement_id_one()), None)?;
+        let first = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), body.clone());
+        let later = UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+            body,
+        );
+        assert_ne!(first.statement_id(), later.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_signature_does_not_change_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let unsigned = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_version_tag_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_version_tag_signature_after_body_change() -> Result<(), Box<dyn std::error::Error>> {
+        let signed_unsigned = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
+        let tampered = unsigned_version_tag("1.2.4", Some(statement_id_one()), None)?;
+        let sig = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, sig);
         assert!(matches!(
             signed.verify_signature(&public_key()),
             Err(StatementSignatureError::Verification(

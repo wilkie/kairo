@@ -4,20 +4,22 @@
 //! disk. Records are sharded under each record-type directory using two
 //! levels of two base58 characters — see [`shard`] for details.
 //!
-//! Three independent traits split the responsibilities:
+//! Independent traits split the responsibilities:
 //!
 //! - [`ActorStore`] — actor genesis bodies, indexed by [`ActorId`].
 //! - [`ObjectStore`] — signed `ObjectGenesis` statements, indexed by
 //!   [`ObjectId`].
 //! - [`StatementStore`] — signed envelope statements (`ObjectRevision`,
-//!   `ObjectBranch`), indexed by [`StatementId`].
+//!   `ObjectBranch`, `ObjectVersionTag`), indexed by [`StatementId`].
 //! - [`BlobStore`] — raw bytes addressed by a caller-supplied [`BlobId`].
 //!
 //! [`BranchResolver`] resolves the current `(actor, object, name)`
 //! `ObjectBranch` tip via a per-object materialized index that
-//! `put_object_branch` keeps in sync.
+//! `put_object_branch` keeps in sync. [`VersionTagResolver`] does the
+//! same for `(actor, object, semver)` `ObjectVersionTag` heads via a
+//! parallel index maintained by `put_object_version_tag`.
 //!
-//! [`FilesystemStore`] implements all three. It also implements
+//! [`FilesystemStore`] implements all of these. It also implements
 //! [`ActorResolver`] so `kairo-statement::verify` consumes a store directly.
 //!
 //! Future work (revisit at the moments noted):
@@ -30,6 +32,7 @@
 mod branches;
 pub mod error;
 mod shard;
+mod tags;
 
 use std::fs;
 use std::io;
@@ -40,13 +43,16 @@ use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
 use kairo_statement::json::{
     ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, SignedStatement,
+    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
+    SignedStatement,
 };
 
 pub use branches::BranchTip;
 pub use error::{CorruptReason, StoreError};
+pub use tags::VersionTagHead;
 
 const STORE_VERSION: &str = "1";
 const VERSION_FILE: &str = "version.txt";
@@ -55,6 +61,7 @@ const ACTORS_DIR: &str = "actors";
 const OBJECTS_DIR: &str = "objects";
 const STATEMENTS_DIR: &str = "statements";
 const BRANCHES_DIR: &str = "branches";
+const VERSION_TAGS_DIR: &str = "version_tags";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -86,13 +93,15 @@ pub trait ObjectStore {
 
 /// Persistence interface for envelope-wrapped signed statements.
 ///
-/// Today `ObjectRevision` and `ObjectBranch` are supported. New statement
-/// types add new methods alongside; do not collapse them into a single
-/// generic until the shape of more statement types is known.
+/// Today `ObjectRevision`, `ObjectBranch`, and `ObjectVersionTag` are
+/// supported. New statement types add new methods alongside; do not
+/// collapse them into a single generic until the shape of more statement
+/// types is known.
 ///
-/// `put_object_branch` also updates the per-object branch tip index, so a
-/// later `BranchResolver::latest_branch` call returns the new tip without
-/// scanning all branch statements.
+/// `put_object_branch` and `put_object_version_tag` also update their
+/// per-object materialized indices, so later `BranchResolver` /
+/// `VersionTagResolver` calls return the latest head without scanning
+/// all underlying statements.
 pub trait StatementStore {
     fn put_object_revision(
         &self,
@@ -113,6 +122,16 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ObjectBranchBody>, StoreError>;
+
+    fn put_object_version_tag(
+        &self,
+        statement: &SignedStatement<ObjectVersionTagBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_object_version_tag(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ObjectVersionTagBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -133,6 +152,30 @@ pub trait BranchResolver {
 
     /// All known `(actor, name)` branch tips for an object.
     fn list_branches(&self, object: &ObjectId) -> Result<Vec<BranchTip>, StoreError>;
+}
+
+/// Resolver for the current `(actor, object, version)` version-tag head.
+///
+/// Backed by the per-object head index materialized in
+/// `<root>/version_tags/<XX>/<YY>/<object-id>.json`. The MVP
+/// implementation always queries the index; rebuilding from underlying
+/// statements is future work.
+///
+/// The returned statement may be a bind (`target` present) or a
+/// revocation (`target` absent). Callers walk the `supersedes` chain via
+/// `get_object_version_tag` to surface the full audit history.
+pub trait VersionTagResolver {
+    /// Latest `ObjectVersionTag` statement for `(actor, object, version)`.
+    /// Returns `None` if no tag with that version has been published.
+    fn latest_version_tag(
+        &self,
+        actor: &ActorId,
+        object: &ObjectId,
+        version: &str,
+    ) -> Result<Option<SignedStatement<ObjectVersionTagBody>>, StoreError>;
+
+    /// All known `(actor, version)` tag heads for an object.
+    fn list_version_tags(&self, object: &ObjectId) -> Result<Vec<VersionTagHead>, StoreError>;
 }
 
 /// Persistence interface for raw byte blobs.
@@ -346,6 +389,50 @@ impl StatementStore for FilesystemStore {
         }
         Ok(signed)
     }
+
+    fn put_object_version_tag(
+        &self,
+        statement: &SignedStatement<ObjectVersionTagBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ObjectVersionTagStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let object = statement.unsigned().body().object();
+        let version = statement.unsigned().body().version().as_str();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_version_tag_index(object, actor, version, &id, created_at)?;
+
+        Ok(id)
+    }
+
+    fn get_object_version_tag(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ObjectVersionTagBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ObjectVersionTagStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
 }
 
 impl FilesystemStore {
@@ -398,6 +485,55 @@ impl FilesystemStore {
             Err(error) => Err(StoreError::Unavailable(error)),
         }
     }
+
+    fn upsert_version_tag_index(
+        &self,
+        object: &ObjectId,
+        actor: &ActorId,
+        version: &str,
+        statement_id: &StatementId,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let path = self.shard_path(VERSION_TAGS_DIR, object.as_str(), JSON_SUFFIX)?;
+        let mut index = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<tags::VersionTagIndexFile>(&bytes).map_err(
+                |error| StoreError::Corrupt {
+                    id: object.to_string(),
+                    reason: CorruptReason::Parse(format!("invalid version tag index: {error}")),
+                },
+            )?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                tags::VersionTagIndexFile::default()
+            }
+            Err(error) => return Err(StoreError::Unavailable(error)),
+        };
+
+        let updated = index.upsert(actor, version, statement_id, created_at);
+        if updated {
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_version_tag_index(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Option<tags::VersionTagIndexFile>, StoreError> {
+        let path = self.shard_path(VERSION_TAGS_DIR, object.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: tags::VersionTagIndexFile =
+                    serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                        id: object.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid version tag index: {error}")),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
 }
 
 impl BranchResolver for FilesystemStore {
@@ -443,6 +579,52 @@ impl BranchResolver for FilesystemStore {
             return Ok(Vec::new());
         };
         index.into_tips(object)
+    }
+}
+
+impl VersionTagResolver for FilesystemStore {
+    fn latest_version_tag(
+        &self,
+        actor: &ActorId,
+        object: &ObjectId,
+        version: &str,
+    ) -> Result<Option<SignedStatement<ObjectVersionTagBody>>, StoreError> {
+        let Some(index) = self.read_version_tag_index(object)? else {
+            return Ok(None);
+        };
+        let Some(entry) = index.lookup(actor, version) else {
+            return Ok(None);
+        };
+        let statement_id =
+            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
+                id: entry.statement_id.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid statement id in version tag index: {error}"
+                )),
+            })?;
+        let signed = self.get_object_version_tag(&statement_id)?;
+
+        if signed.unsigned().actor() != actor
+            || signed.unsigned().body().object() != object
+            || signed.unsigned().body().version().as_str() != version
+        {
+            return Err(StoreError::Corrupt {
+                id: statement_id.to_string(),
+                reason: CorruptReason::Parse(
+                    "version tag index points at a statement with mismatched (actor, object, version)"
+                        .to_owned(),
+                ),
+            });
+        }
+
+        Ok(Some(signed))
+    }
+
+    fn list_version_tags(&self, object: &ObjectId) -> Result<Vec<VersionTagHead>, StoreError> {
+        let Some(index) = self.read_version_tag_index(object)? else {
+            return Ok(Vec::new());
+        };
+        index.into_heads(object)
     }
 }
 
@@ -519,8 +701,9 @@ mod tests {
     use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey};
     use kairo_statement::verify::{verify_envelope_statement, ActorResolution, SignatureStatus};
     use kairo_statement::{
-        ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, RevisionId,
-        Signature, SignedStatement, UnsignedStatement,
+        ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+        ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement,
+        UnsignedStatement,
     };
     use tempfile::TempDir;
 
@@ -1024,6 +1207,215 @@ mod tests {
         let object = ObjectId::new(OBJECT_ID)?;
         let tips = store.list_branches(&object)?;
         assert!(tips.is_empty());
+        Ok(())
+    }
+
+    fn signed_version_tag(
+        actor: ActorId,
+        object: ObjectId,
+        version: &str,
+        target: Option<StatementId>,
+        supersedes: Option<StatementId>,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ObjectVersionTagBody>, Box<dyn std::error::Error>> {
+        let semver = SemverVersion::parse(version)?;
+        let body = ObjectVersionTagBody::new(object.clone(), semver, target, supersedes)?;
+        let subject: KairoRef = format!("object:{object}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn round_trips_object_version_tag() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let target = StatementId::from_sha256_digest([0xAA; 32]);
+        let signed = signed_version_tag(actor, object, "1.2.3", Some(target), None, timestamp())?;
+        let id = store.put_object_version_tag(&signed)?;
+        let loaded = store.get_object_version_tag(&id)?;
+        assert_eq!(loaded, signed);
+        Ok(())
+    }
+
+    #[test]
+    fn latest_version_tag_returns_most_recent() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let earlier = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            Timestamp::from_seconds(timestamp().seconds()),
+        )?;
+        let earlier_id = store.put_object_version_tag(&earlier)?;
+        let later = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xBB; 32])),
+            Some(earlier_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_version_tag(&later)?;
+
+        let resolved = store.latest_version_tag(&actor, &object, "1.2.3")?;
+        assert_eq!(resolved, Some(later));
+        Ok(())
+    }
+
+    #[test]
+    fn revoke_supersedes_bind_at_latest_wins() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let bind = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            Timestamp::from_seconds(timestamp().seconds()),
+        )?;
+        let bind_id = store.put_object_version_tag(&bind)?;
+        let revoke = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            None,
+            Some(bind_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_version_tag(&revoke)?;
+
+        let resolved = store.latest_version_tag(&actor, &object, "1.2.3")?;
+        assert!(matches!(
+            resolved,
+            Some(signed) if signed.unsigned().body().is_revocation()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_version_tag_returns_none() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let resolved = store.latest_version_tag(&actor, &object, "1.2.3")?;
+        assert!(resolved.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn version_tags_are_independent_per_version_string() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let one = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        let two = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.4",
+            Some(StatementId::from_sha256_digest([0xCC; 32])),
+            None,
+            timestamp(),
+        )?;
+        store.put_object_version_tag(&one)?;
+        store.put_object_version_tag(&two)?;
+
+        assert_eq!(
+            store.latest_version_tag(&actor, &object, "1.2.3")?,
+            Some(one)
+        );
+        assert_eq!(
+            store.latest_version_tag(&actor, &object, "1.2.4")?,
+            Some(two)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_version_tags_returns_all_heads_for_object() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let one = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        let two = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.4",
+            Some(StatementId::from_sha256_digest([0xCC; 32])),
+            None,
+            timestamp(),
+        )?;
+        store.put_object_version_tag(&one)?;
+        store.put_object_version_tag(&two)?;
+
+        let heads = store.list_version_tags(&object)?;
+        assert_eq!(heads.len(), 2);
+        let versions: Vec<_> = heads.iter().map(|h| h.version.as_str()).collect();
+        assert!(versions.contains(&"1.2.3"));
+        assert!(versions.contains(&"1.2.4"));
+        Ok(())
+    }
+
+    #[test]
+    fn version_tag_index_path_is_sharded() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let signed = signed_version_tag(
+            actor,
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        store.put_object_version_tag(&signed)?;
+
+        let shard1 = &object.as_str()[3..5];
+        let shard2 = &object.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(VERSION_TAGS_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{object}.json"));
+        assert!(expected.exists(), "expected version tag index at {expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn list_version_tags_for_unknown_object_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let object = ObjectId::new(OBJECT_ID)?;
+        let heads = store.list_version_tags(&object)?;
+        assert!(heads.is_empty());
         Ok(())
     }
 }

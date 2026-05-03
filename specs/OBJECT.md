@@ -119,6 +119,22 @@ Callers may bypass branch resolution by pinning a specific `ObjectRevision`
 `ObjectGenesis.initial_revision` — without an `ObjectRevision` there is no
 manifest hash to bind, so no snapshot is yet defined.
 
+#### Tags vs branches
+
+`ObjectVersionTag` shares `ObjectBranch`'s actor-scoped, latest-wins
+shape but uses a strict semver name and carries an explicit
+`supersedes` chain. Branches are intended for in-flight pointers (`head`,
+`audit`, `release`); tags are intended for published version names that
+the future dependency resolver will consume (`1.2.3`, `1.2.3-rc.1`).
+
+Both pointer types are mutable. Snapshot identity is over the
+*frontier*, not over which actor's branch or tag was followed to
+resolve it — so two callers following different actors' tags for
+`1.2.3` may end up at different snapshots, but each snapshot is
+independently verifiable. Consumers that need build reproducibility
+must pin to the resolved `StatementId` (or `SnapshotId`), not to the
+tag's version string.
+
 ### 2.4 What revision fields prove
 
 A signed `ObjectRevision` statement carries three identity-bearing fields,

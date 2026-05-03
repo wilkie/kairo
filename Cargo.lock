@@ -390,6 +390,7 @@ dependencies = [
  "ed25519-dalek",
  "kairo-core",
  "kairo-identity",
+ "semver",
  "serde",
  "serde_json",
 ]

@@ -152,9 +152,9 @@ statement_id =
 - A valid signature proves only that the actor made the claim. It does not
   prove that the pointed-at revision exists, that it is reachable, that
   the actor has authority over the object, or that any other actor agrees.
-- Distinct from `VersionTag` (TODO §7): `ObjectBranch` resolves by latest-wins
-  supersession; `VersionTag` resolves immutably (a second tag with the
-  same name is a conflict, not an update).
+- Distinct from `ObjectVersionTag`: branches accept arbitrary names; tags
+  require strict semver and carry an explicit `supersedes` chain. Both
+  share the same actor-scoped, latest-wins resolution shape.
 
 ## Test Vectors
 

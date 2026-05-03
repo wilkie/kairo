@@ -58,6 +58,24 @@ advertisements.
 
 See `STATEMENTS.md`.
 
+## Version Tag
+
+A `VersionTag` is an actor-scoped, mutable pointer that binds a strict
+semver string (`1.2.3`, `1.2.3-rc.1`, `1.2.3+build.5`) to a specific
+`ObjectRevision` statement, or withdraws a previously published binding.
+Encoded as the `ObjectVersionTag` statement type and resolved
+latest-wins on `(actor, object, version)`, like `ObjectBranch`. Every
+non-genesis tag carries an explicit `supersedes` pointer so the
+rebind / revoke chain is reconstructable as audit history.
+
+Tags are mutable: an actor may rebind `1.2.3` to a different revision
+(e.g. to revoke a bad release and replace it). The version string alone
+is therefore not a stable handle for build reproducibility — consumers
+that need stability must pin to the resolved `StatementId` (or
+`SnapshotId`), the way Cargo.lock and package-lock.json do.
+
+See `STATEMENTS.md` §4.2b and `schemas/canonical/object-version-tag-v1.md`.
+
 ## Actor
 
 An `Actor` is a cryptographic identity that can issue signed statements.

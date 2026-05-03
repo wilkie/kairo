@@ -45,4 +45,5 @@ is explicitly a standalone reference.
 - `object-genesis-v1.md`
 - `object-revision-v1.md`
 - `object-branch-v1.md`
+- `object-version-tag-v1.md`
 - `snapshot-v1.md`
