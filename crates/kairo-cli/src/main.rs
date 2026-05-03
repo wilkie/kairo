@@ -125,6 +125,17 @@ enum VerifyCommand {
         /// Branch name (defaults to "head").
         #[arg(long, default_value = "head")]
         name: String,
+        /// Truster whose perspective to evaluate trust from. Defaults
+        /// to the sole local actor (the only key in the keystore); if
+        /// the keystore has multiple keys, you must pass --as.
+        /// `--no-as` skips trust evaluation entirely (report says
+        /// `unevaluated`).
+        #[arg(long, conflicts_with = "no_as")]
+        r#as: Option<String>,
+        /// Skip trust evaluation. Trust stays `unevaluated` regardless
+        /// of what is in the keystore. Conflicts with --as.
+        #[arg(long)]
+        no_as: bool,
         /// Path to a Git repository (working tree or .git directory).
         /// Defaults to the repo discovered walking upward from the
         /// current directory. Conflicts with --no-repo.
@@ -1951,6 +1962,10 @@ struct RevisionChecks {
     /// `git:sha256:<oid>/kairo.toml` descriptor for tree-derived
     /// manifests. `None` when no manifest could be resolved.
     manifest_source: Option<String>,
+    /// Truster used for the trust evaluation, if any. `None` when
+    /// trust was skipped (`--no-as`) or when no local actor could be
+    /// auto-picked from the keystore.
+    truster: Option<ActorId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1977,6 +1992,8 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
             statement,
             actor,
             name,
+            r#as,
+            no_as,
             repo,
             no_repo,
             manifest,
@@ -2085,7 +2102,28 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 commit_lookup.as_ref(),
             );
 
-            let signature = verify_envelope_statement(&revision_statement, &store);
+            let mut signature = verify_envelope_statement(&revision_statement, &store);
+
+            // Resolve the truster for trust evaluation. Trust is
+            // first-person so it is always parameterized by *who* is
+            // asking. `--no-as` skips evaluation; `--as <id>` is
+            // explicit; otherwise the keystore must have exactly one
+            // entry to be unambiguous.
+            let truster = if no_as {
+                None
+            } else {
+                resolve_verify_truster(paths, r#as)?
+            };
+            if let Some(by_actor) = truster.as_ref() {
+                signature.trust = match kairo_statement::verify::evaluate_trust(
+                    by_actor,
+                    &signature.signature_actor,
+                    &store,
+                ) {
+                    Ok(eval) => eval,
+                    Err(error) => return Err(CliError::ReadActorTrust(error)),
+                };
+            }
 
             let revision_checks = RevisionChecks {
                 statement_id: revision_statement.statement_id(),
@@ -2094,6 +2132,7 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 signature,
                 validation,
                 manifest_source: manifest_source.map(|p| p.display().to_string()),
+                truster,
             };
 
             let overall = aggregate_overall_status(&genesis, &revision_checks, &object_id);
@@ -2119,6 +2158,33 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
             } else {
                 Ok(format_object_verification(&report))
             }
+        }
+    }
+}
+
+/// Resolve the truster used for trust evaluation in `verify object`.
+///
+/// `--as <id>` is authoritative. Otherwise: if the keystore has
+/// exactly one actor, auto-pick it; if zero, return `None` (trust
+/// stays `Unevaluated`); if more than one, return an error so the
+/// user explicitly chooses with `--as`.
+fn resolve_verify_truster(
+    paths: &StorePaths,
+    explicit: Option<String>,
+) -> Result<Option<ActorId>, CliError> {
+    if let Some(actor) = explicit {
+        let by_actor = ActorId::new(actor.clone())
+            .map_err(|source| CliError::ParseActorId { actor, source })?;
+        return Ok(Some(by_actor));
+    }
+    let keystore = open_keystore(paths)?;
+    let mut actors = keystore.list_actors().map_err(CliError::ListKeystore)?;
+    match actors.len() {
+        0 => Ok(None),
+        1 => Ok(Some(actors.remove(0))),
+        _ => {
+            actors.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            Err(CliError::AmbiguousLocalActor { candidates: actors })
         }
     }
 }
@@ -2311,6 +2377,14 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
         "  actor = {}\n",
         format_actor_resolution(&report.revision.signature.actor)
     ));
+    let trust_truster = match &report.revision.truster {
+        Some(actor) => format!(" (as {actor})"),
+        None => String::new(),
+    };
+    out.push_str(&format!(
+        "  trust = {}{trust_truster}\n",
+        format_trust(&report.revision.signature.trust)
+    ));
     out.push_str(&format!(
         "  object_consistency = {}\n",
         format_object_consistency(&report.revision.validation.object_consistency)
@@ -2414,6 +2488,10 @@ fn format_object_verification_json(report: &ObjectVerificationReport) -> String 
             "object": report.revision.revision_object.to_string(),
             "signature": format_signature_status(&report.revision.signature.signature),
             "actor": format_actor_resolution(&report.revision.signature.actor),
+            "trust": {
+                "status": format_trust(&report.revision.signature.trust),
+                "by_actor": report.revision.truster.as_ref().map(|a| a.to_string()),
+            },
             "object_consistency": object_consistency_value,
             "manifest_binding": manifest_binding_value,
             "manifest_source": report.revision.manifest_source.clone(),
@@ -2906,7 +2984,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -3044,6 +3122,10 @@ enum CliError {
     BuildActorSubjectRef {
         actor: ActorId,
         source: kairo_core::IdError,
+    },
+    ListKeystore(kairo_keystore::KeystoreError),
+    AmbiguousLocalActor {
+        candidates: Vec<ActorId>,
     },
     ComputeSnapshot(SnapshotError),
     ObjectVerificationFailed(String),
@@ -3216,6 +3298,16 @@ impl fmt::Display for CliError {
                 f,
                 "could not build subject reference for actor {actor}: {source}"
             ),
+            Self::ListKeystore(error) => write!(f, "failed to list keystore: {error}"),
+            Self::AmbiguousLocalActor { candidates } => {
+                f.write_str(
+                    "multiple local actors found in keystore; pass --as <actor-id> to choose, or --no-as to skip trust evaluation. candidates:\n",
+                )?;
+                for actor in candidates {
+                    writeln!(f, "  {actor}")?;
+                }
+                Ok(())
+            }
             Self::ComputeSnapshot(error) => write!(f, "{error}"),
             Self::ObjectVerificationFailed(report) => {
                 f.write_str(report)?;
@@ -3294,6 +3386,7 @@ impl Error for CliError {
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
             | Self::ReadKey { source, .. } => Some(source),
+            Self::ListKeystore(error) => Some(error),
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
             | Self::ParseStatementId { source, .. }
@@ -3312,6 +3405,7 @@ impl Error for CliError {
             | Self::TagNotFound { .. }
             | Self::RevokeWithoutPriorTag { .. }
             | Self::WithdrawWithoutPriorTrust { .. }
+            | Self::AmbiguousLocalActor { .. }
             | Self::GitRepoNotDiscovered { .. }
             | Self::ManifestNotUtf8
             | Self::MissingPublicKey
@@ -4724,6 +4818,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    r#as: None,
+                    no_as: true,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -4754,6 +4850,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    r#as: None,
+                    no_as: true,
                     manifest: None,
                     json: false,
                 },
@@ -4781,6 +4879,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    r#as: None,
+                    no_as: true,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -4822,6 +4922,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    r#as: None,
+                    no_as: true,
                     manifest: Some(wrong_manifest),
                     json: false,
                 },
@@ -4851,6 +4953,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    r#as: None,
+                    no_as: true,
                     manifest: Some(manifest_path),
                     json: true,
                 },
@@ -4910,6 +5014,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    r#as: None,
+                    no_as: true,
                     manifest: None,
                     json: false,
                 },
@@ -4943,7 +5049,10 @@ kind = "tree"
                         actor: None,
                         repo: None,
                         no_repo: false,
+                        r#as: None,
+                        no_as: false,
                         name,
+                        ..
                     }
                 }),
                 ..
@@ -5075,6 +5184,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: Some(git_dir.path().to_path_buf()),
                     no_repo: false,
+                    r#as: None,
+                    no_as: true,
                     manifest: None,
                     json: false,
                 },
@@ -5172,6 +5283,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: Some(git_dir.path().to_path_buf()),
                     no_repo: false,
+                    r#as: None,
+                    no_as: true,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -5464,6 +5577,168 @@ kind = "tree"
         assert!(matches!(
             result,
             Err(CliError::WithdrawWithoutPriorTrust { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_auto_picks_sole_local_actor_for_trust()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The fixture creates exactly one local actor (the signer) and
+        // does not publish a trust opinion about itself, so the
+        // auto-picked truster sees its own statements as Unknown.
+        let (store_dir, _manifest_dir, _actor_id, object_id, _revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    r#as: None,
+                    no_as: false,
+                    repo: None,
+                    no_repo: true,
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(output.contains("trust = unknown"));
+        // Trust line includes the truster id when auto-resolved.
+        assert!(output.contains("(as zQm"));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_with_explicit_as_grants_trusted()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Create a separate truster actor, grant trust to the signer,
+        // then verify --as <truster> sees Trusted.
+        let (store_dir, _manifest_dir, signer_id, object_id, _revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        // Add a second local actor to act as truster.
+        let truster_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+        // Grant trust from truster -> signer.
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Grant {
+                    by: truster_id.clone(),
+                    of: signer_id.clone(),
+                    reason: None,
+                },
+            }),
+        })?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    r#as: Some(truster_id.clone()),
+                    no_as: false,
+                    repo: None,
+                    no_repo: true,
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(output.contains("trust = trusted"));
+        assert!(output.contains(&format!("(as {truster_id})")));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_with_no_as_skips_trust_evaluation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (store_dir, _manifest_dir, _actor_id, object_id, _revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    r#as: None,
+                    no_as: true,
+                    repo: None,
+                    no_repo: true,
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(output.contains("trust = unevaluated"));
+        // No "(as ...)" suffix when no truster was used.
+        assert!(!output.contains("(as zQm"));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_ambiguous_local_actor_errors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Two local actors, no --as: must error.
+        let (store_dir, _manifest_dir, _signer_id, object_id, _revision_statement, manifest_path) =
+            fixture_with_branch()?;
+        // Add a second actor to make resolution ambiguous.
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    r#as: None,
+                    no_as: false,
+                    repo: None,
+                    no_repo: true,
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        });
+        assert!(matches!(
+            result,
+            Err(CliError::AmbiguousLocalActor { .. })
         ));
         Ok(())
     }

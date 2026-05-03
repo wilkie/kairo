@@ -44,6 +44,13 @@ pub trait Keystore {
     fn get_signing_key(&self, actor_id: &ActorId) -> Result<SecretSigningKey, KeystoreError>;
 
     fn has_signing_key(&self, actor_id: &ActorId) -> Result<bool, KeystoreError>;
+
+    /// Enumerate every actor that has a signing key in this keystore.
+    /// Order is not guaranteed. Used by callers that need to auto-pick
+    /// "the" local actor (e.g. CLI `--as` defaulting) and want to
+    /// distinguish "exactly one local actor" from "ambiguous, ask the
+    /// user."
+    fn list_actors(&self) -> Result<Vec<ActorId>, KeystoreError>;
 }
 
 /// Filesystem-backed keystore rooted at a single directory.
@@ -124,6 +131,34 @@ impl Keystore for FilesystemKeystore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(KeystoreError::Unavailable(error)),
         }
+    }
+
+    fn list_actors(&self) -> Result<Vec<ActorId>, KeystoreError> {
+        let mut actors = Vec::new();
+        let entries = match fs::read_dir(&self.root) {
+            Ok(iter) => iter,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(actors),
+            Err(error) => return Err(KeystoreError::Unavailable(error)),
+        };
+        for entry in entries {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let actor_id = ActorId::new(stem.to_owned()).map_err(|error| KeystoreError::Corrupt {
+                id: stem.to_owned(),
+                reason: CorruptReason::Parse(format!("invalid actor id in keystore: {error}")),
+            })?;
+            actors.push(actor_id);
+        }
+        Ok(actors)
     }
 }
 
@@ -359,6 +394,42 @@ mod tests {
         let path = dir.path().join(format!("{actor_id}.json"));
         let mode = fs::metadata(&path)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+        Ok(())
+    }
+
+    #[test]
+    fn list_actors_enumerates_stored_keys() -> TestResult {
+        let (_dir, keystore) = open_temp()?;
+        assert!(keystore.list_actors()?.is_empty());
+
+        let secret_a = SecretSigningKey::ed25519([1; 32]);
+        let actor_a = fresh_actor_id(&secret_a);
+        keystore.put_signing_key(&actor_a, &secret_a)?;
+
+        let secret_b = SecretSigningKey::ed25519([2; 32]);
+        let actor_b = fresh_actor_id(&secret_b);
+        keystore.put_signing_key(&actor_b, &secret_b)?;
+
+        let actors = keystore.list_actors()?;
+        assert_eq!(actors.len(), 2);
+        assert!(actors.contains(&actor_a));
+        assert!(actors.contains(&actor_b));
+        Ok(())
+    }
+
+    #[test]
+    fn list_actors_ignores_non_json_files() -> TestResult {
+        let (dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+        keystore.put_signing_key(&actor_id, &secret)?;
+
+        // Junk files should be skipped, not parse-errored.
+        fs::write(dir.path().join("README.txt"), b"not a key")?;
+        fs::write(dir.path().join(".hidden"), b"also not a key")?;
+
+        let actors = keystore.list_actors()?;
+        assert_eq!(actors, vec![actor_id]);
         Ok(())
     }
 }
