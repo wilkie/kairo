@@ -7,8 +7,11 @@
    viewBox="0 0 256 256.00001"
    version="1.1"
    id="svg1"
-   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
    sodipodi:docname="kairo_icon.svg"
+   inkscape:export-filename="kairo_icon_48.png"
+   inkscape:export-xdpi="4.7600002"
+   inkscape:export-ydpi="4.7600002"
+   inkscape:version="1.4.3 (0d15f75, 2025-12-25)"
    xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
    xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
    xmlns="http://www.w3.org/2000/svg"
@@ -23,15 +26,15 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#d1d1d1"
      inkscape:document-units="mm"
-     inkscape:zoom="0.75811588"
-     inkscape:cx="456.39461"
-     inkscape:cy="417.48235"
+     inkscape:zoom="0.40122838"
+     inkscape:cx="839.92065"
+     inkscape:cy="616.85567"
      inkscape:window-width="1920"
      inkscape:window-height="1111"
      inkscape:window-x="-9"
      inkscape:window-y="-9"
      inkscape:window-maximized="1"
-     inkscape:current-layer="layer1" />
+     inkscape:current-layer="svg1" />
   <defs
      id="defs1" />
   <g
@@ -58,6 +61,6 @@
     <path
        id="path252"
        style="baseline-shift:baseline;display:inline;overflow:visible;vector-effect:none;fill:#007373;fill-opacity:1;stroke-width:2.8326;enable-background:accumulate;stop-color:#000000"
-       d="m 126.50135,89.145243 -2.13127,1.633591 3.63607,6.28987 -15.48549,26.821006 H 99.899852 l -7.59858,13.16235 h 27.815018 l 19.6515,-34.03891 -12.34858,-12.345586 a 3.6977685,3.6977685 0 0 1 -0.91786,-1.522321 z" />
+       d="M 126.24807 100.11327 L 112.52074 123.8896 L 99.899807 123.8896 L 92.301305 137.0521 L 120.11614 137.0521 L 134.02331 112.96365 L 135.08991 108.9825 L 126.71109 100.60523 A 11.228171 11.228171 0 0 1 126.24807 100.11327 z " />
   </g>
 </svg>
