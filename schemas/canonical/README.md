@@ -47,4 +47,6 @@ is explicitly a standalone reference.
 - `object-branch-v1.md`
 - `object-version-tag-v1.md`
 - `actor-trust-v1.md`
+- `actor-capability-grant-v1.md`
+- `actor-capability-revocation-v1.md`
 - `snapshot-v1.md`
