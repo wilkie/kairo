@@ -330,29 +330,49 @@ read, so a successful load is a fixity check), resolves the chosen
 `ObjectRevision` (default: creator-actor's `"head"` branch — same
 resolution rules as `snapshot compute`, with `--actor`, `--name`, and
 `--statement` overrides), verifies the revision's signature against
-the resolved actor through the local `ActorResolver`, and — when
-`--manifest <path>` is supplied — validates the revision's
-`manifest_hash` and any declared `[kairo].object` against the parsed
-manifest. The output aggregates these into a single `VALID`,
-`INDETERMINATE`, or `INVALID` verdict per the rules below; `--json`
-emits a stable JSON shape.
+the resolved actor through the local `ActorResolver`, looks the
+storage commit up in a Git repository, and validates the manifest
+binding against the `kairo.toml` blob in the commit's tree. The output
+aggregates these into a single `VALID`, `INDETERMINATE`, or `INVALID`
+verdict per the rules below; `--json` emits a stable JSON shape.
+
+Git lookup behavior:
+
+- `--repo <path>` — explicit Git repository path (working tree or
+  `.git`). Authoritative when given.
+- No flag — walk upward from the current working directory looking
+  for a `.git` (the same algorithm `git status` uses). Use the first
+  one found.
+- Neither — error with a hint pointing at `--repo` and `--no-repo`.
+- `--no-repo` — skip the Git lookup entirely. The content layer stays
+  `INDETERMINATE` and, without an explicit `--manifest`, manifest
+  binding does too.
+
+Manifest source:
+
+- `--manifest <path>` overrides everything; useful for unusual
+  layouts or for verifying a revision against a manifest the user
+  pinned out-of-tree.
+- Otherwise the verifier reads `kairo.toml` from the commit's tree at
+  the revision being verified. The report records the source as
+  `git:sha256:<oid>/kairo.toml` so the audit trail is explicit.
 
 Aggregation:
 
-- `VALID` — every check returned valid (today this requires §11 Git
-  integration; until then the strongest reachable verdict is
-  `INDETERMINATE`).
+- `VALID` — every check returned valid: genesis fixity, signature,
+  actor resolution, object consistency, manifest binding, and content
+  layer (commit found + parents agree).
 - `INVALID` — at least one check actively failed (signature invalid,
-  actor mismatch, object id mismatch, manifest hash mismatch). Exits
-  non-zero.
+  actor mismatch, object id mismatch, manifest hash mismatch, commit
+  not in repo, parent disagreement). Exits non-zero.
 - `INDETERMINATE` — no failures, but at least one check could not be
-  evaluated (no manifest provided, content layer awaiting §11). Exits
-  zero with the marker in the report.
+  evaluated (no manifest available, no Git lookup performed, non-Git
+  revision scheme). Exits zero with the marker in the report.
 
-These commands do not validate actor authority, actor key-active status, Git
-commit availability, parent commit consistency, or snapshot closure
-completeness. `verify object` reports the gaps explicitly (e.g.
-`content = INDETERMINATE (TODO §11)`) rather than silently passing.
+These commands do not validate actor authority, actor key-active status,
+or snapshot closure completeness. They do verify that signed Git commits
+exist locally and that declared parents agree with the Git graph; the
+remaining gaps are reported explicitly in the verdict.
 
 ---
 

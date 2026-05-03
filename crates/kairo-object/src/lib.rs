@@ -82,13 +82,13 @@ pub fn validate_revision_manifest(
 ///
 /// Each dimension is reported independently — a manifest mismatch does not
 /// invalidate the object-id check, etc. Companion data that the caller did
-/// not (or could not) supply is reported as `*NotProvided`, which the
-/// caller treats as indeterminate. Git/content-layer checks always remain
-/// indeterminate in the MVP — see TODO §11.
+/// not (or could not) supply is reported as `*NotProvided` /
+/// `Indeterminate`, which callers should treat as "not yet evaluated."
 ///
 /// This validator is pure: it does no I/O. The caller (today the CLI;
-/// tomorrow `kairo verify object` in TODO §8) decides how to resolve the
-/// `ObjectGenesis` and read the manifest.
+/// the `kairo verify object` command and any future verifier API)
+/// decides how to resolve the `ObjectGenesis`, read the manifest, and
+/// look up the storage commit in a Git repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectRevisionValidationReport {
     pub statement_id: StatementId,
@@ -160,23 +160,59 @@ pub enum ParentReferenceCheck {
 
 /// Content-layer (Git) check.
 ///
-/// MVP value: always `Indeterminate`. TODO §11 will make this a real check.
+/// Populated by `validate_object_revision` when the caller supplies a
+/// `CommitLookup` from a Git repository (TODO §11). When no lookup is
+/// provided, or when the revision's storage form is not a `git:sha256:`
+/// reference, the check stays `Indeterminate`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentLayerCheck {
+    /// Commit was found and its parents agree with the parents
+    /// declared on the `ObjectRevision` statement (set-equality —
+    /// parent ordering is not enforced).
+    Verified,
+    /// Commit was found but its parents disagree with the declared
+    /// parents. Lists are normalized to git oids (without the
+    /// `git:sha256:` prefix).
+    ParentMismatch {
+        expected: Vec<String>,
+        actual: Vec<String>,
+    },
+    /// Commit was not present in the supplied repository.
+    CommitNotFound,
+    /// No repository lookup was supplied (e.g. caller did not provide
+    /// a Git repo, or the revision's storage scheme is not Git).
     Indeterminate,
 }
+
+/// Result of looking up the revision's storage commit in a Git
+/// repository. Constructed by the caller (typically the CLI via
+/// `kairo-git`) and passed into `validate_object_revision`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitLookup {
+    /// Commit exists; here are its parent oids as plain hex strings
+    /// (without the `git:sha256:` prefix).
+    Found { parent_oids: Vec<String> },
+    /// Commit was not present in the repository.
+    NotFound,
+}
+
+/// Storage-revision scheme prefix this validator understands.
+const GIT_REVISION_PREFIX: &str = "git:sha256:";
 
 /// Validate a signed `ObjectRevision` statement against optional companion
 /// data and return a structured report.
 ///
 /// Pass `Some(genesis)` when the caller has resolved the `ObjectGenesis` for
 /// `revision.object()`; otherwise pass `None`. Likewise for the manifest.
-/// The function never fails: missing inputs are reported as
-/// `GenesisNotProvided` / `ManifestNotProvided`.
+/// `commit_lookup` carries the result of asking a Git repository about the
+/// revision's storage commit; when `None`, the content layer stays
+/// `Indeterminate`. The function never fails: missing inputs are reported
+/// as `*NotProvided` / `Indeterminate`.
 pub fn validate_object_revision(
     statement: &SignedStatement<ObjectRevisionBody>,
     object_genesis: Option<&ObjectGenesisStatement>,
     manifest: Option<&ObjectManifest>,
+    commit_lookup: Option<&CommitLookup>,
 ) -> ObjectRevisionValidationReport {
     let revision = statement.unsigned().body();
     let statement_id = statement.statement_id();
@@ -217,12 +253,53 @@ pub fn validate_object_revision(
         }
     };
 
+    let content = evaluate_content_layer(revision, commit_lookup);
+
     ObjectRevisionValidationReport {
         statement_id,
         object_consistency,
         manifest_binding,
         parents,
-        content: ContentLayerCheck::Indeterminate,
+        content,
+    }
+}
+
+fn evaluate_content_layer(
+    revision: &ObjectRevisionBody,
+    commit_lookup: Option<&CommitLookup>,
+) -> ContentLayerCheck {
+    let lookup = match commit_lookup {
+        Some(lookup) => lookup,
+        None => return ContentLayerCheck::Indeterminate,
+    };
+    let actual_parents = match lookup {
+        CommitLookup::Found { parent_oids } => parent_oids,
+        CommitLookup::NotFound => return ContentLayerCheck::CommitNotFound,
+    };
+
+    // Strip the git:sha256: prefix from declared parents. If any
+    // declared parent lacks the prefix, we can't compare against Git
+    // — treat the layer as Indeterminate so we don't false-positive.
+    let mut expected = Vec::with_capacity(revision.parents().len());
+    for parent in revision.parents() {
+        match parent.as_str().strip_prefix(GIT_REVISION_PREFIX) {
+            Some(oid) => expected.push(oid.to_owned()),
+            None => return ContentLayerCheck::Indeterminate,
+        }
+    }
+
+    let mut expected_sorted = expected.clone();
+    expected_sorted.sort();
+    let mut actual_sorted = actual_parents.clone();
+    actual_sorted.sort();
+
+    if expected_sorted == actual_sorted {
+        ContentLayerCheck::Verified
+    } else {
+        ContentLayerCheck::ParentMismatch {
+            expected,
+            actual: actual_parents.clone(),
+        }
     }
 }
 
@@ -1265,7 +1342,7 @@ mod tests {
                 manifest.manifest_hash(),
             )?;
 
-            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest));
+            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest), None);
 
             assert_eq!(report.statement_id, signed.statement_id());
             assert_eq!(
@@ -1286,7 +1363,7 @@ mod tests {
             let manifest = manifest_with_object(None)?;
             let signed = signed_revision(object_id, vec![], manifest.manifest_hash())?;
 
-            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest));
+            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest), None);
 
             assert_eq!(report.parents, ParentReferenceCheck::NoParents);
             Ok(())
@@ -1303,7 +1380,7 @@ mod tests {
                 manifest.manifest_hash(),
             )?;
 
-            let report = validate_object_revision(&signed, None, Some(&manifest));
+            let report = validate_object_revision(&signed, None, Some(&manifest), None);
 
             assert_eq!(
                 report.object_consistency,
@@ -1324,7 +1401,7 @@ mod tests {
                 BlobId::from_sha256_digest([1; 32]),
             )?;
 
-            let report = validate_object_revision(&signed, Some(&genesis), None);
+            let report = validate_object_revision(&signed, Some(&genesis), None, None);
 
             assert_eq!(
                 report.object_consistency,
@@ -1354,7 +1431,7 @@ mod tests {
                 BlobId::from_sha256_digest([1; 32]),
             )?;
 
-            let report = validate_object_revision(&signed, Some(&genesis_b), None);
+            let report = validate_object_revision(&signed, Some(&genesis_b), None, None);
 
             assert!(matches!(
                 report.object_consistency,
@@ -1372,7 +1449,7 @@ mod tests {
             let manifest = manifest_with_object(None)?;
             let signed = signed_revision(object_id, vec![], BlobId::from_sha256_digest([1; 32]))?;
 
-            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest));
+            let report = validate_object_revision(&signed, Some(&genesis), Some(&manifest), None);
 
             assert!(matches!(
                 report.manifest_binding,
@@ -1398,7 +1475,7 @@ mod tests {
             let signed =
                 signed_revision(revision_object.clone(), vec![], manifest.manifest_hash())?;
 
-            let report = validate_object_revision(&signed, None, Some(&manifest));
+            let report = validate_object_revision(&signed, None, Some(&manifest), None);
 
             assert!(matches!(
                 report.manifest_binding,
@@ -1426,7 +1503,7 @@ mod tests {
                 BlobId::from_sha256_digest([2; 32]),
             )?;
 
-            let report = validate_object_revision(&signed, Some(&genesis_b), Some(&manifest));
+            let report = validate_object_revision(&signed, Some(&genesis_b), Some(&manifest), None);
 
             assert!(matches!(
                 report.object_consistency,
@@ -1436,6 +1513,129 @@ mod tests {
                 report.manifest_binding,
                 ManifestBindingCheck::HashMismatch { .. }
             ));
+            Ok(())
+        }
+
+        #[test]
+        fn content_layer_verified_when_lookup_parents_match(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                genesis.object_id(),
+                vec![RevisionId::new("git:sha256:aaa")],
+                manifest.manifest_hash(),
+            )?;
+            let lookup = CommitLookup::Found {
+                parent_oids: vec!["aaa".to_owned()],
+            };
+            let report = validate_object_revision(
+                &signed,
+                Some(&genesis),
+                Some(&manifest),
+                Some(&lookup),
+            );
+            assert_eq!(report.content, ContentLayerCheck::Verified);
+            Ok(())
+        }
+
+        #[test]
+        fn content_layer_parent_mismatch_when_oids_disagree(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                genesis.object_id(),
+                vec![RevisionId::new("git:sha256:aaa")],
+                manifest.manifest_hash(),
+            )?;
+            let lookup = CommitLookup::Found {
+                parent_oids: vec!["bbb".to_owned()],
+            };
+            let report = validate_object_revision(
+                &signed,
+                Some(&genesis),
+                Some(&manifest),
+                Some(&lookup),
+            );
+            assert!(matches!(
+                report.content,
+                ContentLayerCheck::ParentMismatch { .. }
+            ));
+            Ok(())
+        }
+
+        #[test]
+        fn content_layer_parent_match_is_order_independent(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            // Two declared parents in one order, Git reports them in the
+            // opposite order. Should still verify (set equality).
+            let genesis = genesis_for_object([42; 32])?;
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                genesis.object_id(),
+                vec![
+                    RevisionId::new("git:sha256:aaa"),
+                    RevisionId::new("git:sha256:bbb"),
+                ],
+                manifest.manifest_hash(),
+            )?;
+            let lookup = CommitLookup::Found {
+                parent_oids: vec!["bbb".to_owned(), "aaa".to_owned()],
+            };
+            let report = validate_object_revision(
+                &signed,
+                Some(&genesis),
+                Some(&manifest),
+                Some(&lookup),
+            );
+            assert_eq!(report.content, ContentLayerCheck::Verified);
+            Ok(())
+        }
+
+        #[test]
+        fn content_layer_commit_not_found(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let genesis = genesis_for_object([42; 32])?;
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                genesis.object_id(),
+                vec![],
+                manifest.manifest_hash(),
+            )?;
+            let lookup = CommitLookup::NotFound;
+            let report = validate_object_revision(
+                &signed,
+                Some(&genesis),
+                Some(&manifest),
+                Some(&lookup),
+            );
+            assert_eq!(report.content, ContentLayerCheck::CommitNotFound);
+            Ok(())
+        }
+
+        #[test]
+        fn content_layer_indeterminate_when_parent_lacks_git_prefix(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            // A non-git parent reference can't be compared against Git's
+            // view; we don't false-positive — we report Indeterminate.
+            let genesis = genesis_for_object([42; 32])?;
+            let manifest = manifest_with_object(None)?;
+            let signed = signed_revision(
+                genesis.object_id(),
+                vec![RevisionId::new("opaque:abc")],
+                manifest.manifest_hash(),
+            )?;
+            let lookup = CommitLookup::Found {
+                parent_oids: vec!["abc".to_owned()],
+            };
+            let report = validate_object_revision(
+                &signed,
+                Some(&genesis),
+                Some(&manifest),
+                Some(&lookup),
+            );
+            assert_eq!(report.content, ContentLayerCheck::Indeterminate);
             Ok(())
         }
     }

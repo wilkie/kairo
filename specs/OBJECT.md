@@ -146,18 +146,24 @@ companion content (Git) layer.
   layer validation checks that the resolved `ObjectGenesis` derives this
   same `ObjectId`.
 - **`revision`** — the storage revision id (e.g. `git:sha256:<commit>`).
-  The statement layer takes it as opaque. Confirming it exists in Git, and
-  that its parents match `parents`, is content-layer work (TODO §11).
+  The statement layer takes it as opaque; the content layer (`kairo verify
+  object` with a Git repo) confirms the commit exists in the supplied
+  repository.
 - **`parents`** — claimed predecessors of `revision`. The statement layer
-  records their presence; the content layer compares them to Git commit
-  parents.
+  records their presence; the content layer compares them to the Git
+  commit's actual parents (set-equality — parent ordering is not
+  enforced).
 - **`manifest_hash`** — the canonical `kairo.toml` hash the actor pinned
   at signing time. Statement-layer validation re-derives the hash from a
-  parsed manifest and compares.
+  parsed manifest and compares. With a Git repo available, the verifier
+  reads the manifest from the commit's tree (`kairo.toml` at the root),
+  removing a class of "verifying with the wrong manifest" mistakes.
 
 The structured `ObjectRevisionValidationReport` (see `STATEMENTS.md` §6.2)
-reports these checks independently, including a placeholder `content` field
-that stays indeterminate until the Git integration in TODO §11 fills it in.
+reports these checks independently. The `content` field carries the
+result of the Git lookup: `Verified` (commit found, parents agree),
+`ParentMismatch`, `CommitNotFound`, or `Indeterminate` (no repo
+supplied or non-Git revision scheme).
 
 ---
 

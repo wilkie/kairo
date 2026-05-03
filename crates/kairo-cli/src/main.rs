@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use base64::engine::general_purpose::STANDARD;
@@ -14,9 +14,9 @@ use kairo_identity::{
 };
 use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::{
-    validate_object_revision, validate_revision_manifest, ContentLayerCheck, DependencyDeclaration,
-    ManifestBindingCheck, ObjectConsistencyCheck, ObjectDependencySelector, ObjectManifest,
-    ObjectRevisionValidationReport, ParentReferenceCheck, Snapshot, SnapshotError,
+    validate_object_revision, validate_revision_manifest, CommitLookup, ContentLayerCheck,
+    DependencyDeclaration, ManifestBindingCheck, ObjectConsistencyCheck, ObjectDependencySelector,
+    ObjectManifest, ObjectRevisionValidationReport, ParentReferenceCheck, Snapshot, SnapshotError,
 };
 use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
 use kairo_statement::verify::{
@@ -98,10 +98,12 @@ enum VerifyCommand {
     /// Loads the `ObjectGenesis`, resolves the chosen `ObjectRevision`
     /// (default: creator-actor's `head` branch; override with `--actor`,
     /// `--name`, or `--statement`), verifies the revision's signature
-    /// against the resolved actor, and — when `--manifest` is supplied —
-    /// validates the manifest binding. Content-layer checks (Git
-    /// commit reachability, parent agreement) remain indeterminate
-    /// until TODO §11.
+    /// against the resolved actor, looks the storage commit up in a
+    /// Git repository (default: discovered upward from the current
+    /// directory; override with `--repo`), and validates the manifest
+    /// binding by reading `kairo.toml` from the commit's tree. Pass
+    /// `--manifest <path>` to override the tree-derived manifest, or
+    /// `--no-repo` to skip the Git lookup entirely.
     Object {
         /// Object whose verification report to compute.
         #[arg(long)]
@@ -116,9 +118,19 @@ enum VerifyCommand {
         /// Branch name (defaults to "head").
         #[arg(long, default_value = "head")]
         name: String,
-        /// Optional kairo.toml manifest to validate the revision's
-        /// `manifest_hash` against. If omitted, manifest binding is
-        /// reported as INDETERMINATE.
+        /// Path to a Git repository (working tree or .git directory).
+        /// Defaults to the repo discovered walking upward from the
+        /// current directory. Conflicts with --no-repo.
+        #[arg(long, conflicts_with = "no_repo")]
+        repo: Option<PathBuf>,
+        /// Skip Git lookup entirely. Content-layer check stays
+        /// INDETERMINATE; without `--manifest`, manifest binding does
+        /// too. Conflicts with --repo.
+        #[arg(long)]
+        no_repo: bool,
+        /// Override the kairo.toml manifest (otherwise read from the
+        /// commit's tree at `kairo.toml`). Useful when verifying a
+        /// revision that named a non-default manifest path.
         #[arg(long)]
         manifest: Option<PathBuf>,
         /// Emit a stable JSON representation of the report.
@@ -1530,7 +1542,11 @@ struct RevisionChecks {
     revision_object: ObjectId,
     signature: VerificationReport,
     validation: ObjectRevisionValidationReport,
-    manifest_path: Option<PathBuf>,
+    /// Where the manifest came from for the binding check. Either a
+    /// filesystem path (explicit `--manifest`) or a synthetic
+    /// `git:sha256:<oid>/kairo.toml` descriptor for tree-derived
+    /// manifests. `None` when no manifest could be resolved.
+    manifest_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1557,6 +1573,8 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
             statement,
             actor,
             name,
+            repo,
+            no_repo,
             manifest,
             json,
         } => {
@@ -1571,10 +1589,6 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                         object: object_id.clone(),
                         source: error,
                     })?;
-            // The store re-derives the ObjectId on read and returns
-            // CorruptReason::HashMismatch if it doesn't match; reaching
-            // this point therefore implies the genesis body is fixity-
-            // consistent with the requested object id.
             let genesis = GenesisCheck {
                 derived_object: genesis_statement.object_id(),
             };
@@ -1629,30 +1643,53 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 }
             };
 
-            // Manifest binding (optional input).
-            let manifest_value = match manifest.as_ref() {
-                Some(path) => Some(read_manifest(path.clone())?),
+            let revision_body = revision_statement.unsigned().body();
+
+            // Open the Git repo (explicit --repo, discovery, or skipped
+            // via --no-repo). Discovery walks upward from the current
+            // working directory; an absent repo is non-fatal — it just
+            // leaves the content layer Indeterminate.
+            let git_repo = if no_repo {
+                None
+            } else {
+                open_repo_for_verify(repo.as_deref())?
+            };
+
+            // Look up the storage commit. None = no repo or non-git
+            // revision scheme. Some(NotFound) = repo present, commit
+            // missing. Some(Found{...}) = commit details for the
+            // content-layer check.
+            let commit_lookup = match git_repo.as_ref() {
+                Some(repo) => Some(lookup_commit_for_revision(repo, revision_body.revision())?),
                 None => None,
             };
 
-            // Validate the revision against genesis + (optional) manifest.
+            // Resolve the manifest. Order of preference: explicit
+            // --manifest override, then kairo.toml read from the
+            // commit's tree, then nothing.
+            let (manifest_value, manifest_source) = resolve_manifest(
+                manifest.as_deref(),
+                git_repo.as_ref(),
+                revision_body.revision(),
+                &commit_lookup,
+            )?;
+
             let validation = validate_object_revision(
                 &revision_statement,
                 Some(&genesis_statement),
                 manifest_value.as_ref(),
+                commit_lookup.as_ref(),
             );
 
-            // Verify the signature using the store as ActorResolver.
             let signature = verify_envelope_statement(&revision_statement, &store);
 
-            let revision_body = revision_statement.unsigned().body();
             let revision_checks = RevisionChecks {
                 statement_id: revision_statement.statement_id(),
                 revision: revision_body.revision().clone(),
                 revision_object: revision_body.object().clone(),
                 signature,
                 validation,
-                manifest_path: manifest,
+                manifest_source: manifest_source.map(|p| p.display().to_string()),
             };
 
             let overall = aggregate_overall_status(&genesis, &revision_checks, &object_id);
@@ -1680,6 +1717,85 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
             }
         }
     }
+}
+
+/// Open the Git repo for `verify object`. Explicit `--repo <path>` is
+/// authoritative; otherwise walk upward from cwd. Returns `Ok(None)`
+/// only when the caller passed `--no-repo`; this function never
+/// silently swallows discovery failures — it is up to the caller
+/// (`run_verify_command`) to gate the call.
+fn open_repo_for_verify(
+    explicit_repo: Option<&Path>,
+) -> Result<Option<kairo_git::Repository>, CliError> {
+    let path = match explicit_repo {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir().map_err(|source| CliError::CwdUnavailable { source })?,
+    };
+    match (explicit_repo, kairo_git::discover(&path)) {
+        (_, Ok(repo)) => Ok(Some(repo)),
+        // Explicit --repo: failure is fatal so the user knows their
+        // path was wrong.
+        (Some(explicit), Err(error)) => Err(CliError::OpenGitRepo {
+            path: explicit.to_path_buf(),
+            source: error,
+        }),
+        // No --repo, no --no-repo, no discovered repo: error with a
+        // clear hint pointing at the available options.
+        (None, Err(_)) => Err(CliError::GitRepoNotDiscovered { searched_from: path }),
+    }
+}
+
+/// Strip the `git:sha256:` prefix from a `RevisionId` and look up the
+/// commit. Non-git revisions return `Ok(None)` — the caller treats
+/// that as "content layer is Indeterminate."
+fn lookup_commit_for_revision(
+    repo: &kairo_git::Repository,
+    revision: &RevisionId,
+) -> Result<CommitLookup, CliError> {
+    let oid = match revision.as_str().strip_prefix("git:sha256:") {
+        Some(oid) => oid,
+        None => return Ok(CommitLookup::NotFound),
+    };
+    match repo.find_commit(oid) {
+        Ok(Some(info)) => Ok(CommitLookup::Found {
+            parent_oids: info.parent_ids,
+        }),
+        Ok(None) => Ok(CommitLookup::NotFound),
+        Err(error) => Err(CliError::GitOperation { source: error }),
+    }
+}
+
+/// Resolve the manifest used for the binding check. Returns the
+/// parsed manifest plus a "source path" string for the report.
+fn resolve_manifest(
+    explicit_manifest: Option<&Path>,
+    git_repo: Option<&kairo_git::Repository>,
+    revision: &RevisionId,
+    commit_lookup: &Option<CommitLookup>,
+) -> Result<(Option<ObjectManifest>, Option<PathBuf>), CliError> {
+    if let Some(path) = explicit_manifest {
+        let manifest = read_manifest(path.to_path_buf())?;
+        return Ok((Some(manifest), Some(path.to_path_buf())));
+    }
+    let (Some(repo), Some(CommitLookup::Found { .. })) = (git_repo, commit_lookup.as_ref()) else {
+        return Ok((None, None));
+    };
+    let oid = match revision.as_str().strip_prefix("git:sha256:") {
+        Some(oid) => oid,
+        None => return Ok((None, None)),
+    };
+    let bytes = repo
+        .read_blob_at_path(oid, "kairo.toml")
+        .map_err(|source| CliError::GitOperation { source })?;
+    let Some(bytes) = bytes else {
+        return Ok((None, None));
+    };
+    let text = String::from_utf8(bytes).map_err(|_| CliError::ManifestNotUtf8)?;
+    let manifest = ObjectManifest::parse_toml(&text).map_err(CliError::ParseManifest)?;
+    Ok((
+        Some(manifest),
+        Some(PathBuf::from(format!("git:sha256:{oid}/kairo.toml"))),
+    ))
 }
 
 fn aggregate_overall_status(
@@ -1720,6 +1836,10 @@ fn aggregate_overall_status(
         ManifestBindingCheck::ManifestNotProvided => OverallStatus::Indeterminate,
     };
     let content_status = match revision.validation.content {
+        ContentLayerCheck::Verified => OverallStatus::Valid,
+        ContentLayerCheck::ParentMismatch { .. } | ContentLayerCheck::CommitNotFound => {
+            OverallStatus::Invalid
+        }
         ContentLayerCheck::Indeterminate => OverallStatus::Indeterminate,
     };
 
@@ -1795,15 +1915,31 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
         "  manifest_binding = {}\n",
         format_manifest_binding(&report.revision.validation.manifest_binding)
     ));
-    if let Some(path) = &report.revision.manifest_path {
-        out.push_str(&format!("  manifest_path = {}\n", path.display()));
+    if let Some(source) = &report.revision.manifest_source {
+        out.push_str(&format!("  manifest_source = {source}\n"));
     }
     out.push_str(&format!(
         "  parents = {}\n",
         format_parents(&report.revision.validation.parents)
     ));
-    out.push_str("  content = INDETERMINATE (TODO §11)\n");
+    out.push_str(&format!(
+        "  content = {}\n",
+        format_content_layer(&report.revision.validation.content)
+    ));
     out
+}
+
+fn format_content_layer(check: &ContentLayerCheck) -> String {
+    match check {
+        ContentLayerCheck::Verified => "VALID (commit found, parents agree)".to_owned(),
+        ContentLayerCheck::ParentMismatch { expected, actual } => format!(
+            "INVALID (parent mismatch; expected {expected:?}, actual {actual:?})"
+        ),
+        ContentLayerCheck::CommitNotFound => "INVALID (commit not in repo)".to_owned(),
+        ContentLayerCheck::Indeterminate => {
+            "INDETERMINATE (no Git lookup performed)".to_owned()
+        }
+    }
 }
 
 fn format_object_verification_json(report: &ObjectVerificationReport) -> String {
@@ -1876,13 +2012,9 @@ fn format_object_verification_json(report: &ObjectVerificationReport) -> String 
             "actor": format_actor_resolution(&report.revision.signature.actor),
             "object_consistency": object_consistency_value,
             "manifest_binding": manifest_binding_value,
-            "manifest_path": report
-                .revision
-                .manifest_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
+            "manifest_source": report.revision.manifest_source.clone(),
             "parents": parents_value,
-            "content": "indeterminate",
+            "content": content_layer_json(&report.revision.validation.content),
         },
     });
     let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
@@ -1912,7 +2044,20 @@ fn format_manifest_binding(check: &ManifestBindingCheck) -> &'static str {
 fn format_parents(check: &ParentReferenceCheck) -> String {
     match check {
         ParentReferenceCheck::NoParents => "0 (initial revision)".to_owned(),
-        ParentReferenceCheck::Declared { count } => format!("{count} declared (content: indeterminate)"),
+        ParentReferenceCheck::Declared { count } => format!("{count} declared"),
+    }
+}
+
+fn content_layer_json(check: &ContentLayerCheck) -> serde_json::Value {
+    match check {
+        ContentLayerCheck::Verified => serde_json::json!({ "status": "verified" }),
+        ContentLayerCheck::ParentMismatch { expected, actual } => serde_json::json!({
+            "status": "parent-mismatch",
+            "expected": expected,
+            "actual": actual,
+        }),
+        ContentLayerCheck::CommitNotFound => serde_json::json!({ "status": "commit-not-found" }),
+        ContentLayerCheck::Indeterminate => serde_json::json!({ "status": "indeterminate" }),
     }
 }
 
@@ -2354,7 +2499,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -2481,6 +2626,20 @@ enum CliError {
     },
     ComputeSnapshot(SnapshotError),
     ObjectVerificationFailed(String),
+    CwdUnavailable {
+        source: std::io::Error,
+    },
+    OpenGitRepo {
+        path: PathBuf,
+        source: kairo_git::GitError,
+    },
+    GitRepoNotDiscovered {
+        searched_from: PathBuf,
+    },
+    GitOperation {
+        source: kairo_git::GitError,
+    },
+    ManifestNotUtf8,
     ManifestObjectMismatch {
         manifest_object: ObjectId,
         cli_object: ObjectId,
@@ -2625,6 +2784,19 @@ impl fmt::Display for CliError {
                 f.write_str(report)?;
                 f.write_str("object verification reported INVALID")
             }
+            Self::CwdUnavailable { source } => {
+                write!(f, "could not read current working directory: {source}")
+            }
+            Self::OpenGitRepo { path, source } => {
+                write!(f, "failed to open Git repository at {}: {source}", path.display())
+            }
+            Self::GitRepoNotDiscovered { searched_from } => write!(
+                f,
+                "no Git repository discovered from {}; pass --repo to specify one or --no-repo to skip Git lookup",
+                searched_from.display()
+            ),
+            Self::GitOperation { source } => write!(f, "{source}"),
+            Self::ManifestNotUtf8 => f.write_str("kairo.toml in commit tree is not valid UTF-8"),
             Self::ManifestObjectMismatch {
                 manifest_object,
                 cli_object,
@@ -2657,7 +2829,8 @@ impl Error for CliError {
             | Self::ReadStatement { source, .. }
             | Self::ReadPublicKey { source, .. }
             | Self::ReadActorGenesis { source, .. }
-            | Self::ScanStatements { source, .. } => Some(source),
+            | Self::ScanStatements { source, .. }
+            | Self::CwdUnavailable { source } => Some(source),
             Self::ParseManifest(error) => Some(error),
             Self::ParseActorGenesisJson(error) | Self::ParseStatementJson(error) => Some(error),
             Self::ParseActorGenesis(error) => Some(error),
@@ -2685,6 +2858,7 @@ impl Error for CliError {
             | Self::ParseStatementId { source, .. }
             | Self::BuildSubjectRef { source, .. } => Some(source),
             Self::GenerateKey(error) => Some(error),
+            Self::OpenGitRepo { source, .. } | Self::GitOperation { source } => Some(source),
             Self::VerificationFailed(_)
             | Self::ObjectVerificationFailed(_)
             | Self::HomeNotSet
@@ -2695,6 +2869,8 @@ impl Error for CliError {
             | Self::TagObjectMismatch { .. }
             | Self::TagNotFound { .. }
             | Self::RevokeWithoutPriorTag { .. }
+            | Self::GitRepoNotDiscovered { .. }
+            | Self::ManifestNotUtf8
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64
@@ -4103,6 +4279,8 @@ kind = "tree"
                     statement: None,
                     actor: None,
                     name: "head".to_owned(),
+                    repo: None,
+                    no_repo: true,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -4131,6 +4309,8 @@ kind = "tree"
                     statement: None,
                     actor: None,
                     name: "head".to_owned(),
+                    repo: None,
+                    no_repo: true,
                     manifest: None,
                     json: false,
                 },
@@ -4156,6 +4336,8 @@ kind = "tree"
                     statement: Some(revision_statement.clone()),
                     actor: None,
                     name: "head".to_owned(),
+                    repo: None,
+                    no_repo: true,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -4195,6 +4377,8 @@ kind = "tree"
                     statement: None,
                     actor: None,
                     name: "head".to_owned(),
+                    repo: None,
+                    no_repo: true,
                     manifest: Some(wrong_manifest),
                     json: false,
                 },
@@ -4222,6 +4406,8 @@ kind = "tree"
                     statement: None,
                     actor: None,
                     name: "head".to_owned(),
+                    repo: None,
+                    no_repo: true,
                     manifest: Some(manifest_path),
                     json: true,
                 },
@@ -4279,6 +4465,8 @@ kind = "tree"
                     statement: None,
                     actor: None,
                     name: "head".to_owned(),
+                    repo: None,
+                    no_repo: true,
                     manifest: None,
                     json: false,
                 },
@@ -4310,12 +4498,248 @@ kind = "tree"
                         json: true,
                         statement: None,
                         actor: None,
+                        repo: None,
+                        no_repo: false,
                         name,
                     }
                 }),
                 ..
             }) if object == "zQmObject" && manifest.as_os_str() == "kairo.toml" && name == "head"
         ));
+    }
+
+    /// Init a Git repo, commit a kairo.toml that matches `manifest_text`,
+    /// and return (tempdir, commit_oid).
+    fn init_git_repo_with_manifest(
+        manifest_text: &str,
+    ) -> Result<(tempfile::TempDir, String), Box<dyn std::error::Error>> {
+        use std::process::Command as Process;
+        let dir = tempfile::TempDir::new()?;
+        let run_git = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
+            let status = Process::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .status()?;
+            if !status.success() {
+                return Err(format!("git {args:?} failed").into());
+            }
+            Ok(())
+        };
+        run_git(&["init", "--initial-branch=main", "--quiet"])?;
+        run_git(&["config", "user.name", "Kairo Test"])?;
+        run_git(&["config", "user.email", "test@kairo.test"])?;
+        run_git(&["config", "commit.gpgsign", "false"])?;
+        std::fs::write(dir.path().join("kairo.toml"), manifest_text)?;
+        run_git(&["add", "kairo.toml"])?;
+        run_git(&["commit", "-m", "first", "--quiet"])?;
+        let output = Process::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()?;
+        if !output.status.success() {
+            return Err("rev-parse failed".into());
+        }
+        let oid = String::from_utf8(output.stdout)?.trim().to_owned();
+        Ok((dir, oid))
+    }
+
+    #[test]
+    fn verify_object_with_real_git_repo_can_reach_valid(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Build a fixture where the revision's storage commit really
+        // exists in a Git repo and its tree's kairo.toml matches what
+        // the revision was signed against. With everything available,
+        // overall must be VALID.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "git-fixture"
+
+            [content]
+            kind = "tree"
+        "#;
+        let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+
+        // Use the same kairo.toml content the commit holds, so the
+        // manifest_hash signed into the revision matches the tree
+        // content the verifier reads back.
+        let manifest_path = git_dir.path().join("kairo.toml");
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: format!("git:sha256:{commit_oid}"),
+                    manifest: manifest_path,
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_id.clone(),
+                    revision: revision_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        // Verify with --repo pointing at the real git repo. No
+        // --manifest — the verifier must read kairo.toml from the
+        // commit's tree itself.
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: Some(git_dir.path().to_path_buf()),
+                    no_repo: false,
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(
+            output.contains("verify object: VALID"),
+            "expected VALID, got:\n{output}"
+        );
+        assert!(output.contains("content = VALID"));
+        assert!(output.contains("manifest_binding = VALID (bound)"));
+        assert!(output.contains(&format!("manifest_source = git:sha256:{commit_oid}/kairo.toml")));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_with_repo_missing_commit_is_invalid(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Sign a revision against a commit oid that doesn't exist in
+        // the git repo we point --repo at. Content layer must report
+        // CommitNotFound, which makes overall INVALID.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "git-fixture"
+        "#;
+        let (git_dir, real_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let _ = real_oid; // we need a repo with at least one commit, but we'll sign against a different oid
+        let store_dir = tempfile::TempDir::new()?;
+
+        // Use the working tree's kairo.toml as the manifest the user
+        // signs against.
+        let manifest_path = git_dir.path().join("kairo.toml");
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision:
+                        "git:sha256:0123456789abcdef0123456789abcdef01234567".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_id.clone(),
+                    revision: revision_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: Some(git_dir.path().to_path_buf()),
+                    no_repo: false,
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        });
+        assert!(matches!(
+            result,
+            Err(CliError::ObjectVerificationFailed(report))
+                if report.contains("INVALID") && report.contains("commit not in repo")
+        ));
+        Ok(())
     }
 
     #[test]

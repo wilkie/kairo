@@ -9,6 +9,7 @@ repository.workspace = true
 base64 = "=0.21.7"
 clap = { version = "4.4", features = ["derive", "env"] }
 kairo-core = { path = "../kairo-core" }
+kairo-git = { path = "../kairo-git" }
 kairo-identity = { path = "../kairo-identity" }
 kairo-keystore = { path = "../kairo-keystore" }
 kairo-object = { path = "../kairo-object" }

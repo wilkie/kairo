@@ -1,0 +1,19 @@
+[package]
+name = "kairo-git"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gix = { version = "0.66", default-features = false, features = ["max-performance-safe"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "kairo_git"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
