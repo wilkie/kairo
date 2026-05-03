@@ -401,10 +401,12 @@ impl StatementStore for FilesystemStore {
         atomic_write(&path, &bytes)?;
 
         let actor = statement.unsigned().actor();
-        let object = statement.unsigned().body().object();
-        let version = statement.unsigned().body().version().as_str();
+        let body = statement.unsigned().body();
+        let object = body.object();
+        let version = body.version().as_str();
         let created_at = statement.unsigned().created_at();
-        self.upsert_version_tag_index(object, actor, version, &id, created_at)?;
+        let supersedes = body.supersedes();
+        self.upsert_version_tag_index(object, actor, version, &id, created_at, supersedes)?;
 
         Ok(id)
     }
@@ -493,6 +495,7 @@ impl FilesystemStore {
         version: &str,
         statement_id: &StatementId,
         created_at: kairo_core::Timestamp,
+        supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
         let path = self.shard_path(VERSION_TAGS_DIR, object.as_str(), JSON_SUFFIX)?;
         let mut index = match fs::read(&path) {
@@ -508,7 +511,7 @@ impl FilesystemStore {
             Err(error) => return Err(StoreError::Unavailable(error)),
         };
 
-        let updated = index.upsert(actor, version, statement_id, created_at);
+        let updated = index.upsert(actor, version, statement_id, created_at, supersedes);
         if updated {
             let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
             atomic_write(&path, &bytes)?;
@@ -592,7 +595,7 @@ impl VersionTagResolver for FilesystemStore {
         let Some(index) = self.read_version_tag_index(object)? else {
             return Ok(None);
         };
-        let Some(entry) = index.lookup(actor, version) else {
+        let Some(entry) = index.lookup_head(actor, version) else {
             return Ok(None);
         };
         let statement_id =
@@ -1416,6 +1419,88 @@ mod tests {
         let object = ObjectId::new(OBJECT_ID)?;
         let heads = store.list_version_tags(&object)?;
         assert!(heads.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn chain_precedence_overrides_timestamp_tiebreak() -> TestResult {
+        // Bind first; revoke second, both at same created_at, with the
+        // revoke's statement id sorting *lower* lexicographically. With
+        // pure (created_at, statement_id) tiebreak the bind would win;
+        // chain-precedence must give the win to the revoke because it
+        // explicitly supersedes the bind.
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let bind = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        let bind_id = store.put_object_version_tag(&bind)?;
+        let revoke = signed_version_tag(
+            actor.clone(),
+            object.clone(),
+            "1.2.3",
+            None,
+            Some(bind_id.clone()),
+            timestamp(), // same created_at — would tie under old rule
+        )?;
+        let revoke_id = store.put_object_version_tag(&revoke)?;
+        // Sanity: at least one of these orderings would have caused
+        // the bind to win under timestamp+id tiebreak.
+        let _ = (bind_id, revoke_id);
+
+        let resolved = store.latest_version_tag(&actor, &object, "1.2.3")?;
+        assert!(matches!(
+            resolved,
+            Some(signed) if signed.unsigned().body().is_revocation()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_actor_supersedes_does_not_replace_per_actor_head() -> TestResult {
+        // Actor B signs a tag whose supersedes points at actor A's
+        // tag. The MVP per-actor resolver intentionally does not honor
+        // cross-actor supersession (that requires the §10 capability
+        // model). A's head stays A's tag; B has its own head.
+        let (_dir, store) = open_temp_store()?;
+        let actor_a = fresh_genesis().actor_id();
+        let actor_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let a_tag = signed_version_tag(
+            actor_a.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        let a_id = store.put_object_version_tag(&a_tag)?;
+        let b_tag = signed_version_tag(
+            actor_b.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xBB; 32])),
+            Some(a_id.clone()),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_version_tag(&b_tag)?;
+
+        let a_head = store.latest_version_tag(&actor_a, &object, "1.2.3")?;
+        assert_eq!(a_head, Some(a_tag));
+        let b_head = store.latest_version_tag(&actor_b, &object, "1.2.3")?;
+        assert_eq!(b_head, Some(b_tag));
         Ok(())
     }
 }

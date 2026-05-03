@@ -135,24 +135,35 @@ schemas/canonical/object-branch-v1.md
 An `ObjectVersionTag` statement binds a strict semver 2.0.0 string to a
 specific `ObjectRevision` statement (a *bind*) or withdraws a previously
 published binding (a *revoke*). Like `ObjectBranch` it is actor-scoped
-and resolves latest-wins on `(actor, object, version)`. Two differences
-from `ObjectBranch`:
+and mutable. Differences from `ObjectBranch`:
 
 1. The version name must parse as semver 2.0.0; the future dependency
    resolver consumes these strings.
-2. Every non-genesis tag carries an explicit `supersedes` pointer at the
-   prior `ObjectVersionTag` it replaces, so the rebind / revoke history
-   is reconstructable without inferring from `created_at` order. The
-   genesis tag for `(actor, object, version)` has `supersedes = null`
-   and must be a bind; a revoke with no chain reference is a shape
-   violation.
+2. Every non-genesis tag carries an explicit `supersedes` pointer at
+   the prior `ObjectVersionTag` it replaces, so the rebind / revoke
+   history is reconstructable without inferring from `created_at`
+   order. The genesis tag has `supersedes = null` and must be a bind;
+   a revoke with no chain reference is a shape violation.
+3. Resolution honors **chain precedence**: the head for
+   `(actor, object, version)` is the leaf of the supersedes chain — a
+   statement no other statement supersedes. A successor that explicitly
+   names its predecessor is unambiguously later regardless of
+   `created_at`. `(created_at, statement_id)` is only a fork tiebreak,
+   applied when the chain has multiple leaves.
+
+`supersedes` may reference a tag from a **different actor** for the
+same `(object, version)`. The protocol records this claim, but the MVP
+per-actor resolver does not honor cross-actor edges — they're recorded
+for audit and await the §10 capability/authority model (delegation,
+co-maintainer grants, ownership transfer) to become load-bearing for
+resolution.
 
 Because tags are mutable, **consumers that need build reproducibility
 must record the resolved `StatementId` (or `SnapshotId`)** in their
 lockfile equivalent. The version string alone is not a stable handle —
-the actor may rebind or revoke it, and different resolvers may end up at
-different revisions for the same `(actor, object, version)` depending on
-what statements they have seen.
+the actor may rebind or revoke it, and different resolvers may end up
+at different revisions for the same `(actor, object, version)`
+depending on what statements they have seen.
 
 The canonical ObjectVersionTag v1 form is documented in:
 

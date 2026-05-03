@@ -51,45 +51,69 @@ a stable handle.
 
 ## Resolution Rule
 
-> For `(actor, object, version)`, the current tag is the `ObjectVersionTag`
-> statement signed by `actor` for `(object, version)` with the greatest
-> `(envelope.created_at, statement_id)`.
+> For `(actor, object, version)`, the current tag is the **leaf of the
+> supersedes chain**: an `ObjectVersionTag` statement signed by `actor`
+> for `(object, version)` whose `statement_id` is not referenced by any
+> other such statement's `supersedes` field.
 
-If that statement's `target` is a `StatementId`, the version is **bound**
-to that `ObjectRevision`. If `target` is absent (the revocation shape),
+Chain precedence is authoritative: a successor statement that explicitly
+names its predecessor via `supersedes` is unambiguously later than that
+predecessor, regardless of `created_at`. `(envelope.created_at,
+statement_id)` is **only** a fork tiebreak — applied when the chain has
+multiple leaves (an actor signed two tags both pointing at the same
+predecessor, or two genesis tags), the leaf with the greatest
+`(created_at, statement_id)` wins.
+
+If the head's `target` is a `StatementId`, the version is **bound** to
+that `ObjectRevision`. If `target` is absent (the revocation shape),
 the version is **withdrawn** for that actor; the resolver returns the
-withdrawal along with the `supersedes` chain so callers can audit what was
-withdrawn.
+withdrawal along with the `supersedes` chain so callers can audit what
+was withdrawn.
 
-Tiebreaking on `statement_id` gives a total order even when timestamps
-collide. Cryptographic validity, actor resolution, and trust evaluation
-are reported independently and do not affect resolution at the statement
+Cryptographic validity, actor resolution, and trust evaluation are
+reported independently and do not affect resolution at the statement
 layer.
+
+### Cross-actor supersession
+
+`supersedes` may reference an `ObjectVersionTag` from a **different
+actor** for the same `(object, version)`. The protocol records the
+claim, but the MVP per-actor resolver intentionally does not honor
+cross-actor edges — `latest_version_tag(actor, object, version)`
+considers only that actor's own statements. Honoring a B-supersedes-A
+claim requires an authority story (delegation, co-maintainer grants,
+ownership transfer) which lands with the §10 trust/capability model.
+Until then, cross-actor supersession is *expressible* and visible in
+audit history, but not load-bearing for resolution.
 
 ## Tag Chain Validation
 
 Every `ObjectVersionTag` is one of two shapes:
 
-- **Genesis (first tag for `(actor, object, version)`):**
+- **Genesis (no `supersedes`):**
   - `target` is present (a bind — you cannot revoke a version that was
     never bound).
   - `supersedes` is absent.
-- **Successor (any later tag for `(actor, object, version)`):**
+- **Successor:**
   - `target` is present (rebind) or absent (revoke).
   - `supersedes` is present and must reference an existing
-    `ObjectVersionTag` from the **same actor** for the **same
-    `(object, version)`**.
+    `ObjectVersionTag` for the **same `(object, version)`**.
+
+Cross-actor `supersedes` references are permitted (see "Cross-actor
+supersession" under Resolution Rule). What is **not** permitted is a
+`supersedes` that resolves to a tag for a different `(object, version)`
+— that's not a chain edge, that's a category error.
 
 A successor whose `supersedes` does not resolve in the local store is
-`Indeterminate`, not invalid — same handling as missing parent revisions.
-A successor whose `supersedes` resolves to a tag for a different actor or
-a different `(object, version)` is **invalid**.
+`Indeterminate`, not invalid — same handling as missing parent
+revisions. The chain just doesn't extend backwards in history; the
+successor is still a valid leaf.
 
 Forks (two successor tags both naming the same `supersedes`) are not
 blocked — in a federated system an actor may double-publish from two
-devices. The resolver still picks a single head via latest-wins on
-`(created_at, statement_id)`; the fork is preserved as an explicit audit
-signal rather than silently smoothed over.
+devices. The resolver picks a single head among the chain leaves via
+the fork-tiebreak rule above; the fork is preserved as an explicit
+audit signal rather than silently smoothed over.
 
 ## Example — Bind
 
