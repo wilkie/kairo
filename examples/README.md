@@ -116,6 +116,31 @@ export KAIRO_STORE_FRESH="$(mktemp -d)/kairo-store"
 kairo --store "$KAIRO_STORE_FRESH" actor import --genesis "$ACTOR_FILE"
 kairo --store "$KAIRO_STORE_FRESH" object import --statement "$OBJECT_FILE"
 kairo --store "$KAIRO_STORE_FRESH" revision import --statement "$STATEMENT_FILE"
+
+# 10. (Optional) Export everything the local store knows about the
+#     object as a portable directory bundle, then import it into yet
+#     another fresh store with a single command. Bundles cover what
+#     the per-record `actor/object/revision import` does, plus the
+#     object's branches, version tags, signing actors, and referenced
+#     blobs — every record fixity-checked on import.
+BUNDLE_DIR="$(mktemp -d)/object-bundle"
+kairo bundle export --object "$OBJECT" --output "$BUNDLE_DIR"
+ls "$BUNDLE_DIR"
+# → manifest.json  actors/  objects/  statements/  blobs/
+
+export KAIRO_STORE_BUNDLED="$(mktemp -d)/kairo-store"
+kairo --store "$KAIRO_STORE_BUNDLED" bundle import --input "$BUNDLE_DIR"
+
+# Branch resolution works in the bundled store — no per-record
+# wiring needed.
+kairo --store "$KAIRO_STORE_BUNDLED" branch show --object "$OBJECT"
+
+# The bundle declares which Git commits its statements reference but
+# does NOT carry the Git history itself in MVP. To reach VALID in the
+# bundled store you'd need the same Git repo (or its commits) reachable
+# from the bundled-store cwd. A future bundle version will optionally
+# include a Git pack and populate ~/.kairo/git/ on import.
+cat "$BUNDLE_DIR/manifest.json" | sed -n '/git_history/,$p' | head -n 6
 ```
 
 ### What this demonstrates

@@ -10,9 +10,12 @@ use kairo_core::{BlobId, ObjectId, SnapshotId, StatementId};
 use kairo_statement::{ObjectGenesisStatement, ObjectRevisionBody, RevisionId, SignedStatement};
 use serde::Deserialize;
 
-/// Canonical ObjectManifest v1 encoding is documented at
+/// Domain separator for `BlobId`s derived from canonical
+/// `ObjectManifest` bytes. Exposed so other crates (e.g.
+/// `kairo-bundle`) can re-derive a manifest blob's id during fixity
+/// checks. Canonical ObjectManifest v1 encoding is documented at
 /// `schemas/canonical/object-manifest-v1.md`.
-const OBJECT_MANIFEST_DOMAIN: &[u8] = b"kairo.object.manifest.v1";
+pub const OBJECT_MANIFEST_DOMAIN: &[u8] = b"kairo.object.manifest.v1";
 
 /// Canonical Snapshot v1 encoding is documented at
 /// `schemas/canonical/snapshot-v1.md`.

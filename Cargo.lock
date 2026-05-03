@@ -1068,12 +1068,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-bundle"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "kairo-core",
+ "kairo-identity",
+ "kairo-object",
+ "kairo-statement",
+ "kairo-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kairo-cli"
 version = "0.1.0"
 dependencies = [
  "base64",
  "clap",
  "ed25519-dalek",
+ "kairo-bundle",
  "kairo-core",
  "kairo-git",
  "kairo-identity",

@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use clap::{Parser, Subcommand};
+use kairo_bundle::{import_bundle, write_bundle, BundleError, ImportSummary};
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
@@ -30,8 +31,8 @@ use kairo_statement::{
     SignedStatement, TrustDecision, UnsignedStatement,
 };
 use kairo_store::{
-    ActorStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore, TrustResolver,
-    VersionTagResolver,
+    ActorStore, BlobStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore,
+    TrustResolver, VersionTagResolver,
 };
 
 #[derive(Debug, Parser)]
@@ -85,6 +86,11 @@ enum Command {
     Trust {
         #[command(subcommand)]
         command: TrustCommand,
+    },
+    /// Export and import portable directory bundles for an object.
+    Bundle {
+        #[command(subcommand)]
+        command: BundleCommand,
     },
     /// Compute a SnapshotId for an object's effective state.
     Snapshot {
@@ -282,6 +288,34 @@ enum TrustCommand {
         of: String,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BundleCommand {
+    /// Write a portable directory bundle for an object: its
+    /// `ObjectGenesis`, every known `ObjectRevision` / `ObjectBranch`
+    /// / `ObjectVersionTag` for it, every signing actor, and every
+    /// referenced blob. `ActorTrust` statements are intentionally
+    /// excluded; trust is first-person and does not transport with
+    /// object data. The destination directory must be empty (or not
+    /// exist).
+    Export {
+        /// Object whose bundle to write.
+        #[arg(long)]
+        object: String,
+        /// Destination directory for the bundle. Created if missing.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Read a directory bundle and ingest its contents into the local
+    /// store. Every record is fixity-checked: ids are re-derived from
+    /// the canonical bytes and rejected on mismatch. Idempotent —
+    /// re-importing the same bundle is a no-op.
+    Import {
+        /// Bundle directory to read.
+        #[arg(long)]
+        input: PathBuf,
     },
 }
 
@@ -496,6 +530,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Branch { command }) => run_branch_command(command, &paths),
         Some(Command::Tag { command }) => run_tag_command(command, &paths),
         Some(Command::Trust { command }) => run_trust_command(command, &paths),
+        Some(Command::Bundle { command }) => run_bundle_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         Some(Command::Verify { command }) => run_verify_command(command, &paths),
         None => Ok(help_text()),
@@ -789,6 +824,19 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
                     });
                 }
             }
+
+            // Persist the manifest blob alongside the revision so the
+            // store carries everything signed-into the revision (and
+            // bundle export can ship it). Idempotent: re-writing the
+            // same canonical bytes under the same BlobId is a no-op
+            // at the byte level.
+            let manifest_canonical_bytes = parsed_manifest.canonical_bytes();
+            store
+                .put_blob(&manifest_hash, &manifest_canonical_bytes)
+                .map_err(|error| CliError::WriteBlob {
+                    blob: manifest_hash.clone(),
+                    source: error,
+                })?;
 
             let body = ObjectRevisionBody::new(
                 object_id.clone(),
@@ -1819,6 +1867,48 @@ fn format_trust_history_json(
     let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     output.push('\n');
     output
+}
+
+fn run_bundle_command(command: BundleCommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        BundleCommand::Export { object, output } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+            let manifest = write_bundle(
+                &store,
+                &object_id,
+                &output,
+                &Timestamp::now().to_string(),
+                env!("CARGO_PKG_VERSION"),
+            )
+            .map_err(CliError::Bundle)?;
+            let mut out = String::new();
+            out.push_str("export bundle\n");
+            out.push_str(&format!("object = {}\n", object_id));
+            out.push_str(&format!("output = {}\n", output.display()));
+            out.push_str(&format!("actors = {}\n", manifest.contents.actors.len()));
+            out.push_str(&format!(
+                "statements = {}\n",
+                manifest.contents.statements.len()
+            ));
+            out.push_str(&format!("blobs = {}\n", manifest.contents.blobs.len()));
+            out.push_str(&format!(
+                "expected_git_commits = {}\n",
+                manifest.git_history.expected_commits.len()
+            ));
+            Ok(out)
+        }
+        BundleCommand::Import { input } => {
+            let store = open_store(paths)?;
+            let summary: ImportSummary =
+                import_bundle(&input, &store).map_err(CliError::Bundle)?;
+            Ok(format!(
+                "import bundle\nactors = {}\nobjects = {}\nstatements = {}\nblobs = {}\n",
+                summary.actors, summary.objects, summary.statements, summary.blobs,
+            ))
+        }
+    }
 }
 
 fn run_snapshot_command(command: SnapshotCommand, paths: &StorePaths) -> Result<String, CliError> {
@@ -2984,7 +3074,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -3058,6 +3148,10 @@ enum CliError {
         statement: kairo_core::StatementId,
         source: kairo_store::StoreError,
     },
+    WriteBlob {
+        blob: kairo_core::BlobId,
+        source: kairo_store::StoreError,
+    },
     ReadRevision {
         statement: kairo_core::StatementId,
         source: kairo_store::StoreError,
@@ -3127,6 +3221,7 @@ enum CliError {
     AmbiguousLocalActor {
         candidates: Vec<ActorId>,
     },
+    Bundle(BundleError),
     ComputeSnapshot(SnapshotError),
     ObjectVerificationFailed(String),
     CwdUnavailable {
@@ -3216,6 +3311,9 @@ impl fmt::Display for CliError {
             Self::WriteObjectGenesis { object, source } => {
                 write!(f, "failed to write object genesis {object}: {source}")
             }
+            Self::WriteBlob { blob, source } => {
+                write!(f, "failed to write blob {blob}: {source}")
+            }
             Self::WriteRevision { statement, source } => {
                 write!(
                     f,
@@ -3299,6 +3397,7 @@ impl fmt::Display for CliError {
                 "could not build subject reference for actor {actor}: {source}"
             ),
             Self::ListKeystore(error) => write!(f, "failed to list keystore: {error}"),
+            Self::Bundle(error) => write!(f, "{error}"),
             Self::AmbiguousLocalActor { candidates } => {
                 f.write_str(
                     "multiple local actors found in keystore; pass --as <actor-id> to choose, or --no-as to skip trust evaluation. candidates:\n",
@@ -3371,6 +3470,7 @@ impl Error for CliError {
             | Self::ReadActor { source, .. }
             | Self::WriteObjectGenesis { source, .. }
             | Self::WriteRevision { source, .. }
+            | Self::WriteBlob { source, .. }
             | Self::ReadRevision { source, .. }
             | Self::WriteBranch { source, .. }
             | Self::WriteVersionTag { source, .. }
@@ -3387,6 +3487,7 @@ impl Error for CliError {
             | Self::WriteKey { source, .. }
             | Self::ReadKey { source, .. } => Some(source),
             Self::ListKeystore(error) => Some(error),
+            Self::Bundle(error) => Some(error),
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
             | Self::ParseStatementId { source, .. }
@@ -5740,6 +5841,77 @@ kind = "tree"
             result,
             Err(CliError::AmbiguousLocalActor { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn end_to_end_bundle_export_then_import() -> Result<(), Box<dyn std::error::Error>> {
+        // Build a populated source store, export a bundle to a tmp
+        // dir, then import into a brand-new store and re-resolve the
+        // branch tip end-to-end.
+        let (src_store_dir, _manifest_dir, actor_id, object_id, revision_statement, _manifest_path) =
+            fixture_with_branch()?;
+
+        let bundle_dir = tempfile::TempDir::new()?;
+        let bundle_path = bundle_dir.path().join("bundle");
+
+        let export_output = run(Cli {
+            store: Some(src_store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Export {
+                    object: object_id.clone(),
+                    output: bundle_path.clone(),
+                },
+            }),
+        })?;
+        assert!(export_output.contains("export bundle"));
+        assert!(export_output.contains(&object_id));
+
+        // Fresh empty store as the import target.
+        let dest_store_dir = tempfile::TempDir::new()?;
+        let import_output = run(Cli {
+            store: Some(dest_store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Import {
+                    input: bundle_path.clone(),
+                },
+            }),
+        })?;
+        assert!(import_output.contains("import bundle"));
+        assert!(import_output.contains("actors = 1"));
+
+        // Branch resolves at the new store, pointing at the original
+        // revision statement.
+        let show_output = run(Cli {
+            store: Some(dest_store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Show {
+                    object: object_id.clone(),
+                    actor: Some(actor_id.clone()),
+                    name: "head".to_owned(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(show_output.contains(&revision_statement));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_import_rejects_unknown_directory() -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let nowhere = std::path::PathBuf::from("/nonexistent-kairo-bundle-dir-xyz");
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Import { input: nowhere },
+            }),
+        });
+        assert!(matches!(result, Err(CliError::Bundle(_))));
         Ok(())
     }
 }

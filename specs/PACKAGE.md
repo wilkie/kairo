@@ -10,6 +10,44 @@ closures between Kairo stores, nodes, users, and long-term archives.
 
 This specification is intentionally prescriptive enough to guide implementation.
 
+### MVP slice (current implementation)
+
+`crates/kairo-bundle` and the `kairo bundle export | import` CLI ship a
+strict subset of this spec:
+
+- One package type only: an **object bundle** corresponding to §4.1
+  (`Object package`) — ObjectGenesis + every known
+  ObjectRevision/ObjectBranch/ObjectVersionTag for the root object,
+  every signing actor's ActorGenesis, and every referenced blob
+  (currently just the canonical manifest blob per revision).
+- **`ActorTrust` statements are intentionally excluded** from object
+  bundles. Trust is first-person; bundling opinions inside an object
+  package would invite reading them as authority. A separate
+  trust-bundle type may land later.
+- **Directory format only** (§5.1). Tar, gzip, and the deterministic
+  rules in §17 are not implemented; users tar/compress the directory
+  with their own tooling if they need single-file transport.
+- **No Git history in the bundle.** The manifest declares the Git
+  commit ids the bundle's `ObjectRevision` statements name in a new
+  `git_history` field (`{ "included": false, "expected_commits":
+  [...] }`); recipients must obtain those commits separately to reach
+  end-to-end `VALID`. A future bundle version flips
+  `git_history.included = true`, adds a `git/` subdirectory carrying
+  the Git pack, and ingests it into a `~/.kairo/git/` managed mirror
+  on import.
+- **No bundle-level signature** (§24). Every signed statement inside
+  is independently verifiable on its own bytes; the manifest is an
+  inventory, not an authority claim.
+- **Manifest schema** is the §7.1 shape minus the `closure`,
+  `executions`, `provenance`, and `indexes` sections, plus
+  `git_history`. `manifest.schema = "kairo.bundle.v1"` (note: the
+  field name is intentionally narrower than `kairo.package.v1` —
+  bundle is the MVP slice; the full package spec gets its own schema
+  string when it lands).
+- **Fixity is hard.** Importer re-derives every id from canonical
+  bytes; mismatches abort the import. Idempotent re-import is a no-op
+  at the byte level (same id + same bytes overwrites same content).
+
 ---
 
 ## 1. Purpose
