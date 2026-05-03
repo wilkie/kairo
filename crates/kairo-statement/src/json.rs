@@ -7,9 +7,10 @@ use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, Ti
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
-    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
-    SignedStatement, UnsignedStatement,
+    ActorTrustBody, ActorTrustShapeError, ObjectBranchBody, ObjectGenesisBody, ObjectKind,
+    ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
+    SemverParseError, SemverVersion, Signature, SignedStatement, TrustDecision,
+    TrustDecisionParseError, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,8 @@ pub enum StatementJsonError {
     InvalidCreatedAt(TimestampError),
     InvalidVersion(SemverParseError),
     InvalidTagShape(ObjectVersionTagShapeError),
+    InvalidTrustDecision(TrustDecisionParseError),
+    InvalidTrustShape(ActorTrustShapeError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -56,6 +59,8 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
             Self::InvalidVersion(error) => write!(f, "{error}"),
             Self::InvalidTagShape(error) => write!(f, "{error}"),
+            Self::InvalidTrustDecision(error) => write!(f, "{error}"),
+            Self::InvalidTrustShape(error) => write!(f, "{error}"),
         }
     }
 }
@@ -71,6 +76,8 @@ impl Error for StatementJsonError {
             Self::InvalidCreatedAt(error) => Some(error),
             Self::InvalidVersion(error) => Some(error),
             Self::InvalidTagShape(error) => Some(error),
+            Self::InvalidTrustDecision(error) => Some(error),
+            Self::InvalidTrustShape(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -441,6 +448,95 @@ impl ObjectVersionTagBodyJson {
             object: body.object().to_string(),
             version: body.version().as_str().to_owned(),
             target: body.target().map(|id| id.to_string()),
+            supersedes: body.supersedes().map(|id| id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorTrustStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorTrustBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorTrustStatementJson {
+    pub fn to_statement(&self) -> Result<SignedStatement<ActorTrustBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "ActorTrust", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorTrustBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorTrust".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorTrustBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorTrustBodyJson {
+    pub trusted_actor: String,
+    pub decision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub supersedes: Option<String>,
+}
+
+impl ActorTrustBodyJson {
+    pub fn to_body(&self) -> Result<ActorTrustBody, StatementJsonError> {
+        let trusted_actor =
+            ActorId::new(self.trusted_actor.clone()).map_err(StatementJsonError::InvalidActor)?;
+        let decision = match &self.decision {
+            Some(value) => Some(
+                TrustDecision::parse(value).map_err(StatementJsonError::InvalidTrustDecision)?,
+            ),
+            None => None,
+        };
+        let supersedes = match &self.supersedes {
+            Some(value) => Some(
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
+        ActorTrustBody::new(trusted_actor, decision, self.reason.clone(), supersedes)
+            .map_err(StatementJsonError::InvalidTrustShape)
+    }
+
+    pub fn from_body(body: &ActorTrustBody) -> Self {
+        Self {
+            trusted_actor: body.trusted_actor().to_string(),
+            decision: body.decision().map(|d| d.as_str().to_owned()),
+            reason: body.reason().map(|r| r.to_owned()),
             supersedes: body.supersedes().map(|id| id.to_string()),
         }
     }
@@ -1100,6 +1196,163 @@ mod tests {
         let dto = ObjectVersionTagStatementJson::from_statement(&revoke);
         let round_tripped = dto.to_statement()?;
         assert_eq!(revoke.statement_id(), round_tripped.statement_id());
+        Ok(())
+    }
+
+    const TRUSTED_ACTOR_ID: &str = "zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu";
+
+    fn actor_trust_grant_json(signature: &str) -> String {
+        format!(
+            r#"{{
+              "type": "ActorTrust",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{TRUSTED_ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "trusted_actor": "{TRUSTED_ACTOR_ID}",
+                "decision": "trusted",
+                "supersedes": null
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn actor_trust_withdraw_json(signature: &str) -> String {
+        let prior = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ActorTrust",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{TRUSTED_ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "trusted_actor": "{TRUSTED_ACTOR_ID}",
+                "decision": null,
+                "reason": "key was leaked",
+                "supersedes": "{prior}"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_actor_trust_json(
+        json: &str,
+    ) -> Result<SignedStatement<ActorTrustBody>, serde_json::Error> {
+        let dto: ActorTrustStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_actor_trust_grant_json() {
+        let parsed = parse_actor_trust_json(&actor_trust_grant_json("c2lnbmF0dXJl"));
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if signed.unsigned().body().decision() == Some(TrustDecision::Trusted)
+                && signed.unsigned().body().supersedes().is_none()
+        ));
+    }
+
+    #[test]
+    fn parses_actor_trust_withdraw_json() {
+        let parsed = parse_actor_trust_json(&actor_trust_withdraw_json("c2lnbmF0dXJl"));
+        let expected_prior = revision_statement_id();
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if signed.unsigned().body().is_withdrawal()
+                && signed.unsigned().body().supersedes() == Some(&expected_prior)
+                && signed.unsigned().body().reason() == Some("key was leaked")
+        ));
+    }
+
+    #[test]
+    fn rejects_actor_trust_with_unknown_decision_string() {
+        let body = ActorTrustBodyJson {
+            trusted_actor: TRUSTED_ACTOR_ID.to_owned(),
+            decision: Some("maybe".to_owned()),
+            reason: None,
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidTrustDecision(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_actor_trust_withdraw_without_supersedes() {
+        let body = ActorTrustBodyJson {
+            trusted_actor: TRUSTED_ACTOR_ID.to_owned(),
+            decision: None,
+            reason: None,
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidTrustShape(
+                ActorTrustShapeError::WithdrawWithoutSupersedes
+            ))
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_actor_trust_statement_id() {
+        let first = actor_trust_grant_json("c2lnbmF0dXJlLW9uZQ==");
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2lnbmF0dXJlLXR3bw==",
+                "algorithm": "example",
+                "key_id": "secondary",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "supersedes": null,
+                "decision": "trusted",
+                "trusted_actor": "{TRUSTED_ACTOR_ID}"
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "actor:{TRUSTED_ACTOR_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ActorTrust"
+            }}"#
+        );
+        let first_id = parse_actor_trust_json(&first).map(|s| s.statement_id());
+        let second_id = parse_actor_trust_json(&second).map(|s| s.statement_id());
+        assert!(
+            matches!((first_id, second_id), (Ok(first_id), Ok(second_id)) if first_id == second_id)
+        );
+    }
+
+    #[test]
+    fn actor_trust_round_trips_through_from_statement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let grant = parse_actor_trust_json(&actor_trust_grant_json("c2lnbmF0dXJl"))?;
+        let dto = ActorTrustStatementJson::from_statement(&grant);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(grant.statement_id(), round_tripped.statement_id());
+
+        let withdraw = parse_actor_trust_json(&actor_trust_withdraw_json("c2lnbmF0dXJl"))?;
+        let dto = ActorTrustStatementJson::from_statement(&withdraw);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(withdraw.statement_id(), round_tripped.statement_id());
         Ok(())
     }
 }

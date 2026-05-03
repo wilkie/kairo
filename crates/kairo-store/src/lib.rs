@@ -10,7 +10,8 @@
 //! - [`ObjectStore`] — signed `ObjectGenesis` statements, indexed by
 //!   [`ObjectId`].
 //! - [`StatementStore`] — signed envelope statements (`ObjectRevision`,
-//!   `ObjectBranch`, `ObjectVersionTag`), indexed by [`StatementId`].
+//!   `ObjectBranch`, `ObjectVersionTag`, `ActorTrust`), indexed by
+//!   [`StatementId`].
 //! - [`BlobStore`] — raw bytes addressed by a caller-supplied [`BlobId`].
 //!
 //! [`BranchResolver`] resolves the current `(actor, object, name)`
@@ -18,6 +19,9 @@
 //! `put_object_branch` keeps in sync. [`VersionTagResolver`] does the
 //! same for `(actor, object, semver)` `ObjectVersionTag` heads via a
 //! parallel index maintained by `put_object_version_tag`.
+//! [`TrustResolver`] resolves the current `(by_actor, trusted_actor)`
+//! `ActorTrust` head via a per-truster materialized index maintained
+//! by `put_actor_trust`.
 //!
 //! [`FilesystemStore`] implements all of these. It also implements
 //! [`ActorResolver`] so `kairo-statement::verify` consumes a store directly.
@@ -33,6 +37,7 @@ mod branches;
 pub mod error;
 mod shard;
 mod tags;
+mod trust;
 
 use std::fs;
 use std::io;
@@ -42,17 +47,18 @@ use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
 use kairo_statement::json::{
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
+    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
-    SignedStatement,
+    ActorTrustBody, ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody,
+    ObjectVersionTagBody, SignedStatement,
 };
 
 pub use branches::BranchTip;
 pub use error::{CorruptReason, StoreError};
 pub use tags::VersionTagHead;
+pub use trust::TrustHead;
 
 const STORE_VERSION: &str = "1";
 const VERSION_FILE: &str = "version.txt";
@@ -62,6 +68,7 @@ const OBJECTS_DIR: &str = "objects";
 const STATEMENTS_DIR: &str = "statements";
 const BRANCHES_DIR: &str = "branches";
 const VERSION_TAGS_DIR: &str = "version_tags";
+const TRUST_DIR: &str = "trust";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -93,15 +100,15 @@ pub trait ObjectStore {
 
 /// Persistence interface for envelope-wrapped signed statements.
 ///
-/// Today `ObjectRevision`, `ObjectBranch`, and `ObjectVersionTag` are
-/// supported. New statement types add new methods alongside; do not
-/// collapse them into a single generic until the shape of more statement
-/// types is known.
+/// Today `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`, and
+/// `ActorTrust` are supported. New statement types add new methods
+/// alongside; do not collapse them into a single generic until the
+/// shape of more statement types is known.
 ///
-/// `put_object_branch` and `put_object_version_tag` also update their
-/// per-object materialized indices, so later `BranchResolver` /
-/// `VersionTagResolver` calls return the latest head without scanning
-/// all underlying statements.
+/// `put_object_branch`, `put_object_version_tag`, and `put_actor_trust`
+/// also update their respective materialized indices, so later
+/// `BranchResolver` / `VersionTagResolver` / `TrustResolver` calls
+/// return the latest head without scanning all underlying statements.
 pub trait StatementStore {
     fn put_object_revision(
         &self,
@@ -132,6 +139,16 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ObjectVersionTagBody>, StoreError>;
+
+    fn put_actor_trust(
+        &self,
+        statement: &SignedStatement<ActorTrustBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_trust(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorTrustBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -176,6 +193,52 @@ pub trait VersionTagResolver {
 
     /// All known `(actor, version)` tag heads for an object.
     fn list_version_tags(&self, object: &ObjectId) -> Result<Vec<VersionTagHead>, StoreError>;
+}
+
+/// Resolver for the current `(by_actor, trusted_actor)` trust head.
+///
+/// Backed by the per-trusted-actor head index materialized in
+/// `<root>/trust/<XX>/<YY>/<trusted-actor-id>.json`. Each file is keyed
+/// by truster, so opinions about a single trusted actor cluster
+/// together — federation aggregation ("what does the world say about
+/// Y?") is O(1).
+///
+/// The returned statement may be a grant (`decision = "trusted"`),
+/// block (`decision = "untrusted"`), or withdrawal
+/// (`decision = null` — the chain leaf retracts any prior decision).
+/// Callers walk the `supersedes` chain via `get_actor_trust` to
+/// surface the full audit history.
+///
+/// Cross-actor `supersedes` is invalid for trust at the canonical
+/// schema layer; the per-truster keying inside each index file
+/// enforces this structurally — the chain resolver only ever walks
+/// entries under one truster key.
+pub trait TrustResolver {
+    /// Latest `ActorTrust` statement for `(by_actor, trusted_actor)`.
+    /// Returns `None` if `by_actor` has never published a trust
+    /// statement about `trusted_actor`.
+    fn latest_trust(
+        &self,
+        by_actor: &ActorId,
+        trusted_actor: &ActorId,
+    ) -> Result<Option<SignedStatement<ActorTrustBody>>, StoreError>;
+
+    /// All known trust heads signed by `by_actor`. Each head is the
+    /// chain leaf for one `trusted_actor`.
+    ///
+    /// MVP implementation walks the trust directory; this is
+    /// O(trusted-actor count). A per-truster reverse index can land
+    /// when this query becomes hot.
+    fn list_trust(&self, by_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError>;
+
+    /// All known trust heads about `trusted_actor`, one per truster
+    /// who has expressed an opinion. O(1) given the sharding choice;
+    /// useful for federation aggregation and for surfacing peer
+    /// opinions in UIs.
+    fn list_opinions_about(
+        &self,
+        trusted_actor: &ActorId,
+    ) -> Result<Vec<TrustHead>, StoreError>;
 }
 
 /// Persistence interface for raw byte blobs.
@@ -435,6 +498,59 @@ impl StatementStore for FilesystemStore {
         }
         Ok(signed)
     }
+
+    fn put_actor_trust(
+        &self,
+        statement: &SignedStatement<ActorTrustBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorTrustStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let by_actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let trusted_actor = body.trusted_actor();
+        let created_at = statement.unsigned().created_at();
+        let decision = body.decision().map(|d| d.as_str());
+        let supersedes = body.supersedes();
+        self.upsert_trust_index(
+            trusted_actor,
+            by_actor,
+            &id,
+            created_at,
+            decision,
+            supersedes,
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_trust(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorTrustBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorTrustStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
 }
 
 impl FilesystemStore {
@@ -537,6 +653,108 @@ impl FilesystemStore {
             Err(error) => Err(StoreError::Unavailable(error)),
         }
     }
+
+    fn upsert_trust_index(
+        &self,
+        trusted_actor: &ActorId,
+        by_actor: &ActorId,
+        statement_id: &StatementId,
+        created_at: kairo_core::Timestamp,
+        decision: Option<&str>,
+        supersedes: Option<&StatementId>,
+    ) -> Result<(), StoreError> {
+        let path = self.shard_path(TRUST_DIR, trusted_actor.as_str(), JSON_SUFFIX)?;
+        let mut index = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<trust::TrustIndexFile>(&bytes).map_err(
+                |error| StoreError::Corrupt {
+                    id: trusted_actor.to_string(),
+                    reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
+                },
+            )?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => trust::TrustIndexFile::default(),
+            Err(error) => return Err(StoreError::Unavailable(error)),
+        };
+
+        let updated = index.upsert(by_actor, statement_id, created_at, decision, supersedes);
+        if updated {
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(trusted_actor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_trust_index(
+        &self,
+        trusted_actor: &ActorId,
+    ) -> Result<Option<trust::TrustIndexFile>, StoreError> {
+        let path = self.shard_path(TRUST_DIR, trusted_actor.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: trust::TrustIndexFile =
+                    serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                        id: trusted_actor.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
+    /// Walk the trust directory and apply `for_each` to each
+    /// `(trusted_actor, index)` pair. Used by `list_trust(by_actor)`
+    /// in the absence of a per-truster reverse index.
+    fn walk_trust_indices(
+        &self,
+        mut for_each: impl FnMut(ActorId, trust::TrustIndexFile) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let trust_root = self.root.join(TRUST_DIR);
+        let level1 = match fs::read_dir(&trust_root) {
+            Ok(iter) => iter,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(StoreError::Unavailable(error)),
+        };
+        for entry in level1 {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            for entry2 in fs::read_dir(entry.path())? {
+                let entry2 = entry2?;
+                if !entry2.file_type()?.is_dir() {
+                    continue;
+                }
+                for entry3 in fs::read_dir(entry2.path())? {
+                    let entry3 = entry3?;
+                    let path = entry3.path();
+                    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let bytes = fs::read(&path)?;
+                    let index: trust::TrustIndexFile = serde_json::from_slice(&bytes)
+                        .map_err(|error| StoreError::Corrupt {
+                            id: stem.to_string(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid trust index: {error}"
+                            )),
+                        })?;
+                    let trusted_actor =
+                        ActorId::new(stem.to_string()).map_err(|error| StoreError::Corrupt {
+                            id: stem.to_string(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid trusted actor id in trust path: {error}"
+                            )),
+                        })?;
+                    for_each(trusted_actor, index)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl BranchResolver for FilesystemStore {
@@ -631,6 +849,66 @@ impl VersionTagResolver for FilesystemStore {
     }
 }
 
+impl TrustResolver for FilesystemStore {
+    fn latest_trust(
+        &self,
+        by_actor: &ActorId,
+        trusted_actor: &ActorId,
+    ) -> Result<Option<SignedStatement<ActorTrustBody>>, StoreError> {
+        let Some(index) = self.read_trust_index(trusted_actor)? else {
+            return Ok(None);
+        };
+        let Some(entry) = index.lookup_head(by_actor) else {
+            return Ok(None);
+        };
+        let statement_id =
+            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
+                id: entry.statement_id.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid statement id in trust index: {error}"
+                )),
+            })?;
+        let signed = self.get_actor_trust(&statement_id)?;
+
+        if signed.unsigned().actor() != by_actor
+            || signed.unsigned().body().trusted_actor() != trusted_actor
+        {
+            return Err(StoreError::Corrupt {
+                id: statement_id.to_string(),
+                reason: CorruptReason::Parse(
+                    "trust index points at a statement with mismatched (by_actor, trusted_actor)"
+                        .to_owned(),
+                ),
+            });
+        }
+
+        Ok(Some(signed))
+    }
+
+    fn list_trust(&self, by_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError> {
+        let mut heads = Vec::new();
+        self.walk_trust_indices(|trusted_actor, index| {
+            for head in index.into_heads(&trusted_actor)? {
+                if &head.by_actor == by_actor {
+                    heads.push(head);
+                }
+            }
+            Ok(())
+        })?;
+        Ok(heads)
+    }
+
+    fn list_opinions_about(
+        &self,
+        trusted_actor: &ActorId,
+    ) -> Result<Vec<TrustHead>, StoreError> {
+        let Some(index) = self.read_trust_index(trusted_actor)? else {
+            return Ok(Vec::new());
+        };
+        index.into_heads(trusted_actor)
+    }
+}
+
 impl BlobStore for FilesystemStore {
     fn put_blob(&self, id: &BlobId, bytes: &[u8]) -> Result<(), StoreError> {
         let path = self.shard_path(BLOBS_DIR, id.as_str(), BLOB_SUFFIX)?;
@@ -704,9 +982,9 @@ mod tests {
     use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey};
     use kairo_statement::verify::{verify_envelope_statement, ActorResolution, SignatureStatus};
     use kairo_statement::{
-        ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+        ActorTrustBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
         ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement,
-        UnsignedStatement,
+        TrustDecision, UnsignedStatement,
     };
     use tempfile::TempDir;
 
@@ -1501,6 +1779,408 @@ mod tests {
         assert_eq!(a_head, Some(a_tag));
         let b_head = store.latest_version_tag(&actor_b, &object, "1.2.3")?;
         assert_eq!(b_head, Some(b_tag));
+        Ok(())
+    }
+
+    fn signed_actor_trust(
+        by_actor: ActorId,
+        trusted_actor: ActorId,
+        decision: Option<TrustDecision>,
+        reason: Option<&str>,
+        supersedes: Option<StatementId>,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorTrustBody>, Box<dyn std::error::Error>> {
+        let body = ActorTrustBody::new(
+            trusted_actor.clone(),
+            decision,
+            reason.map(|r| r.to_owned()),
+            supersedes,
+        )?;
+        let subject: KairoRef = format!("actor:{trusted_actor}").parse()?;
+        let unsigned = UnsignedStatement::new(by_actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            by_actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn trusted_actor_id() -> ActorId {
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [33; 32],
+        )
+        .actor_id()
+    }
+
+    fn other_trusted_actor_id() -> ActorId {
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [44; 32],
+        )
+        .actor_id()
+    }
+
+    #[test]
+    fn round_trips_actor_trust() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted = trusted_actor_id();
+        let signed = signed_actor_trust(
+            by_actor,
+            trusted,
+            Some(TrustDecision::Trusted),
+            Some("works"),
+            None,
+            timestamp(),
+        )?;
+        let id = store.put_actor_trust(&signed)?;
+        let loaded = store.get_actor_trust(&id)?;
+        assert_eq!(loaded, signed);
+        Ok(())
+    }
+
+    #[test]
+    fn latest_trust_returns_chain_leaf() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted = trusted_actor_id();
+        let grant = signed_actor_trust(
+            by_actor.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_trust(&grant)?;
+        let block = signed_actor_trust(
+            by_actor.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Untrusted),
+            None,
+            Some(grant_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_actor_trust(&block)?;
+
+        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        assert_eq!(resolved, Some(block));
+        Ok(())
+    }
+
+    #[test]
+    fn withdraw_supersedes_grant_at_latest_wins() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted = trusted_actor_id();
+        let grant = signed_actor_trust(
+            by_actor.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_trust(&grant)?;
+        let withdraw = signed_actor_trust(
+            by_actor.clone(),
+            trusted.clone(),
+            None,
+            None,
+            Some(grant_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_actor_trust(&withdraw)?;
+
+        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        assert!(matches!(
+            resolved,
+            Some(signed) if signed.unsigned().body().is_withdrawal()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_trust_returns_none() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted = trusted_actor_id();
+        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        assert!(resolved.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn trust_is_independent_per_trusted_actor() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted_a = trusted_actor_id();
+        let trusted_b = other_trusted_actor_id();
+        let grant_a = signed_actor_trust(
+            by_actor.clone(),
+            trusted_a.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let block_b = signed_actor_trust(
+            by_actor.clone(),
+            trusted_b.clone(),
+            Some(TrustDecision::Untrusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_trust(&grant_a)?;
+        store.put_actor_trust(&block_b)?;
+
+        assert_eq!(store.latest_trust(&by_actor, &trusted_a)?, Some(grant_a));
+        assert_eq!(store.latest_trust(&by_actor, &trusted_b)?, Some(block_b));
+        Ok(())
+    }
+
+    #[test]
+    fn list_trust_returns_all_heads_for_truster() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted_a = trusted_actor_id();
+        let trusted_b = other_trusted_actor_id();
+        let grant_a = signed_actor_trust(
+            by_actor.clone(),
+            trusted_a.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let block_b = signed_actor_trust(
+            by_actor.clone(),
+            trusted_b.clone(),
+            Some(TrustDecision::Untrusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_trust(&grant_a)?;
+        store.put_actor_trust(&block_b)?;
+
+        let heads = store.list_trust(&by_actor)?;
+        assert_eq!(heads.len(), 2);
+        let trusted_set: Vec<_> = heads.iter().map(|h| h.trusted_actor.clone()).collect();
+        assert!(trusted_set.contains(&trusted_a));
+        assert!(trusted_set.contains(&trusted_b));
+        Ok(())
+    }
+
+    #[test]
+    fn trust_index_path_is_sharded_on_trusted_actor() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted = trusted_actor_id();
+        let signed = signed_actor_trust(
+            by_actor,
+            trusted.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_trust(&signed)?;
+
+        let shard1 = &trusted.as_str()[3..5];
+        let shard2 = &trusted.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(TRUST_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{trusted}.json"));
+        assert!(expected.exists(), "expected trust index at {expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn list_trust_for_unknown_truster_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let heads = store.list_trust(&by_actor)?;
+        assert!(heads.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn list_opinions_about_returns_each_truster_head() -> TestResult {
+        // Two trusters express opinions about the same trusted actor.
+        // list_opinions_about returns both heads.
+        let (_dir, store) = open_temp_store()?;
+        let truster_a = fresh_genesis().actor_id();
+        let truster_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+        let trusted = trusted_actor_id();
+
+        let a_grant = signed_actor_trust(
+            truster_a.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let b_block = signed_actor_trust(
+            truster_b.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Untrusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_trust(&a_grant)?;
+        store.put_actor_trust(&b_block)?;
+
+        let opinions = store.list_opinions_about(&trusted)?;
+        assert_eq!(opinions.len(), 2);
+        let trusters: Vec<_> = opinions.iter().map(|h| h.by_actor.clone()).collect();
+        assert!(trusters.contains(&truster_a));
+        assert!(trusters.contains(&truster_b));
+        Ok(())
+    }
+
+    #[test]
+    fn list_opinions_about_unknown_target_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let trusted = trusted_actor_id();
+        let opinions = store.list_opinions_about(&trusted)?;
+        assert!(opinions.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn list_trust_walks_directory_to_find_truster_heads() -> TestResult {
+        // Same truster X publishes opinions about two different
+        // trusted actors. Each opinion lands in its target's file
+        // (different shard paths). list_trust(X) must walk both files.
+        let (_dir, store) = open_temp_store()?;
+        let truster = fresh_genesis().actor_id();
+        let trusted_a = trusted_actor_id();
+        let trusted_b = other_trusted_actor_id();
+        let about_a = signed_actor_trust(
+            truster.clone(),
+            trusted_a.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let about_b = signed_actor_trust(
+            truster.clone(),
+            trusted_b.clone(),
+            Some(TrustDecision::Untrusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_trust(&about_a)?;
+        store.put_actor_trust(&about_b)?;
+
+        let heads = store.list_trust(&truster)?;
+        assert_eq!(heads.len(), 2);
+        let targets: Vec<_> = heads.iter().map(|h| h.trusted_actor.clone()).collect();
+        assert!(targets.contains(&trusted_a));
+        assert!(targets.contains(&trusted_b));
+        Ok(())
+    }
+
+    #[test]
+    fn separate_trusters_do_not_cross_influence() -> TestResult {
+        // Truster A and truster B both publish trust about the same
+        // trusted actor. Each truster's index is independent because
+        // sharding is on by_actor.
+        let (_dir, store) = open_temp_store()?;
+        let truster_a = fresh_genesis().actor_id();
+        let truster_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+        let trusted = trusted_actor_id();
+
+        let a_grant = signed_actor_trust(
+            truster_a.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let b_block = signed_actor_trust(
+            truster_b.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Untrusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_trust(&a_grant)?;
+        store.put_actor_trust(&b_block)?;
+
+        let a_head = store.latest_trust(&truster_a, &trusted)?;
+        assert!(matches!(
+            a_head,
+            Some(s) if s.unsigned().body().decision() == Some(TrustDecision::Trusted)
+        ));
+        let b_head = store.latest_trust(&truster_b, &trusted)?;
+        assert!(matches!(
+            b_head,
+            Some(s) if s.unsigned().body().decision() == Some(TrustDecision::Untrusted)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn trust_chain_precedence_overrides_timestamp_tiebreak() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let by_actor = fresh_genesis().actor_id();
+        let trusted = trusted_actor_id();
+        let grant = signed_actor_trust(
+            by_actor.clone(),
+            trusted.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_trust(&grant)?;
+        let withdraw = signed_actor_trust(
+            by_actor.clone(),
+            trusted.clone(),
+            None,
+            None,
+            Some(grant_id),
+            timestamp(), // same created_at — would tie under pure timestamp+id rule
+        )?;
+        store.put_actor_trust(&withdraw)?;
+
+        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        assert!(matches!(
+            resolved,
+            Some(s) if s.unsigned().body().is_withdrawal()
+        ));
         Ok(())
     }
 }

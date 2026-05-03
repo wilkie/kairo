@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/actor-trust-v1.schema.json",
+  "title": "Kairo ActorTrust Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "properties": {
+    "type": {
+      "const": "ActorTrust"
+    },
+    "version": {
+      "const": 1
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "The truster (by_actor): the local actor whose key signs this trust opinion."
+    },
+    "subject": {
+      "type": "string",
+      "pattern": "^actor:z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "Internal reference of the trusted actor: 'actor:<trusted-actor-id>'."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ)."
+    },
+    "body": {
+      "type": "object",
+      "required": ["trusted_actor", "decision", "supersedes"],
+      "properties": {
+        "trusted_actor": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "ActorId of the actor being judged. Must agree with the envelope subject."
+        },
+        "decision": {
+          "oneOf": [
+            { "const": "trusted" },
+            { "const": "untrusted" },
+            { "type": "null", "description": "Withdrawal: retracts any prior decision." }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable reason. Included in canonical bytes."
+        },
+        "supersedes": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+              "description": "StatementId of the prior ActorTrust this one replaces. Must reference a statement from the same by_actor for the same trusted_actor."
+            },
+            {
+              "type": "null",
+              "description": "Genesis statement — the first decision for this (by_actor, trusted_actor). A genesis statement must have a non-null decision."
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature"
+    }
+  },
+  "additionalProperties": false
+}

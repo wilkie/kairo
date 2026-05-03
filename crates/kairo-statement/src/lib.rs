@@ -482,6 +482,158 @@ impl fmt::Display for ObjectVersionTagShapeError {
 
 impl Error for ObjectVersionTagShapeError {}
 
+/// A trust decision for an `ActorTrust` statement. Withdrawal is
+/// represented at the body level by `decision: None`, not as a third
+/// variant here, so that this enum stays aligned with the canonical
+/// "trusted" / "untrusted" string encoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustDecision {
+    Trusted,
+    Untrusted,
+}
+
+impl TrustDecision {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Trusted => "trusted",
+            Self::Untrusted => "untrusted",
+        }
+    }
+
+    /// Parse a wire-format string. `"trusted"` and `"untrusted"` only;
+    /// everything else (including `null`/None at the JSON layer, which
+    /// is handled separately as withdrawal) is invalid.
+    pub fn parse(value: &str) -> Result<Self, TrustDecisionParseError> {
+        match value {
+            "trusted" => Ok(Self::Trusted),
+            "untrusted" => Ok(Self::Untrusted),
+            other => Err(TrustDecisionParseError {
+                input: other.to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustDecisionParseError {
+    pub input: String,
+}
+
+impl fmt::Display for TrustDecisionParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid TrustDecision {:?}: expected \"trusted\" or \"untrusted\"",
+            self.input
+        )
+    }
+}
+
+impl Error for TrustDecisionParseError {}
+
+/// Canonical ActorTrust body v1 encoding is documented at
+/// `schemas/canonical/actor-trust-v1.md`.
+///
+/// `ActorTrust` records a local actor's first-person opinion about
+/// another actor's identity claims: trusted, untrusted, or withdrawn
+/// (`decision = None`). Resolution is per-truster — `(by_actor,
+/// trusted_actor)` is the lookup key. Cross-actor `supersedes` is
+/// invalid for trust (tighter than `ObjectVersionTag`); the resolver
+/// in `kairo-store` enforces this at lookup time.
+///
+/// Genesis: `decision` is `Some(_)`, `supersedes` is `None`.
+/// Successor: `supersedes` is `Some(_)`; `decision` may be any of
+/// `Some(Trusted)`, `Some(Untrusted)`, or `None` (withdrawal). The
+/// shape `decision = None && supersedes = None` is invalid — you
+/// can't withdraw nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorTrustBody {
+    trusted_actor: ActorId,
+    decision: Option<TrustDecision>,
+    reason: Option<String>,
+    supersedes: Option<StatementId>,
+}
+
+impl ActorTrustBody {
+    pub fn new(
+        trusted_actor: ActorId,
+        decision: Option<TrustDecision>,
+        reason: Option<String>,
+        supersedes: Option<StatementId>,
+    ) -> Result<Self, ActorTrustShapeError> {
+        if decision.is_none() && supersedes.is_none() {
+            return Err(ActorTrustShapeError::WithdrawWithoutSupersedes);
+        }
+        Ok(Self {
+            trusted_actor,
+            decision,
+            reason,
+            supersedes,
+        })
+    }
+
+    pub fn trusted_actor(&self) -> &ActorId {
+        &self.trusted_actor
+    }
+
+    pub fn decision(&self) -> Option<TrustDecision> {
+        self.decision
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+
+    pub fn supersedes(&self) -> Option<&StatementId> {
+        self.supersedes.as_ref()
+    }
+
+    pub fn is_withdrawal(&self) -> bool {
+        self.decision.is_none()
+    }
+
+    pub fn is_genesis(&self) -> bool {
+        self.supersedes.is_none()
+    }
+}
+
+impl StatementBody for ActorTrustBody {
+    const TYPE: &'static str = "ActorTrust";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ActorTrustBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.trusted_actor.as_str());
+        encode_option(out, self.decision.as_ref(), |out, decision| {
+            encode_str(out, decision.as_str());
+        });
+        encode_option(out, self.reason.as_ref(), |out, reason| {
+            encode_str(out, reason);
+        });
+        encode_option(out, self.supersedes.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorTrustShapeError {
+    WithdrawWithoutSupersedes,
+}
+
+impl fmt::Display for ActorTrustShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WithdrawWithoutSupersedes => f.write_str(
+                "ActorTrust with decision=null must reference a prior statement via supersedes",
+            ),
+        }
+    }
+}
+
+impl Error for ActorTrustShapeError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectGenesisStatement {
     body: ObjectGenesisBody,
@@ -1300,6 +1452,170 @@ mod tests {
     fn rejects_version_tag_signature_after_body_change() -> Result<(), Box<dyn std::error::Error>> {
         let signed_unsigned = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
         let tampered = unsigned_version_tag("1.2.4", Some(statement_id_one()), None)?;
+        let sig = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, sig);
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    fn trusted_actor() -> Result<ActorId, kairo_core::IdError> {
+        // A second actor distinct from actor_id() so trusted != truster in tests.
+        ActorId::new("zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu")
+    }
+
+    fn unsigned_actor_trust(
+        decision: Option<TrustDecision>,
+        reason: Option<&str>,
+        supersedes: Option<StatementId>,
+    ) -> Result<UnsignedStatement<ActorTrustBody>, Box<dyn std::error::Error>> {
+        let trusted = trusted_actor()?;
+        let body = ActorTrustBody::new(
+            trusted.clone(),
+            decision,
+            reason.map(|r| r.to_owned()),
+            supersedes,
+        )?;
+        let subject: KairoRef = format!("actor:{trusted}").parse()?;
+        Ok(UnsignedStatement::new(actor_id()?, subject, timestamp(), body))
+    }
+
+    #[test]
+    fn trust_decision_parses_known_strings() {
+        assert_eq!(TrustDecision::parse("trusted"), Ok(TrustDecision::Trusted));
+        assert_eq!(
+            TrustDecision::parse("untrusted"),
+            Ok(TrustDecision::Untrusted)
+        );
+    }
+
+    #[test]
+    fn trust_decision_rejects_unknown_string() {
+        let err = TrustDecision::parse("maybe");
+        assert!(matches!(err, Err(TrustDecisionParseError { ref input }) if input == "maybe"));
+    }
+
+    #[test]
+    fn actor_trust_body_rejects_withdraw_without_supersedes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body = ActorTrustBody::new(trusted_actor()?, None, None, None);
+        assert_eq!(
+            body.err(),
+            Some(ActorTrustShapeError::WithdrawWithoutSupersedes)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_body_genesis_grant_is_valid() -> Result<(), Box<dyn std::error::Error>> {
+        let body = ActorTrustBody::new(
+            trusted_actor()?,
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+        )?;
+        assert!(body.is_genesis());
+        assert!(!body.is_withdrawal());
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_body_successor_withdraw_is_valid(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body =
+            ActorTrustBody::new(trusted_actor()?, None, None, Some(statement_id_one()))?;
+        assert!(!body.is_genesis());
+        assert!(body.is_withdrawal());
+        Ok(())
+    }
+
+    #[test]
+    fn same_actor_trust_body_produces_same_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let second = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_decision_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let trusted = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let untrusted = unsigned_actor_trust(Some(TrustDecision::Untrusted), None, None)?;
+        assert_ne!(trusted.statement_id(), untrusted.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_withdraw_differs_from_grant(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let grant = unsigned_actor_trust(
+            Some(TrustDecision::Trusted),
+            None,
+            Some(statement_id_one()),
+        )?;
+        let withdraw = unsigned_actor_trust(None, None, Some(statement_id_one()))?;
+        assert_ne!(grant.statement_id(), withdraw.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_reason_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let without = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let with = unsigned_actor_trust(
+            Some(TrustDecision::Trusted),
+            Some("verified at conference"),
+            None,
+        )?;
+        assert_ne!(without.statement_id(), with.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_supersedes_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let genesis = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let successor = unsigned_actor_trust(
+            Some(TrustDecision::Trusted),
+            None,
+            Some(statement_id_one()),
+        )?;
+        assert_ne!(genesis.statement_id(), successor.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn actor_trust_signature_does_not_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_actor_trust_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_actor_trust_signature_after_body_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let signed_unsigned = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        let tampered = unsigned_actor_trust(Some(TrustDecision::Untrusted), None, None)?;
         let sig = ed25519_signature(&signed_unsigned)?;
         let signed = SignedStatement::new(tampered, sig);
         assert!(matches!(
