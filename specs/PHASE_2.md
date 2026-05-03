@@ -79,9 +79,11 @@ but not honored; `ActorTrust` cross-actor `supersedes` is invalid; multi-
 maintainer flows are unsupported. A capability model would unlock all of
 these by giving actors a way to grant scoped authority to other actors.
 
-- [ ] Draft `specs/CAPABILITIES.md` (or refresh if it already exists) with
-      the MVP capability statement type, scope vocabulary, and resolution
-      rules.
+- [ ] Draft `specs/CAPABILITIES.md` with the MVP capability statement type,
+      scope vocabulary, and resolution rules. The path is now free — the
+      pre-Phase-1 file at that name was the runtime sandbox spec, which has
+      been renamed to `specs/SANDBOX.md`. Seed prose for the new doc lives
+      in `ACTORS.md` §10–12 (Actor Capabilities / Grants / Revocation).
 - [ ] Decide whether capability grants are first-person (like trust) or
       object-scoped (like branches/tags).
 - [ ] Spec the interaction with `ObjectBranch v2` (cross-actor supersedes

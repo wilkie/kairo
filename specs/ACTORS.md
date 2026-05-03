@@ -44,7 +44,8 @@ Actors interact with:
 - `CORE_LIBRARY.md` for authority evaluation.
 - `POLICY.md` for local trust decisions.
 - `IDENTIFIERS.md` for `ActorId` format.
-- `CAPABILITIES.md` for runtime capabilities, which are separate from actor capabilities.
+- `CAPABILITIES.md` for actor capabilities (delegated authority to issue statements on behalf of another actor).
+- `SANDBOX.md` for runtime sandbox capabilities — what an executing artifact may access — which are separate from actor capabilities.
 - `DAEMON.md` for local trust-root configuration.
 - `API.md`, `CLI.md`, and `WEB_CLIENT.md` for presenting actor information.
 - `PACKAGE.md` for preserving signed actor-related statements.
@@ -405,7 +406,9 @@ authority through valid grants and delegations.
 
 Actor capabilities define which statement kinds an actor may issue.
 
-These are different from runtime capabilities in `CAPABILITIES.md`.
+These are different from runtime sandbox capabilities in `SANDBOX.md` (which
+govern what an executing artifact may access — filesystem, network, GPU,
+etc.).
 
 ### 10.1 Capability fields
 

@@ -1,13 +1,20 @@
-# CAPABILITIES.md
+# SANDBOX.md
 
 ## Status
 
 Draft specification.
 
-This document defines the capability model used across Kairo for **runtime permissions,
-execution constraints, and policy decisions**.
+This document defines the **sandbox model** used by the executor surface for
+runtime permissions, execution constraints, and policy decisions on a single
+running artifact. *Sandbox capabilities* describe what an execution is allowed
+to do (filesystem, network, GPU, display, …).
 
-Capabilities describe *what an execution is allowed to do*.
+These are unrelated to **actor capabilities** (the distributed-systems sense:
+delegated authority for one actor to issue statements on behalf of another).
+Actor capabilities are specified in `CAPABILITIES.md` and seeded today by
+`ACTORS.md` §10–12. When this document says "capability" without qualification,
+it means *sandbox capability* — the runtime permission granted to an executing
+artifact.
 
 ---
 
@@ -338,4 +345,4 @@ UI must:
 
 ---
 
-End of CAPABILITIES.md
+End of SANDBOX.md

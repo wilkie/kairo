@@ -33,7 +33,7 @@ For build, run, and execution behavior, read:
 - `specs/BUILD.md`
 - `specs/PLANNER.md`
 - `specs/ENVIRONMENTS.md`
-- `specs/CAPABILITIES.md`
+- `specs/SANDBOX.md`
 - `specs/EXECUTOR.md`
 - `specs/FORMATS.md`
 
