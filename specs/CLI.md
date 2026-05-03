@@ -324,9 +324,35 @@ with `--actor` / `--name`. There is no implicit bootstrap from
 (and, for the default-resolved form, set a branch) before computing a
 snapshot.
 
+`verify object --object <id>` is the end-to-end verification entrypoint.
+It loads the `ObjectGenesis` (the store re-derives the `ObjectId` on
+read, so a successful load is a fixity check), resolves the chosen
+`ObjectRevision` (default: creator-actor's `"head"` branch — same
+resolution rules as `snapshot compute`, with `--actor`, `--name`, and
+`--statement` overrides), verifies the revision's signature against
+the resolved actor through the local `ActorResolver`, and — when
+`--manifest <path>` is supplied — validates the revision's
+`manifest_hash` and any declared `[kairo].object` against the parsed
+manifest. The output aggregates these into a single `VALID`,
+`INDETERMINATE`, or `INVALID` verdict per the rules below; `--json`
+emits a stable JSON shape.
+
+Aggregation:
+
+- `VALID` — every check returned valid (today this requires §11 Git
+  integration; until then the strongest reachable verdict is
+  `INDETERMINATE`).
+- `INVALID` — at least one check actively failed (signature invalid,
+  actor mismatch, object id mismatch, manifest hash mismatch). Exits
+  non-zero.
+- `INDETERMINATE` — no failures, but at least one check could not be
+  evaluated (no manifest provided, content layer awaiting §11). Exits
+  zero with the marker in the report.
+
 These commands do not validate actor authority, actor key-active status, Git
 commit availability, parent commit consistency, or snapshot closure
-completeness.
+completeness. `verify object` reports the gaps explicitly (e.g.
+`content = INDETERMINATE (TODO §11)`) rather than silently passing.
 
 ---
 

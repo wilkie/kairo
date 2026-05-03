@@ -14,8 +14,9 @@ use kairo_identity::{
 };
 use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::{
-    validate_revision_manifest, DependencyDeclaration, ObjectDependencySelector, ObjectManifest,
-    Snapshot, SnapshotError,
+    validate_object_revision, validate_revision_manifest, ContentLayerCheck, DependencyDeclaration,
+    ManifestBindingCheck, ObjectConsistencyCheck, ObjectDependencySelector, ObjectManifest,
+    ObjectRevisionValidationReport, ParentReferenceCheck, Snapshot, SnapshotError,
 };
 use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
 use kairo_statement::verify::{
@@ -82,6 +83,47 @@ enum Command {
     Snapshot {
         #[command(subcommand)]
         command: SnapshotCommand,
+    },
+    /// Verify objects, statements, and the bindings between them.
+    Verify {
+        #[command(subcommand)]
+        command: VerifyCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum VerifyCommand {
+    /// Verify an object end-to-end through the local store.
+    ///
+    /// Loads the `ObjectGenesis`, resolves the chosen `ObjectRevision`
+    /// (default: creator-actor's `head` branch; override with `--actor`,
+    /// `--name`, or `--statement`), verifies the revision's signature
+    /// against the resolved actor, and — when `--manifest` is supplied —
+    /// validates the manifest binding. Content-layer checks (Git
+    /// commit reachability, parent agreement) remain indeterminate
+    /// until TODO §11.
+    Object {
+        /// Object whose verification report to compute.
+        #[arg(long)]
+        object: String,
+        /// Pin the frontier to a specific ObjectRevision statement,
+        /// bypassing branch resolution. Conflicts with --actor / --name.
+        #[arg(long, conflicts_with_all = ["actor", "name"])]
+        statement: Option<String>,
+        /// Actor whose branch tip to follow. Defaults to ObjectGenesis.created_by.
+        #[arg(long)]
+        actor: Option<String>,
+        /// Branch name (defaults to "head").
+        #[arg(long, default_value = "head")]
+        name: String,
+        /// Optional kairo.toml manifest to validate the revision's
+        /// `manifest_hash` against. If omitted, manifest binding is
+        /// reported as INDETERMINATE.
+        #[arg(long)]
+        manifest: Option<PathBuf>,
+        /// Emit a stable JSON representation of the report.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -358,6 +400,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Branch { command }) => run_branch_command(command, &paths),
         Some(Command::Tag { command }) => run_tag_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
+        Some(Command::Verify { command }) => run_verify_command(command, &paths),
         None => Ok(help_text()),
     }
 }
@@ -1452,6 +1495,427 @@ fn format_snapshot_json(snapshot: &Snapshot) -> String {
     output
 }
 
+/// Aggregated end-to-end verification result for an object, produced
+/// by `kairo verify object`.
+#[derive(Debug)]
+struct ObjectVerificationReport {
+    object: ObjectId,
+    genesis: GenesisCheck,
+    frontier: FrontierResolution,
+    revision: RevisionChecks,
+    overall: OverallStatus,
+}
+
+#[derive(Debug)]
+struct GenesisCheck {
+    derived_object: ObjectId,
+}
+
+#[derive(Debug)]
+enum FrontierResolution {
+    BranchTip {
+        actor: ActorId,
+        name: String,
+        statement: kairo_core::StatementId,
+    },
+    PinnedStatement {
+        statement: kairo_core::StatementId,
+    },
+}
+
+#[derive(Debug)]
+struct RevisionChecks {
+    statement_id: kairo_core::StatementId,
+    revision: RevisionId,
+    revision_object: ObjectId,
+    signature: VerificationReport,
+    validation: ObjectRevisionValidationReport,
+    manifest_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverallStatus {
+    Valid,
+    Indeterminate,
+    Invalid,
+}
+
+impl OverallStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Valid => "VALID",
+            Self::Indeterminate => "INDETERMINATE",
+            Self::Invalid => "INVALID",
+        }
+    }
+}
+
+fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        VerifyCommand::Object {
+            object,
+            statement,
+            actor,
+            name,
+            manifest,
+            json,
+        } => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+
+            let genesis_statement =
+                store
+                    .get_object_genesis(&object_id)
+                    .map_err(|error| CliError::ReadObjectGenesis {
+                        object: object_id.clone(),
+                        source: error,
+                    })?;
+            // The store re-derives the ObjectId on read and returns
+            // CorruptReason::HashMismatch if it doesn't match; reaching
+            // this point therefore implies the genesis body is fixity-
+            // consistent with the requested object id.
+            let genesis = GenesisCheck {
+                derived_object: genesis_statement.object_id(),
+            };
+
+            // Resolve the chosen ObjectRevision and how we got there.
+            let (revision_statement, frontier) = match statement {
+                Some(statement) => {
+                    let statement_id = kairo_core::StatementId::new(statement.clone())
+                        .map_err(|source| CliError::ParseStatementId { statement, source })?;
+                    let revision = store.get_object_revision(&statement_id).map_err(|error| {
+                        CliError::ReadRevision {
+                            statement: statement_id.clone(),
+                            source: error,
+                        }
+                    })?;
+                    (
+                        revision,
+                        FrontierResolution::PinnedStatement {
+                            statement: statement_id,
+                        },
+                    )
+                }
+                None => {
+                    let actor_id = match actor {
+                        Some(actor) => ActorId::new(actor.clone())
+                            .map_err(|source| CliError::ParseActorId { actor, source })?,
+                        None => genesis_statement.body().created_by().clone(),
+                    };
+                    let branch = store
+                        .latest_branch(&actor_id, &object_id, &name)
+                        .map_err(CliError::ReadBranch)?
+                        .ok_or_else(|| CliError::BranchNotFound {
+                            actor: actor_id.clone(),
+                            object: object_id.clone(),
+                            name: name.clone(),
+                        })?;
+                    let revision_statement_id = branch.unsigned().body().revision().clone();
+                    let revision = store.get_object_revision(&revision_statement_id).map_err(
+                        |error| CliError::ReadRevision {
+                            statement: revision_statement_id.clone(),
+                            source: error,
+                        },
+                    )?;
+                    (
+                        revision,
+                        FrontierResolution::BranchTip {
+                            actor: actor_id,
+                            name,
+                            statement: revision_statement_id,
+                        },
+                    )
+                }
+            };
+
+            // Manifest binding (optional input).
+            let manifest_value = match manifest.as_ref() {
+                Some(path) => Some(read_manifest(path.clone())?),
+                None => None,
+            };
+
+            // Validate the revision against genesis + (optional) manifest.
+            let validation = validate_object_revision(
+                &revision_statement,
+                Some(&genesis_statement),
+                manifest_value.as_ref(),
+            );
+
+            // Verify the signature using the store as ActorResolver.
+            let signature = verify_envelope_statement(&revision_statement, &store);
+
+            let revision_body = revision_statement.unsigned().body();
+            let revision_checks = RevisionChecks {
+                statement_id: revision_statement.statement_id(),
+                revision: revision_body.revision().clone(),
+                revision_object: revision_body.object().clone(),
+                signature,
+                validation,
+                manifest_path: manifest,
+            };
+
+            let overall = aggregate_overall_status(&genesis, &revision_checks, &object_id);
+
+            let report = ObjectVerificationReport {
+                object: object_id,
+                genesis,
+                frontier,
+                revision: revision_checks,
+                overall,
+            };
+
+            if matches!(overall, OverallStatus::Invalid) {
+                return Err(CliError::ObjectVerificationFailed(if json {
+                    format_object_verification_json(&report)
+                } else {
+                    format_object_verification(&report)
+                }));
+            }
+
+            if json {
+                Ok(format_object_verification_json(&report))
+            } else {
+                Ok(format_object_verification(&report))
+            }
+        }
+    }
+}
+
+fn aggregate_overall_status(
+    genesis: &GenesisCheck,
+    revision: &RevisionChecks,
+    requested_object: &ObjectId,
+) -> OverallStatus {
+    // Genesis: a successful store read already proved the derived
+    // ObjectId matches; a mismatch here would only arise if the CLI
+    // and store somehow disagreed on the requested id.
+    let genesis_status = if &genesis.derived_object == requested_object {
+        OverallStatus::Valid
+    } else {
+        OverallStatus::Invalid
+    };
+
+    let signature_status = match revision.signature.signature {
+        SignatureStatus::Valid => OverallStatus::Valid,
+        SignatureStatus::NotEvaluated => OverallStatus::Indeterminate,
+        _ => OverallStatus::Invalid,
+    };
+    let actor_status = match revision.signature.actor {
+        ActorResolution::Resolved => OverallStatus::Valid,
+        ActorResolution::NotFound | ActorResolution::SignatureActorMismatch => {
+            OverallStatus::Invalid
+        }
+        ActorResolution::ResolverUnavailable(_) => OverallStatus::Indeterminate,
+    };
+    let object_consistency_status = match revision.validation.object_consistency {
+        ObjectConsistencyCheck::Consistent => OverallStatus::Valid,
+        ObjectConsistencyCheck::Mismatch { .. } => OverallStatus::Invalid,
+        ObjectConsistencyCheck::GenesisNotProvided => OverallStatus::Indeterminate,
+    };
+    let manifest_binding_status = match revision.validation.manifest_binding {
+        ManifestBindingCheck::Bound => OverallStatus::Valid,
+        ManifestBindingCheck::HashMismatch { .. }
+        | ManifestBindingCheck::DeclaredObjectMismatch { .. } => OverallStatus::Invalid,
+        ManifestBindingCheck::ManifestNotProvided => OverallStatus::Indeterminate,
+    };
+    let content_status = match revision.validation.content {
+        ContentLayerCheck::Indeterminate => OverallStatus::Indeterminate,
+    };
+
+    fold_status(&[
+        genesis_status,
+        signature_status,
+        actor_status,
+        object_consistency_status,
+        manifest_binding_status,
+        content_status,
+    ])
+}
+
+/// Worst-of fold: any Invalid wins; otherwise any Indeterminate wins;
+/// otherwise Valid.
+fn fold_status(items: &[OverallStatus]) -> OverallStatus {
+    if items.iter().any(|s| matches!(s, OverallStatus::Invalid)) {
+        OverallStatus::Invalid
+    } else if items.iter().any(|s| matches!(s, OverallStatus::Indeterminate)) {
+        OverallStatus::Indeterminate
+    } else {
+        OverallStatus::Valid
+    }
+}
+
+fn format_object_verification(report: &ObjectVerificationReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("verify object: {}\n", report.overall.label()));
+    out.push_str(&format!("object = {}\n", report.object));
+    out.push_str(&format!(
+        "genesis: derived_object = {}\n",
+        report.genesis.derived_object
+    ));
+    match &report.frontier {
+        FrontierResolution::BranchTip {
+            actor,
+            name,
+            statement,
+        } => {
+            out.push_str(&format!(
+                "frontier: branch actor={actor} name={name} statement={statement}\n"
+            ));
+        }
+        FrontierResolution::PinnedStatement { statement } => {
+            out.push_str(&format!("frontier: pinned statement={statement}\n"));
+        }
+    }
+    out.push_str(&format!(
+        "revision: statement = {}\n",
+        report.revision.statement_id
+    ));
+    out.push_str(&format!(
+        "  revision = {}\n",
+        report.revision.revision.as_str()
+    ));
+    out.push_str(&format!(
+        "  object = {}\n",
+        report.revision.revision_object
+    ));
+    out.push_str(&format!(
+        "  signature = {}\n",
+        format_signature_status(&report.revision.signature.signature)
+    ));
+    out.push_str(&format!(
+        "  actor = {}\n",
+        format_actor_resolution(&report.revision.signature.actor)
+    ));
+    out.push_str(&format!(
+        "  object_consistency = {}\n",
+        format_object_consistency(&report.revision.validation.object_consistency)
+    ));
+    out.push_str(&format!(
+        "  manifest_binding = {}\n",
+        format_manifest_binding(&report.revision.validation.manifest_binding)
+    ));
+    if let Some(path) = &report.revision.manifest_path {
+        out.push_str(&format!("  manifest_path = {}\n", path.display()));
+    }
+    out.push_str(&format!(
+        "  parents = {}\n",
+        format_parents(&report.revision.validation.parents)
+    ));
+    out.push_str("  content = INDETERMINATE (TODO §11)\n");
+    out
+}
+
+fn format_object_verification_json(report: &ObjectVerificationReport) -> String {
+    let frontier = match &report.frontier {
+        FrontierResolution::BranchTip {
+            actor,
+            name,
+            statement,
+        } => serde_json::json!({
+            "kind": "branch",
+            "actor": actor.to_string(),
+            "name": name,
+            "statement": statement.to_string(),
+        }),
+        FrontierResolution::PinnedStatement { statement } => serde_json::json!({
+            "kind": "pinned",
+            "statement": statement.to_string(),
+        }),
+    };
+
+    let manifest_binding_value = match &report.revision.validation.manifest_binding {
+        ManifestBindingCheck::Bound => serde_json::json!({ "status": "bound" }),
+        ManifestBindingCheck::HashMismatch { expected, actual } => serde_json::json!({
+            "status": "hash-mismatch",
+            "expected": expected.to_string(),
+            "actual": actual.to_string(),
+        }),
+        ManifestBindingCheck::DeclaredObjectMismatch { expected, actual } => serde_json::json!({
+            "status": "declared-object-mismatch",
+            "expected": expected.to_string(),
+            "actual": actual.to_string(),
+        }),
+        ManifestBindingCheck::ManifestNotProvided => {
+            serde_json::json!({ "status": "manifest-not-provided" })
+        }
+    };
+
+    let object_consistency_value = match &report.revision.validation.object_consistency {
+        ObjectConsistencyCheck::Consistent => serde_json::json!({ "status": "consistent" }),
+        ObjectConsistencyCheck::Mismatch { expected, actual } => serde_json::json!({
+            "status": "mismatch",
+            "expected": expected.to_string(),
+            "actual": actual.to_string(),
+        }),
+        ObjectConsistencyCheck::GenesisNotProvided => {
+            serde_json::json!({ "status": "genesis-not-provided" })
+        }
+    };
+
+    let parents_value = match &report.revision.validation.parents {
+        ParentReferenceCheck::NoParents => serde_json::json!({ "status": "none" }),
+        ParentReferenceCheck::Declared { count } => serde_json::json!({
+            "status": "declared",
+            "count": count,
+        }),
+    };
+
+    let value = serde_json::json!({
+        "overall": report.overall.label(),
+        "object": report.object.to_string(),
+        "genesis": {
+            "derived_object": report.genesis.derived_object.to_string(),
+        },
+        "frontier": frontier,
+        "revision": {
+            "statement_id": report.revision.statement_id.to_string(),
+            "revision": report.revision.revision.as_str(),
+            "object": report.revision.revision_object.to_string(),
+            "signature": format_signature_status(&report.revision.signature.signature),
+            "actor": format_actor_resolution(&report.revision.signature.actor),
+            "object_consistency": object_consistency_value,
+            "manifest_binding": manifest_binding_value,
+            "manifest_path": report
+                .revision
+                .manifest_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            "parents": parents_value,
+            "content": "indeterminate",
+        },
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
+fn format_object_consistency(check: &ObjectConsistencyCheck) -> &'static str {
+    match check {
+        ObjectConsistencyCheck::Consistent => "VALID",
+        ObjectConsistencyCheck::Mismatch { .. } => "INVALID (mismatch)",
+        ObjectConsistencyCheck::GenesisNotProvided => "INDETERMINATE (genesis not provided)",
+    }
+}
+
+fn format_manifest_binding(check: &ManifestBindingCheck) -> &'static str {
+    match check {
+        ManifestBindingCheck::Bound => "VALID (bound)",
+        ManifestBindingCheck::HashMismatch { .. } => "INVALID (hash mismatch)",
+        ManifestBindingCheck::DeclaredObjectMismatch { .. } => {
+            "INVALID (declared object mismatch)"
+        }
+        ManifestBindingCheck::ManifestNotProvided => "INDETERMINATE (no manifest provided)",
+    }
+}
+
+fn format_parents(check: &ParentReferenceCheck) -> String {
+    match check {
+        ParentReferenceCheck::NoParents => "0 (initial revision)".to_owned(),
+        ParentReferenceCheck::Declared { count } => format!("{count} declared (content: indeterminate)"),
+    }
+}
+
 fn read_manifest(path: PathBuf) -> Result<ObjectManifest, CliError> {
     let input = std::fs::read_to_string(&path).map_err(|source| CliError::ReadManifest {
         path: path.clone(),
@@ -1890,7 +2354,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -2016,6 +2480,7 @@ enum CliError {
         version: String,
     },
     ComputeSnapshot(SnapshotError),
+    ObjectVerificationFailed(String),
     ManifestObjectMismatch {
         manifest_object: ObjectId,
         cli_object: ObjectId,
@@ -2156,6 +2621,10 @@ impl fmt::Display for CliError {
                 "cannot revoke version {version} on object {object}: actor {actor} has no prior tag for it"
             ),
             Self::ComputeSnapshot(error) => write!(f, "{error}"),
+            Self::ObjectVerificationFailed(report) => {
+                f.write_str(report)?;
+                f.write_str("object verification reported INVALID")
+            }
             Self::ManifestObjectMismatch {
                 manifest_object,
                 cli_object,
@@ -2217,6 +2686,7 @@ impl Error for CliError {
             | Self::BuildSubjectRef { source, .. } => Some(source),
             Self::GenerateKey(error) => Some(error),
             Self::VerificationFailed(_)
+            | Self::ObjectVerificationFailed(_)
             | Self::HomeNotSet
             | Self::KeyDoesNotMatchActor { .. }
             | Self::ManifestObjectMismatch { .. }
@@ -3521,5 +3991,356 @@ kind = "tree"
         assert!(human.contains(&revision_statement));
 
         Ok(())
+    }
+
+    /// Built fixture: store dir + manifest dir (held for lifetime),
+    /// then actor id, object id, revision statement id, manifest path.
+    type VerifyFixture = (
+        tempfile::TempDir,
+        tempfile::TempDir,
+        String,
+        String,
+        String,
+        PathBuf,
+    );
+
+    /// Build a temp store with one actor, one object, one signed
+    /// revision, and a `head` branch pointing at the revision.
+    fn fixture_with_branch() -> Result<VerifyFixture, Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_dir = tempfile::TempDir::new()?;
+        let manifest_path = manifest_dir.path().join("kairo.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "verify-fixture"
+
+                [content]
+                kind = "tree"
+            "#,
+        )?;
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: "git:sha256:r1".to_owned(),
+                    manifest: manifest_path.clone(),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: revision_statement.clone(),
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        Ok((
+            store_dir,
+            manifest_dir,
+            actor_id,
+            object_id,
+            revision_statement,
+            manifest_path,
+        ))
+    }
+
+    #[test]
+    fn verify_object_happy_path_with_manifest_is_indeterminate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Content-layer check is always Indeterminate today (TODO §11);
+        // until then the strongest reachable verdict is INDETERMINATE.
+        let (store_dir, _manifest_dir, _actor_id, object_id, _revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(output.contains("verify object: INDETERMINATE"));
+        assert!(output.contains("signature = valid"));
+        assert!(output.contains("manifest_binding = VALID (bound)"));
+        assert!(output.contains("content = INDETERMINATE"));
+        assert!(output.contains(&object_id));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_without_manifest_marks_binding_indeterminate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (store_dir, _manifest_dir, _actor_id, object_id, _revision_statement, _manifest_path) =
+            fixture_with_branch()?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(output.contains("verify object: INDETERMINATE"));
+        assert!(output.contains("manifest_binding = INDETERMINATE (no manifest provided)"));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_with_pinned_statement_uses_pinned_frontier(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (store_dir, _manifest_dir, _actor_id, object_id, revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: Some(revision_statement.clone()),
+                    actor: None,
+                    name: "head".to_owned(),
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(output.contains("frontier: pinned statement="));
+        assert!(output.contains(&revision_statement));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_with_wrong_manifest_is_invalid_and_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (store_dir, manifest_dir, _actor_id, object_id, _revision_statement, _manifest_path) =
+            fixture_with_branch()?;
+
+        let wrong_manifest = manifest_dir.path().join("wrong.toml");
+        std::fs::write(
+            &wrong_manifest,
+            r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "different"
+
+                [content]
+                kind = "tree"
+            "#,
+        )?;
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    manifest: Some(wrong_manifest),
+                    json: false,
+                },
+            }),
+        });
+        assert!(matches!(
+            result,
+            Err(CliError::ObjectVerificationFailed(report))
+                if report.contains("INVALID") && report.contains("hash mismatch")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_json_output_is_well_formed() -> Result<(), Box<dyn std::error::Error>> {
+        let (store_dir, _manifest_dir, _actor_id, object_id, revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        let json = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    manifest: Some(manifest_path),
+                    json: true,
+                },
+            }),
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        assert_eq!(value["overall"].as_str(), Some("INDETERMINATE"));
+        assert_eq!(value["object"].as_str(), Some(object_id.as_str()));
+        assert_eq!(value["frontier"]["kind"].as_str(), Some("branch"));
+        assert_eq!(
+            value["revision"]["statement_id"].as_str(),
+            Some(revision_statement.as_str())
+        );
+        assert_eq!(value["revision"]["signature"].as_str(), Some("valid"));
+        assert_eq!(
+            value["revision"]["manifest_binding"]["status"].as_str(),
+            Some("bound")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_branch_not_found_returns_error() -> Result<(), Box<dyn std::error::Error>> {
+        // Build a fixture without a branch.
+        let store_dir = tempfile::TempDir::new()?;
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id,
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        });
+        assert!(matches!(result, Err(CliError::BranchNotFound { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_verify_object_command() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "verify",
+            "object",
+            "--object",
+            "zQmObject",
+            "--manifest",
+            "kairo.toml",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Verify {
+                    command: VerifyCommand::Object {
+                        object,
+                        manifest: Some(manifest),
+                        json: true,
+                        statement: None,
+                        actor: None,
+                        name,
+                    }
+                }),
+                ..
+            }) if object == "zQmObject" && manifest.as_os_str() == "kairo.toml" && name == "head"
+        ));
+    }
+
+    #[test]
+    fn parses_verify_object_with_pinned_statement() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "verify",
+            "object",
+            "--object",
+            "zQmObject",
+            "--statement",
+            "zQmStatement",
+        ]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Verify {
+                    command: VerifyCommand::Object {
+                        statement: Some(statement),
+                        actor: None,
+                        ..
+                    }
+                }),
+                ..
+            }) if statement == "zQmStatement"
+        ));
     }
 }
