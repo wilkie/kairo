@@ -231,7 +231,19 @@ kairo revision verify-actor-genesis --statement <object-revision.json> --actor-g
 kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]
 kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]
 kairo branch list --object <id>
+kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>
+kairo tag revoke --actor <id> --object <id> --version <semver>
+kairo tag show --object <id> [--actor <id>] --version <semver> [--json]
+kairo tag list --object <id>
+kairo tag history --object <id> [--actor <id>] --version <semver> [--json]
+kairo trust grant --by <id> --of <id> [--reason <text>]
+kairo trust block --by <id> --of <id> [--reason <text>]
+kairo trust withdraw --by <id> --of <id> [--reason <text>]
+kairo trust show --by <id> --of <id> [--json]
+kairo trust list --by <id>
+kairo trust history --by <id> --of <id> [--json]
 kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]
+kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]
 ```
 
 `manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
@@ -315,6 +327,23 @@ version string — in their lockfile equivalent. Two resolvers can
 disagree on `(actor, object, version)` if they have seen different
 subsets of the actor's tag history; this is by design.
 
+`trust grant --by <id> --of <id>` signs and persists an `ActorTrust`
+that records `--by`'s opinion that `--of` is trusted. `trust block`
+records the opposite (untrusted), and `trust withdraw` retracts any
+prior opinion. The CLI auto-computes the `supersedes` pointer: if
+`--by` already has an opinion about `--of`, the new statement
+supersedes it; otherwise it is the genesis opinion. Withdrawal
+requires a prior opinion to chain off of and errors if there is none.
+`--reason <text>` is optional and is included in canonical bytes.
+
+`trust show --by <id> --of <id>` resolves `--by`'s current opinion
+about `--of`. A missing opinion prints `decision = unknown` and is
+**not** an error — trust is informational. `trust list --by <id>`
+enumerates the truster's current opinions, one per trusted actor.
+`trust history --by <id> --of <id>` walks the `supersedes` chain
+backwards from the head (newest first); a missing predecessor is
+reported as indeterminate rather than failing.
+
 `snapshot compute --object <id>` resolves the chosen `ObjectRevision` and
 computes its `SnapshotId`. By default it follows the creator-actor's
 `"head"` branch; `--actor`, `--name`, and `--statement` override that
@@ -356,6 +385,22 @@ Manifest source:
 - Otherwise the verifier reads `kairo.toml` from the commit's tree at
   the revision being verified. The report records the source as
   `git:sha256:<oid>/kairo.toml` so the audit trail is explicit.
+
+Trust evaluation:
+
+- `--as <by-actor>` — explicit truster. The report folds
+  `by_actor`'s active `ActorTrust` opinion about the revision's
+  signing actor into one of `trusted`, `untrusted`, or `unknown`.
+- No flag — auto-pick the sole local actor from the keystore. If the
+  keystore has zero keys, trust stays `unevaluated`. If it has more
+  than one, the command errors with the candidate list and a hint
+  to pass `--as` (or `--no-as` to skip).
+- `--no-as` — skip trust evaluation entirely; trust stays
+  `unevaluated` regardless of keystore contents.
+
+Trust never changes the `VALID` / `INVALID` / `INDETERMINATE`
+verdict; it is reported alongside as a separate line (or JSON field)
+so callers can compose it independently.
 
 Aggregation:
 

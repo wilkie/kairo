@@ -76,6 +76,25 @@ that need stability must pin to the resolved `StatementId` (or
 
 See `STATEMENTS.md` §4.2b and `schemas/canonical/object-version-tag-v1.md`.
 
+## Trust
+
+A first-person opinion that one actor (the *truster*, `by_actor`) holds
+about another actor (the *trusted actor*, `trusted_actor`). Encoded as
+the `ActorTrust` statement type with three observable values: `Trusted`,
+`Untrusted`, or withdrawn (chain-leaf decision is `null`). Resolution
+is per-truster and chain-precedence: the head for `(by_actor,
+trusted_actor)` is the leaf of the supersedes chain. Cross-actor
+`supersedes` is invalid — only the truster who signed `S` may publish
+its successor.
+
+Trust is **informational**: it never makes a cryptographically valid
+statement invalid, and it never validates an invalid one.
+`evaluate_trust` folds the chain leaf into one of `Trusted | Untrusted
+| Unknown` (withdrawal collapses to `Unknown`); a caller that supplied
+no truster sees `Unevaluated`.
+
+See `STATEMENTS.md` §4.2c and `schemas/canonical/actor-trust-v1.md`.
+
 ## Actor
 
 An `Actor` is a cryptographic identity that can issue signed statements.

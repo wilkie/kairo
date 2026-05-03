@@ -305,8 +305,11 @@ Statement verification produces a structured `VerificationReport` with three
   resolvable. Possible values include `Resolved`, `NotFound`,
   `ResolverUnavailable` (transient/operational), and `SignatureActorMismatch`
   (the signature's actor field disagrees with the envelope's actor field).
-- **Trust evaluation** — local trust policy. The MVP value is always
-  `Unevaluated`; `kairo-trust` will populate this later (see TODO §10).
+- **Trust evaluation** — first-person local opinion. Possible values are
+  `Trusted`, `Untrusted`, `Unknown` (no opinion published, or the chain leaf
+  is a withdrawal), and `Unevaluated` (the caller did not supply a `by_actor`
+  to evaluate from). Backed by `ActorTrust` statements; see `STATEMENTS.md`
+  §4.2c.
 
 Rules:
 
@@ -317,10 +320,14 @@ Rules:
    `Invalid` signature is still invalid.
 3. `ResolverUnavailable` is operational, not semantic. Callers should retry
    or report it differently from `NotFound`.
-4. The MVP version of the report is filled by `verify_envelope_statement` in
-   `kairo-statement::verify`, using an `ActorResolver` (see §8). The shape is
-   stable: future trust evaluation populates the existing field rather than
-   changing the report.
+4. Trust is **always parameterized by a truster**. `Trusted` from actor X's
+   perspective says nothing about what actor Y thinks. There is no
+   node-wide "is trusted" — each truster has their own opinion, resolved
+   independently.
+5. The report shape is stable: `verify_envelope_statement` fills signature
+   and actor resolution; `evaluate_trust(by_actor, of_actor, trust_resolver)`
+   in `kairo-statement::verify` fills the trust field when a truster is
+   provided.
 
 ---
 

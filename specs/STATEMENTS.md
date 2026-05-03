@@ -195,6 +195,50 @@ The canonical ObjectVersionTag v1 form is documented in:
 schemas/canonical/object-version-tag-v1.md
 ```
 
+### 4.2c ActorTrust Statement
+
+An `ActorTrust` statement records a **first-person** opinion that one
+actor (`by_actor`) holds about another (`trusted_actor`) — `trusted`,
+`untrusted`, or a withdrawal of any prior opinion. Like
+`ObjectVersionTag` it is actor-scoped and mutable, with chain
+precedence over timestamp.
+
+Differences from `ObjectVersionTag`:
+
+1. The lookup key is `(by_actor, trusted_actor)` — there is no object.
+   Trust is about who is trustworthy, not about what they signed.
+2. `decision` is one of `"trusted"`, `"untrusted"`, or `null`. A `null`
+   decision is a withdrawal: it retracts any prior opinion. The shape
+   `decision = null && supersedes = null` is invalid (you can't
+   withdraw nothing).
+3. Cross-actor `supersedes` is **invalid** for trust (tighter than
+   `ObjectVersionTag`, which only declines to honor cross-actor edges
+   in the MVP resolver but records them at the protocol layer). Trust
+   is first-person: only the truster who signed `S` may publish a
+   successor that supersedes `S`.
+4. An optional `reason` string, included in canonical bytes, lets the
+   truster annotate why.
+
+`evaluate_trust(by_actor, of_actor)` (in `kairo-statement::verify`)
+folds the chain leaf into a `TrustEvaluation`:
+
+- `Some("trusted")` → `Trusted`
+- `Some("untrusted")` → `Untrusted`
+- `None` (withdrawal) → `Unknown` (equivalent to never having an
+  opinion; the audit history is still on disk)
+- No statement → `Unknown`
+- Caller did not supply `by_actor` → `Unevaluated`
+
+Trust is **informational**: it never makes a cryptographically valid
+statement invalid, and it never validates an invalid one. Callers
+compose the two independently, per §6.1.
+
+The canonical ActorTrust v1 form is documented in:
+
+```text
+schemas/canonical/actor-trust-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo
@@ -374,8 +418,10 @@ critical rules are:
 - Cryptographic validity (signature + actor resolution) and trust evaluation
   are independent. A valid signature does not imply trust; trust does not
   override invalid signatures.
-- The MVP fills `trust = Unevaluated`; the report shape stays stable when
-  `kairo-trust` lands.
+- Trust is **first-person**: it is parameterized by *who* is asking. When the
+  caller supplies `by_actor`, `evaluate_trust` (see §4.2c) folds that
+  truster's `ActorTrust` chain leaf into one of `Trusted | Untrusted |
+  Unknown`. When no `by_actor` is supplied, trust stays `Unevaluated`.
 - `ResolverUnavailable` is operational and must be reported distinctly from
   `NotFound`.
 
