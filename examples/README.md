@@ -13,9 +13,10 @@ A minimal object lineage that demonstrates the MVP end-to-end flow:
 3. Create a signed object revision pointing at the object's current state.
 4. Set the actor's `head` branch to that revision so it can be resolved by
    name later.
-5. Compute a `SnapshotId` for the object's effective state.
-6. Verify the revision against the actor's genesis through the generic
-   verifier.
+5. Bind a semver version tag to that revision.
+6. Compute a `SnapshotId` for the object's effective state.
+7. Run end-to-end `kairo verify object` against the local store + Git repo.
+8. Publish a first-person trust opinion and observe it in the verify report.
 
 ### Run the walkthrough
 
@@ -24,23 +25,33 @@ A minimal object lineage that demonstrates the MVP end-to-end flow:
 export KAIRO_STORE="$(mktemp -d)/kairo-store"
 echo "store at: $KAIRO_STORE"
 
+cd examples/objects/hello-kairo
+
+# The example tree is committed to a tiny throwaway Git repo so the
+# revision-id (`git:sha256:<commit>`) refers to a real commit. The
+# verifier will read kairo.toml back from the commit's tree and check
+# the manifest binding end-to-end.
+git init --quiet
+git add kairo.toml
+git -c user.name=Kairo -c user.email=test@kairo.test commit -m "init" --quiet
+COMMIT="$(git rev-parse HEAD)"
+
 # 1. Generate a fresh person actor.
 kairo actor create --kind person
 # → prints `actor = zQm…` (record this)
 ACTOR=zQm...
 
 # 2. Bind the example tree as a new object lineage.
-cd examples/objects/hello-kairo
-kairo object create --actor "$ACTOR" --kind software --initial-revision git:sha256:0000000000000000000000000000000000000000000000000000000000000001
+kairo object create --actor "$ACTOR" --kind software \
+  --initial-revision "git:sha256:$COMMIT"
 # → prints `object = zQm…`
 OBJECT=zQm...
 
-# 3. Sign a revision claim that binds a storage commit to that object.
+# 3. Sign a revision claim that binds the storage commit to that object.
 kairo revision create \
   --actor "$ACTOR" \
   --object "$OBJECT" \
-  --revision git:sha256:0000000000000000000000000000000000000000000000000000000000000001 \
-  --parent  git:sha256:0000000000000000000000000000000000000000000000000000000000000000
+  --revision "git:sha256:$COMMIT"
 # → prints `statement = zQm…` (record this)
 STATEMENT=zQm...
 
@@ -59,47 +70,77 @@ kairo branch set --actor "$ACTOR" --object "$OBJECT" --revision "$STATEMENT"
 kairo branch show --object "$OBJECT"
 kairo branch list --object "$OBJECT"
 
-# 6b. Compute the SnapshotId for object's effective state. By default this
-#     follows the creator-actor's "head" branch; --statement <id> pins the
-#     frontier directly.
+# 6b. Bind a semver version tag to the same revision. Tags are independent
+#     of branches; consumers that need stable references should pin to the
+#     resolved StatementId, not the version string.
+kairo tag bind --actor "$ACTOR" --object "$OBJECT" \
+  --version 1.0.0 --revision "$STATEMENT"
+kairo tag show --object "$OBJECT" --version 1.0.0
+kairo tag list --object "$OBJECT"
+
+# 6c. Compute the SnapshotId for the object's effective state. By default
+#     this follows the creator-actor's "head" branch; --statement <id>
+#     pins the frontier directly.
 kairo snapshot compute --object "$OBJECT"
 # → prints `snapshot = zQm…`
 kairo snapshot compute --object "$OBJECT" --json
 
-# 7. Verify the most recent revision statement against the actor's genesis.
-#    (For now this command takes file paths; the upcoming store-backed
-#    `kairo verify` will resolve them automatically.)
-STATEMENT_FILE="$(find "$KAIRO_STORE/statements" -name '*.json' | head -n 1)"
-ACTOR_FILE="$(find "$KAIRO_STORE/actors" -name '*.json' | head -n 1)"
-kairo revision verify-actor-genesis \
-  --statement "$STATEMENT_FILE" \
-  --actor-genesis "$ACTOR_FILE"
+# 7. Verify the object end-to-end: genesis fixity, revision signature,
+#    actor resolution, object consistency, manifest binding, and content
+#    layer (commit found + parents agree). With one local actor in the
+#    keystore, --as is auto-picked, so trust resolves too.
+kairo verify object --object "$OBJECT"
+# → prints `verify object: VALID` plus the per-dimension breakdown,
+#   including `trust = unknown (as $ACTOR)` since no opinion exists yet.
+kairo verify object --object "$OBJECT" --json
 
-# 7b. (Optional) Verify with --json for machine-readable output.
-kairo revision verify-actor-genesis \
-  --statement "$STATEMENT_FILE" \
-  --actor-genesis "$ACTOR_FILE" --json
+# 8. Publish a first-person trust opinion. With one local actor we are
+#    both the truster and the signer of the revision, so this expresses
+#    "I trust myself," which evaluate_trust then surfaces in verify.
+kairo trust grant --by "$ACTOR" --of "$ACTOR" --reason "self-trust"
+kairo trust show --by "$ACTOR" --of "$ACTOR"
+kairo trust list --by "$ACTOR"
 
-# 8. (Optional) Re-import the records into a fresh store to demonstrate
+# Re-run verification: trust now reports `trusted` instead of `unknown`.
+kairo verify object --object "$OBJECT"
+
+# 9. (Optional) Re-import the records into a fresh store to demonstrate
 #    fixity round-trips: the imported statement_id and object_id are
 #    derived from the canonical bytes of the parsed body, and must match
 #    what was originally created.
+STATEMENT_FILE="$(find "$KAIRO_STORE/statements" -name "$STATEMENT.json")"
+ACTOR_FILE="$(find "$KAIRO_STORE/actors" -name "$ACTOR.json")"
+OBJECT_FILE="$(find "$KAIRO_STORE/objects" -name "$OBJECT.json")"
+
 export KAIRO_STORE_FRESH="$(mktemp -d)/kairo-store"
 kairo --store "$KAIRO_STORE_FRESH" actor import --genesis "$ACTOR_FILE"
-kairo --store "$KAIRO_STORE_FRESH" object import --statement \
-  "$(find "$KAIRO_STORE/objects" -name '*.json' | head -n 1)"
+kairo --store "$KAIRO_STORE_FRESH" object import --statement "$OBJECT_FILE"
 kairo --store "$KAIRO_STORE_FRESH" revision import --statement "$STATEMENT_FILE"
 ```
 
 ### What this demonstrates
 
-- Identity is content-addressed: the ActorId, ObjectId, and StatementId are
-  all derived from the canonical bytes of their respective records, not
+- **Content-addressed identity.** ActorId, ObjectId, and StatementId are
+  derived from the canonical bytes of their respective records, not
   assigned by any registry.
-- The keystore lives at `<store>/keys/` (override with `--keys`); the secret
-  key file is mode `0600` on Unix.
-- The store is sharded two levels deep by `<XX>/<YY>` of each ID, so look
-  for files at e.g. `actors/zQ/m…/zQm…json`.
-- Verification reports three independent dimensions — signature status,
-  actor resolution, and trust evaluation. Trust is `unevaluated` until the
-  trust crate lands; see `specs/ACTORS.md` §6.2.
+- **Per-actor pointers.** Branches and version tags are mutable per-actor
+  pointers; their statements are signed and the resolver picks the chain
+  leaf (with timestamp tiebreak only on forks). Snapshot identity is
+  over the resolved frontier, so two callers following different actors'
+  branches/tags can land at different snapshots — but each snapshot is
+  independently verifiable.
+- **End-to-end verification.** `kairo verify object` rolls up six
+  independent checks — genesis fixity, signature, actor resolution,
+  object consistency, manifest binding, and Git content layer — into a
+  single `VALID` / `INDETERMINATE` / `INVALID` verdict.
+- **First-person trust.** Trust is parameterized by *who* is asking;
+  `--as <truster>` (auto-picked from the keystore when there is one local
+  actor) resolves the truster's `ActorTrust` chain leaf into
+  `trusted | untrusted | unknown`. Trust is informational — it never
+  changes the cryptographic verdict.
+- **Layout on disk.** The store at `$KAIRO_STORE/` is sharded two levels
+  deep by `<XX>/<YY>` of each ID; the keystore lives at `<store>/keys/`
+  (override with `--keys`) with key files at mode `0600` on Unix.
+
+See `specs/STORE.md` §4 for the full MVP layout and `specs/STATEMENTS.md`
+§6 for the verification model.

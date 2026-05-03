@@ -100,6 +100,49 @@ store/
 
 Exact layout is not mandated but must preserve semantics.
 
+#### MVP layout
+
+The MVP `FilesystemStore` (`crates/kairo-store/src/lib.rs`) deliberately
+**does not group statements by object**. Each record type lives under
+its own top-level directory and is sharded two levels deep using
+characters from the record id's base58 payload:
+
+```text
+~/.kairo/
+  version.txt                            # store schema version
+  actors/<XX>/<YY>/<actor-id>.json       # ActorGenesis bodies
+  objects/<XX>/<YY>/<object-id>.json     # signed ObjectGenesis
+  statements/<XX>/<YY>/<statement-id>.json
+                                         # signed ObjectRevision /
+                                         # ObjectBranch / ObjectVersionTag /
+                                         # ActorTrust
+  branches/<XX>/<YY>/<object-id>.json    # per-object materialized
+                                         # branch tip index
+  version_tags/<XX>/<YY>/<object-id>.json
+                                         # per-object materialized
+                                         # version-tag head index
+  trust/<XX>/<YY>/<trusted-actor-id>.json
+                                         # per-trusted-actor materialized
+                                         # trust-opinion index, keyed
+                                         # internally by truster
+  blobs/<XX>/<YY>/<blob-id>              # raw blob bytes
+  keys/<actor-id>.json                   # FilesystemKeystore (mode 0600
+                                         # on Unix; not part of the store
+                                         # crate proper)
+```
+
+Sharding (2 levels of 2 base58 chars from positions 3–4 and 5–6 of the
+id) yields up to ~11.3M sparse leaf directories per record type. The
+materialized indices (`branches/`, `version_tags/`, `trust/`) are
+strict materializations of the underlying signed statements: rebuild
+from `statements/` is correct but not yet implemented; for now the
+write paths (`put_object_branch`, `put_object_version_tag`,
+`put_actor_trust`) keep them consistent.
+
+Snapshots are not stored in the MVP — `kairo snapshot compute` derives
+a `SnapshotId` on demand from the resolved frontier; closure caching
+is future work.
+
 ---
 
 ## 5. Provider Trait Implementation

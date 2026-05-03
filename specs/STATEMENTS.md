@@ -454,9 +454,16 @@ than collapsed into a single boolean:
 - **`parents`** — `NoParents` (initial revision) or `Declared { count }`.
   The statement layer cannot prove that the named parents exist; that
   belongs to the content (Git) layer.
-- **`content`** — always `Indeterminate` in the MVP. A future content-layer
-  check (TODO §11) verifies that `revision`, `parents`, and the working
-  tree's manifest match the local Git repository.
+- **`content`** — does the storage commit named by `revision` exist
+  locally, and do its parents agree with the revision's declared
+  parents? Variants:
+  - `Verified` — commit found and parents agree (set-equality;
+    ordering is not enforced).
+  - `ParentMismatch { expected, actual }` — declared parents disagree
+    with the Git commit's actual parents.
+  - `CommitNotFound` — the commit is not in the configured Git repo.
+  - `Indeterminate` — no Git lookup was performed (no repo provided
+    or the revision uses a non-`git:sha256:` scheme).
 
 What each revision field actually proves once validated:
 
@@ -472,9 +479,13 @@ What each revision field actually proves once validated:
 
 `ObjectRevisionValidationReport` and `validate_object_revision` live in
 `kairo-object`. The validator is **pure** (no I/O); the caller decides how
-to fetch the genesis and manifest, which is why missing inputs are reported
-as `*NotProvided` (indeterminate) rather than as failure. The store-backed
-`kairo verify object` command (TODO §8) will become the primary caller.
+to fetch the genesis, manifest, and Git commit lookup, which is why
+missing inputs are reported as `*NotProvided` / `Indeterminate` rather
+than as failure. The store-backed `kairo verify object` command is its
+primary caller, plumbing the local `FilesystemStore` for genesis and
+revision lookups, the `kairo-git` repository for commit + parent
+checks, and (optionally, when `--as <truster>` is given or auto-picked
+from the keystore) the `TrustResolver` for the trust dimension.
 
 ---
 
