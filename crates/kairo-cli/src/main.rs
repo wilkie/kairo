@@ -2455,6 +2455,9 @@ fn format_actor_resolution(resolution: &ActorResolution) -> &'static str {
 
 fn format_trust(trust: &TrustEvaluation) -> &'static str {
     match trust {
+        TrustEvaluation::Trusted => "trusted",
+        TrustEvaluation::Untrusted => "untrusted",
+        TrustEvaluation::Unknown => "unknown",
         TrustEvaluation::Unevaluated => "unevaluated",
     }
 }

@@ -4,13 +4,20 @@
 //! through an [`ActorResolver`], then evaluates the signature against the
 //! resolved initial key. It returns a structured [`VerificationReport`] that
 //! reports signature status, actor resolution outcome, and trust evaluation
-//! independently. Cryptographic validity does not imply trust; trust is only
-//! filled in once `kairo-trust` exists (see TODO §10).
+//! independently. Cryptographic validity does not imply trust; trust comes
+//! from a separate per-truster opinion published as `ActorTrust`.
+//!
+//! [`evaluate_trust`] resolves "does `by_actor` trust `of_actor`?" against a
+//! [`TrustResolver`]. The resolver returns the chain-leaf `ActorTrust` for
+//! the pair (or `None` if no opinion was ever published); `evaluate_trust`
+//! folds that into a [`TrustEvaluation`]. Trust is informational — it never
+//! makes a cryptographically valid statement invalid; callers compose the
+//! two independently.
 
 use kairo_core::{ActorId, StatementId};
 use kairo_identity::{ActorResolveError, ActorResolver, SignatureVerificationError};
 
-use crate::{SignedStatement, StatementBody, StatementSignatureError};
+use crate::{ActorTrustBody, SignedStatement, StatementBody, StatementSignatureError, TrustDecision};
 
 /// Outcome of verifying a signed statement against a resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,15 +64,65 @@ pub enum SignatureStatus {
     NotEvaluated,
 }
 
-/// Local trust evaluation.
+/// Local trust evaluation against a chosen truster.
 ///
-/// Always [`TrustEvaluation::Unevaluated`] in the MVP. A future revision will
-/// add `Trusted` / `Untrusted` once `kairo-trust` lands. The placeholder
-/// exists so `VerificationReport` does not change shape when trust evaluation
-/// is wired up.
+/// Trust is first-person and always parameterized by *who* is asking. A
+/// statement is `Trusted` from `by_actor`'s perspective when `by_actor` has
+/// an active "trusted" opinion about the statement's signing actor;
+/// `Untrusted` when the active opinion is "untrusted"; `Unknown` when no
+/// active opinion exists (no statement, or the chain leaf is a withdrawal);
+/// and `Unevaluated` when the caller did not supply a `by_actor` (e.g.
+/// `kairo verify object` was run without `--as`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrustEvaluation {
+    Trusted,
+    Untrusted,
+    Unknown,
     Unevaluated,
+}
+
+/// Lookup interface for first-person trust opinions.
+///
+/// Implementors return the chain-leaf `ActorTrust` statement for a
+/// `(by_actor, trusted_actor)` pair, or `None` if `by_actor` has never
+/// published an opinion about `trusted_actor`. The leaf may be a grant,
+/// block, or withdrawal — `evaluate_trust` interprets the decision.
+///
+/// Mirrors [`ActorResolver`] in shape: a small generic trait that can
+/// be satisfied by any backing store (filesystem, in-memory, network),
+/// with an associated `Error` so callers don't lock to a single error
+/// type.
+pub trait TrustResolver {
+    type Error: std::error::Error + 'static;
+
+    fn latest_trust(
+        &self,
+        by_actor: &ActorId,
+        trusted_actor: &ActorId,
+    ) -> Result<Option<SignedStatement<ActorTrustBody>>, Self::Error>;
+}
+
+/// Resolve "does `by_actor` trust `of_actor`?" against `trust_resolver`.
+///
+/// Returns the active opinion as a [`TrustEvaluation`]. A withdrawal
+/// (chain leaf with `decision = None`) is reported as
+/// [`TrustEvaluation::Unknown`] — the actor explicitly retracted any
+/// prior opinion, so for evaluation purposes it is equivalent to never
+/// having published one. The audit history is still preserved on disk
+/// via the chain.
+pub fn evaluate_trust<R: TrustResolver>(
+    by_actor: &ActorId,
+    of_actor: &ActorId,
+    trust_resolver: &R,
+) -> Result<TrustEvaluation, R::Error> {
+    match trust_resolver.latest_trust(by_actor, of_actor)? {
+        None => Ok(TrustEvaluation::Unknown),
+        Some(signed) => Ok(match signed.unsigned().body().decision() {
+            Some(TrustDecision::Trusted) => TrustEvaluation::Trusted,
+            Some(TrustDecision::Untrusted) => TrustEvaluation::Untrusted,
+            None => TrustEvaluation::Unknown,
+        }),
+    }
 }
 
 /// Verify an envelope-wrapped signed statement against an [`ActorResolver`].
@@ -449,6 +506,165 @@ mod tests {
         assert_eq!(report.statement_id, expected_id);
         assert_eq!(report.envelope_actor, actor_id);
         assert_eq!(report.signature_actor, actor_id);
+        Ok(())
+    }
+
+    use std::collections::HashMap;
+    use std::convert::Infallible;
+
+    use crate::ActorTrustBody;
+
+    /// Test-only in-memory `TrustResolver`. Callers pre-populate
+    /// `(by_actor, trusted_actor) -> SignedStatement<ActorTrustBody>`.
+    #[derive(Debug, Default)]
+    struct MemoryTrustResolver {
+        entries: HashMap<(String, String), SignedStatement<ActorTrustBody>>,
+    }
+
+    impl MemoryTrustResolver {
+        fn insert(&mut self, signed: SignedStatement<ActorTrustBody>) {
+            let by_actor = signed.unsigned().actor().to_string();
+            let trusted_actor = signed.unsigned().body().trusted_actor().to_string();
+            self.entries.insert((by_actor, trusted_actor), signed);
+        }
+    }
+
+    impl TrustResolver for MemoryTrustResolver {
+        type Error = Infallible;
+
+        fn latest_trust(
+            &self,
+            by_actor: &ActorId,
+            trusted_actor: &ActorId,
+        ) -> Result<Option<SignedStatement<ActorTrustBody>>, Self::Error> {
+            Ok(self
+                .entries
+                .get(&(by_actor.to_string(), trusted_actor.to_string()))
+                .cloned())
+        }
+    }
+
+    fn signed_actor_trust(
+        by_actor: &ActorId,
+        trusted_actor: &ActorId,
+        decision: Option<TrustDecision>,
+        supersedes: Option<crate::StatementId>,
+    ) -> Result<SignedStatement<ActorTrustBody>, Box<dyn std::error::Error>> {
+        let body = ActorTrustBody::new(trusted_actor.clone(), decision, None, supersedes)?;
+        let subject: KairoRef = format!("actor:{trusted_actor}").parse()?;
+        let unsigned = UnsignedStatement::new(by_actor.clone(), subject, timestamp(), body);
+        let key = signing_key();
+        let bytes = key.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let signature = Signature::new(
+            by_actor.clone(),
+            public_key_for(&key).key_id().to_string(),
+            "ed25519",
+            bytes,
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn fresh_actor(seed: u8) -> ActorId {
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key_for(&SigningKey::from_bytes(&[seed; 32])),
+            timestamp(),
+            [seed; 32],
+        )
+        .actor_id()
+    }
+
+    #[test]
+    fn evaluate_trust_returns_unknown_when_no_opinion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let by_actor = fresh_actor(1);
+        let of_actor = fresh_actor(2);
+        let resolver = MemoryTrustResolver::default();
+        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        assert_eq!(evaluation, TrustEvaluation::Unknown);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_trust_returns_trusted_for_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let by_actor = fresh_actor(1);
+        let of_actor = fresh_actor(2);
+        let mut resolver = MemoryTrustResolver::default();
+        resolver.insert(signed_actor_trust(
+            &by_actor,
+            &of_actor,
+            Some(TrustDecision::Trusted),
+            None,
+        )?);
+        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        assert_eq!(evaluation, TrustEvaluation::Trusted);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_trust_returns_untrusted_for_block()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let by_actor = fresh_actor(1);
+        let of_actor = fresh_actor(2);
+        let mut resolver = MemoryTrustResolver::default();
+        resolver.insert(signed_actor_trust(
+            &by_actor,
+            &of_actor,
+            Some(TrustDecision::Untrusted),
+            None,
+        )?);
+        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        assert_eq!(evaluation, TrustEvaluation::Untrusted);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_trust_treats_withdrawal_as_unknown()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Resolver returns the chain leaf, which here is the
+        // withdrawal. evaluate_trust collapses that to Unknown.
+        let by_actor = fresh_actor(1);
+        let of_actor = fresh_actor(2);
+        let grant = signed_actor_trust(
+            &by_actor,
+            &of_actor,
+            Some(TrustDecision::Trusted),
+            None,
+        )?;
+        let withdraw = signed_actor_trust(
+            &by_actor,
+            &of_actor,
+            None,
+            Some(grant.statement_id()),
+        )?;
+        let mut resolver = MemoryTrustResolver::default();
+        resolver.insert(withdraw);
+        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        assert_eq!(evaluation, TrustEvaluation::Unknown);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_trust_is_per_truster() -> Result<(), Box<dyn std::error::Error>> {
+        // Truster A grants; truster B has no opinion. Same target.
+        let truster_a = fresh_actor(1);
+        let truster_b = fresh_actor(2);
+        let target = fresh_actor(3);
+        let mut resolver = MemoryTrustResolver::default();
+        resolver.insert(signed_actor_trust(
+            &truster_a,
+            &target,
+            Some(TrustDecision::Trusted),
+            None,
+        )?);
+        assert_eq!(
+            evaluate_trust(&truster_a, &target, &resolver)?,
+            TrustEvaluation::Trusted
+        );
+        assert_eq!(
+            evaluate_trust(&truster_b, &target, &resolver)?,
+            TrustEvaluation::Unknown
+        );
         Ok(())
     }
 }

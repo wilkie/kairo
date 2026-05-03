@@ -935,6 +935,18 @@ impl ActorResolver for FilesystemStore {
     }
 }
 
+impl kairo_statement::verify::TrustResolver for FilesystemStore {
+    type Error = StoreError;
+
+    fn latest_trust(
+        &self,
+        by_actor: &ActorId,
+        trusted_actor: &ActorId,
+    ) -> Result<Option<SignedStatement<ActorTrustBody>>, Self::Error> {
+        TrustResolver::latest_trust(self, by_actor, trusted_actor)
+    }
+}
+
 fn read_or_missing(path: &Path) -> Result<Vec<u8>, StoreError> {
     match fs::read(path) {
         Ok(bytes) => Ok(bytes),
