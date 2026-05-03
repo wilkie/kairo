@@ -145,6 +145,31 @@ no truster sees `Unevaluated`.
 
 See `STATEMENTS.md` §4.2c and `schemas/canonical/actor-trust-v1.md`.
 
+## Capability
+
+A `Capability` is a structured, signed authorization in which one actor
+(the *grantor*) delegates to another actor (the *grantee*) the authority
+to issue specific statement kinds on a scoped target — typically an
+object or the grantor's own actor surface. A capability names a scope,
+the statement kinds it covers, and optional constraints (expiration,
+delegation depth, opt-in pinning to a specific signing key). Encoded as
+the `ActorCapabilityGrant` statement type, retracted via
+`ActorCapabilityRevocation`, sharded per-grantor.
+
+This is the distributed-systems sense of "capability": a transferable,
+unforgeable token of authority in the statement graph. Capability
+validity is **semantic** and computed from grants, root authority, and
+constraints; local trust policy may still refuse to act on a valid
+capability. Capabilities make cross-actor authority claims (e.g.
+`ObjectVersionTag` cross-actor `supersedes`) load-bearing; without
+them, every authority claim is bounded by the actor that signed it.
+
+Not to be confused with **runtime sandbox capability** (filesystem,
+network, GPU access granted to an executing artifact). That is an
+unrelated concept; see `SANDBOX.md`.
+
+See `CAPABILITIES.md`.
+
 ## Actor
 
 An `Actor` is a cryptographic identity that can issue signed statements.
