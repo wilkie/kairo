@@ -24,12 +24,14 @@ use kairo_statement::verify::{
     VerificationReport,
 };
 use kairo_statement::{
-    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-    ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion,
-    Signature, SignedStatement, UnsignedStatement,
+    ActorTrustBody, ActorTrustShapeError, ObjectBranchBody, ObjectGenesisBody,
+    ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
+    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
+    SignedStatement, TrustDecision, UnsignedStatement,
 };
 use kairo_store::{
-    ActorStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore, VersionTagResolver,
+    ActorStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore, TrustResolver,
+    VersionTagResolver,
 };
 
 #[derive(Debug, Parser)]
@@ -78,6 +80,11 @@ enum Command {
     Tag {
         #[command(subcommand)]
         command: TagCommand,
+    },
+    /// Work with first-person trust opinions (ActorTrust).
+    Trust {
+        #[command(subcommand)]
+        command: TrustCommand,
     },
     /// Compute a SnapshotId for an object's effective state.
     Snapshot {
@@ -196,6 +203,72 @@ enum TagCommand {
         actor: Option<String>,
         #[arg(long)]
         version: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TrustCommand {
+    /// Sign a new ActorTrust granting trust from --by to --of. If the
+    /// truster has previously published an opinion about --of, the new
+    /// statement supersedes it; otherwise it is the genesis opinion.
+    Grant {
+        /// Truster: the local actor whose key signs this opinion.
+        #[arg(long)]
+        by: String,
+        /// Trusted actor: the actor being judged.
+        #[arg(long)]
+        of: String,
+        /// Optional human-readable reason. Included in canonical bytes.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Sign a new ActorTrust marking --of as untrusted from --by's
+    /// perspective. Auto-supersedes any prior opinion.
+    Block {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        of: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Sign a new ActorTrust withdrawing --by's prior opinion about
+    /// --of. Requires a prior opinion to chain off of; the supersedes
+    /// pointer is auto-set to the truster's current head.
+    Withdraw {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        of: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Resolve and print --by's current opinion about --of. A missing
+    /// opinion is reported as Unknown rather than an error.
+    Show {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        of: String,
+        /// Emit a stable JSON representation.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all current opinions signed by --by, one per trusted actor.
+    List {
+        #[arg(long)]
+        by: String,
+    },
+    /// Walk the supersedes chain backwards from --by's current opinion
+    /// about --of, newest first. Missing chain links are reported as
+    /// indeterminate.
+    History {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        of: String,
         #[arg(long)]
         json: bool,
     },
@@ -411,6 +484,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Revision { command }) => run_revision_command(command, &paths),
         Some(Command::Branch { command }) => run_branch_command(command, &paths),
         Some(Command::Tag { command }) => run_tag_command(command, &paths),
+        Some(Command::Trust { command }) => run_trust_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         Some(Command::Verify { command }) => run_verify_command(command, &paths),
         None => Ok(help_text()),
@@ -1399,6 +1473,336 @@ fn format_tag_history_json(
         "actor": actor.to_string(),
         "object": object.to_string(),
         "version": version,
+        "history": entries,
+    });
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
+fn run_trust_command(command: TrustCommand, paths: &StorePaths) -> Result<String, CliError> {
+    match command {
+        TrustCommand::Grant { by, of, reason } => {
+            run_trust_decide(paths, by, of, reason, Some(TrustDecision::Trusted), "grant")
+        }
+        TrustCommand::Block { by, of, reason } => {
+            run_trust_decide(paths, by, of, reason, Some(TrustDecision::Untrusted), "block")
+        }
+        TrustCommand::Withdraw { by, of, reason } => {
+            run_trust_decide(paths, by, of, reason, None, "withdraw")
+        }
+        TrustCommand::Show { by, of, json } => {
+            let by_actor = ActorId::new(by.clone())
+                .map_err(|source| CliError::ParseActorId { actor: by, source })?;
+            let trusted_actor = ActorId::new(of.clone())
+                .map_err(|source| CliError::ParseActorId { actor: of, source })?;
+            let store = open_store(paths)?;
+            let resolved = store
+                .latest_trust(&by_actor, &trusted_actor)
+                .map_err(CliError::ReadActorTrust)?;
+            if json {
+                Ok(format_trust_show_json(&by_actor, &trusted_actor, resolved.as_ref()))
+            } else {
+                Ok(format_trust_show(&by_actor, &trusted_actor, resolved.as_ref()))
+            }
+        }
+        TrustCommand::List { by } => {
+            let by_actor = ActorId::new(by.clone())
+                .map_err(|source| CliError::ParseActorId { actor: by, source })?;
+            let store = open_store(paths)?;
+            let heads = store
+                .list_trust(&by_actor)
+                .map_err(CliError::ReadActorTrust)?;
+            Ok(format_trust_list(&by_actor, &heads))
+        }
+        TrustCommand::History { by, of, json } => {
+            let by_actor = ActorId::new(by.clone())
+                .map_err(|source| CliError::ParseActorId { actor: by, source })?;
+            let trusted_actor = ActorId::new(of.clone())
+                .map_err(|source| CliError::ParseActorId { actor: of, source })?;
+            let store = open_store(paths)?;
+            let head = store
+                .latest_trust(&by_actor, &trusted_actor)
+                .map_err(CliError::ReadActorTrust)?;
+            let chain = match head {
+                Some(signed) => walk_trust_chain(&store, signed)?,
+                None => Vec::new(),
+            };
+            if json {
+                Ok(format_trust_history_json(&by_actor, &trusted_actor, &chain))
+            } else {
+                Ok(format_trust_history(&by_actor, &trusted_actor, &chain))
+            }
+        }
+    }
+}
+
+fn run_trust_decide(
+    paths: &StorePaths,
+    by: String,
+    of: String,
+    reason: Option<String>,
+    decision: Option<TrustDecision>,
+    label: &str,
+) -> Result<String, CliError> {
+    let by_actor = ActorId::new(by.clone())
+        .map_err(|source| CliError::ParseActorId { actor: by, source })?;
+    let trusted_actor = ActorId::new(of.clone())
+        .map_err(|source| CliError::ParseActorId { actor: of, source })?;
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    let actor_body = store
+        .get_actor(&by_actor)
+        .map_err(|error| CliError::ReadActor {
+            actor: by_actor.clone(),
+            source: error,
+        })?;
+    let secret = keystore
+        .get_signing_key(&by_actor)
+        .map_err(|error| CliError::ReadKey {
+            actor: by_actor.clone(),
+            source: error,
+        })?;
+    if &secret.public_key() != actor_body.initial_key() {
+        return Err(CliError::KeyDoesNotMatchActor { actor: by_actor });
+    }
+
+    // Auto-chain: if the truster already has a head about this trusted
+    // actor, supersede it; otherwise this is the genesis opinion.
+    // Withdrawal additionally requires a prior head.
+    let prior = store
+        .latest_trust(&by_actor, &trusted_actor)
+        .map_err(CliError::ReadActorTrust)?;
+    let supersedes = prior.as_ref().map(|signed| signed.statement_id());
+    if decision.is_none() && supersedes.is_none() {
+        return Err(CliError::WithdrawWithoutPriorTrust {
+            by_actor,
+            trusted_actor,
+        });
+    }
+
+    let body = ActorTrustBody::new(trusted_actor.clone(), decision, reason, supersedes.clone())
+        .map_err(CliError::TrustShape)?;
+    let subject: KairoRef = format!("actor:{trusted_actor}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: trusted_actor.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(by_actor.clone(), subject, Timestamp::now(), body);
+    let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        by_actor.clone(),
+        secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_trust(&signed)
+        .map_err(|error| CliError::WriteActorTrust {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    let supersedes_line = match supersedes {
+        Some(id) => format!("supersedes = {id}\n"),
+        None => "supersedes = (genesis)\n".to_owned(),
+    };
+    let decision_line = match signed.unsigned().body().decision() {
+        Some(d) => d.as_str(),
+        None => "(withdrawn)",
+    };
+    Ok(format!(
+        "{label} trust\nstatement = {statement_id}\nby_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = {decision_line}\n{supersedes_line}",
+    ))
+}
+
+/// One link in a trust history walk. `Indeterminate` marks the point
+/// where the chain leaves the local store.
+#[derive(Debug)]
+enum TrustChainLink {
+    Statement(Box<SignedStatement<ActorTrustBody>>),
+    Indeterminate { missing: kairo_core::StatementId },
+}
+
+fn walk_trust_chain(
+    store: &FilesystemStore,
+    head: SignedStatement<ActorTrustBody>,
+) -> Result<Vec<TrustChainLink>, CliError> {
+    let mut chain = Vec::new();
+    let mut next = Some(head);
+    while let Some(signed) = next {
+        let supersedes = signed.unsigned().body().supersedes().cloned();
+        chain.push(TrustChainLink::Statement(Box::new(signed)));
+        match supersedes {
+            Some(prior_id) => match store.get_actor_trust(&prior_id) {
+                Ok(prior) => next = Some(prior),
+                Err(kairo_store::StoreError::Missing) => {
+                    chain.push(TrustChainLink::Indeterminate { missing: prior_id });
+                    next = None;
+                }
+                Err(error) => return Err(CliError::ReadActorTrust(error)),
+            },
+            None => next = None,
+        }
+    }
+    Ok(chain)
+}
+
+fn format_trust_show(
+    by_actor: &ActorId,
+    trusted_actor: &ActorId,
+    resolved: Option<&SignedStatement<ActorTrustBody>>,
+) -> String {
+    match resolved {
+        None => format!(
+            "by_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = unknown\n"
+        ),
+        Some(signed) => {
+            let body = signed.unsigned().body();
+            let decision = match body.decision() {
+                Some(d) => d.as_str(),
+                None => "unknown",
+            };
+            let supersedes = match body.supersedes() {
+                Some(id) => id.to_string(),
+                None => "(genesis)".to_owned(),
+            };
+            let reason = match body.reason() {
+                Some(r) => format!("reason = {r}\n"),
+                None => String::new(),
+            };
+            format!(
+                "statement = {}\nby_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = {decision}\nsupersedes = {supersedes}\ncreated_at = {}\n{reason}",
+                signed.statement_id(),
+                signed.unsigned().created_at(),
+            )
+        }
+    }
+}
+
+fn format_trust_show_json(
+    by_actor: &ActorId,
+    trusted_actor: &ActorId,
+    resolved: Option<&SignedStatement<ActorTrustBody>>,
+) -> String {
+    let value = match resolved {
+        None => serde_json::json!({
+            "by_actor": by_actor.to_string(),
+            "trusted_actor": trusted_actor.to_string(),
+            "decision": "unknown",
+            "statement_id": null,
+        }),
+        Some(signed) => {
+            let body = signed.unsigned().body();
+            serde_json::json!({
+                "statement_id": signed.statement_id().to_string(),
+                "by_actor": by_actor.to_string(),
+                "trusted_actor": trusted_actor.to_string(),
+                "decision": body.decision().map(|d| d.as_str()),
+                "supersedes": body.supersedes().map(|id| id.to_string()),
+                "reason": body.reason(),
+                "is_withdrawal": body.is_withdrawal(),
+                "created_at": signed.unsigned().created_at().to_string(),
+            })
+        }
+    };
+    let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+    output.push('\n');
+    output
+}
+
+fn format_trust_list(by_actor: &ActorId, heads: &[kairo_store::TrustHead]) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("by_actor = {by_actor}\n"));
+    output.push_str(&format!("opinions = {}\n", heads.len()));
+    for head in heads {
+        let decision = head.decision.as_deref().unwrap_or("unknown");
+        output.push_str(&format!(
+            "  trusted_actor={} decision={decision} statement={} created_at={}\n",
+            head.trusted_actor, head.statement_id, head.created_at,
+        ));
+    }
+    output
+}
+
+fn format_trust_history(
+    by_actor: &ActorId,
+    trusted_actor: &ActorId,
+    chain: &[TrustChainLink],
+) -> String {
+    let mut output = String::new();
+    output.push_str(&format!("by_actor = {by_actor}\n"));
+    output.push_str(&format!("trusted_actor = {trusted_actor}\n"));
+    output.push_str(&format!("history (newest -> oldest, {} entries):\n", chain.len()));
+    for (idx, link) in chain.iter().enumerate() {
+        let n = idx + 1;
+        match link {
+            TrustChainLink::Statement(signed) => {
+                let body = signed.unsigned().body();
+                let kind = match body.decision() {
+                    Some(TrustDecision::Trusted) => "grant",
+                    Some(TrustDecision::Untrusted) => "block",
+                    None => "withdraw",
+                };
+                let supersedes = match body.supersedes() {
+                    Some(id) => format!(" supersedes={id}"),
+                    None => " (genesis)".to_owned(),
+                };
+                output.push_str(&format!(
+                    "  {n}. statement={} created_at={} kind={kind}{supersedes}\n",
+                    signed.statement_id(),
+                    signed.unsigned().created_at(),
+                ));
+            }
+            TrustChainLink::Indeterminate { missing } => {
+                output.push_str(&format!(
+                    "  {n}. (missing) statement={missing} — chain truncated; import the predecessor to continue\n"
+                ));
+            }
+        }
+    }
+    output
+}
+
+fn format_trust_history_json(
+    by_actor: &ActorId,
+    trusted_actor: &ActorId,
+    chain: &[TrustChainLink],
+) -> String {
+    let entries: Vec<_> = chain
+        .iter()
+        .map(|link| match link {
+            TrustChainLink::Statement(signed) => {
+                let body = signed.unsigned().body();
+                let kind = match body.decision() {
+                    Some(TrustDecision::Trusted) => "grant",
+                    Some(TrustDecision::Untrusted) => "block",
+                    None => "withdraw",
+                };
+                serde_json::json!({
+                    "kind": kind,
+                    "statement_id": signed.statement_id().to_string(),
+                    "decision": body.decision().map(|d| d.as_str()),
+                    "supersedes": body.supersedes().map(|id| id.to_string()),
+                    "reason": body.reason(),
+                    "created_at": signed.unsigned().created_at().to_string(),
+                })
+            }
+            TrustChainLink::Indeterminate { missing } => serde_json::json!({
+                "kind": "indeterminate",
+                "missing_statement_id": missing.to_string(),
+            }),
+        })
+        .collect();
+    let value = serde_json::json!({
+        "by_actor": by_actor.to_string(),
+        "trusted_actor": trusted_actor.to_string(),
         "history": entries,
     });
     let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
@@ -2502,7 +2906,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -2626,6 +3030,20 @@ enum CliError {
         actor: ActorId,
         object: ObjectId,
         version: String,
+    },
+    TrustShape(ActorTrustShapeError),
+    WriteActorTrust {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    ReadActorTrust(kairo_store::StoreError),
+    WithdrawWithoutPriorTrust {
+        by_actor: ActorId,
+        trusted_actor: ActorId,
+    },
+    BuildActorSubjectRef {
+        actor: ActorId,
+        source: kairo_core::IdError,
     },
     ComputeSnapshot(SnapshotError),
     ObjectVerificationFailed(String),
@@ -2782,6 +3200,22 @@ impl fmt::Display for CliError {
                 f,
                 "cannot revoke version {version} on object {object}: actor {actor} has no prior tag for it"
             ),
+            Self::TrustShape(error) => write!(f, "{error}"),
+            Self::WriteActorTrust { statement, source } => {
+                write!(f, "failed to write actor trust statement {statement}: {source}")
+            }
+            Self::ReadActorTrust(error) => write!(f, "failed to read actor trust: {error}"),
+            Self::WithdrawWithoutPriorTrust {
+                by_actor,
+                trusted_actor,
+            } => write!(
+                f,
+                "cannot withdraw trust: actor {by_actor} has no prior opinion about {trusted_actor}"
+            ),
+            Self::BuildActorSubjectRef { actor, source } => write!(
+                f,
+                "could not build subject reference for actor {actor}: {source}"
+            ),
             Self::ComputeSnapshot(error) => write!(f, "{error}"),
             Self::ObjectVerificationFailed(report) => {
                 f.write_str(report)?;
@@ -2848,10 +3282,14 @@ impl Error for CliError {
             | Self::ReadRevision { source, .. }
             | Self::WriteBranch { source, .. }
             | Self::WriteVersionTag { source, .. }
+            | Self::WriteActorTrust { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
-            Self::ReadBranch(error) | Self::ReadVersionTag(error) => Some(error),
+            Self::ReadBranch(error)
+            | Self::ReadVersionTag(error)
+            | Self::ReadActorTrust(error) => Some(error),
             Self::ParseSemver(error) => Some(error),
             Self::TagShape(error) => Some(error),
+            Self::TrustShape(error) => Some(error),
             Self::ComputeSnapshot(error) => Some(error),
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
@@ -2859,7 +3297,8 @@ impl Error for CliError {
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
             | Self::ParseStatementId { source, .. }
-            | Self::BuildSubjectRef { source, .. } => Some(source),
+            | Self::BuildSubjectRef { source, .. }
+            | Self::BuildActorSubjectRef { source, .. } => Some(source),
             Self::GenerateKey(error) => Some(error),
             Self::OpenGitRepo { source, .. } | Self::GitOperation { source } => Some(source),
             Self::VerificationFailed(_)
@@ -2872,6 +3311,7 @@ impl Error for CliError {
             | Self::TagObjectMismatch { .. }
             | Self::TagNotFound { .. }
             | Self::RevokeWithoutPriorTag { .. }
+            | Self::WithdrawWithoutPriorTrust { .. }
             | Self::GitRepoNotDiscovered { .. }
             | Self::ManifestNotUtf8
             | Self::MissingPublicKey
@@ -4769,5 +5209,262 @@ kind = "tree"
                 ..
             }) if statement == "zQmStatement"
         ));
+    }
+
+    #[test]
+    fn end_to_end_trust_grant_show_list() -> Result<(), Box<dyn std::error::Error>> {
+        // Create two actors (truster + trusted), grant trust, show
+        // and list — confirm the head reflects the grant.
+        let store_dir = tempfile::TempDir::new()?;
+
+        let truster_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let truster_id = parse_field(&truster_output, "actor = ")?;
+
+        let trusted_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let trusted_id = parse_field(&trusted_output, "actor = ")?;
+        assert_ne!(truster_id, trusted_id);
+
+        let grant = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Grant {
+                    by: truster_id.clone(),
+                    of: trusted_id.clone(),
+                    reason: Some("works for me".to_owned()),
+                },
+            }),
+        })?;
+        assert!(grant.contains("grant trust"));
+        assert!(grant.contains("decision = trusted"));
+        assert!(grant.contains("supersedes = (genesis)"));
+
+        let show = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Show {
+                    by: truster_id.clone(),
+                    of: trusted_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(show.contains("decision = trusted"));
+        assert!(show.contains("reason = works for me"));
+
+        let list = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::List {
+                    by: truster_id.clone(),
+                },
+            }),
+        })?;
+        assert!(list.contains("opinions = 1"));
+        assert!(list.contains(&trusted_id));
+        Ok(())
+    }
+
+    #[test]
+    fn trust_block_then_withdraw_chains_correctly()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+
+        let truster_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+        let trusted_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+
+        let block = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Block {
+                    by: truster_id.clone(),
+                    of: trusted_id.clone(),
+                    reason: None,
+                },
+            }),
+        })?;
+        let block_statement = parse_field(&block, "statement = ")?;
+        assert!(block.contains("decision = untrusted"));
+
+        // Wait so created_at moves; not strictly required for chain
+        // precedence, but keeps history readable.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let withdraw = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Withdraw {
+                    by: truster_id.clone(),
+                    of: trusted_id.clone(),
+                    reason: None,
+                },
+            }),
+        })?;
+        assert!(withdraw.contains("decision = (withdrawn)"));
+        assert!(withdraw.contains(&format!("supersedes = {block_statement}")));
+
+        // Show should now report unknown (withdrawal collapsed).
+        let show = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Show {
+                    by: truster_id.clone(),
+                    of: trusted_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        // The withdrawal is the head; in show output we render the
+        // chain leaf's decision literally, which is "unknown".
+        assert!(show.contains("decision = unknown"));
+
+        // History should report newest-first: withdraw, then block.
+        let history = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::History {
+                    by: truster_id.clone(),
+                    of: trusted_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(history.contains("history (newest -> oldest, 2 entries):"));
+        assert!(history.contains("kind=withdraw"));
+        assert!(history.contains("kind=block"));
+        Ok(())
+    }
+
+    #[test]
+    fn trust_show_unknown_when_no_opinion() -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let truster_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+        let trusted_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+
+        let show = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Show {
+                    by: truster_id,
+                    of: trusted_id,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(show.contains("decision = unknown"));
+        Ok(())
+    }
+
+    #[test]
+    fn trust_withdraw_without_prior_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let truster_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+        let trusted_id = parse_field(
+            &run(Cli {
+                store: Some(store_dir.path().to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )?;
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Withdraw {
+                    by: truster_id,
+                    of: trusted_id,
+                    reason: None,
+                },
+            }),
+        });
+        assert!(matches!(
+            result,
+            Err(CliError::WithdrawWithoutPriorTrust { .. })
+        ));
+        Ok(())
     }
 }
