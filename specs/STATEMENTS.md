@@ -130,6 +130,30 @@ The canonical ObjectBranch v1 form is documented in:
 schemas/canonical/object-branch-v1.md
 ```
 
+#### Future: `ObjectBranch v2` with `supersedes`
+
+`ObjectBranch v1` resolves purely on `(created_at, statement_id)`. This
+shares a known wart with the original `ObjectVersionTag` design: when
+two updates collide on `created_at` (signed in the same second), the
+statement-id lex tiebreak can pick a winner the actor did not intend.
+`ObjectVersionTag v1` solved this by adding a `supersedes` chain edge
+and resolving by chain leaf (see §4.2b and
+`schemas/canonical/object-version-tag-v1.md`).
+
+Branches have the same wart, but adding `supersedes` to `ObjectBranch`
+would change its canonical bytes — every existing v1 `StatementId`
+would re-derive differently. The fix is therefore a v2 schema bump,
+not an in-place addition.
+
+This work is **deferred** until either (a) a real same-second branch
+collision causes user-visible damage, or (b) the §10 capability /
+authority model lands. (b) is the more likely trigger: cross-actor
+supersession (one actor taking over another's branch via a delegation
+or maintainership grant) needs a chain edge in branches the same way
+it needs one in tags. Designing `ObjectBranch v2` together with the
+capability model — instead of designing it now in isolation and
+redesigning when capabilities arrive — is the right scope.
+
 ### 4.2b ObjectVersionTag Statement
 
 An `ObjectVersionTag` statement binds a strict semver 2.0.0 string to a
