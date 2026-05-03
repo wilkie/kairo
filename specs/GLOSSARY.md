@@ -49,6 +49,56 @@ What a frontier is not:
 
 See `OBJECT.md` §2.3 and `schemas/canonical/snapshot-v1.md`.
 
+## Fixity
+
+A check that a record's content-addressed identity matches its bytes:
+re-derive the id from the canonical bytes and confirm it equals the id
+the record is *claimed* to have (its filename, its store key, the entry
+in a manifest, the field on a wrapping envelope). For Kairo this means
+recomputing an `ActorId`, `ObjectId`, `StatementId`, or `BlobId` from
+the canonical encoding and refusing the record if the derivation
+disagrees.
+
+Fixity is a property of the data, not of the storage system. Because
+every Kairo identifier is `multihash(domain || canonical_bytes)`,
+identity *is* the bytes — there is no "later version of `zQm…`."
+A mismatch can only mean tampering, corruption, the wrong domain
+separator, or a bug in canonical encoding. None of those are silently
+recoverable: every fixity failure is surfaced to the caller (e.g.
+`StoreError::Corrupt { reason: HashMismatch { expected, actual } }`,
+`BundleError::FixityMismatch`, `BundleError::BlobHashMismatch`) rather
+than papered over with a "best effort" repair.
+
+Where fixity is enforced today:
+
+- **Store reads** — `get_actor`, `get_object_genesis`,
+  `get_object_revision`, `get_object_branch`, `get_object_version_tag`,
+  and `get_actor_trust` all re-derive the id from the parsed body and
+  reject records whose derivation does not match the requested id.
+- **Bundle import** — every actor/object/statement file is parsed and
+  its id re-derived; every blob's bytes are re-hashed against
+  `OBJECT_MANIFEST_DOMAIN` and compared to the filename. Re-importing
+  the same bundle is idempotent because identical bytes produce
+  identical ids.
+- **Keystore reads** — the stored `actor_id` and `key_id` fields must
+  agree with the recomputed values for the loaded secret key.
+- **`kairo verify object`** — the genesis-derives-id check is part of
+  the aggregate verdict; a fixity failure on the genesis record is
+  reported as `INVALID`.
+
+Fixity is distinct from **signature validity** (does the actor's
+private key vouch for these bytes?), **trust** (do I, the local
+caller, accept this actor's claims?), and **content-layer
+verification** (does the storage commit named by an `ObjectRevision`
+actually exist in Git, with the declared parents?). All four are
+independent dimensions of the verification model in `STATEMENTS.md`
+§6 and `ACTORS.md` §6.2; fixity is the prerequisite that the bytes
+in front of you really are the record you asked for.
+
+See `crates/kairo-store/src/error.rs` (`CorruptReason::HashMismatch`)
+and `crates/kairo-bundle/src/error.rs`
+(`FixityMismatch`, `BlobHashMismatch`).
+
 ## Statement
 
 A `Statement` is an immutable signed claim made by an Actor. Statements describe
