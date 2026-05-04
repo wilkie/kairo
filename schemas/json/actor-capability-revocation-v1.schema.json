@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/actor-capability-revocation-v1.schema.json",
+  "title": "Kairo ActorCapabilityRevocation Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "properties": {
+    "type": { "const": "ActorCapabilityRevocation" },
+    "version": { "const": 1 },
+    "actor": {
+      "type": "string",
+      "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "The original grantor: must equal the actor that signed the grant being revoked."
+    },
+    "subject": {
+      "type": "string",
+      "pattern": "^statement:z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "Internal reference of the revoked grant: 'statement:<grant-statement-id>'. Must agree with body.revoked_grant."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ)."
+    },
+    "body": {
+      "type": "object",
+      "required": ["revoked_grant", "retroactive"],
+      "properties": {
+        "revoked_grant": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "StatementId of the ActorCapabilityGrant being revoked."
+        },
+        "retroactive": {
+          "type": "boolean",
+          "description": "If true, invalidates the grant from inception (every statement issued under it is re-evaluated). Default revocation only invalidates statements created strictly after this revocation."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable reason. Included in canonical bytes."
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature"
+    }
+  },
+  "additionalProperties": false
+}

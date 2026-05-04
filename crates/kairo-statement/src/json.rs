@@ -4,13 +4,16 @@ use std::fmt;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, TimestampError};
+use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActorTrustBody, ActorTrustShapeError, ObjectBranchBody, ObjectGenesisBody, ObjectKind,
-    ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
-    SemverParseError, SemverVersion, Signature, SignedStatement, TrustDecision,
-    TrustDecisionParseError, UnsignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ActorTrustShapeError,
+    Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError, ObjectBranchBody,
+    ObjectGenesisBody, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
+    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
+    SignedStatement, StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError,
+    UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +38,8 @@ pub enum StatementJsonError {
     InvalidTagShape(ObjectVersionTagShapeError),
     InvalidTrustDecision(TrustDecisionParseError),
     InvalidTrustShape(ActorTrustShapeError),
+    InvalidStatementKind(StatementKindParseError),
+    InvalidCapabilityShape(CapabilityShapeError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -61,6 +66,8 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidTagShape(error) => write!(f, "{error}"),
             Self::InvalidTrustDecision(error) => write!(f, "{error}"),
             Self::InvalidTrustShape(error) => write!(f, "{error}"),
+            Self::InvalidStatementKind(error) => write!(f, "{error}"),
+            Self::InvalidCapabilityShape(error) => write!(f, "{error}"),
         }
     }
 }
@@ -78,6 +85,8 @@ impl Error for StatementJsonError {
             Self::InvalidTagShape(error) => Some(error),
             Self::InvalidTrustDecision(error) => Some(error),
             Self::InvalidTrustShape(error) => Some(error),
+            Self::InvalidStatementKind(error) => Some(error),
+            Self::InvalidCapabilityShape(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -538,6 +547,277 @@ impl ActorTrustBodyJson {
             decision: body.decision().map(|d| d.as_str().to_owned()),
             reason: body.reason().map(|r| r.to_owned()),
             supersedes: body.supersedes().map(|id| id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityScopeJson {
+    Object(String),
+    Actor(String),
+}
+
+impl CapabilityScopeJson {
+    fn to_scope(&self) -> Result<CapabilityScope, StatementJsonError> {
+        match self {
+            Self::Object(id) => Ok(CapabilityScope::Object(
+                ObjectId::new(id.clone()).map_err(StatementJsonError::InvalidObject)?,
+            )),
+            Self::Actor(id) => Ok(CapabilityScope::Actor(
+                ActorId::new(id.clone()).map_err(StatementJsonError::InvalidActor)?,
+            )),
+        }
+    }
+
+    fn from_scope(scope: &CapabilityScope) -> Self {
+        match scope {
+            CapabilityScope::Object(id) => Self::Object(id.to_string()),
+            CapabilityScope::Actor(id) => Self::Actor(id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityConstraintJson {
+    /// RFC 3339 UTC seconds, matching the envelope `created_at` shape.
+    ExpiresAt(String),
+    MaxDelegationDepth(u8),
+    KeyPinned(String),
+}
+
+impl CapabilityConstraintJson {
+    fn to_constraint(&self) -> Result<CapabilityConstraint, StatementJsonError> {
+        match self {
+            Self::ExpiresAt(value) => {
+                let ts: Timestamp = value.parse().map_err(StatementJsonError::InvalidCreatedAt)?;
+                Ok(CapabilityConstraint::ExpiresAt(ts))
+            }
+            Self::MaxDelegationDepth(depth) => {
+                Ok(CapabilityConstraint::MaxDelegationDepth(*depth))
+            }
+            Self::KeyPinned(id) => Ok(CapabilityConstraint::KeyPinned(KeyId::new(id.clone()))),
+        }
+    }
+
+    fn from_constraint(constraint: &CapabilityConstraint) -> Self {
+        match constraint {
+            CapabilityConstraint::ExpiresAt(ts) => Self::ExpiresAt(ts.to_string()),
+            CapabilityConstraint::MaxDelegationDepth(depth) => Self::MaxDelegationDepth(*depth),
+            CapabilityConstraint::KeyPinned(id) => Self::KeyPinned(id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityJson {
+    pub scope: CapabilityScopeJson,
+    pub statement_kinds: Vec<String>,
+    pub delegable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<CapabilityConstraintJson>,
+}
+
+impl CapabilityJson {
+    fn to_capability(&self) -> Result<Capability, StatementJsonError> {
+        let scope = self.scope.to_scope()?;
+        let mut kinds = Vec::with_capacity(self.statement_kinds.len());
+        for kind_str in &self.statement_kinds {
+            kinds.push(
+                StatementKind::parse(kind_str)
+                    .map_err(StatementJsonError::InvalidStatementKind)?,
+            );
+        }
+        let mut constraints = Vec::with_capacity(self.constraints.len());
+        for constraint in &self.constraints {
+            constraints.push(constraint.to_constraint()?);
+        }
+        Capability::new(scope, kinds, self.delegable, constraints)
+            .map_err(StatementJsonError::InvalidCapabilityShape)
+    }
+
+    fn from_capability(cap: &Capability) -> Self {
+        Self {
+            scope: CapabilityScopeJson::from_scope(cap.scope()),
+            statement_kinds: cap
+                .statement_kinds()
+                .iter()
+                .map(|k| k.as_str().to_owned())
+                .collect(),
+            delegable: cap.delegable(),
+            constraints: cap
+                .constraints()
+                .iter()
+                .map(CapabilityConstraintJson::from_constraint)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorCapabilityGrantStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorCapabilityGrantBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorCapabilityGrantStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorCapabilityGrantBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "ActorCapabilityGrant", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorCapabilityGrantBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorCapabilityGrant".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorCapabilityGrantBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorCapabilityGrantBodyJson {
+    pub grantee: String,
+    pub capability: CapabilityJson,
+    pub supersedes: Option<String>,
+}
+
+impl ActorCapabilityGrantBodyJson {
+    pub fn to_body(&self) -> Result<ActorCapabilityGrantBody, StatementJsonError> {
+        let grantee =
+            ActorId::new(self.grantee.clone()).map_err(StatementJsonError::InvalidActor)?;
+        let capability = self.capability.to_capability()?;
+        let supersedes = match &self.supersedes {
+            Some(value) => Some(
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
+        Ok(ActorCapabilityGrantBody::new(grantee, capability, supersedes))
+    }
+
+    pub fn from_body(body: &ActorCapabilityGrantBody) -> Self {
+        Self {
+            grantee: body.grantee().to_string(),
+            capability: CapabilityJson::from_capability(body.capability()),
+            supersedes: body.supersedes().map(|id| id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorCapabilityRevocationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorCapabilityRevocationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorCapabilityRevocationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, StatementJsonError> {
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorCapabilityRevocation",
+            1,
+        )?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorCapabilityRevocationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorCapabilityRevocation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorCapabilityRevocationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorCapabilityRevocationBodyJson {
+    pub revoked_grant: String,
+    pub retroactive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ActorCapabilityRevocationBodyJson {
+    pub fn to_body(&self) -> Result<ActorCapabilityRevocationBody, StatementJsonError> {
+        let revoked_grant = StatementId::new(self.revoked_grant.clone())
+            .map_err(StatementJsonError::InvalidStatement)?;
+        Ok(ActorCapabilityRevocationBody::new(
+            revoked_grant,
+            self.retroactive,
+            self.reason.clone(),
+        ))
+    }
+
+    pub fn from_body(body: &ActorCapabilityRevocationBody) -> Self {
+        Self {
+            revoked_grant: body.revoked_grant().to_string(),
+            retroactive: body.retroactive(),
+            reason: body.reason().map(|r| r.to_owned()),
         }
     }
 }
@@ -1353,6 +1633,390 @@ mod tests {
         let dto = ActorTrustStatementJson::from_statement(&withdraw);
         let round_tripped = dto.to_statement()?;
         assert_eq!(withdraw.statement_id(), round_tripped.statement_id());
+        Ok(())
+    }
+
+    const GRANTEE_ACTOR_ID: &str = "zQmZsHt8fzNFmDDYE3RZ7mTpCrz9rYpzXmFFvPbV5Q3KcAa";
+
+    fn capability_grant_object_scoped_json(signature: &str) -> String {
+        format!(
+            r#"{{
+              "type": "ActorCapabilityGrant",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{GRANTEE_ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "grantee": "{GRANTEE_ACTOR_ID}",
+                "capability": {{
+                  "scope": {{ "object": "{OBJECT_ID}" }},
+                  "statement_kinds": ["ObjectBranch", "ObjectVersionTag"],
+                  "delegable": true,
+                  "constraints": [
+                    {{ "max_delegation_depth": 1 }}
+                  ]
+                }},
+                "supersedes": null
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn capability_grant_successor_json(signature: &str) -> String {
+        let prior = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ActorCapabilityGrant",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{GRANTEE_ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "grantee": "{GRANTEE_ACTOR_ID}",
+                "capability": {{
+                  "scope": {{ "object": "{OBJECT_ID}" }},
+                  "statement_kinds": ["ObjectVersionTag"],
+                  "delegable": true,
+                  "constraints": []
+                }},
+                "supersedes": "{prior}"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_capability_grant_json(
+        json: &str,
+    ) -> Result<SignedStatement<ActorCapabilityGrantBody>, serde_json::Error> {
+        let dto: ActorCapabilityGrantStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_capability_grant_object_scoped_json() {
+        let parsed = parse_capability_grant_json(&capability_grant_object_scoped_json("c2ln"));
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if signed.unsigned().body().is_genesis()
+                && signed.unsigned().body().capability().delegable()
+                && signed.unsigned().body().capability().statement_kinds().len() == 2
+        ));
+    }
+
+    #[test]
+    fn parses_capability_grant_successor_json() {
+        let parsed = parse_capability_grant_json(&capability_grant_successor_json("c2ln"));
+        let expected_prior = revision_statement_id();
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if !signed.unsigned().body().is_genesis()
+                && signed.unsigned().body().supersedes() == Some(&expected_prior)
+        ));
+    }
+
+    #[test]
+    fn rejects_capability_grant_with_unknown_statement_kind() {
+        let body = ActorCapabilityGrantBodyJson {
+            grantee: GRANTEE_ACTOR_ID.to_owned(),
+            capability: CapabilityJson {
+                scope: CapabilityScopeJson::Object(OBJECT_ID.to_owned()),
+                statement_kinds: vec!["WidgetCreated".to_owned()],
+                delegable: false,
+                constraints: vec![],
+            },
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidStatementKind(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_capability_grant_with_empty_statement_kinds() {
+        let body = ActorCapabilityGrantBodyJson {
+            grantee: GRANTEE_ACTOR_ID.to_owned(),
+            capability: CapabilityJson {
+                scope: CapabilityScopeJson::Object(OBJECT_ID.to_owned()),
+                statement_kinds: vec![],
+                delegable: false,
+                constraints: vec![],
+            },
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidCapabilityShape(
+                CapabilityShapeError::EmptyStatementKinds
+            ))
+        ));
+    }
+
+    #[test]
+    fn rejects_capability_grant_with_kind_invalid_for_actor_scope() {
+        let body = ActorCapabilityGrantBodyJson {
+            grantee: GRANTEE_ACTOR_ID.to_owned(),
+            capability: CapabilityJson {
+                scope: CapabilityScopeJson::Actor(ACTOR_ID.to_owned()),
+                statement_kinds: vec!["ObjectVersionTag".to_owned()],
+                delegable: false,
+                constraints: vec![],
+            },
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidCapabilityShape(
+                CapabilityShapeError::KindInvalidForScope { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_capability_grant_statement_id() {
+        let first = capability_grant_object_scoped_json("c2lnLW9uZQ==");
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2lnLXR3bw==",
+                "algorithm": "example",
+                "key_id": "secondary",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "supersedes": null,
+                "capability": {{
+                  "constraints": [
+                    {{ "max_delegation_depth": 1 }}
+                  ],
+                  "delegable": true,
+                  "statement_kinds": ["ObjectBranch", "ObjectVersionTag"],
+                  "scope": {{ "object": "{OBJECT_ID}" }}
+                }},
+                "grantee": "{GRANTEE_ACTOR_ID}"
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "actor:{GRANTEE_ACTOR_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ActorCapabilityGrant"
+            }}"#
+        );
+        let first_id = parse_capability_grant_json(&first).map(|s| s.statement_id());
+        let second_id = parse_capability_grant_json(&second).map(|s| s.statement_id());
+        assert!(matches!(
+            (first_id, second_id),
+            (Ok(first_id), Ok(second_id)) if first_id == second_id
+        ));
+    }
+
+    #[test]
+    fn capability_grant_round_trips_through_from_statement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let grant = parse_capability_grant_json(&capability_grant_object_scoped_json("c2ln"))?;
+        let dto = ActorCapabilityGrantStatementJson::from_statement(&grant);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(grant.statement_id(), round_tripped.statement_id());
+
+        let successor = parse_capability_grant_json(&capability_grant_successor_json("c2ln"))?;
+        let dto = ActorCapabilityGrantStatementJson::from_statement(&successor);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(successor.statement_id(), round_tripped.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_input_kind_order_does_not_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Demonstrates that the canonical encoder normalizes the kind list:
+        // JSON inputs with kinds in different orders produce the same statement_id.
+        let unordered = format!(
+            r#"{{
+              "type": "ActorCapabilityGrant",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{GRANTEE_ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "grantee": "{GRANTEE_ACTOR_ID}",
+                "capability": {{
+                  "scope": {{ "object": "{OBJECT_ID}" }},
+                  "statement_kinds": ["ObjectVersionTag", "ObjectBranch"],
+                  "delegable": true,
+                  "constraints": [
+                    {{ "max_delegation_depth": 1 }}
+                  ]
+                }},
+                "supersedes": null
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "c2ln"
+              }}
+            }}"#
+        );
+        let ordered_id = parse_capability_grant_json(&capability_grant_object_scoped_json("c2ln"))?
+            .statement_id();
+        let unordered_id = parse_capability_grant_json(&unordered)?.statement_id();
+        assert_eq!(ordered_id, unordered_id);
+        Ok(())
+    }
+
+    fn capability_revocation_default_json(signature: &str) -> String {
+        let revoked = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ActorCapabilityRevocation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "statement:{revoked}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "revoked_grant": "{revoked}",
+                "retroactive": false,
+                "reason": "delegate stepped down"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn capability_revocation_retroactive_json(signature: &str) -> String {
+        let revoked = revision_statement_id();
+        format!(
+            r#"{{
+              "type": "ActorCapabilityRevocation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "statement:{revoked}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "revoked_grant": "{revoked}",
+                "retroactive": true
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_capability_revocation_json(
+        json: &str,
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, serde_json::Error> {
+        let dto: ActorCapabilityRevocationStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_capability_revocation_default_json() {
+        let parsed =
+            parse_capability_revocation_json(&capability_revocation_default_json("c2ln"));
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if !signed.unsigned().body().retroactive()
+                && signed.unsigned().body().reason() == Some("delegate stepped down")
+        ));
+    }
+
+    #[test]
+    fn parses_capability_revocation_retroactive_json() {
+        let parsed =
+            parse_capability_revocation_json(&capability_revocation_retroactive_json("c2ln"));
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if signed.unsigned().body().retroactive()
+                && signed.unsigned().body().reason().is_none()
+        ));
+    }
+
+    #[test]
+    fn rejects_capability_revocation_with_invalid_grant_id() {
+        let body = ActorCapabilityRevocationBodyJson {
+            revoked_grant: "not-a-valid-statement-id".to_owned(),
+            retroactive: false,
+            reason: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidStatement(_))
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_capability_revocation_statement_id() {
+        let first = capability_revocation_default_json("c2ln");
+        let revoked = revision_statement_id();
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2ln",
+                "algorithm": "example",
+                "key_id": "primary",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "reason": "delegate stepped down",
+                "retroactive": false,
+                "revoked_grant": "{revoked}"
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "statement:{revoked}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ActorCapabilityRevocation"
+            }}"#
+        );
+        let first_id = parse_capability_revocation_json(&first).map(|s| s.statement_id());
+        let second_id = parse_capability_revocation_json(&second).map(|s| s.statement_id());
+        assert!(matches!(
+            (first_id, second_id),
+            (Ok(first_id), Ok(second_id)) if first_id == second_id
+        ));
+    }
+
+    #[test]
+    fn capability_revocation_round_trips_through_from_statement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let default =
+            parse_capability_revocation_json(&capability_revocation_default_json("c2ln"))?;
+        let dto = ActorCapabilityRevocationStatementJson::from_statement(&default);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(default.statement_id(), round_tripped.statement_id());
+
+        let retro =
+            parse_capability_revocation_json(&capability_revocation_retroactive_json("c2ln"))?;
+        let dto = ActorCapabilityRevocationStatementJson::from_statement(&retro);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(retro.statement_id(), round_tripped.statement_id());
         Ok(())
     }
 }

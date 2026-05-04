@@ -239,6 +239,89 @@ The canonical ActorTrust v1 form is documented in:
 schemas/canonical/actor-trust-v1.md
 ```
 
+### 4.2d ActorCapabilityGrant Statement
+
+An `ActorCapabilityGrant` statement records a **delegation**: the
+grantor (the signer) authorizes a `grantee` actor to issue a specified
+set of statement kinds against a scoped target, optionally bounded by
+constraints. This is the distributed-systems sense of "capability" — a
+transferable, unforgeable token of authority that makes cross-actor
+authority claims load-bearing in the statement graph.
+
+Differences from `ActorTrust`:
+
+1. The lookup key is `(grantor, grantee, scope)` — three coordinates.
+   `scope` is either `Object(O)` or `Actor(A)`; kind narrowing lives
+   entirely in the body's `statement_kinds` field, not in scope (per
+   `specs/CAPABILITIES.md` Decision E).
+2. Each `(grantor, grantee, scope)` triple has at most one active
+   chain. Successor grants must declare `supersedes`. A second
+   genesis-shape grant on an existing triple is a shape violation.
+3. Cross-grantor `supersedes` is **invalid**, matching trust. Only the
+   original grantor may supersede their own grant.
+4. The body carries a nested `Capability { scope, statement_kinds,
+   delegable, constraints }`. `statement_kinds` is sorted and
+   deduplicated in canonical bytes; `constraints` is sorted by tag
+   byte with at most one of each variant.
+5. Constraints today: `ExpiresAt(timestamp)`,
+   `MaxDelegationDepth(u8)`, `KeyPinned(KeyId)`. `KeyPinned` is the
+   opt-in escape hatch for high-stakes grants where auto-revocation
+   on grantor key compromise matters more than survivability across
+   routine key rotations.
+
+Resolution: `evaluate_capability(grantee, target, at)` (defined in
+`specs/CAPABILITIES.md` §6.1) folds the chain leaf, the revocation
+status, the recursive grantor-authority check, and the constraint
+satisfaction check into a `CapabilityEvaluation` value. The
+load-bearing payoff is the `ObjectVersionTag` resolver flip: cross-
+actor `supersedes` becomes honored when capability evaluation succeeds.
+
+Per-`(scope, kind)` shape validity is conservative in v1: `Object`
+scope accepts `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`;
+`Actor` scope accepts no kinds today (reserved for future actor-
+surface statement types). The validator rejects invalid combinations
+at body construction time.
+
+The canonical ActorCapabilityGrant v1 form is documented in:
+
+```text
+schemas/canonical/actor-capability-grant-v1.md
+```
+
+See `specs/CAPABILITIES.md` for the complete model, decisions, and
+deferred work.
+
+### 4.2e ActorCapabilityRevocation Statement
+
+An `ActorCapabilityRevocation` statement retracts a previously issued
+`ActorCapabilityGrant`. Differences from the grant:
+
+1. The signer must equal the original grantor — cross-grantor
+   revocation is invalid in v1 (multi-actor revocation paths are
+   deferred).
+2. Revocations do **not** chain. There is no `supersedes` field.
+   Duplicate revocations naming the same grant are tolerated for
+   federation replay; the most-restrictive interpretation wins
+   (any `retroactive = true` revocation makes the grant retroactively
+   invalid).
+3. Default revocation invalidates the grant for statements created
+   strictly *after* the revocation's `created_at`. `retroactive =
+   true` invalidates the grant from inception, propagating to every
+   statement issued under it (including cross-actor `supersedes`
+   edges that depended on the grant).
+
+Per `specs/CAPABILITIES.md` §7.1, grantor key compromise requires the
+operator to enumerate grants signed by the compromised key and issue
+retroactive revocations as part of the cleanup runbook — grants
+default to `ActorId` binding and are not auto-killed by key
+revocation. The `KeyPinned` constraint is the opt-in escape hatch.
+
+The canonical ActorCapabilityRevocation v1 form is documented in:
+
+```text
+schemas/canonical/actor-capability-revocation-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo

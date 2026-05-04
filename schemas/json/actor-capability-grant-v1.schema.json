@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/actor-capability-grant-v1.schema.json",
+  "title": "Kairo ActorCapabilityGrant Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "properties": {
+    "type": { "const": "ActorCapabilityGrant" },
+    "version": { "const": 1 },
+    "actor": {
+      "type": "string",
+      "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "The grantor: the actor whose key signs this delegation."
+    },
+    "subject": {
+      "type": "string",
+      "pattern": "^actor:z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "Internal reference of the grantee: 'actor:<grantee-id>'. Must agree with body.grantee."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ)."
+    },
+    "body": {
+      "type": "object",
+      "required": ["grantee", "capability", "supersedes"],
+      "properties": {
+        "grantee": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "ActorId of the actor being authorized."
+        },
+        "capability": { "$ref": "#/$defs/capability" },
+        "supersedes": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+              "description": "StatementId of the prior ActorCapabilityGrant this one replaces. Must reference a statement on the same (grantor, grantee, scope) triple."
+            },
+            {
+              "type": "null",
+              "description": "Genesis grant — the first grant for this (grantor, grantee, scope) triple. A second genesis grant on an existing triple is a shape violation."
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": ["scope", "statement_kinds", "delegable"],
+      "properties": {
+        "scope": { "$ref": "#/$defs/scope" },
+        "statement_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/statement_kind" },
+          "description": "Statement kinds the grantee may issue. Sorted/deduplicated by the canonical encoder; JSON input may be in any order."
+        },
+        "delegable": {
+          "type": "boolean",
+          "description": "Whether the grantee may further re-grant this capability."
+        },
+        "constraints": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/constraint" },
+          "description": "At most one of each variant. Sorted by tag byte in canonical encoding."
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["object"],
+          "properties": {
+            "object": {
+              "type": "string",
+              "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+            }
+          },
+          "additionalProperties": false,
+          "description": "Object-scoped grant."
+        },
+        {
+          "type": "object",
+          "required": ["actor"],
+          "properties": {
+            "actor": {
+              "type": "string",
+              "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$"
+            }
+          },
+          "additionalProperties": false,
+          "description": "Grantor's own actor surface. Reserved for future actor-surface statement kinds; no kinds are valid for this scope in v1."
+        }
+      ]
+    },
+    "statement_kind": {
+      "type": "string",
+      "enum": [
+        "ObjectGenesis",
+        "ObjectRevision",
+        "ObjectBranch",
+        "ObjectVersionTag",
+        "ActorTrust",
+        "ActorCapabilityGrant",
+        "ActorCapabilityRevocation"
+      ]
+    },
+    "constraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["expires_at"],
+          "properties": {
+            "expires_at": {
+              "type": "string",
+              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+              "description": "Grant invalid for statements created strictly after this RFC 3339 UTC seconds timestamp."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["max_delegation_depth"],
+          "properties": {
+            "max_delegation_depth": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["key_pinned"],
+          "properties": {
+            "key_pinned": {
+              "type": "string",
+              "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+              "description": "KeyId of the grantor signing key the grant is bound to. Revoking the key auto-invalidates the grant."
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

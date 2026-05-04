@@ -7,12 +7,12 @@ use std::error::Error;
 use std::fmt;
 
 use kairo_core::canonical::{
-    encode_bytes, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
+    encode_bytes, encode_i64, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };
 use semver::Version as SemverVersionInner;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_identity::{
-    verify_signature as verify_identity_signature, PublicKey, SignatureBytes,
+    verify_signature as verify_identity_signature, KeyId, PublicKey, SignatureBytes,
     SignatureVerificationError, VerifiedSignature,
 };
 
@@ -633,6 +633,396 @@ impl fmt::Display for ActorTrustShapeError {
 }
 
 impl Error for ActorTrustShapeError {}
+
+/// A canonical statement-kind discriminant, used to enumerate the kinds
+/// authorized by an `ActorCapabilityGrant` and to drive
+/// per-`(scope, kind)` shape validity. The `as_str` mapping matches
+/// each statement type's canonical `TYPE` constant.
+///
+/// `Ord` is derived so that `Capability::statement_kinds` can be sorted
+/// for canonical-byte determinism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum StatementKind {
+    ObjectGenesis,
+    ObjectRevision,
+    ObjectBranch,
+    ObjectVersionTag,
+    ActorTrust,
+    ActorCapabilityGrant,
+    ActorCapabilityRevocation,
+}
+
+impl StatementKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ObjectGenesis => "ObjectGenesis",
+            Self::ObjectRevision => "ObjectRevision",
+            Self::ObjectBranch => "ObjectBranch",
+            Self::ObjectVersionTag => "ObjectVersionTag",
+            Self::ActorTrust => "ActorTrust",
+            Self::ActorCapabilityGrant => "ActorCapabilityGrant",
+            Self::ActorCapabilityRevocation => "ActorCapabilityRevocation",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, StatementKindParseError> {
+        match value {
+            "ObjectGenesis" => Ok(Self::ObjectGenesis),
+            "ObjectRevision" => Ok(Self::ObjectRevision),
+            "ObjectBranch" => Ok(Self::ObjectBranch),
+            "ObjectVersionTag" => Ok(Self::ObjectVersionTag),
+            "ActorTrust" => Ok(Self::ActorTrust),
+            "ActorCapabilityGrant" => Ok(Self::ActorCapabilityGrant),
+            "ActorCapabilityRevocation" => Ok(Self::ActorCapabilityRevocation),
+            other => Err(StatementKindParseError {
+                input: other.to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementKindParseError {
+    pub input: String,
+}
+
+impl fmt::Display for StatementKindParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown StatementKind {:?}", self.input)
+    }
+}
+
+impl Error for StatementKindParseError {}
+
+/// The target of an `ActorCapabilityGrant`. Today there are two
+/// variants — object-scoped and actor-scoped (the grantor's own actor
+/// surface). Per `specs/CAPABILITIES.md` Decision E, kind narrowing
+/// lives in `Capability::statement_kinds`, not in scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityScope {
+    Object(ObjectId),
+    Actor(ActorId),
+}
+
+impl CapabilityScope {
+    /// Tag byte used in canonical encoding and for shape diagnostics.
+    pub fn tag(&self) -> u8 {
+        match self {
+            Self::Object(_) => 0x00,
+            Self::Actor(_) => 0x01,
+        }
+    }
+
+    /// Whether `kind` is a legal statement kind to delegate under this
+    /// scope. The MVP table is conservative; future actor-surface
+    /// statement kinds will join `Actor` here.
+    pub fn is_kind_valid(&self, kind: StatementKind) -> bool {
+        match self {
+            Self::Object(_) => matches!(
+                kind,
+                StatementKind::ObjectRevision
+                    | StatementKind::ObjectBranch
+                    | StatementKind::ObjectVersionTag
+            ),
+            // No actor-surface statement type is delegatable in v1.
+            // Reserved for future kinds (ActorMetadata, etc.).
+            Self::Actor(_) => false,
+        }
+    }
+}
+
+impl CanonicalEncode for CapabilityScope {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_u8(out, self.tag());
+        match self {
+            Self::Object(id) => encode_str(out, id.as_str()),
+            Self::Actor(id) => encode_str(out, id.as_str()),
+        }
+    }
+}
+
+/// Constraints layered onto a capability. Each variant has at most one
+/// occurrence in `Capability::constraints` (validated at construction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityConstraint {
+    /// Grant is invalid for statements created strictly after this
+    /// timestamp.
+    ExpiresAt(Timestamp),
+    /// Maximum re-grant chain depth.
+    MaxDelegationDepth(u8),
+    /// Grant is bound to a specific grantor signing key; revocation of
+    /// that key auto-invalidates the grant. See `specs/CAPABILITIES.md`
+    /// §7.2.
+    KeyPinned(KeyId),
+}
+
+impl CapabilityConstraint {
+    /// Tag byte used for canonical encoding and for sort/dedup ordering.
+    pub fn tag(&self) -> u8 {
+        match self {
+            Self::ExpiresAt(_) => 0x00,
+            Self::MaxDelegationDepth(_) => 0x01,
+            Self::KeyPinned(_) => 0x02,
+        }
+    }
+}
+
+impl CanonicalEncode for CapabilityConstraint {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_u8(out, self.tag());
+        match self {
+            Self::ExpiresAt(ts) => encode_i64(out, ts.seconds()),
+            Self::MaxDelegationDepth(depth) => encode_u8(out, *depth),
+            Self::KeyPinned(key_id) => encode_str(out, key_id.as_str()),
+        }
+    }
+}
+
+/// A capability granted from one actor to another. See
+/// `specs/CAPABILITIES.md` §4 and
+/// `schemas/canonical/actor-capability-grant-v1.md`.
+///
+/// Constructor enforces:
+/// - `statement_kinds` is non-empty.
+/// - `statement_kinds` is sorted and deduplicated (constructor
+///   normalizes).
+/// - Each kind in `statement_kinds` is valid for `scope` per the
+///   per-`(scope, kind)` shape table.
+/// - `constraints` has at most one of each variant; constructor sorts
+///   by tag byte for canonical determinism.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capability {
+    scope: CapabilityScope,
+    statement_kinds: Vec<StatementKind>,
+    delegable: bool,
+    constraints: Vec<CapabilityConstraint>,
+}
+
+impl Capability {
+    pub fn new(
+        scope: CapabilityScope,
+        mut statement_kinds: Vec<StatementKind>,
+        delegable: bool,
+        mut constraints: Vec<CapabilityConstraint>,
+    ) -> Result<Self, CapabilityShapeError> {
+        if statement_kinds.is_empty() {
+            return Err(CapabilityShapeError::EmptyStatementKinds);
+        }
+
+        statement_kinds.sort();
+        statement_kinds.dedup();
+
+        for kind in &statement_kinds {
+            if !scope.is_kind_valid(*kind) {
+                return Err(CapabilityShapeError::KindInvalidForScope {
+                    scope_tag: scope.tag(),
+                    kind: *kind,
+                });
+            }
+        }
+
+        constraints.sort_by_key(|c| c.tag());
+        let mut prev_tag: Option<u8> = None;
+        for constraint in &constraints {
+            if Some(constraint.tag()) == prev_tag {
+                return Err(CapabilityShapeError::DuplicateConstraintTag {
+                    tag: constraint.tag(),
+                });
+            }
+            prev_tag = Some(constraint.tag());
+        }
+
+        Ok(Self {
+            scope,
+            statement_kinds,
+            delegable,
+            constraints,
+        })
+    }
+
+    pub fn scope(&self) -> &CapabilityScope {
+        &self.scope
+    }
+
+    pub fn statement_kinds(&self) -> &[StatementKind] {
+        &self.statement_kinds
+    }
+
+    pub fn delegable(&self) -> bool {
+        self.delegable
+    }
+
+    pub fn constraints(&self) -> &[CapabilityConstraint] {
+        &self.constraints
+    }
+}
+
+impl CanonicalEncode for Capability {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        self.scope.encode_canonical(out);
+        encode_list(out, &self.statement_kinds, |out, kind| {
+            encode_str(out, kind.as_str());
+        });
+        encode_u8(out, if self.delegable { 1 } else { 0 });
+        encode_list(out, &self.constraints, |out, constraint| {
+            constraint.encode_canonical(out);
+        });
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityShapeError {
+    EmptyStatementKinds,
+    KindInvalidForScope {
+        scope_tag: u8,
+        kind: StatementKind,
+    },
+    DuplicateConstraintTag {
+        tag: u8,
+    },
+}
+
+impl fmt::Display for CapabilityShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyStatementKinds => f.write_str(
+                "Capability::statement_kinds must be non-empty",
+            ),
+            Self::KindInvalidForScope { scope_tag, kind } => write!(
+                f,
+                "StatementKind {:?} is not valid for scope tag 0x{scope_tag:02x}",
+                kind.as_str()
+            ),
+            Self::DuplicateConstraintTag { tag } => write!(
+                f,
+                "Capability::constraints contains duplicate variant (tag 0x{tag:02x})"
+            ),
+        }
+    }
+}
+
+impl Error for CapabilityShapeError {}
+
+/// Canonical ActorCapabilityGrant body v1 encoding is documented at
+/// `schemas/canonical/actor-capability-grant-v1.md`.
+///
+/// `ActorCapabilityGrant` is a signed delegation: the grantor (the
+/// signer of the envelope) authorizes the named `grantee` to issue a
+/// specified set of statement kinds against a scoped target,
+/// optionally bounded by constraints.
+///
+/// Resolution is per-`(grantor, grantee, scope)` triple, with chain
+/// precedence: the leaf of the supersedes chain is the source of
+/// truth for the grantee's current authority on this scope from this
+/// grantor. See `specs/CAPABILITIES.md` §5.1.1 and §6.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCapabilityGrantBody {
+    grantee: ActorId,
+    capability: Capability,
+    supersedes: Option<StatementId>,
+}
+
+impl ActorCapabilityGrantBody {
+    pub fn new(
+        grantee: ActorId,
+        capability: Capability,
+        supersedes: Option<StatementId>,
+    ) -> Self {
+        Self {
+            grantee,
+            capability,
+            supersedes,
+        }
+    }
+
+    pub fn grantee(&self) -> &ActorId {
+        &self.grantee
+    }
+
+    pub fn capability(&self) -> &Capability {
+        &self.capability
+    }
+
+    pub fn supersedes(&self) -> Option<&StatementId> {
+        self.supersedes.as_ref()
+    }
+
+    pub fn is_genesis(&self) -> bool {
+        self.supersedes.is_none()
+    }
+}
+
+impl StatementBody for ActorCapabilityGrantBody {
+    const TYPE: &'static str = "ActorCapabilityGrant";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ActorCapabilityGrantBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.grantee.as_str());
+        self.capability.encode_canonical(out);
+        encode_option(out, self.supersedes.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+    }
+}
+
+/// Canonical ActorCapabilityRevocation body v1 encoding is documented at
+/// `schemas/canonical/actor-capability-revocation-v1.md`.
+///
+/// `ActorCapabilityRevocation` retracts a previously issued
+/// `ActorCapabilityGrant`. The signer of the envelope must equal the
+/// original grantor (cross-grantor revocation is invalid in v1; see
+/// `specs/CAPABILITIES.md` §5.2). Default revocation invalidates the
+/// grant for statements created strictly after the revocation;
+/// `retroactive = true` invalidates the grant from inception.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorCapabilityRevocationBody {
+    revoked_grant: StatementId,
+    retroactive: bool,
+    reason: Option<String>,
+}
+
+impl ActorCapabilityRevocationBody {
+    pub fn new(
+        revoked_grant: StatementId,
+        retroactive: bool,
+        reason: Option<String>,
+    ) -> Self {
+        Self {
+            revoked_grant,
+            retroactive,
+            reason,
+        }
+    }
+
+    pub fn revoked_grant(&self) -> &StatementId {
+        &self.revoked_grant
+    }
+
+    pub fn retroactive(&self) -> bool {
+        self.retroactive
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+impl StatementBody for ActorCapabilityRevocationBody {
+    const TYPE: &'static str = "ActorCapabilityRevocation";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ActorCapabilityRevocationBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.revoked_grant.as_str());
+        encode_u8(out, if self.retroactive { 1 } else { 0 });
+        encode_option(out, self.reason.as_ref(), |out, reason| {
+            encode_str(out, reason);
+        });
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectGenesisStatement {
@@ -1616,6 +2006,419 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let signed_unsigned = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
         let tampered = unsigned_actor_trust(Some(TrustDecision::Untrusted), None, None)?;
+        let sig = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, sig);
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    fn grantee_actor() -> Result<ActorId, kairo_core::IdError> {
+        // Third actor distinct from actor_id() and trusted_actor().
+        ActorId::new("zQmZsHt8fzNFmDDYE3RZ7mTpCrz9rYpzXmFFvPbV5Q3KcAa")
+    }
+
+    fn object_scope() -> Result<CapabilityScope, kairo_core::IdError> {
+        Ok(CapabilityScope::Object(object_id()?))
+    }
+
+    fn simple_capability(
+        kinds: Vec<StatementKind>,
+    ) -> Result<Capability, Box<dyn std::error::Error>> {
+        Ok(Capability::new(object_scope()?, kinds, false, vec![])?)
+    }
+
+    fn unsigned_capability_grant(
+        capability: Capability,
+        supersedes: Option<StatementId>,
+    ) -> Result<UnsignedStatement<ActorCapabilityGrantBody>, Box<dyn std::error::Error>> {
+        let grantee = grantee_actor()?;
+        let body = ActorCapabilityGrantBody::new(grantee.clone(), capability, supersedes);
+        let subject: KairoRef = format!("actor:{grantee}").parse()?;
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            subject,
+            timestamp(),
+            body,
+        ))
+    }
+
+    fn unsigned_capability_revocation(
+        revoked_grant: StatementId,
+        retroactive: bool,
+        reason: Option<&str>,
+    ) -> Result<UnsignedStatement<ActorCapabilityRevocationBody>, Box<dyn std::error::Error>> {
+        let body = ActorCapabilityRevocationBody::new(
+            revoked_grant.clone(),
+            retroactive,
+            reason.map(|r| r.to_owned()),
+        );
+        let subject: KairoRef = format!("statement:{revoked_grant}").parse()?;
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            subject,
+            timestamp(),
+            body,
+        ))
+    }
+
+    // ---- StatementKind ----
+
+    #[test]
+    fn statement_kind_parses_known_strings() {
+        assert_eq!(
+            StatementKind::parse("ObjectVersionTag"),
+            Ok(StatementKind::ObjectVersionTag)
+        );
+        assert_eq!(
+            StatementKind::parse("ActorCapabilityGrant"),
+            Ok(StatementKind::ActorCapabilityGrant)
+        );
+    }
+
+    #[test]
+    fn statement_kind_rejects_unknown_string() {
+        let err = StatementKind::parse("WidgetCreated");
+        assert!(matches!(err, Err(StatementKindParseError { ref input }) if input == "WidgetCreated"));
+    }
+
+    #[test]
+    fn statement_kind_round_trips_through_as_str() {
+        for kind in [
+            StatementKind::ObjectGenesis,
+            StatementKind::ObjectRevision,
+            StatementKind::ObjectBranch,
+            StatementKind::ObjectVersionTag,
+            StatementKind::ActorTrust,
+            StatementKind::ActorCapabilityGrant,
+            StatementKind::ActorCapabilityRevocation,
+        ] {
+            assert_eq!(StatementKind::parse(kind.as_str()), Ok(kind));
+        }
+    }
+
+    // ---- Capability shape ----
+
+    #[test]
+    fn capability_rejects_empty_statement_kinds() -> Result<(), Box<dyn std::error::Error>> {
+        let err = Capability::new(object_scope()?, vec![], false, vec![]);
+        assert_eq!(err.err(), Some(CapabilityShapeError::EmptyStatementKinds));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_rejects_invalid_kind_for_object_scope(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let err = Capability::new(
+            object_scope()?,
+            vec![StatementKind::ActorTrust],
+            false,
+            vec![],
+        );
+        assert!(matches!(
+            err,
+            Err(CapabilityShapeError::KindInvalidForScope { kind: StatementKind::ActorTrust, .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_rejects_any_kind_for_actor_scope_in_v1(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // No actor-surface kinds are delegatable in v1.
+        let err = Capability::new(
+            CapabilityScope::Actor(actor_id()?),
+            vec![StatementKind::ActorTrust],
+            false,
+            vec![],
+        );
+        assert!(matches!(
+            err,
+            Err(CapabilityShapeError::KindInvalidForScope { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_rejects_duplicate_constraint_variant(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let err = Capability::new(
+            object_scope()?,
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![
+                CapabilityConstraint::MaxDelegationDepth(1),
+                CapabilityConstraint::MaxDelegationDepth(2),
+            ],
+        );
+        assert!(matches!(
+            err,
+            Err(CapabilityShapeError::DuplicateConstraintTag { tag: 0x01 })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_sorts_and_deduplicates_statement_kinds(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cap = Capability::new(
+            object_scope()?,
+            vec![
+                StatementKind::ObjectVersionTag,
+                StatementKind::ObjectBranch,
+                StatementKind::ObjectVersionTag, // duplicate
+            ],
+            false,
+            vec![],
+        )?;
+        assert_eq!(
+            cap.statement_kinds(),
+            &[StatementKind::ObjectBranch, StatementKind::ObjectVersionTag]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capability_sorts_constraints_by_tag() -> Result<(), Box<dyn std::error::Error>> {
+        // Inserted in non-tag order.
+        let cap = Capability::new(
+            object_scope()?,
+            vec![StatementKind::ObjectVersionTag],
+            true,
+            vec![
+                CapabilityConstraint::MaxDelegationDepth(2),
+                CapabilityConstraint::ExpiresAt(Timestamp::from_seconds(1)),
+            ],
+        )?;
+        let tags: Vec<u8> = cap.constraints().iter().map(|c| c.tag()).collect();
+        assert_eq!(tags, vec![0x00, 0x01]);
+        Ok(())
+    }
+
+    #[test]
+    fn capability_canonical_bytes_independent_of_input_order(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kinds_a = vec![StatementKind::ObjectBranch, StatementKind::ObjectVersionTag];
+        let kinds_b = vec![StatementKind::ObjectVersionTag, StatementKind::ObjectBranch];
+        let a = Capability::new(object_scope()?, kinds_a, false, vec![])?;
+        let b = Capability::new(object_scope()?, kinds_b, false, vec![])?;
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+        Ok(())
+    }
+
+    // ---- ActorCapabilityGrant ----
+
+    #[test]
+    fn same_capability_grant_body_produces_same_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cap_a = simple_capability(vec![StatementKind::ObjectVersionTag])?;
+        let cap_b = simple_capability(vec![StatementKind::ObjectVersionTag])?;
+        let first = unsigned_capability_grant(cap_a, None)?;
+        let second = unsigned_capability_grant(cap_b, None)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_grantee_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cap = simple_capability(vec![StatementKind::ObjectVersionTag])?;
+        let with_grantee_one = unsigned_capability_grant(cap.clone(), None)?;
+        // Build a second statement with a different grantee but same scope/kinds.
+        let other_grantee = trusted_actor()?;
+        let body = ActorCapabilityGrantBody::new(other_grantee.clone(), cap, None);
+        let subject: KairoRef = format!("actor:{other_grantee}").parse()?;
+        let with_grantee_two =
+            UnsignedStatement::new(actor_id()?, subject, timestamp(), body);
+        assert_ne!(
+            with_grantee_one.statement_id(),
+            with_grantee_two.statement_id()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_kinds_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let one = unsigned_capability_grant(
+            simple_capability(vec![StatementKind::ObjectVersionTag])?,
+            None,
+        )?;
+        let two = unsigned_capability_grant(
+            simple_capability(vec![
+                StatementKind::ObjectVersionTag,
+                StatementKind::ObjectBranch,
+            ])?,
+            None,
+        )?;
+        assert_ne!(one.statement_id(), two.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_delegable_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kinds = vec![StatementKind::ObjectVersionTag];
+        let non_delegable = Capability::new(object_scope()?, kinds.clone(), false, vec![])?;
+        let delegable = Capability::new(object_scope()?, kinds, true, vec![])?;
+        let one = unsigned_capability_grant(non_delegable, None)?;
+        let two = unsigned_capability_grant(delegable, None)?;
+        assert_ne!(one.statement_id(), two.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_constraint_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let kinds = vec![StatementKind::ObjectVersionTag];
+        let unconstrained = Capability::new(object_scope()?, kinds.clone(), false, vec![])?;
+        let with_constraint = Capability::new(
+            object_scope()?,
+            kinds,
+            false,
+            vec![CapabilityConstraint::MaxDelegationDepth(3)],
+        )?;
+        let one = unsigned_capability_grant(unconstrained, None)?;
+        let two = unsigned_capability_grant(with_constraint, None)?;
+        assert_ne!(one.statement_id(), two.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_supersedes_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let cap = simple_capability(vec![StatementKind::ObjectVersionTag])?;
+        let genesis = unsigned_capability_grant(cap.clone(), None)?;
+        let successor = unsigned_capability_grant(cap, Some(statement_id_one()))?;
+        assert_ne!(genesis.statement_id(), successor.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_signature_does_not_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_capability_grant(
+            simple_capability(vec![StatementKind::ObjectVersionTag])?,
+            None,
+        )?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_capability_grant_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_capability_grant(
+            simple_capability(vec![StatementKind::ObjectVersionTag])?,
+            None,
+        )?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_capability_grant_signature_after_body_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let signed_unsigned = unsigned_capability_grant(
+            simple_capability(vec![StatementKind::ObjectVersionTag])?,
+            None,
+        )?;
+        let tampered = unsigned_capability_grant(
+            simple_capability(vec![StatementKind::ObjectBranch])?,
+            None,
+        )?;
+        let sig = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, sig);
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    // ---- ActorCapabilityRevocation ----
+
+    #[test]
+    fn same_capability_revocation_body_produces_same_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let second = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_revocation_revoked_grant_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let one = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let two = unsigned_capability_revocation(statement_id_two(), false, None)?;
+        assert_ne!(one.statement_id(), two.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_revocation_retroactive_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let default = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let retro = unsigned_capability_revocation(statement_id_one(), true, None)?;
+        assert_ne!(default.statement_id(), retro.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_revocation_reason_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let without = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let with = unsigned_capability_revocation(
+            statement_id_one(),
+            false,
+            Some("delegate stepped down"),
+        )?;
+        assert_ne!(without.statement_id(), with.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_revocation_signature_does_not_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_capability_revocation_ed25519_signature(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_capability_revocation_signature_after_body_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let signed_unsigned =
+            unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let tampered = unsigned_capability_revocation(statement_id_one(), true, None)?;
         let sig = ed25519_signature(&signed_unsigned)?;
         let signed = SignedStatement::new(tampered, sig);
         assert!(matches!(

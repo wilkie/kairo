@@ -15,6 +15,8 @@ Documents:
 - `object-branch-v1.schema.json`
 - `object-version-tag-v1.schema.json`
 - `actor-trust-v1.schema.json`
+- `actor-capability-grant-v1.schema.json`
+- `actor-capability-revocation-v1.schema.json`
 
 These JSON schemas describe interchange shape only. Canonical hash and signature
 inputs are defined by the corresponding documents in `schemas/canonical/`.
