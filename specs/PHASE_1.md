@@ -105,7 +105,9 @@ web client are out of scope for Phase 1 and pick up in Phase 2 onward.
 ### §6 supporting work (landed alongside)
 
 - [x] `ObjectBranch` statement type — named, actor-scoped, mutable revision
-      pointer; supersession by `(created_at, statement_id)` latest-wins.
+      pointer with explicit `supersedes` chain (added in-place to v1
+      alongside `CAPABILITIES.md` §6.2; chain precedence overrides the
+      `(created_at, statement_id)` tiebreak, matching `ObjectVersionTag`).
 - [x] `BranchResolver` trait + per-object materialized branch tip index in
       `kairo-store`.
 - [x] `kairo branch set / show / list` CLI.
@@ -216,11 +218,12 @@ when that scan becomes hot.
 Federation-related trust work (forgetting peer opinions, propagating
 trust across a node) stays deferred — see §9 (bundles). The
 capability-style delegation that lets one actor supersede another's
-claims has since landed in `specs/CAPABILITIES.md`; the
-`ObjectVersionTag` resolver flip honors cross-actor `supersedes`
-when a covering capability evaluates to `Held` (Phase 2 §3 in
-`PHASE_2.md`). A future `ObjectBranch v2` will use the same authority
-oracle.
+claims has since landed in `specs/CAPABILITIES.md`; both the
+`ObjectVersionTag` and `ObjectBranch` resolver flips honor cross-actor
+`supersedes` when a covering capability evaluates to `Held` (Phase 2
+§3 in `PHASE_2.md`). The branch flip rides an in-place addition to
+`ObjectBranch v1` rather than a v2 schema bump, since the system was
+not yet deployed.
 
 ## 11. Git Content Integration
 
@@ -309,6 +312,7 @@ this, the way Phase 1 picked a focused slice of the long-term spec.
 - Key rotation and revocation semantics beyond the initial actor key.
 - Multi-actor authority and delegation. The capability model
   (`specs/CAPABILITIES.md`) has since landed in Phase 2 §3 and unlocked
-  cross-actor `supersedes` for `ObjectVersionTag`. `ObjectBranch v2`
-  remains, and `ActorTrust` cross-actor `supersedes` was deliberately
-  kept invalid (Decision B in `CAPABILITIES.md` §9).
+  cross-actor `supersedes` for both `ObjectVersionTag` and
+  `ObjectBranch` (the latter via an in-place addition to v1, since the
+  system was not yet deployed). `ActorTrust` cross-actor `supersedes`
+  was deliberately kept invalid (Decision B in `CAPABILITIES.md` §9).

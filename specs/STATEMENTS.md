@@ -115,11 +115,33 @@ schemas/canonical/object-genesis-v1.md
 ### 4.2a ObjectBranch Statement
 
 An `ObjectBranch` statement is a named, actor-scoped, mutable pointer at a
-specific `ObjectRevision` statement. Resolution rule: for
-`(actor, object, name)`, the current branch is whichever `ObjectBranch`
-statement signed by that actor for that pair has the greatest
-`(envelope.created_at, statement_id)`. Older `ObjectBranch` statements stay
-valid evidence of past claims; only the latest is load-bearing.
+specific `ObjectRevision` statement. Like `ObjectVersionTag`, it carries
+an explicit `supersedes` pointer at the prior `ObjectBranch` it
+replaces, so the advance history is reconstructable without inferring
+from `created_at` order. The genesis advance for an
+`(actor, object, name)` triple has `supersedes = null`; successors set
+`supersedes` to the prior chain leaf's `StatementId`. The CLI
+(`kairo branch set`) auto-computes this — callers don't need to track
+it manually.
+
+Resolution honors **chain precedence**: the head for
+`(actor, object, name)` is the leaf of the supersedes chain — a
+statement no other statement supersedes. A successor that explicitly
+names its predecessor is unambiguously later regardless of
+`created_at`. `(created_at, statement_id)` is only a fork tiebreak,
+applied when the chain has multiple leaves. Older `ObjectBranch`
+statements stay valid evidence of past claims; only the chain leaf is
+load-bearing.
+
+`supersedes` may reference a branch from a **different actor** for the
+same `(object, name)`. The resolver in
+`kairo-store::FilesystemStore::latest_branch` honors that edge when
+the successor's signer holds an `ObjectBranch` capability on the
+object at the successor's `created_at` (per `CAPABILITIES.md` §6.2).
+Without a covering grant, the cross-actor edge is recorded but not
+honored — each actor keeps their own per-actor head. This is the
+direct parallel of the cross-actor flip already implemented for
+`ObjectVersionTag`.
 
 `name = "head"` is the conventional default the CLI assumes when no name is
 given. It is not reserved at the protocol level.
@@ -129,32 +151,6 @@ The canonical ObjectBranch v1 form is documented in:
 ```text
 schemas/canonical/object-branch-v1.md
 ```
-
-#### Future: `ObjectBranch v2` with `supersedes`
-
-`ObjectBranch v1` resolves purely on `(created_at, statement_id)`. This
-shares a known wart with the original `ObjectVersionTag` design: when
-two updates collide on `created_at` (signed in the same second), the
-statement-id lex tiebreak can pick a winner the actor did not intend.
-`ObjectVersionTag v1` solved this by adding a `supersedes` chain edge
-and resolving by chain leaf (see §4.2b and
-`schemas/canonical/object-version-tag-v1.md`).
-
-Branches have the same wart, but adding `supersedes` to `ObjectBranch`
-would change its canonical bytes — every existing v1 `StatementId`
-would re-derive differently. The fix is therefore a v2 schema bump,
-not an in-place addition.
-
-This work is **deferred** until either (a) a real same-second branch
-collision causes user-visible damage, or (b) cross-actor supersession
-needs to land for branches. (b) is the more likely trigger: with the
-capability model now in `CAPABILITIES.md` and `evaluate_capability`
-implemented, the resolver flip for `ObjectVersionTag` (§6.2 of that
-spec) honors cross-actor `supersedes` when a covering capability
-exists. Branches need the same edge to permit one actor taking over
-another's branch via delegation. The `ObjectBranch v2` schema bump is
-where that lands; the design parallels `ObjectVersionTag`'s chain
-edge.
 
 ### 4.2b ObjectVersionTag Statement
 

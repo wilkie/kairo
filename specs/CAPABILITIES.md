@@ -22,8 +22,8 @@ features require them as a precondition:
 
 - `ObjectVersionTag` cross-actor `supersedes` (recorded by Phase 1 but not
   honored by the resolver).
-- `ObjectBranch v2` cross-actor `supersedes` (Phase 2 §12, deferred until
-  this spec lands).
+- `ObjectBranch` cross-actor `supersedes` (added in-place to v1 alongside
+  this spec; the resolver flip is the same shape as the tag flip).
 - Multi-maintainer flows on a single object.
 - Federation policy where one node delegates to another (`POLICY.md`).
 
@@ -337,25 +337,27 @@ pub enum CapabilityEvaluation {
 
 ### 6.2 Cross-actor supersedes — the load-bearing case
 
-`ObjectVersionTag.supersedes` may name a tag from a different actor on
-the same `(object, version)`. The Phase 1 resolver records this edge but
-does not honor it. Capability resolution flips that:
+`ObjectVersionTag.supersedes` and `ObjectBranch.supersedes` may name a
+statement from a different actor on the same `(object, version)` /
+`(object, name)` triple. The pre-capability resolver records the edge
+but does not honor it. Capability resolution flips that:
 
 > A cross-actor supersedes edge from successor `S'` (signed by actor `B`)
 > to predecessor `S` (signed by actor `A`) is honored iff `B` holds a
-> capability covering `ObjectVersionTag` statements on `S`'s object at
-> the causal position of `S'.created_at`.
+> capability covering statements of `S'.kind` on `S`'s object at the
+> causal position of `S'.created_at`. The kind check uses the
+> successor's own statement kind (`ObjectVersionTag` or `ObjectBranch`).
 
-Implementation: `kairo-store::FilesystemStore::latest_version_tag` and
-`list_version_tags` start from the same-actor chain leaf and walk
-forward through any authorized cross-actor supersedes edges using
-`evaluate_capability` (`specs/CAPABILITIES.md` §6.1). Same-actor sup
-is automatic; cross-actor sup is honored only when the successor's
-signer holds an `ObjectVersionTag` capability on the object at the
-successor's `created_at`.
-
-The same rule applies to `ObjectBranch v2` cross-actor supersedes when
-that schema bump lands (Phase 2 §12).
+Implementation: `kairo-store::FilesystemStore::latest_version_tag` /
+`list_version_tags` and `latest_branch` / `list_branches` start from
+the same-actor chain leaf and walk forward through any authorized
+cross-actor supersedes edges using `evaluate_capability`
+(`specs/CAPABILITIES.md` §6.1). Same-actor sup is automatic; cross-
+actor sup is honored only when the successor's signer holds the
+matching capability on the object at the successor's `created_at`.
+The two paths share the same walker shape — `walk_authorized_tag_chain`
+and `walk_authorized_branch_chain` — and differ only in the
+`StatementKind` they pass to the evaluator.
 
 For `ActorTrust`, cross-actor supersedes remain **invalid** even with
 capabilities — see Decision B in §9.
@@ -457,12 +459,17 @@ at the implementation that fulfills it.
    — `kairo-store::capabilities_by_object` (per-object reverse index at
    `actor_capability_by_object/<XX>/<YY>/<object-id>.json`). Drives the
    evaluator's hot query `capability_grantors_for(object, grantee)`.
+7. [x] `ObjectBranch` resolver flip per §6.2. `supersedes` was added
+   to `ObjectBranch v1` in place (the system was not yet deployed, so
+   no existing `StatementId`s needed migrating). Implemented in
+   `kairo-store::FilesystemStore::latest_branch` / `list_branches`
+   via `walk_authorized_branch_chain`, mirroring the tag walker —
+   same-actor sup automatic; cross-actor sup honored iff
+   `evaluate_capability` returns `Held` for an `ObjectBranch`-covering
+   grant. `kairo branch set` auto-chains on put.
 
 Deferred to subsequent iterations:
 
-- `ObjectBranch v2` schema bump (Phase 2 §12) — same shape as
-  `ObjectVersionTag` v2 was; deferred until same-second branch
-  collisions or cross-actor branch supersession become user-visible.
 - `KeyPinned` constraint enforcement: the constraint is parsed,
   canonically encoded, and stored, but `evaluate_capability` does not
   yet auto-invalidate on grantor-key revocation (key-state lookup is

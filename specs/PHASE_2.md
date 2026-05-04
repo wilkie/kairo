@@ -95,8 +95,14 @@ multi-maintainer flows were unsupported). The capability model now lives in
       survive routine rotation; the opt-in `KeyPinned` constraint binds a
       grant to a specific signing key for high-stakes delegations.
 - [x] CLI: `kairo capability grant / revoke / list`.
-- [ ] `ObjectBranch v2` cross-actor `supersedes` (parallel to the version-
-      tag flip) — schema bump deferred (see §8 below).
+- [x] `ObjectBranch` cross-actor `supersedes` (parallel to the version-
+      tag flip). Added `supersedes` to `ObjectBranch v1` in place — the
+      system was not yet deployed, so no `StatementId` migration was
+      needed and the v2 schema bump originally planned in §12 is no
+      longer required. Resolver is
+      `kairo-store::FilesystemStore::latest_branch` /
+      `list_branches` via `walk_authorized_branch_chain`; CLI is
+      `kairo branch set` (auto-chains on put). See `CAPABILITIES.md` §6.2.
 
 **Why it matters (now realized):** federation policy
 (`specs/POLICY.md`) and multi-maintainer workflows can build on the
@@ -264,22 +270,24 @@ shape as real consumers need it.
 
 Statement-type evolution that Phase 1 explicitly deferred.
 
-- [ ] `ObjectBranch v2` with `supersedes` chain (`specs/STATEMENTS.md`
-      §4.2a "Future" subsection). The capability model now in §3 honors
-      cross-actor edges for `ObjectVersionTag`; branches need the same
-      treatment, which requires the v2 schema bump (in-place addition to
-      v1 would re-derive every existing `StatementId`).
+- [x] `ObjectBranch` `supersedes` chain. **Cancelled as a v2 schema
+      bump**: since the system was not yet deployed when §3 landed, the
+      `supersedes` field was added to `ObjectBranch v1` in place. No
+      `StatementId` migration was needed. The cross-actor flip rides
+      the same in-place edit (see §3 above and `CAPABILITIES.md` §6.2).
 - [x] `ObjectVersionTag` cross-actor `supersedes` honored by the resolver.
       Implemented in `kairo-store::FilesystemStore::latest_version_tag` /
       `list_version_tags` per `specs/CAPABILITIES.md` §6.2.
 - [ ] `ActorTrust` `forget` operation (federation concern — flush peer
       opinions from the local node without re-publishing a withdrawal).
-- [ ] Schema bump migration tooling for the v1 → v2 transitions.
+- [ ] Schema bump migration tooling for the v1 → v2 transitions (still
+      needed for any *future* schema evolution that lands post-deployment).
 
 **Why it matters:** statement schemas are content-addressed, so v2
-migrations are real work. The capability model in §3 is the prerequisite
-for cross-actor cases; with §3 landed, `ObjectBranch v2` is the next
-piece of statement-type evolution.
+migrations are real work post-deployment. The capability model in §3
+landed before the system was deployed, so the branch `supersedes`
+addition was free; later schema evolutions will need the migration
+tooling tracked above.
 
 ### 13. Polish: Tests, Property Tests, Release Engineering, Threat Model
 

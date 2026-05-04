@@ -295,13 +295,23 @@ revisions whose `body.object` matches and prints one summary per match.
 `branch set` signs and persists an `ObjectBranch` statement that points the
 named branch at the given `ObjectRevision` `StatementId`. The branch must
 match the revision's object; the command refuses to create a dangling
-pointer. Pointer movement is **always explicit** — `revision create` is a
-low-level primitive and never advances any branch on its own.
+pointer. The CLI auto-computes the `supersedes` pointer: if the actor
+already has a chain leaf for `(actor, object, name)`, the new statement
+supersedes it; otherwise it is the genesis advance. Pointer movement
+is **always explicit** — `revision create` is a low-level primitive and
+never advances any branch on its own.
 
-`branch show` resolves the latest `ObjectBranch` for `(actor, object, name)`.
-`--actor` defaults to `ObjectGenesis.created_by`; `--name` defaults to the
-conventional `"head"`. `branch list --object <id>` enumerates all known
-`(actor, name)` branch tips for the object.
+`branch show` resolves the chain leaf `ObjectBranch` for
+`(actor, object, name)`. `--actor` defaults to `ObjectGenesis.created_by`;
+`--name` defaults to the conventional `"head"`. `branch list --object <id>`
+enumerates all known `(actor, name)` branch tips for the object.
+
+Capability resolution rides the branch read path the same way it does
+the tag read path: a cross-actor `supersedes` edge is honored when the
+successor's signer holds an `ObjectBranch` capability on the object at
+the successor's `created_at` (`specs/CAPABILITIES.md` §6.2). The flip
+happens transparently inside `branch show`, `branch list`,
+`verify object`, etc.
 
 `tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>`
 signs and persists an `ObjectVersionTag` that binds the semver string to

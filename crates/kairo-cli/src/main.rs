@@ -1056,7 +1056,19 @@ fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<Stri
                 });
             }
 
-            let body = ObjectBranchBody::new(object_id.clone(), name.clone(), revision_id.clone());
+            // Auto-chain: if the actor already has a head for this branch
+            // name, supersede it; otherwise this is the genesis advance.
+            let supersedes = store
+                .latest_branch(&actor_id, &object_id, &name)
+                .map_err(CliError::ReadBranch)?
+                .map(|signed| signed.statement_id());
+
+            let body = ObjectBranchBody::new(
+                object_id.clone(),
+                name.clone(),
+                revision_id.clone(),
+                supersedes.clone(),
+            );
             let subject: KairoRef = format!("object:{object_id}").parse().map_err(|source| {
                 CliError::BuildSubjectRef {
                     object: object_id.clone(),
@@ -1082,8 +1094,12 @@ fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<Stri
                     source: error,
                 })?;
 
+            let supersedes_line = match supersedes {
+                Some(id) => format!("supersedes = {id}\n"),
+                None => "supersedes = (genesis)\n".to_owned(),
+            };
             Ok(format!(
-                "set branch\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\nname = {name}\nrevision = {revision_id}\n"
+                "set branch\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\nname = {name}\nrevision = {revision_id}\n{supersedes_line}"
             ))
         }
         BranchCommand::Show {

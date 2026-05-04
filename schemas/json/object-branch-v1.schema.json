@@ -41,6 +41,11 @@
           "type": "string",
           "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
           "description": "StatementId of the pointed-at ObjectRevision."
+        },
+        "supersedes": {
+          "type": ["string", "null"],
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "StatementId of the prior ObjectBranch this advance supersedes. Null (or absent) on the genesis advance for an (actor, object, name) triple. Cross-actor supersedes is honored by the resolver only when the successor's signer holds an ObjectBranch capability on the object at the successor's created_at (specs/CAPABILITIES.md §6.2)."
         }
       },
       "additionalProperties": false

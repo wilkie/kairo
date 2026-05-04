@@ -530,10 +530,12 @@ impl StatementStore for FilesystemStore {
         atomic_write(&path, &bytes)?;
 
         let actor = statement.unsigned().actor();
-        let object = statement.unsigned().body().object();
-        let name = statement.unsigned().body().name();
+        let body = statement.unsigned().body();
+        let object = body.object();
+        let name = body.name();
         let created_at = statement.unsigned().created_at();
-        self.upsert_branch_index(object, actor, name, &id, created_at)?;
+        let supersedes = body.supersedes();
+        self.upsert_branch_index(object, actor, name, &id, created_at, supersedes)?;
 
         Ok(id)
     }
@@ -779,6 +781,7 @@ impl FilesystemStore {
         name: &str,
         statement_id: &StatementId,
         created_at: kairo_core::Timestamp,
+        supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
         let path = self.shard_path(BRANCHES_DIR, object.as_str(), JSON_SUFFIX)?;
         let mut index =
@@ -795,7 +798,7 @@ impl FilesystemStore {
                 Err(error) => return Err(StoreError::Unavailable(error)),
             };
 
-        let updated = index.upsert(actor, name, statement_id, created_at);
+        let updated = index.upsert(actor, name, statement_id, created_at, supersedes);
         if updated {
             let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
             atomic_write(&path, &bytes)?;
@@ -1110,26 +1113,37 @@ impl BranchResolver for FilesystemStore {
         let Some(index) = self.read_branch_index(object)? else {
             return Ok(None);
         };
-        let Some(entry) = index.lookup(actor, name) else {
+        let Some(entry) = index.lookup_head(actor, name) else {
             return Ok(None);
         };
-        let statement_id =
-            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
-                id: entry.statement_id.clone(),
+
+        // Per `specs/CAPABILITIES.md` §6.2: from the same-actor chain
+        // leaf, follow authorized cross-actor supersedes edges
+        // forward. Same-actor sup is automatic; cross-actor sup is
+        // honored iff the successor's signer holds an `ObjectBranch`
+        // capability on this object at the successor's `created_at`.
+        let final_entry = self.walk_authorized_branch_chain(object, name, entry, &index)?;
+        let statement_id = StatementId::new(final_entry.statement_id.clone()).map_err(
+            |error| StoreError::Corrupt {
+                id: final_entry.statement_id.clone(),
                 reason: CorruptReason::Parse(format!(
                     "invalid statement id in branch index: {error}"
                 )),
-            })?;
+            },
+        )?;
         let signed = self.get_object_branch(&statement_id)?;
 
-        if signed.unsigned().actor() != actor
-            || signed.unsigned().body().object() != object
+        // The walk may legitimately leave us pointing at a statement
+        // signed by a different actor than the query — that's the
+        // whole point of §6.2. Object and name must still match,
+        // since they're the resolution key.
+        if signed.unsigned().body().object() != object
             || signed.unsigned().body().name() != name
         {
             return Err(StoreError::Corrupt {
                 id: statement_id.to_string(),
                 reason: CorruptReason::Parse(
-                    "branch index points at a statement with mismatched (actor, object, name)"
+                    "branch index points at a statement with mismatched (object, name)"
                         .to_owned(),
                 ),
             });
@@ -1142,7 +1156,166 @@ impl BranchResolver for FilesystemStore {
         let Some(index) = self.read_branch_index(object)? else {
             return Ok(Vec::new());
         };
-        index.into_tips(object)
+        // Per `(perspective_actor, name)`, walk same-actor leaf
+        // forward through authorized cross-actor supersedes edges.
+        // The returned tip's `actor` is the perspective actor; the
+        // tip's `statement_id` may have been signed by an authorized
+        // delegate.
+        let mut tips: Vec<BranchTip> = Vec::new();
+        for (actor_str, by_name) in &index.by_actor {
+            let actor = ActorId::new(actor_str.clone()).map_err(|error| StoreError::Corrupt {
+                id: actor_str.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid actor id in branch index: {error}"
+                )),
+            })?;
+            for name in by_name.keys() {
+                let Some(entry) = index.lookup_head(&actor, name) else {
+                    continue;
+                };
+                let final_entry =
+                    self.walk_authorized_branch_chain(object, name, entry, &index)?;
+                let statement_id = StatementId::new(final_entry.statement_id.clone())
+                    .map_err(|error| StoreError::Corrupt {
+                        id: final_entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid statement id in branch index: {error}"
+                        )),
+                    })?;
+                let created_at: Timestamp =
+                    final_entry.created_at.parse().map_err(|error| {
+                        StoreError::Corrupt {
+                            id: final_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in branch index: {error}"
+                            )),
+                        }
+                    })?;
+                tips.push(BranchTip {
+                    actor: actor.clone(),
+                    object: object.clone(),
+                    name: name.clone(),
+                    statement_id,
+                    created_at,
+                });
+            }
+        }
+        Ok(tips)
+    }
+}
+
+impl FilesystemStore {
+    /// Walk the supersedes chain forward from `start` for the given
+    /// `(object, name)`. Same-actor sups are honored automatically;
+    /// cross-actor sups are honored iff the successor's signer holds
+    /// an `ObjectBranch` capability on `object` at the successor's
+    /// `created_at` (per `specs/CAPABILITIES.md` §6.2).
+    ///
+    /// Mirrors `walk_authorized_tag_chain` for `ObjectVersionTag`.
+    /// The walk is bounded by total entry count for the branch name,
+    /// so a malformed cycle in `supersedes` cannot loop forever.
+    fn walk_authorized_branch_chain(
+        &self,
+        object: &ObjectId,
+        name: &str,
+        start: &branches::BranchEntry,
+        index: &branches::BranchIndexFile,
+    ) -> Result<branches::BranchEntry, StoreError> {
+        let entries = index.entries_for_name(name);
+        let max_steps = entries.len();
+        let mut current_signer: Option<String> = entries
+            .iter()
+            .find(|(_, e)| e.statement_id == start.statement_id)
+            .map(|(actor_str, _)| (*actor_str).to_string());
+        let mut current = start.clone();
+
+        for _ in 0..max_steps {
+            let mut best: Option<(String, &branches::BranchEntry)> = None;
+            for (actor_str, entry) in &entries {
+                if entry.supersedes.as_deref() != Some(current.statement_id.as_str()) {
+                    continue;
+                }
+                let is_same_actor = current_signer
+                    .as_deref()
+                    .is_some_and(|cur| cur == *actor_str);
+                let authorized = if is_same_actor {
+                    true
+                } else {
+                    let signer =
+                        ActorId::new(actor_str.to_string()).map_err(|error| {
+                            StoreError::Corrupt {
+                                id: actor_str.to_string(),
+                                reason: CorruptReason::Parse(format!(
+                                    "invalid actor id in branch index: {error}"
+                                )),
+                            }
+                        })?;
+                    let entry_at: Timestamp = entry.created_at.parse().map_err(|error| {
+                        StoreError::Corrupt {
+                            id: entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in branch index: {error}"
+                            )),
+                        }
+                    })?;
+                    let evaluation = kairo_statement::verify::evaluate_capability(
+                        &signer,
+                        &kairo_statement::verify::ResolutionTarget::Object {
+                            id: object.clone(),
+                            kind: kairo_statement::StatementKind::ObjectBranch,
+                        },
+                        entry_at,
+                        self,
+                    )?;
+                    matches!(
+                        evaluation,
+                        kairo_statement::verify::CapabilityEvaluation::Held
+                    )
+                };
+                if !authorized {
+                    continue;
+                }
+                let candidate = ((*actor_str).to_string(), *entry);
+                match best {
+                    None => best = Some(candidate),
+                    Some((_, existing))
+                        if branch_entry_greater_than_for_walk(entry, existing) =>
+                    {
+                        best = Some(candidate);
+                    }
+                    _ => {}
+                }
+            }
+            match best {
+                None => return Ok(current),
+                Some((actor_str, entry)) => {
+                    current_signer = Some(actor_str);
+                    current = entry.clone();
+                }
+            }
+        }
+        Ok(current)
+    }
+}
+
+fn branch_entry_greater_than_for_walk(
+    candidate: &branches::BranchEntry,
+    current: &branches::BranchEntry,
+) -> bool {
+    match (
+        candidate.created_at.parse::<Timestamp>(),
+        current.created_at.parse::<Timestamp>(),
+    ) {
+        (Ok(a), Ok(b)) => {
+            if a > b {
+                return true;
+            }
+            if a < b {
+                return false;
+            }
+            candidate.statement_id > current.statement_id
+        }
+        _ => candidate.statement_id > current.statement_id,
     }
 }
 
@@ -1969,9 +2142,10 @@ mod tests {
         object: ObjectId,
         name: &str,
         revision: StatementId,
+        supersedes: Option<StatementId>,
         created_at: Timestamp,
     ) -> Result<SignedStatement<ObjectBranchBody>, Box<dyn std::error::Error>> {
-        let body = ObjectBranchBody::new(object.clone(), name, revision);
+        let body = ObjectBranchBody::new(object.clone(), name, revision, supersedes);
         let subject: KairoRef = format!("object:{object}").parse()?;
         let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
         let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
@@ -1990,7 +2164,7 @@ mod tests {
         let actor = fresh_genesis().actor_id();
         let object = ObjectId::new(OBJECT_ID)?;
         let revision = StatementId::from_sha256_digest([0xAA; 32]);
-        let signed = signed_branch(actor, object, "head", revision, timestamp())?;
+        let signed = signed_branch(actor, object, "head", revision, None, timestamp())?;
         let id = store.put_object_branch(&signed)?;
         let loaded = store.get_object_branch(&id)?;
         assert_eq!(loaded, signed);
@@ -2007,16 +2181,18 @@ mod tests {
             object.clone(),
             "head",
             StatementId::from_sha256_digest([0xAA; 32]),
+            None,
             Timestamp::from_seconds(timestamp().seconds()),
         )?;
+        let earlier_id = store.put_object_branch(&earlier)?;
         let later = signed_branch(
             actor.clone(),
             object.clone(),
             "head",
             StatementId::from_sha256_digest([0xBB; 32]),
+            Some(earlier_id),
             Timestamp::from_seconds(timestamp().seconds() + 1),
         )?;
-        store.put_object_branch(&earlier)?;
         store.put_object_branch(&later)?;
 
         let resolved = store.latest_branch(&actor, &object, "head")?;
@@ -2029,28 +2205,32 @@ mod tests {
         let (_dir, store) = open_temp_store()?;
         let actor = fresh_genesis().actor_id();
         let object = ObjectId::new(OBJECT_ID)?;
-        let later = signed_branch(
-            actor.clone(),
-            object.clone(),
-            "head",
-            StatementId::from_sha256_digest([0xBB; 32]),
-            Timestamp::from_seconds(timestamp().seconds() + 1),
-        )?;
         let earlier = signed_branch(
             actor.clone(),
             object.clone(),
             "head",
             StatementId::from_sha256_digest([0xAA; 32]),
+            None,
             Timestamp::from_seconds(timestamp().seconds()),
         )?;
-        // Insert later first, then an earlier write should not move the index.
+        let earlier_id = earlier.statement_id();
+        let later = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Some(earlier_id.clone()),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        // Insert later first, then the earlier write must not move the chain
+        // leaf — the supersedes chain still puts `later` at the tip.
         store.put_object_branch(&later)?;
         store.put_object_branch(&earlier)?;
 
         let resolved = store.latest_branch(&actor, &object, "head")?;
         assert_eq!(resolved, Some(later));
-        // But the earlier branch is still on disk by its statement id.
-        assert!(store.get_object_branch(&earlier.statement_id()).is_ok());
+        // Earlier branch is still on disk by its statement id.
+        assert!(store.get_object_branch(&earlier_id).is_ok());
         Ok(())
     }
 
@@ -2074,6 +2254,7 @@ mod tests {
             object.clone(),
             "head",
             StatementId::from_sha256_digest([0xAA; 32]),
+            None,
             timestamp(),
         )?;
         let release = signed_branch(
@@ -2081,6 +2262,7 @@ mod tests {
             object.clone(),
             "release",
             StatementId::from_sha256_digest([0xCC; 32]),
+            None,
             timestamp(),
         )?;
         store.put_object_branch(&head)?;
@@ -2104,6 +2286,7 @@ mod tests {
             object.clone(),
             "head",
             StatementId::from_sha256_digest([0xAA; 32]),
+            None,
             timestamp(),
         )?;
         let release = signed_branch(
@@ -2111,6 +2294,7 @@ mod tests {
             object.clone(),
             "release",
             StatementId::from_sha256_digest([0xCC; 32]),
+            None,
             timestamp(),
         )?;
         store.put_object_branch(&head)?;
@@ -2134,6 +2318,7 @@ mod tests {
             object.clone(),
             "head",
             StatementId::from_sha256_digest([0xAA; 32]),
+            None,
             timestamp(),
         )?;
         store.put_object_branch(&signed)?;
@@ -2156,6 +2341,204 @@ mod tests {
         let object = ObjectId::new(OBJECT_ID)?;
         let tips = store.list_branches(&object)?;
         assert!(tips.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn cross_actor_branch_supersedes_without_grant_does_not_replace_per_actor_head()
+    -> TestResult {
+        // Actor B signs a branch advance whose supersedes points at
+        // actor A's branch advance, but A has not granted B any
+        // ObjectBranch capability on the object. evaluate_capability(B,
+        // ...) returns NotHeld, so the cross-actor edge is rejected and
+        // each actor keeps their own head. Mirrors the tag-side test
+        // for `specs/CAPABILITIES.md` §6.2.
+        let (_dir, store) = open_temp_store()?;
+        let actor_a = fresh_genesis().actor_id();
+        let actor_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let a_branch = signed_branch(
+            actor_a.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            None,
+            timestamp(),
+        )?;
+        let a_id = store.put_object_branch(&a_branch)?;
+        let b_branch = signed_branch(
+            actor_b.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Some(a_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_branch(&b_branch)?;
+
+        let a_head = store.latest_branch(&actor_a, &object, "head")?;
+        assert_eq!(a_head, Some(a_branch));
+        let b_head = store.latest_branch(&actor_b, &object, "head")?;
+        assert_eq!(b_head, Some(b_branch));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_actor_branch_supersedes_with_grant_replaces_per_actor_head() -> TestResult {
+        // Symmetric payoff: A is the object's root authority and grants
+        // B an ObjectBranch capability on this object. B then signs a
+        // branch advance whose supersedes points at A's. The cross-actor
+        // edge is honored; latest_branch(A, ...) returns B's branch.
+        let (_dir, store) = open_temp_store()?;
+        let a_genesis = fresh_genesis();
+        let actor_a = a_genesis.actor_id();
+        store.put_actor(&a_genesis)?;
+        let object_statement = signed_object_genesis(actor_a.clone());
+        let object = store.put_object_genesis(&object_statement)?;
+
+        let actor_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+
+        let scope = CapabilityScope::Object(object.clone());
+        let grant = signed_capability_grant(
+            actor_a.clone(),
+            actor_b.clone(),
+            scope,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&grant)?;
+
+        let a_branch = signed_branch(
+            actor_a.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            None,
+            timestamp(),
+        )?;
+        let a_id = store.put_object_branch(&a_branch)?;
+        let b_branch = signed_branch(
+            actor_b.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Some(a_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_branch(&b_branch)?;
+
+        let a_head = store.latest_branch(&actor_a, &object, "head")?;
+        assert_eq!(a_head, Some(b_branch.clone()));
+        let b_head = store.latest_branch(&actor_b, &object, "head")?;
+        assert_eq!(b_head, Some(b_branch));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_actor_branch_supersedes_with_revoked_grant_is_not_honored() -> TestResult {
+        // A grants B, B supersedes A's branch, then A revokes the grant
+        // *before* B's advance was created. With a default (non-
+        // retroactive) revocation, B's branch was created strictly after
+        // the revocation, so the grant no longer covers it — the
+        // cross-actor edge is rejected, A's branch stays the head.
+        let (_dir, store) = open_temp_store()?;
+        let a_genesis = fresh_genesis();
+        let actor_a = a_genesis.actor_id();
+        store.put_actor(&a_genesis)?;
+        let object_statement = signed_object_genesis(actor_a.clone());
+        let object = store.put_object_genesis(&object_statement)?;
+
+        let actor_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+
+        let scope = CapabilityScope::Object(object.clone());
+        let grant = signed_capability_grant(
+            actor_a.clone(),
+            actor_b.clone(),
+            scope,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_capability_grant(&grant)?;
+        let revocation = signed_capability_revocation(
+            actor_a.clone(),
+            grant_id,
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_actor_capability_revocation(&revocation)?;
+
+        let a_branch = signed_branch(
+            actor_a.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            None,
+            timestamp(),
+        )?;
+        let a_id = store.put_object_branch(&a_branch)?;
+        let b_branch = signed_branch(
+            actor_b,
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Some(a_id),
+            Timestamp::from_seconds(timestamp().seconds() + 2),
+        )?;
+        store.put_object_branch(&b_branch)?;
+
+        let a_head = store.latest_branch(&actor_a, &object, "head")?;
+        assert_eq!(a_head, Some(a_branch));
+        Ok(())
+    }
+
+    #[test]
+    fn branch_chain_precedence_overrides_timestamp_tiebreak() -> TestResult {
+        // A successor with a strictly older `created_at` than the
+        // genesis must still win because chain precedence — the
+        // supersedes edge — beats the (created_at, statement_id)
+        // tiebreak. Mirrors the tag-side chain-precedence rule.
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let genesis = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            None,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        let genesis_id = store.put_object_branch(&genesis)?;
+        let successor = signed_branch(
+            actor.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0xBB; 32]),
+            Some(genesis_id),
+            Timestamp::from_seconds(timestamp().seconds()),
+        )?;
+        store.put_object_branch(&successor)?;
+
+        let resolved = store.latest_branch(&actor, &object, "head")?;
+        assert_eq!(resolved, Some(successor));
         Ok(())
     }
 
@@ -3009,6 +3392,7 @@ mod tests {
             vec![
                 StatementKind::ObjectRevision,
                 StatementKind::ObjectVersionTag,
+                StatementKind::ObjectBranch,
             ],
             true,
             vec![],

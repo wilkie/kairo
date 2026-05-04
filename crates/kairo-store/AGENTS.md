@@ -46,16 +46,17 @@ needs:
      module-level `//!` doc.
    - Honor chain precedence (supersedes-leaf is authoritative; fork
      tiebreak only on `(created_at, statement_id)`) — see
-     `src/tags.rs`, `src/trust.rs`, and `src/capabilities.rs` for
-     the pattern.
+     `src/branches.rs`, `src/tags.rs`, `src/trust.rs`, and
+     `src/capabilities.rs` for the pattern.
    - **Cross-actor `supersedes`** semantics live above the index, not
      in it. The per-actor / same-actor chain head is the index's
      job; honoring cross-actor edges requires an authority oracle
      (`evaluate_capability`). See
-     `FilesystemStore::walk_authorized_tag_chain` for the pattern:
-     compute same-actor leaf in the index module, then walk forward
-     through authorized cross-actor sup edges in `lib.rs` where the
-     resolver has `&self`.
+     `FilesystemStore::walk_authorized_tag_chain` and the
+     branch-side parallel `walk_authorized_branch_chain` for the
+     pattern: compute same-actor leaf in the index module, then walk
+     forward through authorized cross-actor sup edges in `lib.rs`
+     where the resolver has `&self`.
 
 4. **Tests** in `src/lib.rs`'s `tests` module covering at minimum:
    round-trip; latest/head resolution; chain precedence overriding

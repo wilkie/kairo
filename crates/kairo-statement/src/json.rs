@@ -349,15 +349,25 @@ pub struct ObjectBranchBodyJson {
     pub object: String,
     pub name: String,
     pub revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
 }
 
 impl ObjectBranchBodyJson {
     pub fn to_body(&self) -> Result<ObjectBranchBody, StatementJsonError> {
+        let supersedes = match &self.supersedes {
+            Some(value) => Some(
+                StatementId::new(value.clone())
+                    .map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
         Ok(ObjectBranchBody::new(
             ObjectId::new(self.object.clone()).map_err(StatementJsonError::InvalidObject)?,
             self.name.clone(),
             StatementId::new(self.revision.clone())
                 .map_err(StatementJsonError::InvalidStatement)?,
+            supersedes,
         ))
     }
 
@@ -366,6 +376,7 @@ impl ObjectBranchBodyJson {
             object: body.object().to_string(),
             name: body.name().to_owned(),
             revision: body.revision().to_string(),
+            supersedes: body.supersedes().map(|id| id.to_string()),
         }
     }
 }
@@ -1290,6 +1301,7 @@ mod tests {
             object: OBJECT_ID.to_owned(),
             name: "head".to_owned(),
             revision: "not-a-statement-id".to_owned(),
+            supersedes: None,
         };
 
         assert!(matches!(

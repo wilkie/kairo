@@ -110,7 +110,7 @@ fn signed_branch(
     object: &ObjectId,
     revision: StatementId,
 ) -> Result<SignedStatement<ObjectBranchBody>, Box<dyn std::error::Error>> {
-    let body = ObjectBranchBody::new(object.clone(), "head", revision);
+    let body = ObjectBranchBody::new(object.clone(), "head", revision, None);
     let subject: KairoRef = format!("object:{object}").parse()?;
     let unsigned = UnsignedStatement::new(actor.clone(), subject, timestamp(), body);
     let bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();

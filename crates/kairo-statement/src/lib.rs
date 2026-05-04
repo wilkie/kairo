@@ -300,19 +300,35 @@ impl CanonicalEncode for ObjectRevisionBody {
 /// `name` is free-form. The string `"head"` is the conventional default
 /// across the CLI but is not reserved at the protocol level — actors can
 /// publish branches with any name (`"release"`, `"audit"`, etc.).
+///
+/// `supersedes` names the prior `ObjectBranch` chain leaf this statement
+/// replaces. When present, chain-precedence resolution wins over
+/// timestamp ordering: an explicit successor is unambiguously later
+/// regardless of `created_at`. A genesis branch advance has
+/// `supersedes = None`. Cross-actor `supersedes` is honored by the
+/// resolver iff the successor's signer holds an `ObjectBranch`
+/// capability on the object at the successor's `created_at` (per
+/// `specs/CAPABILITIES.md` §6.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectBranchBody {
     object: ObjectId,
     name: String,
     revision: StatementId,
+    supersedes: Option<StatementId>,
 }
 
 impl ObjectBranchBody {
-    pub fn new(object: ObjectId, name: impl Into<String>, revision: StatementId) -> Self {
+    pub fn new(
+        object: ObjectId,
+        name: impl Into<String>,
+        revision: StatementId,
+        supersedes: Option<StatementId>,
+    ) -> Self {
         Self {
             object,
             name: name.into(),
             revision,
+            supersedes,
         }
     }
 
@@ -327,6 +343,14 @@ impl ObjectBranchBody {
     pub fn revision(&self) -> &StatementId {
         &self.revision
     }
+
+    pub fn supersedes(&self) -> Option<&StatementId> {
+        self.supersedes.as_ref()
+    }
+
+    pub fn is_genesis(&self) -> bool {
+        self.supersedes.is_none()
+    }
 }
 
 impl StatementBody for ObjectBranchBody {
@@ -339,6 +363,9 @@ impl CanonicalEncode for ObjectBranchBody {
         encode_str(out, self.object.as_str());
         encode_str(out, &self.name);
         encode_str(out, self.revision.as_str());
+        encode_option(out, self.supersedes.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
     }
 }
 
@@ -1595,7 +1622,7 @@ mod tests {
             actor_id()?,
             object_ref()?,
             timestamp(),
-            ObjectBranchBody::new(object_id()?, name, revision),
+            ObjectBranchBody::new(object_id()?, name, revision, None),
         ))
     }
 
@@ -1628,7 +1655,7 @@ mod tests {
 
     #[test]
     fn object_branch_created_at_changes_statement_id() -> Result<(), kairo_core::IdError> {
-        let body = ObjectBranchBody::new(object_id()?, "head", statement_id_one());
+        let body = ObjectBranchBody::new(object_id()?, "head", statement_id_one(), None);
         let first = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), body.clone());
         let later = UnsignedStatement::new(
             actor_id()?,
@@ -1638,6 +1665,23 @@ mod tests {
         );
 
         assert_ne!(first.statement_id(), later.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn object_branch_supersedes_changes_statement_id() -> Result<(), kairo_core::IdError> {
+        let object = object_id()?;
+        let genesis = ObjectBranchBody::new(object.clone(), "head", statement_id_one(), None);
+        let successor = ObjectBranchBody::new(
+            object,
+            "head",
+            statement_id_one(),
+            Some(statement_id_two()),
+        );
+        let first = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), genesis);
+        let second = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), successor);
+
+        assert_ne!(first.statement_id(), second.statement_id());
         Ok(())
     }
 

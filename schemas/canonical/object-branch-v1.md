@@ -35,11 +35,10 @@ StatementId = z<base58btc(multihash_sha2_256(domain || canonical_unsigned_statem
 an actor to publicly claim "for object X, my revision named *N* is currently
 revision-statement *R*."
 
-The "mutable" effect is achieved without mutable storage: a later `ObjectBranch`
-statement signed by the same actor for the same `(object, name)` simply
-supersedes the earlier one in resolution. Older `ObjectBranch` statements stay
-valid evidence of the actor's past claims; only the latest is load-bearing
-for resolving "what is the current branch?"
+Mutability is achieved without mutable storage: a successor `ObjectBranch`
+statement supersedes its predecessor. Older `ObjectBranch` statements stay
+valid evidence of past claims; only the chain leaf is load-bearing for
+resolving "what is the current branch?"
 
 The string `name = "head"` is the conventional default the CLI assumes when
 no name is given. It is not reserved at the protocol level; actors may use
@@ -47,15 +46,29 @@ any name (`"release"`, `"audit"`, `"alice-staging"`, etc.).
 
 ## Resolution Rule
 
-> For `(actor, object, name)`, the current branch is the `ObjectBranch` statement
-> signed by `actor` for `(object, name)` with the greatest
+> For `(actor, object, name)`, the current branch is the **chain leaf** —
+> the `ObjectBranch` statement no other statement supersedes within the
+> chain rooted at this `(actor, object, name)` triple. If the chain has
+> multiple leaves (a fork), pick the one with the greatest
 > `(envelope.created_at, statement_id)`.
 
-Tiebreaking on `statement_id` gives a total order even when timestamps
-collide. Cryptographic validity, actor resolution, and trust evaluation are
-reported independently and do not affect resolution at the statement layer.
+A successor that explicitly names its predecessor via `supersedes` is
+unambiguously later regardless of `created_at`. `(created_at, statement_id)`
+ordering is only a fork tiebreak.
 
-## Example
+`supersedes` may name a `ObjectBranch` statement signed by a **different
+actor** for the same `(object, name)`. The cross-actor edge is honored by
+the resolver iff the successor's signer holds an `ObjectBranch` capability
+on `object` at the successor's `created_at` — see `specs/CAPABILITIES.md`
+§6.2 (the same rule applied to `ObjectVersionTag`). Without a covering
+capability the cross-actor edge is recorded but not honored.
+
+Cryptographic validity, actor resolution, and trust evaluation are reported
+independently and do not affect resolution at the statement layer.
+
+## Examples
+
+### Genesis advance
 
 ```json
 {
@@ -67,7 +80,8 @@ reported independently and do not affect resolution at the statement layer.
   "body": {
     "object": "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
     "name": "head",
-    "revision": "zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu"
+    "revision": "zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu",
+    "supersedes": null
   },
   "signature": {
     "actor": "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t",
@@ -75,6 +89,25 @@ reported independently and do not affect resolution at the statement layer.
     "algorithm": "ed25519",
     "bytes": "base64-signature"
   }
+}
+```
+
+### Successor advance superseding the genesis
+
+```json
+{
+  "type": "ObjectBranch",
+  "version": 1,
+  "actor": "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t",
+  "subject": "object:zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
+  "created_at": "2026-05-02T09:11:30Z",
+  "body": {
+    "object": "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk",
+    "name": "head",
+    "revision": "zQmNewRevisionStatementId...",
+    "supersedes": "zPriorBranchStatementId..."
+  },
+  "signature": { "...": "..." }
 }
 ```
 
@@ -100,6 +133,7 @@ Fields are encoded in this exact order:
 | `object` | `ObjectId` payload as `string` |
 | `name` | branch name as `string` |
 | `revision` | `StatementId` payload as `string` (the pointed-at `ObjectRevision`) |
+| `supersedes` | optional `StatementId` payload as `string` (`0x00` for none, `0x01 || string(id)` for some) |
 
 ## Excluded Fields
 
@@ -117,7 +151,8 @@ The following must not be included in Statement ID canonical bytes:
 canonical_body =
   string(object) ||
   string(name) ||
-  string(revision)
+  string(revision) ||
+  option(supersedes, |id| string(id))
 
 canonical_unsigned_statement =
   string("ObjectBranch") ||
@@ -143,18 +178,28 @@ statement_id =
   specific signed `ObjectRevision` statement. This keeps verification crisp
   and lets actors adopt revisions signed by other actors by reference,
   without re-signing them.
+- `supersedes` is the chain edge. The genesis advance for an
+  `(actor, object, name)` triple has `supersedes = null`. Successors set
+  `supersedes` to the prior chain leaf's `StatementId`. The CLI
+  (`kairo branch set`) auto-computes this — callers don't need to track
+  it manually.
+- Cross-actor `supersedes` is the load-bearing case: capability resolution
+  (`evaluate_capability` in `kairo-statement::verify`) gates whether
+  another actor's branch advance is allowed to take over an `(object,
+  name)` chain. Without a covering capability the cross-actor edge is
+  recorded but not honored, mirroring `ObjectVersionTag`'s behavior.
 - `created_at` is the actor's self-claim of when the branch was published.
   Canonical bytes are `i64` Unix epoch seconds (big-endian); JSON
-  interchange uses strict RFC 3339 UTC seconds with the literal `Z` suffix
-  and no fractional seconds. It is the supersession key, so `created_at`
-  monotonicity matters for an actor publishing multiple branch updates;
-  ties resolve on `statement_id`.
+  interchange uses strict RFC 3339 UTC seconds with the literal `Z`
+  suffix and no fractional seconds. With chain precedence in v1, ordering
+  matters only for forks (multiple chain leaves at the same triple).
 - A valid signature proves only that the actor made the claim. It does not
   prove that the pointed-at revision exists, that it is reachable, that
   the actor has authority over the object, or that any other actor agrees.
-- Distinct from `ObjectVersionTag`: branches accept arbitrary names; tags
-  require strict semver and carry an explicit `supersedes` chain. Both
-  share the same actor-scoped, latest-wins resolution shape.
+- Symmetric with `ObjectVersionTag`: both carry an explicit `supersedes`
+  chain and the same cross-actor authority-aware resolution. Branches
+  accept arbitrary names; tags require strict semver and additionally
+  encode bind-vs-revoke via the `target` option.
 
 ## Test Vectors
 
