@@ -698,7 +698,7 @@ impl Error for StatementKindParseError {}
 /// variants — object-scoped and actor-scoped (the grantor's own actor
 /// surface). Per `specs/CAPABILITIES.md` Decision E, kind narrowing
 /// lives in `Capability::statement_kinds`, not in scope.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CapabilityScope {
     Object(ObjectId),
     Actor(ActorId),

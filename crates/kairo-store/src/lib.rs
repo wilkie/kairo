@@ -1384,6 +1384,51 @@ impl kairo_statement::verify::TrustResolver for FilesystemStore {
     }
 }
 
+impl kairo_statement::verify::CapabilityResolver for FilesystemStore {
+    type Error = StoreError;
+
+    fn latest_capability(
+        &self,
+        grantor: &ActorId,
+        grantee: &ActorId,
+        scope: &CapabilityScope,
+    ) -> Result<Option<SignedStatement<ActorCapabilityGrantBody>>, Self::Error> {
+        CapabilityResolver::latest_capability(self, grantor, grantee, scope)
+    }
+
+    fn latest_capability_revocation(
+        &self,
+        grantor: &ActorId,
+        revoked_grant: &StatementId,
+    ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, Self::Error> {
+        CapabilityResolver::latest_capability_revocation(self, grantor, revoked_grant)
+    }
+
+    fn capability_grantors_for(
+        &self,
+        object: &ObjectId,
+        grantee: &ActorId,
+    ) -> Result<Vec<ActorId>, Self::Error> {
+        Ok(self
+            .list_capabilities_for_object(object)?
+            .into_iter()
+            .filter(|head| &head.grantee == grantee)
+            .map(|head| head.grantor)
+            .collect())
+    }
+
+    fn object_root_authority(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Option<Vec<ActorId>>, Self::Error> {
+        match self.get_object_genesis(object) {
+            Ok(statement) => Ok(Some(vec![statement.body().created_by().clone()])),
+            Err(StoreError::Missing) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 fn read_or_missing(path: &Path) -> Result<Vec<u8>, StoreError> {
     match fs::read(path) {
         Ok(bytes) => Ok(bytes),
@@ -1429,7 +1474,10 @@ mod tests {
     use kairo_core::canonical::CanonicalEncode;
     use kairo_core::{BlobId, KairoRef, ObjectId, Timestamp};
     use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey};
-    use kairo_statement::verify::{verify_envelope_statement, ActorResolution, SignatureStatus};
+    use kairo_statement::verify::{
+        evaluate_capability, verify_envelope_statement, ActorResolution, CapabilityEvaluation,
+        ResolutionTarget, SignatureStatus,
+    };
     use kairo_statement::{
         ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, Capability,
         CapabilityScope, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
@@ -3210,6 +3258,44 @@ mod tests {
                 ..
             })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_against_filesystem_store_returns_held() -> TestResult {
+        // End-to-end: real FilesystemStore is used as the
+        // CapabilityResolver behind evaluate_capability. The store's
+        // ObjectGenesis pins the root authority; one grant from root
+        // to bob is enough for evaluate_capability to return Held.
+        let (_dir, store) = open_temp_store()?;
+        let root_genesis = fresh_genesis();
+        let root_actor = root_genesis.actor_id();
+        store.put_actor(&root_genesis)?;
+
+        let object_statement = signed_object_genesis(root_actor.clone());
+        let object_id = store.put_object_genesis(&object_statement)?;
+
+        let bob = grantee_actor();
+        let scope = CapabilityScope::Object(object_id.clone());
+        let grant = signed_capability_grant(
+            root_actor.clone(),
+            bob.clone(),
+            scope,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&grant)?;
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &ResolutionTarget::Object {
+                id: object_id,
+                kind: StatementKind::ObjectVersionTag,
+            },
+            timestamp(),
+            &store,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Held);
         Ok(())
     }
 }

@@ -13,11 +13,24 @@
 //! folds that into a [`TrustEvaluation`]. Trust is informational — it never
 //! makes a cryptographically valid statement invalid; callers compose the
 //! two independently.
+//!
+//! [`evaluate_capability`] resolves "does grantee `B` have authority to
+//! issue statements of kind `K` against target `T` at causal position `at`?"
+//! against a [`CapabilityResolver`]. It walks the chain leaf for each
+//! candidate grantor, checks revocation / expiration / delegation depth,
+//! and recursively verifies grantor authority back to the object's root
+//! authority. See `specs/CAPABILITIES.md` §6.1.
 
-use kairo_core::{ActorId, StatementId};
+use std::collections::HashSet;
+
+use kairo_core::{ActorId, ObjectId, StatementId, Timestamp};
 use kairo_identity::{ActorResolveError, ActorResolver, SignatureVerificationError};
 
-use crate::{ActorTrustBody, SignedStatement, StatementBody, StatementSignatureError, TrustDecision};
+use crate::{
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, CapabilityConstraint,
+    CapabilityScope, SignedStatement, StatementBody, StatementKind, StatementSignatureError,
+    TrustDecision,
+};
 
 /// Outcome of verifying a signed statement against a resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +136,290 @@ pub fn evaluate_trust<R: TrustResolver>(
             None => TrustEvaluation::Unknown,
         }),
     }
+}
+
+/// What the capability evaluator is being asked to authorize. See
+/// `specs/CAPABILITIES.md` §6.1.
+///
+/// `Object` is the only target with usable kinds in v1; `Actor`
+/// targets exist for forward compatibility (no statement kind is
+/// valid for `CapabilityScope::Actor` per §4.3, so the evaluator
+/// short-circuits to `NotHeld`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolutionTarget {
+    Object { id: ObjectId, kind: StatementKind },
+    Actor { id: ActorId, kind: StatementKind },
+}
+
+impl ResolutionTarget {
+    pub fn kind(&self) -> StatementKind {
+        match self {
+            Self::Object { kind, .. } | Self::Actor { kind, .. } => *kind,
+        }
+    }
+
+    fn scope(&self) -> CapabilityScope {
+        match self {
+            Self::Object { id, .. } => CapabilityScope::Object(id.clone()),
+            Self::Actor { id, .. } => CapabilityScope::Actor(id.clone()),
+        }
+    }
+}
+
+/// Outcome of [`evaluate_capability`]. See `specs/CAPABILITIES.md`
+/// §6.1 for the exact decision rules.
+///
+/// `Revoked` and `Expired` carry the offending grant's `StatementId`
+/// so callers can audit *which* grant in the chain failed.
+/// `DelegationTooDeep` and `GrantorLacksAuthority` aggregate
+/// information about the chain rather than naming a single grant —
+/// the chain shape is the failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityEvaluation {
+    /// `grantee` is authorized for `(target.kind, target.id)` at the
+    /// requested causal position.
+    Held,
+    /// No covering grant exists.
+    NotHeld,
+    /// A covering grant exists but is revoked at the requested
+    /// position (default revocation when `at >= revocation.created_at`,
+    /// or any retroactive revocation regardless of `at`).
+    Revoked(StatementId),
+    /// A covering grant exists but its `ExpiresAt` constraint is in
+    /// the past relative to the requested position.
+    Expired(StatementId),
+    /// A covering grant exists but the chain that would authorize it
+    /// exceeds some grant's `MaxDelegationDepth`.
+    DelegationTooDeep,
+    /// A covering grant exists but its grantor does not hold the
+    /// authority to have issued it (no root-authority match and no
+    /// recursive delegable chain reaches the root). Also returned for
+    /// cycles in the delegation graph.
+    GrantorLacksAuthority,
+}
+
+/// Lookup interface for capability evaluation.
+///
+/// Implementors return the structural primitives the evaluator
+/// composes:
+///
+/// - `latest_capability` — chain leaf for a `(grantor, grantee, scope)`
+///   triple.
+/// - `latest_capability_revocation` — most-restrictive revocation a
+///   grantor has issued against one of their grants.
+/// - `capability_grantors_for` — every grantor who has a chain-leaf
+///   grant naming `grantee` on `object`.
+/// - `object_root_authority` — the actors empowered to originate any
+///   capability on `object` (the root authority set; v1 returns a
+///   single-element vector containing the object's `created_by`).
+///
+/// Mirrors [`TrustResolver`] in shape: a small generic trait that
+/// can be satisfied by any backing store (filesystem, in-memory,
+/// network), with an associated `Error` so callers don't lock to a
+/// single error type.
+pub trait CapabilityResolver {
+    type Error: std::error::Error + 'static;
+
+    fn latest_capability(
+        &self,
+        grantor: &ActorId,
+        grantee: &ActorId,
+        scope: &CapabilityScope,
+    ) -> Result<Option<SignedStatement<ActorCapabilityGrantBody>>, Self::Error>;
+
+    fn latest_capability_revocation(
+        &self,
+        grantor: &ActorId,
+        revoked_grant: &StatementId,
+    ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, Self::Error>;
+
+    fn capability_grantors_for(
+        &self,
+        object: &ObjectId,
+        grantee: &ActorId,
+    ) -> Result<Vec<ActorId>, Self::Error>;
+
+    fn object_root_authority(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Option<Vec<ActorId>>, Self::Error>;
+}
+
+/// Resolve "does `grantee` have authority to issue statements of
+/// kind `target.kind()` against `target` at causal position `at`?"
+/// against `resolver`.
+///
+/// Returns the structured outcome as a [`CapabilityEvaluation`].
+/// See `specs/CAPABILITIES.md` §6.1 for the decision rules; the
+/// implementation walks every candidate grantor produced by
+/// `capability_grantors_for` and returns the first non-failure
+/// outcome (`Held`), or the most informative failure observed.
+///
+/// Cycle detection: the evaluator tracks the
+/// `(grantor, grantee, scope)` triples already on the resolution
+/// path and returns `GrantorLacksAuthority` rather than recurring
+/// into a cycle. `MaxDelegationDepth` enforces a separate
+/// per-constraint bound on chain length.
+pub fn evaluate_capability<R: CapabilityResolver>(
+    grantee: &ActorId,
+    target: &ResolutionTarget,
+    at: Timestamp,
+    resolver: &R,
+) -> Result<CapabilityEvaluation, R::Error> {
+    let mut visited = HashSet::new();
+    evaluate_inner(grantee, target, at, false, resolver, &mut visited, 0)
+}
+
+fn evaluate_inner<R: CapabilityResolver>(
+    grantee: &ActorId,
+    target: &ResolutionTarget,
+    at: Timestamp,
+    require_delegable: bool,
+    resolver: &R,
+    visited: &mut HashSet<(ActorId, ActorId, CapabilityScope)>,
+    depth: usize,
+) -> Result<CapabilityEvaluation, R::Error> {
+    let object_id = match target {
+        ResolutionTarget::Object { id, .. } => id.clone(),
+        ResolutionTarget::Actor { .. } => {
+            // No statement kinds are valid for actor scope in v1
+            // (`specs/CAPABILITIES.md` §4.3). Future actor-surface
+            // kinds will lift this short-circuit.
+            return Ok(CapabilityEvaluation::NotHeld);
+        }
+    };
+    let scope = target.scope();
+    let kind = target.kind();
+
+    let candidate_grantors = resolver.capability_grantors_for(&object_id, grantee)?;
+    if candidate_grantors.is_empty() {
+        return Ok(CapabilityEvaluation::NotHeld);
+    }
+
+    let mut best_failure: Option<CapabilityEvaluation> = None;
+
+    for grantor in candidate_grantors {
+        let key = (grantor.clone(), grantee.clone(), scope.clone());
+        if visited.contains(&key) {
+            // Cycle on this resolution path — treat as
+            // "grantor authority unproven" per §6.1.
+            best_failure.get_or_insert(CapabilityEvaluation::GrantorLacksAuthority);
+            continue;
+        }
+
+        let Some(grant) = resolver.latest_capability(&grantor, grantee, &scope)? else {
+            // Index pointed at a grantor whose chain leaf is gone.
+            // Treat as no covering grant from this grantor; the
+            // resolver / index inconsistency will surface elsewhere.
+            continue;
+        };
+        let body = grant.unsigned().body();
+        let cap = body.capability();
+        let grant_id = grant.statement_id();
+
+        if !cap.statement_kinds().contains(&kind) {
+            continue;
+        }
+
+        if require_delegable && !cap.delegable() {
+            // Grant exists but doesn't permit re-grant; cannot
+            // satisfy a recursive authority check.
+            continue;
+        }
+
+        // Revocation (§6.1 condition 4 + §6.3).
+        if let Some(revocation) =
+            resolver.latest_capability_revocation(&grantor, &grant_id)?
+        {
+            let rev_at = revocation.unsigned().created_at();
+            let retroactive = revocation.unsigned().body().retroactive();
+            if retroactive || at >= rev_at {
+                best_failure
+                    .get_or_insert(CapabilityEvaluation::Revoked(grant_id.clone()));
+                continue;
+            }
+        }
+
+        // Constraints (§6.1 condition 6).
+        let mut constraint_failure: Option<CapabilityEvaluation> = None;
+        for constraint in cap.constraints() {
+            match constraint {
+                CapabilityConstraint::ExpiresAt(ts) => {
+                    if at > *ts {
+                        constraint_failure =
+                            Some(CapabilityEvaluation::Expired(grant_id.clone()));
+                        break;
+                    }
+                }
+                CapabilityConstraint::MaxDelegationDepth(max) => {
+                    if depth > *max as usize {
+                        constraint_failure = Some(CapabilityEvaluation::DelegationTooDeep);
+                        break;
+                    }
+                }
+                CapabilityConstraint::KeyPinned(_) => {
+                    // §7.2 — auto-invalidation on grantor key
+                    // revocation requires a key-state lookup that
+                    // is not part of this trait in the MVP. Treated
+                    // as informational; deferred.
+                }
+            }
+        }
+        if let Some(failure) = constraint_failure {
+            best_failure.get_or_insert(failure);
+            continue;
+        }
+
+        // Grantor authority (§6.1 condition 5).
+        let root = resolver
+            .object_root_authority(&object_id)?
+            .unwrap_or_default();
+        if root.contains(&grantor) {
+            return Ok(CapabilityEvaluation::Held);
+        }
+
+        // Recurse: grantor must hold a delegable capability covering
+        // `kind` on this object at `at`.
+        visited.insert(key.clone());
+        let recursive_target = ResolutionTarget::Object {
+            id: object_id.clone(),
+            kind,
+        };
+        let recursive = evaluate_inner(
+            &grantor,
+            &recursive_target,
+            at,
+            true,
+            resolver,
+            visited,
+            depth + 1,
+        )?;
+        visited.remove(&key);
+
+        match recursive {
+            CapabilityEvaluation::Held => return Ok(CapabilityEvaluation::Held),
+            // Concrete chain-failure modes propagate verbatim — the
+            // chain exists but breaks for a specific reason (a
+            // parent grant was revoked / expired / over-deep). The
+            // returned StatementId names the parent grant where the
+            // chain broke, which is what an auditor needs.
+            failure @ (CapabilityEvaluation::Revoked(_)
+            | CapabilityEvaluation::Expired(_)
+            | CapabilityEvaluation::DelegationTooDeep) => {
+                best_failure.get_or_insert(failure);
+            }
+            // Structural failures (no chain reaches the root, or a
+            // cycle) collapse to GrantorLacksAuthority at this
+            // level. `NotHeld` from the recursive call means the
+            // grantor has no covering grant on this object → they
+            // could not have issued G.
+            CapabilityEvaluation::NotHeld | CapabilityEvaluation::GrantorLacksAuthority => {
+                best_failure.get_or_insert(CapabilityEvaluation::GrantorLacksAuthority);
+            }
+        }
+    }
+
+    Ok(best_failure.unwrap_or(CapabilityEvaluation::NotHeld))
 }
 
 /// Verify an envelope-wrapped signed statement against an [`ActorResolver`].
@@ -665,6 +962,614 @@ mod tests {
             evaluate_trust(&truster_b, &target, &resolver)?,
             TrustEvaluation::Unknown
         );
+        Ok(())
+    }
+
+    use crate::{
+        ActorCapabilityGrantBody, ActorCapabilityRevocationBody, Capability,
+        CapabilityConstraint, CapabilityScope, StatementKind,
+    };
+
+    #[derive(Debug, Default)]
+    struct MemoryCapabilityResolver {
+        grants: HashMap<(String, String, String), SignedStatement<ActorCapabilityGrantBody>>,
+        revocations:
+            HashMap<(String, String), SignedStatement<ActorCapabilityRevocationBody>>,
+        object_root: HashMap<String, Vec<ActorId>>,
+    }
+
+    impl MemoryCapabilityResolver {
+        fn insert_grant(&mut self, signed: SignedStatement<ActorCapabilityGrantBody>) {
+            let grantor = signed.unsigned().actor().to_string();
+            let body = signed.unsigned().body();
+            let grantee = body.grantee().to_string();
+            let scope_key = scope_key_str(body.capability().scope());
+            self.grants.insert((grantor, grantee, scope_key), signed);
+        }
+
+        fn insert_revocation(
+            &mut self,
+            signed: SignedStatement<ActorCapabilityRevocationBody>,
+        ) {
+            let grantor = signed.unsigned().actor().to_string();
+            let revoked = signed.unsigned().body().revoked_grant().to_string();
+            self.revocations.insert((grantor, revoked), signed);
+        }
+
+        fn set_root(&mut self, object: &ObjectId, root: Vec<ActorId>) {
+            self.object_root.insert(object.to_string(), root);
+        }
+    }
+
+    fn scope_key_str(scope: &CapabilityScope) -> String {
+        match scope {
+            CapabilityScope::Object(id) => format!("object:{id}"),
+            CapabilityScope::Actor(id) => format!("actor:{id}"),
+        }
+    }
+
+    impl CapabilityResolver for MemoryCapabilityResolver {
+        type Error = Infallible;
+
+        fn latest_capability(
+            &self,
+            grantor: &ActorId,
+            grantee: &ActorId,
+            scope: &CapabilityScope,
+        ) -> Result<Option<SignedStatement<ActorCapabilityGrantBody>>, Self::Error> {
+            Ok(self
+                .grants
+                .get(&(
+                    grantor.to_string(),
+                    grantee.to_string(),
+                    scope_key_str(scope),
+                ))
+                .cloned())
+        }
+
+        fn latest_capability_revocation(
+            &self,
+            grantor: &ActorId,
+            revoked_grant: &StatementId,
+        ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, Self::Error>
+        {
+            Ok(self
+                .revocations
+                .get(&(grantor.to_string(), revoked_grant.to_string()))
+                .cloned())
+        }
+
+        fn capability_grantors_for(
+            &self,
+            object: &ObjectId,
+            grantee: &ActorId,
+        ) -> Result<Vec<ActorId>, Self::Error> {
+            let scope = format!("object:{object}");
+            let mut grantors: Vec<ActorId> = self
+                .grants
+                .keys()
+                .filter(|(_, g, s)| g == grantee.as_str() && s == &scope)
+                .map(|(grantor, _, _)| {
+                    ActorId::new(grantor.clone()).expect("memory resolver holds valid actor ids")
+                })
+                .collect();
+            grantors.sort();
+            grantors.dedup();
+            Ok(grantors)
+        }
+
+        fn object_root_authority(
+            &self,
+            object: &ObjectId,
+        ) -> Result<Option<Vec<ActorId>>, Self::Error> {
+            Ok(self.object_root.get(object.as_str()).cloned())
+        }
+    }
+
+    fn signed_capability_grant(
+        grantor: &ActorId,
+        grantee: &ActorId,
+        scope: CapabilityScope,
+        kinds: Vec<StatementKind>,
+        delegable: bool,
+        constraints: Vec<CapabilityConstraint>,
+        supersedes: Option<StatementId>,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorCapabilityGrantBody>, Box<dyn std::error::Error>> {
+        let cap = Capability::new(scope, kinds, delegable, constraints)?;
+        let body = ActorCapabilityGrantBody::new(grantee.clone(), cap, supersedes);
+        let subject: kairo_core::KairoRef = format!("actor:{grantee}").parse()?;
+        let unsigned = UnsignedStatement::new(grantor.clone(), subject, created_at, body);
+        let key = signing_key();
+        let bytes = key.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let signature = Signature::new(
+            grantor.clone(),
+            public_key_for(&key).key_id().to_string(),
+            "ed25519",
+            bytes,
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn signed_capability_revocation(
+        grantor: &ActorId,
+        revoked_grant: StatementId,
+        retroactive: bool,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, Box<dyn std::error::Error>>
+    {
+        let body =
+            ActorCapabilityRevocationBody::new(revoked_grant.clone(), retroactive, None);
+        let subject: kairo_core::KairoRef = format!("statement:{revoked_grant}").parse()?;
+        let unsigned = UnsignedStatement::new(grantor.clone(), subject, created_at, body);
+        let key = signing_key();
+        let bytes = key.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let signature = Signature::new(
+            grantor.clone(),
+            public_key_for(&key).key_id().to_string(),
+            "ed25519",
+            bytes,
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn fresh_object(seed: u8) -> ObjectId {
+        ObjectId::from_sha256_digest([seed; 32])
+    }
+
+    fn capability_target(object: &ObjectId, kind: StatementKind) -> ResolutionTarget {
+        ResolutionTarget::Object {
+            id: object.clone(),
+            kind,
+        }
+    }
+
+    #[test]
+    fn evaluate_capability_held_for_root_authority_grantor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        resolver.insert_grant(signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Held);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_not_held_when_no_grant()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let resolver = MemoryCapabilityResolver::default();
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::NotHeld);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_not_held_when_kind_not_in_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        // Grant covers ObjectRevision; query asks about ObjectVersionTag.
+        resolver.insert_grant(signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectRevision],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::NotHeld);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_revoked_default_after_revocation_time()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        let grant = signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        resolver.insert_grant(grant);
+        resolver.insert_revocation(signed_capability_revocation(
+            &root,
+            grant_id.clone(),
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?);
+
+        let after = Timestamp::from_seconds(timestamp().seconds() + 200);
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            after,
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Revoked(grant_id));
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_held_before_default_revocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        let grant = signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        resolver.insert_grant(grant);
+        resolver.insert_revocation(signed_capability_revocation(
+            &root,
+            grant_id,
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?);
+
+        let before = Timestamp::from_seconds(timestamp().seconds() + 50);
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            before,
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Held);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_revoked_retroactive_even_before_revocation_time()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        let grant = signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        resolver.insert_grant(grant);
+        resolver.insert_revocation(signed_capability_revocation(
+            &root,
+            grant_id.clone(),
+            true,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?);
+
+        let before = Timestamp::from_seconds(timestamp().seconds() + 50);
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            before,
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Revoked(grant_id));
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_expired_when_at_after_expires_at()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        let expires_at = Timestamp::from_seconds(timestamp().seconds() + 100);
+        let grant = signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![CapabilityConstraint::ExpiresAt(expires_at)],
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        resolver.insert_grant(grant);
+
+        let after = Timestamp::from_seconds(timestamp().seconds() + 200);
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            after,
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Expired(grant_id));
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_held_in_delegated_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // root → A (delegable=true, MDD=2) → B (final user)
+        let root = fresh_actor(1);
+        let alice = fresh_actor(2);
+        let bob = fresh_actor(3);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        // root → alice (delegable, MDD allows 2 deep)
+        resolver.insert_grant(signed_capability_grant(
+            &root,
+            &alice,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            true,
+            vec![CapabilityConstraint::MaxDelegationDepth(2)],
+            None,
+            timestamp(),
+        )?);
+        // alice → bob
+        resolver.insert_grant(signed_capability_grant(
+            &alice,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Held);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_grantor_lacks_authority_when_chain_grant_not_delegable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // root → A (delegable=false) → B. A's grant from root cannot
+        // be used to re-grant, so B's grant from A is unbacked.
+        let root = fresh_actor(1);
+        let alice = fresh_actor(2);
+        let bob = fresh_actor(3);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        resolver.insert_grant(signed_capability_grant(
+            &root,
+            &alice,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false, // not delegable
+            vec![],
+            None,
+            timestamp(),
+        )?);
+        resolver.insert_grant(signed_capability_grant(
+            &alice,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::GrantorLacksAuthority);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_delegation_too_deep_propagates_from_chain()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // root → A (delegable, MDD=0) → B. A's parent grant says
+        // "no further re-grants below me," but A re-granted to B.
+        // The recursive evaluator catches MDD violation at depth 1.
+        let root = fresh_actor(1);
+        let alice = fresh_actor(2);
+        let bob = fresh_actor(3);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        resolver.insert_grant(signed_capability_grant(
+            &root,
+            &alice,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            true,
+            vec![CapabilityConstraint::MaxDelegationDepth(0)],
+            None,
+            timestamp(),
+        )?);
+        resolver.insert_grant(signed_capability_grant(
+            &alice,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::DelegationTooDeep);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_grantor_lacks_authority_when_grantor_not_root_and_no_parent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // alice (not root) granted bob, but alice has no parent
+        // grant. Resolver returns GrantorLacksAuthority.
+        let root = fresh_actor(1);
+        let alice = fresh_actor(2);
+        let bob = fresh_actor(3);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        resolver.insert_grant(signed_capability_grant(
+            &alice,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::GrantorLacksAuthority);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_short_circuits_for_actor_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // No statement kinds are valid for actor scope in v1, so
+        // an actor target always evaluates to NotHeld regardless
+        // of any grants in the resolver.
+        let bob = fresh_actor(2);
+        let some_actor = fresh_actor(3);
+        let resolver = MemoryCapabilityResolver::default();
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &ResolutionTarget::Actor {
+                id: some_actor,
+                kind: StatementKind::ActorTrust,
+            },
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::NotHeld);
+        Ok(())
+    }
+
+    #[test]
+    fn evaluate_capability_cycle_returns_grantor_lacks_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // alice ↔ bob: alice granted bob, bob granted alice. Neither
+        // is root. evaluate(bob) follows the chain alice → root, but
+        // alice's authority comes from bob (cycle) → GrantorLacksAuthority.
+        let alice = fresh_actor(2);
+        let bob = fresh_actor(3);
+        let object = fresh_object(9);
+        let mut resolver = MemoryCapabilityResolver::default();
+        // Root authority is some other actor; neither alice nor bob.
+        resolver.set_root(&object, vec![fresh_actor(1)]);
+        resolver.insert_grant(signed_capability_grant(
+            &alice,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            true,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+        resolver.insert_grant(signed_capability_grant(
+            &bob,
+            &alice,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            true,
+            vec![],
+            None,
+            timestamp(),
+        )?);
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::GrantorLacksAuthority);
         Ok(())
     }
 }
