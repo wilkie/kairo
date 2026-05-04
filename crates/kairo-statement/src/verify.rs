@@ -530,6 +530,7 @@ impl VerificationReport {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::too_many_arguments)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use kairo_core::canonical::CanonicalEncode;

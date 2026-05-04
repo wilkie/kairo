@@ -1810,6 +1810,7 @@ fn json_to_corrupt<T: ToString>(id: &T) -> impl FnOnce(serde_json::Error) -> Sto
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use std::fs;
 
