@@ -273,8 +273,12 @@ key. Real-world security needs rotation and revocation.
       keystore alongside the prior one (so the actor retains the
       ability to verify historical statements).
 - [ ] `kairo actor revoke-key --actor <id> --key <key-id>
-      [--retroactive] [--reason <text>]` — signs and persists an
-      `ActorKeyRevocation` using the actor's current active key.
+      [--retroactive] [--reason <text>] [--brick-actor]` — signs and
+      persists an `ActorKeyRevocation` using the actor's current
+      active key. Refuses to revoke the only active key (which would
+      brick the actor per `ACTORS.md` §5.5.1) unless `--brick-actor`
+      is passed; the help text points operators at `actor rotate-key`
+      as the safe alternative.
 - [ ] `kairo actor key-history --actor <id> [--json]` — diagnostic
       surface listing the key chain (genesis-initial + rotations) and
       revocation set in causal order.

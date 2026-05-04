@@ -283,6 +283,54 @@ constraint (`CAPABILITIES.md` §7.2) is the opt-in coupling between a
 specific grant and a specific signing key — pinned grants are
 auto-invalidated on revocation regardless of `retroactive`.
 
+### 5.5.1 Bricking risk and the rotate-first rule
+
+The protocol does **not** prevent an actor from revoking the only
+key they hold. The verification rules are internally consistent:
+the revocation itself is valid (signed by the active key at its
+`created_at`), but immediately afterwards the actor has no key whose
+signature would verify for any new statement — including a fresh
+`ActorKeyRotation`. The actor is permanently dead; recovery means
+publishing a new `ActorGenesis`, which produces a different
+`ActorId`, with continuity re-established socially.
+
+Operator hygiene: **always rotate first, then revoke.**
+
+1. `ActorKeyRotation { next_key: K1, supersedes: null }` signed by K0.
+2. `ActorKeyRevocation { revoked_key: K0_id, ... }` signed by K1.
+
+The CLI (`kairo actor revoke-key`) refuses to revoke the only active
+key without explicit confirmation. The protocol layer makes no such
+check; direct callers of the bodies must enforce this themselves.
+
+### 5.5.2 Future failsafe: cold-storage attestation keys
+
+Both the bricking risk and the lost-active-key compromise scenario
+point at the same missing primitive: a separate authority surface,
+declared at `ActorGenesis` and add-only afterwards, that can sign
+emergency `ActorKeyRotation` / `ActorKeyRevocation` even when the
+operator has no working active key.
+
+Planned shape (Phase 2 §10 follow-on, not v1):
+
+- One or more attestation public keys are declared in `ActorGenesis`
+  alongside `initial_key`, becoming part of the canonical genesis
+  bytes (and therefore of the `ActorId`). An attacker cannot swap
+  them without producing a different `ActorId`.
+- Attestation keys sign **only** emergency key events; they have no
+  authority over operational statements (revisions, branches, tags,
+  capability grants, trust). Kind narrowing is enforced by the
+  verifier.
+- The §6.1 signature rule extends to: active key per the rotation
+  chain at `T`, **or** — for emergency key events only — a declared
+  genesis attestation key. Operational statements stay bound to the
+  active-key-at-`T` rule.
+
+The v1 design intentionally omits attestation keys, to keep the
+genesis shape minimal until the operator-experience needs are
+concrete. The hooks are documented here so the v1 → vN migration is
+contained — see `actor-key-revocation-v1.md` "Future failsafe".
+
 ---
 
 ## 6. Signatures
