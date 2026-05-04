@@ -71,31 +71,37 @@ about implementation.
 **Why it matters:** every downstream surface (web client, federation-as-
 service, daemon-mode CLI) depends on the daemon existing.
 
-### 3. Capability / Delegation Model (spec-first)
+### 3. Capability / Delegation Model
 
-The recurring "future work" theme. Phase 1 deliberately deferred cross-actor
-authority claims: `ObjectVersionTag`'s cross-actor `supersedes` is recorded
-but not honored; `ActorTrust` cross-actor `supersedes` is invalid; multi-
-maintainer flows are unsupported. A capability model would unlock all of
-these by giving actors a way to grant scoped authority to other actors.
+**Status: implemented.** Phase 1 deferred cross-actor authority claims
+(`ObjectVersionTag`'s cross-actor `supersedes` was recorded but not honored;
+multi-maintainer flows were unsupported). The capability model now lives in
+`specs/CAPABILITIES.md` and ships end-to-end:
 
-- [ ] Draft `specs/CAPABILITIES.md` with the MVP capability statement type,
-      scope vocabulary, and resolution rules. The path is now free — the
-      pre-Phase-1 file at that name was the runtime sandbox spec, which has
-      been renamed to `specs/SANDBOX.md`. Seed prose for the new doc lives
-      in `ACTORS.md` §10–12 (Actor Capabilities / Grants / Revocation).
-- [ ] Decide whether capability grants are first-person (like trust) or
-      object-scoped (like branches/tags).
-- [ ] Spec the interaction with `ObjectBranch v2` (cross-actor supersedes
-      enabled by capability grants) and with version-tag cross-actor
-      `supersedes`.
-- [ ] Spec how key rotation interacts with capabilities (do grants follow
-      the actor across rotations, or attach to a specific key?).
-- [ ] Decide spec-first vs. implement-alongside; capability semantics that
-      ship wrong are very expensive to walk back.
+- [x] `specs/CAPABILITIES.md` defines `Capability { scope, statement_kinds,
+      delegable, constraints }` with locked decisions A–G in §9.
+- [x] First-person sharding (Decision A): per-grantor index in
+      `kairo-store::capabilities`; per-object reverse index in
+      `kairo-store::capabilities_by_object` for the §6.1 evaluator's hot
+      path.
+- [x] `ObjectVersionTag` cross-actor `supersedes` is honored by
+      `kairo-store::FilesystemStore::latest_version_tag` when a covering
+      capability evaluates to `Held` at the successor's `created_at`
+      (`CAPABILITIES.md` §6.2).
+- [x] `ActorTrust` cross-actor `supersedes` stays invalid even with
+      capabilities (Decision B in §9) — trust is first-person opinion;
+      indirect trust as a tiebreaker is the right primitive there.
+- [x] Key rotation (`CAPABILITIES.md` §7): grants anchor on `ActorId` and
+      survive routine rotation; the opt-in `KeyPinned` constraint binds a
+      grant to a specific signing key for high-stakes delegations.
+- [x] CLI: `kairo capability grant / revoke / list`.
+- [ ] `ObjectBranch v2` cross-actor `supersedes` (parallel to the version-
+      tag flip) — schema bump deferred (see §8 below).
 
-**Why it matters:** required precondition for federation policy
-(`specs/POLICY.md`), multi-maintainer workflows, and any "co-owners" UX.
+**Why it matters (now realized):** federation policy
+(`specs/POLICY.md`) and multi-maintainer workflows can build on the
+authority oracle (`evaluate_capability` in `kairo-statement::verify`)
+without inventing their own.
 
 ### 4. Federation Protocol
 
@@ -259,20 +265,21 @@ shape as real consumers need it.
 Statement-type evolution that Phase 1 explicitly deferred.
 
 - [ ] `ObjectBranch v2` with `supersedes` chain (`specs/STATEMENTS.md`
-      §4.2a "Future" subsection). Required when same-second branch
-      collisions cause user-visible damage **or** when §3 capability model
-      lands and cross-actor branch supersession needs a chain edge.
-- [ ] `ObjectVersionTag` cross-actor `supersedes` honored by the resolver
-      (today recorded but not load-bearing; flip when §3 lands).
+      §4.2a "Future" subsection). The capability model now in §3 honors
+      cross-actor edges for `ObjectVersionTag`; branches need the same
+      treatment, which requires the v2 schema bump (in-place addition to
+      v1 would re-derive every existing `StatementId`).
+- [x] `ObjectVersionTag` cross-actor `supersedes` honored by the resolver.
+      Implemented in `kairo-store::FilesystemStore::latest_version_tag` /
+      `list_version_tags` per `specs/CAPABILITIES.md` §6.2.
 - [ ] `ActorTrust` `forget` operation (federation concern — flush peer
       opinions from the local node without re-publishing a withdrawal).
 - [ ] Schema bump migration tooling for the v1 → v2 transitions.
 
 **Why it matters:** statement schemas are content-addressed, so v2
-migrations are real work — better designed once with capability model
-context than piecemeal.
-
-**Depends on:** §3 (capability model) for the cross-actor cases.
+migrations are real work. The capability model in §3 is the prerequisite
+for cross-actor cases; with §3 landed, `ObjectBranch v2` is the next
+piece of statement-type evolution.
 
 ### 13. Polish: Tests, Property Tests, Release Engineering, Threat Model
 

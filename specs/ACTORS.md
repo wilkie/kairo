@@ -404,152 +404,51 @@ authority through valid grants and delegations.
 
 ## 10. Actor Capabilities
 
-Actor capabilities define which statement kinds an actor may issue.
+Actor capabilities define delegated authority — one actor empowering another
+to issue specific statement kinds on a scoped target. The authoritative
+specification is **`CAPABILITIES.md`**. This section is a pointer; the
+shape sketched in earlier drafts of §10–12 has been superseded by the
+locked design in that document.
 
 These are different from runtime sandbox capabilities in `SANDBOX.md` (which
 govern what an executing artifact may access — filesystem, network, GPU,
 etc.).
 
-### 10.1 Capability fields
+Authoritative entry points:
 
-Recommended structure:
-
-```rust
-pub struct ActorCapability {
-    pub scope: AuthorityScope,
-    pub statement_kinds: Vec<StatementKindDiscriminant>,
-    pub grantor: ActorId,
-    pub grantee: ActorId,
-    pub delegable: bool,
-    pub constraints: Vec<AuthorityConstraint>,
-}
-```
-
-### 10.2 Authority scope
-
-Capability scope may include:
-
-```rust
-pub enum AuthorityScope {
-    Object(ObjectId),
-    ObjectSnapshot(ObjectId),
-    Artifact(ObjectId, ArtifactId),
-    Build(ObjectId),
-    Runtime(ObjectId),
-    Metadata(ObjectId),
-    Statement(StatementId),
-}
-```
-
-### 10.3 Standard actor capabilities
-
-Recommended standard capabilities:
-
-```text
-object.admin
-object.metadata.write
-object.statement.grant
-object.statement.revoke
-object.artifact.add
-object.artifact.supersede
-object.build.add
-object.build.supersede
-object.runtime.add
-object.runtime.supersede
-object.release.mark
-object.dependency.add
-object.dependency.remove
-actor.key.add
-actor.key.revoke
-actor.metadata.write
-```
-
-### 10.4 Delegation
-
-A capability may be delegable.
-
-If `delegable = false`, the grantee may use the capability but may not grant it to
-another actor.
-
-Delegation chains must be explicit.
-
-### 10.5 Constraints
-
-Capability constraints may include:
-
-- Expiration
-- Statement-kind restriction
-- Snapshot/frontier restriction
-- Artifact type restriction
-- Environment restriction
-- Required co-signers
-- Maximum delegation depth
-- Non-retroactivity
-- Human approval requirement
-
-Constraints must be deterministic and validated by core where semantic.
-
-Local policy may impose additional constraints.
+- `Capability { scope, statement_kinds, delegable, constraints }` —
+  `CAPABILITIES.md` §4 and `schemas/canonical/actor-capability-grant-v1.md`.
+- `CapabilityScope` (object / actor) — `CAPABILITIES.md` §4.1.
+- `CapabilityConstraint` (`ExpiresAt`, `MaxDelegationDepth`, `KeyPinned`) —
+  `CAPABILITIES.md` §4.3.
+- Resolution rules (`evaluate_capability`) — `CAPABILITIES.md` §6.1; the
+  resolver is implemented in `kairo-statement::verify`.
+- Cross-actor `supersedes` honored when a covering capability exists —
+  `CAPABILITIES.md` §6.2; implemented for `ObjectVersionTag` by
+  `kairo-store::FilesystemStore::latest_version_tag`.
 
 ---
 
 ## 11. Grants
 
-A grant is a signed statement that gives a capability to another actor.
+A grant is signed via the `ActorCapabilityGrant` statement type. Validity
+rules and chain semantics live in `CAPABILITIES.md` §5.1 and §6.1.
 
-Grant validity requires:
-
-1. Grantor has authority to grant the capability.
-2. Grantor’s capability is delegable if delegation is involved.
-3. Grant statement signature is valid.
-4. Grant is causally available before the grantee uses the capability.
-5. Grant has not been revoked before use.
-6. Grant constraints are satisfied.
-
-If a required grant is missing, validation is indeterminate.
-
-If a grant is present but invalid, dependent statements are invalid unless another
-valid authority path exists.
+Per Decision A in `CAPABILITIES.md` §9, grants are first-person (sharded
+by grantor); per Decision G, the chain leaf for a `(grantor, grantee,
+scope)` triple is the source of truth — `statement_kinds` does not union
+across siblings. Issue a successor with `supersedes` set to extend or
+narrow.
 
 ---
 
 ## 12. Revocation
 
-Revocation removes or limits actor authority.
-
-Revocation may target:
-
-- Actor capability grant
-- Signing key
-- Actor metadata statement
-- Delegation path
-- Specific statement authority
-- Actor participation in an object
-
-### 12.1 Default revocation behavior
-
-By default:
-
-1. Revocation applies only to causally future statements.
-2. Revocation does not retroactively invalidate earlier valid statements.
-3. Historical snapshots before revocation remain valid.
-4. Revocation must itself be authorized.
-5. Revocation must identify its target precisely.
-
-### 12.2 Retroactive revocation
-
-Retroactive revocation is allowed only if defined by a specific statement kind and
-requires stronger authority than ordinary revocation.
-
-Retroactive revocation should be rare.
-
-Use cases may include:
-
-- Compromised key
-- Fraudulent grant
-- Administrative correction
-
-Retroactive revocation must be explicit and visible in validation results.
+Revocation is signed via the `ActorCapabilityRevocation` statement type
+(`CAPABILITIES.md` §5.2). Default revocation invalidates statements with
+`created_at` strictly after the revocation; `retroactive = true`
+invalidates the grant from inception (`CAPABILITIES.md` §6.3). In v1 only
+the original grantor may revoke (cross-grantor revocation is invalid).
 
 ### 12.3 Key revocation
 
@@ -558,6 +457,14 @@ after the revocation point.
 
 Earlier statements remain valid unless retroactive key compromise semantics are
 explicitly declared.
+
+For capability grants specifically, key revocation does **not**
+auto-invalidate the grant by default — capabilities anchor on `ActorId`,
+not `KeyId` (`CAPABILITIES.md` §7). The `KeyPinned` constraint
+(`CAPABILITIES.md` §7.2) opts a grant in to auto-invalidation when the
+named signing key is revoked, for high-stakes delegations where rotation
+should not survive a compromise window. The grantor key-compromise
+cleanup runbook is in `CAPABILITIES.md` §7.1.
 
 ---
 

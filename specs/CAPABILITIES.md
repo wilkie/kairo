@@ -426,24 +426,48 @@ default; per-key behavior is opt-in via `KeyPinned`.
 
 ## 8. MVP slice
 
-For the first implementation pass:
+**Status: complete.** All MVP items below have shipped. Each one points
+at the implementation that fulfills it.
 
-1. `ActorCapabilityGrant` and `ActorCapabilityRevocation` statement types
-   with canonical encoding (paired
-   `schemas/canonical/actor-capability-*-v1.md` files).
-2. Per-grantor sharding; per-`(grantor, grantee)` listing.
-3. `evaluate_capability(grantee, scope, kind, at_position) ->
-   CapabilityEvaluation`.
-4. `ObjectVersionTag` resolver: honor cross-actor supersedes when
-   capability evaluation succeeds (the Phase 1 deferred resolver flip).
-5. CLI: `kairo capability grant`, `kairo capability revoke`, `kairo
-   capability list`.
-6. Materialized cross-cutting index for `(object, grantee)` lookups,
-   built on the same put-time path as the trust indices.
+1. [x] `ActorCapabilityGrant` and `ActorCapabilityRevocation` statement
+   types with canonical encoding —
+   `schemas/canonical/actor-capability-grant-v1.md`,
+   `schemas/canonical/actor-capability-revocation-v1.md`,
+   `kairo-statement::{ActorCapabilityGrantBody,
+   ActorCapabilityRevocationBody}`, JSON DTOs in
+   `kairo-statement::json`, JSON schemas in
+   `schemas/json/actor-capability-{grant,revocation}-v1.schema.json`.
+2. [x] Per-grantor sharding — `kairo-store::capabilities` (per-grantor
+   index file at `actor_capability/<XX>/<YY>/<grantor-id>.json`); see
+   §5.3. Listing surface: `CapabilityResolver::list_capabilities_from`.
+3. [x] `evaluate_capability(grantee, target, at) -> CapabilityEvaluation`
+   in `kairo-statement::verify`. Implements every condition in §6.1:
+   chain-leaf, kind ∈ statement_kinds, revocation+retroactive (§6.3),
+   `ExpiresAt` / `MaxDelegationDepth` constraints, recursive grantor
+   authority with `delegable=true` requirement, cycle detection.
+4. [x] `ObjectVersionTag` resolver flip per §6.2. Implemented in
+   `kairo-store::FilesystemStore::latest_version_tag` /
+   `list_version_tags` via `walk_authorized_tag_chain`. Same-actor sup
+   automatic; cross-actor sup honored iff `evaluate_capability` returns
+   `Held`.
+5. [x] CLI: `kairo capability grant`, `kairo capability revoke`, `kairo
+   capability list (--grantor <id> | --object <id>)`. Auto-chains on
+   put; revocation refuses cross-grantor signatures.
+6. [x] Materialized cross-cutting index for `(object, grantee)` lookups
+   — `kairo-store::capabilities_by_object` (per-object reverse index at
+   `actor_capability_by_object/<XX>/<YY>/<object-id>.json`). Drives the
+   evaluator's hot query `capability_grantors_for(object, grantee)`.
 
 Deferred to subsequent iterations:
 
-- `ObjectBranch v2` schema bump (Phase 2 §12).
+- `ObjectBranch v2` schema bump (Phase 2 §12) — same shape as
+  `ObjectVersionTag` v2 was; deferred until same-second branch
+  collisions or cross-actor branch supersession become user-visible.
+- `KeyPinned` constraint enforcement: the constraint is parsed,
+  canonically encoded, and stored, but `evaluate_capability` does not
+  yet auto-invalidate on grantor-key revocation (key-state lookup is
+  outside the current `CapabilityResolver` trait). Pairs with Phase 2
+  §10 (Key Rotation and Revocation).
 - Multi-cosigner / threshold capabilities.
 - Snapshot-, artifact-, runtime-, build-scoped grants.
 - Capability bundle type for federation transport.

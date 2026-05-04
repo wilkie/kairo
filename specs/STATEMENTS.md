@@ -146,13 +146,15 @@ would re-derive differently. The fix is therefore a v2 schema bump,
 not an in-place addition.
 
 This work is **deferred** until either (a) a real same-second branch
-collision causes user-visible damage, or (b) the §10 capability /
-authority model lands. (b) is the more likely trigger: cross-actor
-supersession (one actor taking over another's branch via a delegation
-or maintainership grant) needs a chain edge in branches the same way
-it needs one in tags. Designing `ObjectBranch v2` together with the
-capability model — instead of designing it now in isolation and
-redesigning when capabilities arrive — is the right scope.
+collision causes user-visible damage, or (b) cross-actor supersession
+needs to land for branches. (b) is the more likely trigger: with the
+capability model now in `CAPABILITIES.md` and `evaluate_capability`
+implemented, the resolver flip for `ObjectVersionTag` (§6.2 of that
+spec) honors cross-actor `supersedes` when a covering capability
+exists. Branches need the same edge to permit one actor taking over
+another's branch via delegation. The `ObjectBranch v2` schema bump is
+where that lands; the design parallels `ObjectVersionTag`'s chain
+edge.
 
 ### 4.2b ObjectVersionTag Statement
 
@@ -176,11 +178,12 @@ and mutable. Differences from `ObjectBranch`:
    applied when the chain has multiple leaves.
 
 `supersedes` may reference a tag from a **different actor** for the
-same `(object, version)`. The protocol records this claim, but the MVP
-per-actor resolver does not honor cross-actor edges — they're recorded
-for audit and await the §10 capability/authority model (delegation,
-co-maintainer grants, ownership transfer) to become load-bearing for
-resolution.
+same `(object, version)`. The resolver in
+`kairo-store::FilesystemStore::latest_version_tag` honors that edge
+when the successor's signer holds an `ObjectVersionTag` capability on
+the object at the successor's `created_at` (per `CAPABILITIES.md`
+§6.2). Without a covering grant, the cross-actor edge is recorded but
+not honored — each actor keeps their own per-actor head.
 
 Because tags are mutable, **consumers that need build reproducibility
 must record the resolved `StatementId` (or `SnapshotId`)** in their
@@ -212,10 +215,11 @@ Differences from `ObjectVersionTag`:
    `decision = null && supersedes = null` is invalid (you can't
    withdraw nothing).
 3. Cross-actor `supersedes` is **invalid** for trust (tighter than
-   `ObjectVersionTag`, which only declines to honor cross-actor edges
-   in the MVP resolver but records them at the protocol layer). Trust
-   is first-person: only the truster who signed `S` may publish a
-   successor that supersedes `S`.
+   `ObjectVersionTag`, which honors cross-actor edges when a covering
+   capability exists). Trust is first-person: only the truster who
+   signed `S` may publish a successor that supersedes `S` —
+   capabilities cannot delegate the right to publish trust on
+   another's behalf (Decision B in `CAPABILITIES.md` §9).
 4. An optional `reason` string, included in canonical bytes, lets the
    truster annotate why.
 
@@ -270,11 +274,14 @@ Differences from `ActorTrust`:
    routine key rotations.
 
 Resolution: `evaluate_capability(grantee, target, at)` (defined in
-`specs/CAPABILITIES.md` §6.1) folds the chain leaf, the revocation
-status, the recursive grantor-authority check, and the constraint
-satisfaction check into a `CapabilityEvaluation` value. The
-load-bearing payoff is the `ObjectVersionTag` resolver flip: cross-
-actor `supersedes` becomes honored when capability evaluation succeeds.
+`specs/CAPABILITIES.md` §6.1, implemented in `kairo-statement::verify`)
+folds the chain leaf, the revocation status, the recursive
+grantor-authority check, and the constraint satisfaction check into a
+`CapabilityEvaluation` value. The load-bearing payoff is the
+`ObjectVersionTag` resolver flip: cross-actor `supersedes` is honored
+when capability evaluation succeeds. That flip is implemented in
+`kairo-store::FilesystemStore::latest_version_tag` /
+`list_version_tags`.
 
 Per-`(scope, kind)` shape validity is conservative in v1: `Object`
 scope accepts `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`;

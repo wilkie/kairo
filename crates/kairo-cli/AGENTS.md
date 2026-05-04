@@ -62,3 +62,24 @@ For a top-level command (e.g. `kairo foo`):
   field alongside the VALID/INVALID/INDETERMINATE verdict; it never
   changes the verdict. If you add a new command that consumes trust,
   preserve this separation.
+
+## Capability commands
+
+- `kairo capability grant` auto-chains via
+  `CapabilityResolver::latest_capability` — if a chain leaf for the
+  `(grantor, grantee, scope)` triple already exists, the new statement
+  supersedes it; otherwise it's the genesis grant. This mirrors the
+  trust auto-chain pattern; new commands that mint capability
+  statements should follow it.
+- `kairo capability revoke` enforces the v1 rule that only the grant's
+  original grantor may revoke (`CAPABILITIES.md` §5.2). The CLI loads
+  the named grant via `get_actor_capability_grant`, compares the
+  grant's `actor()` to the `--grantor` flag, and errors with
+  `CliError::RevokeWrongGrantor` on mismatch. Don't relax this in
+  command surfaces that wrap revocation.
+- Capability resolution is on the read path. `tag show` and
+  `tag list` already honor cross-actor `supersedes` transparently
+  (the resolver flip is in `kairo-store`, not the CLI). New commands
+  that consume tag heads inherit this for free; do not add a
+  separate "evaluate capability" command unless an audit query
+  genuinely needs the structured `CapabilityEvaluation` enum.

@@ -214,10 +214,13 @@ by truster. The deferred work is a parallel per-truster reverse index
 when that scan becomes hot.
 
 Federation-related trust work (forgetting peer opinions, propagating
-trust across a node, capability-style delegation that lets one actor
-supersede another's claims) stays deferred — see §9 (bundles) and the
-larger capability/authority model that `ObjectVersionTag` cross-actor
-`supersedes` and a future `ObjectBranch v2` will also depend on.
+trust across a node) stays deferred — see §9 (bundles). The
+capability-style delegation that lets one actor supersede another's
+claims has since landed in `specs/CAPABILITIES.md`; the
+`ObjectVersionTag` resolver flip honors cross-actor `supersedes`
+when a covering capability evaluates to `Held` (Phase 2 §3 in
+`PHASE_2.md`). A future `ObjectBranch v2` will use the same authority
+oracle.
 
 ## 11. Git Content Integration
 
@@ -304,6 +307,8 @@ this, the way Phase 1 picked a focused slice of the long-term spec.
 - Run execution.
 - Web client.
 - Key rotation and revocation semantics beyond the initial actor key.
-- Multi-actor authority and delegation (the recurring "future work"
-  theme that would unlock cross-actor `supersedes` for tags and trust,
-  and `ObjectBranch v2`).
+- Multi-actor authority and delegation. The capability model
+  (`specs/CAPABILITIES.md`) has since landed in Phase 2 §3 and unlocked
+  cross-actor `supersedes` for `ObjectVersionTag`. `ObjectBranch v2`
+  remains, and `ActorTrust` cross-actor `supersedes` was deliberately
+  kept invalid (Decision B in `CAPABILITIES.md` §9).

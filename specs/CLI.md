@@ -242,6 +242,9 @@ kairo trust withdraw --by <id> --of <id> [--reason <text>]
 kairo trust show --by <id> --of <id> [--json]
 kairo trust list --by <id>
 kairo trust history --by <id> --of <id> [--json]
+kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]
+kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]
+kairo capability list (--grantor <id> | --object <id>)
 kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]
 kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]
 ```
@@ -343,6 +346,40 @@ enumerates the truster's current opinions, one per trusted actor.
 `trust history --by <id> --of <id>` walks the `supersedes` chain
 backwards from the head (newest first); a missing predecessor is
 reported as indeterminate rather than failing.
+
+`capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>...`
+signs and persists an `ActorCapabilityGrant` authorizing `--grantee` to
+issue the named statement kinds against `--object`. Repeat `--kind`
+once per kind (e.g. `--kind ObjectVersionTag --kind ObjectBranch`); the
+canonical encoder normalizes order. The CLI auto-computes the
+`supersedes` pointer: if `--grantor` has a prior chain leaf for the
+`(grantor, grantee, Object(<object>))` triple, the new statement
+supersedes it; otherwise it is the genesis grant. Optional flags:
+`--delegable` (allow further re-grant), `--expires-at <RFC3339>`,
+`--max-delegation-depth <N>`, `--key-pinned <keyid>`. See
+`specs/CAPABILITIES.md` §4.
+
+`capability revoke --grantor <id> --grant <statement-id>` signs an
+`ActorCapabilityRevocation` against the grant whose `StatementId` is
+`--grant`. The signing actor must equal the grant's original grantor;
+cross-grantor revocation is rejected at the CLI layer (and is invalid
+per `specs/CAPABILITIES.md` §5.2). `--retroactive` invalidates the
+grant from inception (see §6.3); the default invalidates only
+statements created strictly after the revocation.
+
+`capability list` enumerates chain heads. Pass exactly one of
+`--grantor <id>` (audit query — what has this actor delegated, one
+head per `(grantee, scope)` triple — drives the §7.1 cleanup runbook)
+or `--object <id>` (cross-cutting query — who holds capabilities on
+this object, one head per `(grantor, grantee)` pair).
+
+Capability resolution is on the read path: when resolving a tag head
+via `latest_version_tag`, a cross-actor `supersedes` edge is honored
+when the successor's signer holds an `ObjectVersionTag` capability on
+the object at the successor's `created_at`
+(`specs/CAPABILITIES.md` §6.2). The CLI does not need a separate
+"evaluate capability" command for that — the flip happens
+transparently inside `tag show`, `tag list`, `verify object`, etc.
 
 `snapshot compute --object <id>` resolves the chosen `ObjectRevision` and
 computes its `SnapshotId`. By default it follows the creator-actor's

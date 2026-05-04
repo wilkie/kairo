@@ -115,7 +115,9 @@ characters from the record id's base58 payload:
   statements/<XX>/<YY>/<statement-id>.json
                                          # signed ObjectRevision /
                                          # ObjectBranch / ObjectVersionTag /
-                                         # ActorTrust
+                                         # ActorTrust /
+                                         # ActorCapabilityGrant /
+                                         # ActorCapabilityRevocation
   branches/<XX>/<YY>/<object-id>.json    # per-object materialized
                                          # branch tip index
   version_tags/<XX>/<YY>/<object-id>.json
@@ -125,6 +127,17 @@ characters from the record id's base58 payload:
                                          # per-trusted-actor materialized
                                          # trust-opinion index, keyed
                                          # internally by truster
+  actor_capability/<XX>/<YY>/<grantor-id>.json
+                                         # per-grantor materialized
+                                         # capability index (grants nested
+                                         # by grantee → scope, plus a
+                                         # revocations sub-map keyed by
+                                         # revoked grant id)
+  actor_capability_by_object/<XX>/<YY>/<object-id>.json
+                                         # per-object reverse index of
+                                         # object-scoped grants, nested
+                                         # grantee → grantor; drives the
+                                         # §6.1 evaluator's hot query
   blobs/<XX>/<YY>/<blob-id>              # raw blob bytes
   keys/<actor-id>.json                   # FilesystemKeystore (mode 0600
                                          # on Unix; not part of the store
@@ -133,11 +146,13 @@ characters from the record id's base58 payload:
 
 Sharding (2 levels of 2 base58 chars from positions 3–4 and 5–6 of the
 id) yields up to ~11.3M sparse leaf directories per record type. The
-materialized indices (`branches/`, `version_tags/`, `trust/`) are
-strict materializations of the underlying signed statements: rebuild
-from `statements/` is correct but not yet implemented; for now the
-write paths (`put_object_branch`, `put_object_version_tag`,
-`put_actor_trust`) keep them consistent.
+materialized indices (`branches/`, `version_tags/`, `trust/`,
+`actor_capability/`, `actor_capability_by_object/`) are strict
+materializations of the underlying signed statements: rebuild from
+`statements/` is correct but not yet implemented; for now the write
+paths (`put_object_branch`, `put_object_version_tag`, `put_actor_trust`,
+`put_actor_capability_grant`, `put_actor_capability_revocation`) keep
+them consistent.
 
 Snapshots are not stored in the MVP — `kairo snapshot compute` derives
 a `SnapshotId` on demand from the resolved frontier; closure caching

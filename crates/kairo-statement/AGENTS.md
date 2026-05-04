@@ -68,5 +68,11 @@ break the JSON round-trip and tests will catch it late, not early.
   around. If they disagree, the schema doc wins and the impl is the
   bug.
 - Cross-actor authority claims (one actor's statement superseding
-  another's) belong to the deferred §10 capability model. Don't add
-  them to new statement types in the MVP.
+  another's) are governed by the capability model in
+  `specs/CAPABILITIES.md`. The `evaluate_capability` resolver in
+  `src/verify.rs` is the authority oracle; consult it (don't reinvent
+  it) when a new statement type needs cross-actor supersedes
+  semantics. Per Decision B in `specs/CAPABILITIES.md` §9,
+  `ActorTrust` is the one statement that explicitly stays
+  first-person — cross-actor supersedes is invalid for it even with
+  capabilities.

@@ -20,8 +20,11 @@ needs:
 
 3. **Materialized index** if the statement type has a per-key
    resolver concept (latest-wins, chain leaf, etc.):
-   - New module `src/<type>.rs` defining `<Type>IndexFile` (serde
-     transparent BTreeMap) and `<Type>Head` (public summary).
+   - New module `src/<type>.rs` defining `<Type>IndexFile` (often a
+     `serde(transparent)` BTreeMap, optionally with sibling sub-maps
+     when the type carries multiple lookup axes — see
+     `src/capabilities.rs`'s `grants` + `revocations` pair) and
+     `<Type>Head` (public summary).
    - Write path: `put_<type>` calls a private `upsert_<type>_index`
      helper that read-modify-writes the per-shard JSON.
    - Read path: a new `<Type>Resolver` trait + impl on
@@ -29,11 +32,30 @@ needs:
    - **Choose the shard key deliberately.** Per-object indices
      (branches, version_tags) shard on `object_id`; per-truster
      indices (trust) shard on the *trusted actor* so federation
-     aggregation queries are O(1). Document the choice in the
-     module's top-level `//!` doc.
+     aggregation queries are O(1); per-grantor capability indices
+     (`actor_capability`) shard on the signer because the grantor
+     owns revocation authority. Document the choice in the module's
+     top-level `//!` doc.
+   - **Multiple indices per statement type** are sometimes required:
+     `ActorCapabilityGrant` writes both the per-grantor index *and*
+     the per-object reverse index (`actor_capability_by_object`)
+     atomically inside `put_actor_capability_grant`, because the
+     §6.1 capability evaluator's hot query keys on object, not
+     grantor. Pattern: one `put_*` method, multiple
+     `upsert_*_index` helpers; document each index in its own
+     module-level `//!` doc.
    - Honor chain precedence (supersedes-leaf is authoritative; fork
      tiebreak only on `(created_at, statement_id)`) — see
-     `src/tags.rs` and `src/trust.rs` for the pattern.
+     `src/tags.rs`, `src/trust.rs`, and `src/capabilities.rs` for
+     the pattern.
+   - **Cross-actor `supersedes`** semantics live above the index, not
+     in it. The per-actor / same-actor chain head is the index's
+     job; honoring cross-actor edges requires an authority oracle
+     (`evaluate_capability`). See
+     `FilesystemStore::walk_authorized_tag_chain` for the pattern:
+     compute same-actor leaf in the index module, then walk forward
+     through authorized cross-actor sup edges in `lib.rs` where the
+     resolver has `&self`.
 
 4. **Tests** in `src/lib.rs`'s `tests` module covering at minimum:
    round-trip; latest/head resolution; chain precedence overriding

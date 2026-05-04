@@ -11,10 +11,10 @@ to do (filesystem, network, GPU, display, …).
 
 These are unrelated to **actor capabilities** (the distributed-systems sense:
 delegated authority for one actor to issue statements on behalf of another).
-Actor capabilities are specified in `CAPABILITIES.md` and seeded today by
-`ACTORS.md` §10–12. When this document says "capability" without qualification,
-it means *sandbox capability* — the runtime permission granted to an executing
-artifact.
+Actor capabilities are specified in `CAPABILITIES.md`; `ACTORS.md` §10–12
+predates that spec and now forward-references it. When this document says
+"capability" without qualification, it means *sandbox capability* — the
+runtime permission granted to an executing artifact.
 
 ---
 
