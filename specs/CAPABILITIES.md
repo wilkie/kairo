@@ -254,9 +254,17 @@ query — "for this `(grantor, grantee, scope)` triple, what is in
 effect?" — is O(1) once the file is loaded.
 
 The cross-cutting "for this `(object, grantee)`, is there any covering
-capability?" query is satisfied via a materialized object-scoped
-reverse index (§8 item 6), parallel to the per-truster reverse trust
-index discussed in Phase 2 §11.
+capability?" query — the §6.1 capability evaluator's hot path — is
+satisfied via a per-object materialized reverse index at:
+
+```text
+actor_capability_by_object/<XX>/<YY>/<object-id>.json
+```
+
+The reverse index nests `grantee → grantor → chain entries[]` and is
+written at put-time alongside the per-grantor index (object-scoped
+grants only — actor-scoped grants get their own reverse index when
+actor-surface kinds land per §4.3).
 
 Canonical encoding follows the project convention
 (`schemas/canonical/`) — domain-tagged binary, signed envelope as defined

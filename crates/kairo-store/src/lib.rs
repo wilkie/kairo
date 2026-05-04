@@ -26,7 +26,11 @@
 //! `(grantor, grantee, scope)` `ActorCapabilityGrant` head — and any
 //! effective `ActorCapabilityRevocation` for a grant — via a per-
 //! grantor materialized index maintained by
-//! `put_actor_capability_grant` / `put_actor_capability_revocation`.
+//! `put_actor_capability_grant` / `put_actor_capability_revocation`,
+//! plus a per-object cross-cutting reverse index maintained by
+//! `put_actor_capability_grant` for the object-scoped grants. The
+//! reverse index drives the §6.1 "for grantee `B` on object `O`, is
+//! there any covering grant?" hot path.
 //!
 //! [`FilesystemStore`] implements all of these. It also implements
 //! [`ActorResolver`] so `kairo-statement::verify` consumes a store directly.
@@ -40,6 +44,7 @@
 
 mod branches;
 mod capabilities;
+mod capabilities_by_object;
 pub mod error;
 mod shard;
 mod tags;
@@ -65,6 +70,7 @@ use kairo_statement::{
 
 pub use branches::BranchTip;
 pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
+pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
@@ -79,6 +85,7 @@ const BRANCHES_DIR: &str = "branches";
 const VERSION_TAGS_DIR: &str = "version_tags";
 const TRUST_DIR: &str = "trust";
 const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
+const ACTOR_CAPABILITY_BY_OBJECT_DIR: &str = "actor_capability_by_object";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -327,6 +334,21 @@ pub trait CapabilityResolver {
     /// grantor's outstanding grants for key-compromise cleanup).
     fn list_capabilities_from(&self, grantor: &ActorId)
         -> Result<Vec<CapabilityHead>, StoreError>;
+
+    /// All known `(grantor, grantee)` chain heads on `object` —
+    /// across every grantor that has issued an object-scoped grant
+    /// on it. Drives the §6.1 capability evaluator's hot path: when
+    /// asking "does grantee `B` hold a covering grant on `O`?", the
+    /// resolver enumerates these heads and evaluates each. Returns
+    /// an empty vector if no grants target the object.
+    ///
+    /// Actor-scoped grants are not surfaced here (no statement kinds
+    /// are valid for actor scope in v1; see `specs/CAPABILITIES.md`
+    /// §4.3).
+    fn list_capabilities_for_object(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Vec<CapabilityByObjectHead>, StoreError>;
 }
 
 /// Persistence interface for raw byte blobs.
@@ -659,6 +681,15 @@ impl StatementStore for FilesystemStore {
         self.upsert_capability_grant_index(
             grantor, grantee, scope, &id, created_at, supersedes,
         )?;
+        // Object-scoped grants also land in the cross-cutting reverse
+        // index. Actor-scoped grants are skipped — see
+        // `capabilities_by_object.rs` doc and `specs/CAPABILITIES.md`
+        // §4.3 (no statement kinds are valid for actor scope in v1).
+        if let CapabilityScope::Object(object) = scope {
+            self.upsert_capability_by_object_index(
+                object, grantee, grantor, &id, created_at, supersedes,
+            )?;
+        }
 
         Ok(id)
     }
@@ -957,6 +988,63 @@ impl FilesystemStore {
         }
     }
 
+    fn upsert_capability_by_object_index(
+        &self,
+        object: &ObjectId,
+        grantee: &ActorId,
+        grantor: &ActorId,
+        statement_id: &StatementId,
+        created_at: kairo_core::Timestamp,
+        supersedes: Option<&StatementId>,
+    ) -> Result<(), StoreError> {
+        let path =
+            self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
+        let mut index = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<
+                capabilities_by_object::CapabilityByObjectIndexFile,
+            >(&bytes)
+            .map_err(|error| StoreError::Corrupt {
+                id: object.to_string(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid capabilities-by-object index: {error}"
+                )),
+            })?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                capabilities_by_object::CapabilityByObjectIndexFile::default()
+            }
+            Err(error) => return Err(StoreError::Unavailable(error)),
+        };
+
+        let updated = index.upsert(grantee, grantor, statement_id, created_at, supersedes);
+        if updated {
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_capability_by_object_index(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Option<capabilities_by_object::CapabilityByObjectIndexFile>, StoreError> {
+        let path =
+            self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: capabilities_by_object::CapabilityByObjectIndexFile =
+                    serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                        id: object.to_string(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid capabilities-by-object index: {error}"
+                        )),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
     /// Walk the trust directory and apply `for_each` to each
     /// `(trusted_actor, index)` pair. Used by `list_trust(by_actor)`
     /// in the absence of a per-truster reverse index.
@@ -1245,6 +1333,16 @@ impl CapabilityResolver for FilesystemStore {
             return Ok(Vec::new());
         };
         index.into_heads(grantor)
+    }
+
+    fn list_capabilities_for_object(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Vec<CapabilityByObjectHead>, StoreError> {
+        let Some(index) = self.read_capability_by_object_index(object)? else {
+            return Ok(Vec::new());
+        };
+        index.into_heads(object)
     }
 }
 
@@ -2935,6 +3033,143 @@ mod tests {
             .join(shard2)
             .join(format!("{id}.json"));
         assert!(expected.exists(), "expected sharded path {expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn list_capabilities_for_object_returns_per_grantor_grantee_heads() -> TestResult {
+        // Two different grantors each issue an object-scoped grant on
+        // the same object, one to grantee_one and one to grantee_two.
+        // The reverse index returns both heads.
+        let (_dir, store) = open_temp_store()?;
+        let grantor_one = fresh_genesis().actor_id();
+        let grantor_two = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+        let grantee_one = grantee_actor();
+        let grantee_two = other_grantee_actor();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let scope = CapabilityScope::Object(object.clone());
+
+        let grant_one = signed_capability_grant(
+            grantor_one.clone(),
+            grantee_one.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let grant_two = signed_capability_grant(
+            grantor_two.clone(),
+            grantee_two.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&grant_one)?;
+        store.put_actor_capability_grant(&grant_two)?;
+
+        let heads = store.list_capabilities_for_object(&object)?;
+        assert_eq!(heads.len(), 2);
+        let pair_one = heads
+            .iter()
+            .find(|h| h.grantor == grantor_one && h.grantee == grantee_one)
+            .expect("(grantor_one, grantee_one) head present");
+        assert_eq!(pair_one.statement_id, grant_one.statement_id());
+        assert_eq!(pair_one.object, object);
+        let pair_two = heads
+            .iter()
+            .find(|h| h.grantor == grantor_two && h.grantee == grantee_two)
+            .expect("(grantor_two, grantee_two) head present");
+        assert_eq!(pair_two.statement_id, grant_two.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn list_capabilities_for_object_picks_chain_leaf_per_triple() -> TestResult {
+        // Same (grantor, grantee, object) triple — successor wins
+        // over predecessor in the reverse index.
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let scope = CapabilityScope::Object(object.clone());
+        let genesis = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let genesis_id = store.put_actor_capability_grant(&genesis)?;
+        let successor = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope,
+            Some(genesis_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        let successor_id = store.put_actor_capability_grant(&successor)?;
+
+        let heads = store.list_capabilities_for_object(&object)?;
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].statement_id, successor_id);
+        Ok(())
+    }
+
+    #[test]
+    fn list_capabilities_for_unknown_object_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let object = ObjectId::new(OBJECT_ID)?;
+        let heads = store.list_capabilities_for_object(&object)?;
+        assert!(heads.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn capabilities_by_object_index_path_is_sharded() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let scope = CapabilityScope::Object(object.clone());
+        let signed = signed_capability_grant(grantor, grantee, scope, None, timestamp())?;
+        store.put_actor_capability_grant(&signed)?;
+
+        let shard1 = &object.as_str()[3..5];
+        let shard2 = &object.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(ACTOR_CAPABILITY_BY_OBJECT_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{object}.json"));
+        assert!(
+            expected.exists(),
+            "expected capabilities-by-object index at {expected:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_capabilities_for_object_excludes_other_objects() -> TestResult {
+        // A grant on object A must not appear when listing object B.
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let object_a = ObjectId::new(OBJECT_ID)?;
+        let object_b = ObjectId::from_sha256_digest([99; 32]);
+        let scope_a = CapabilityScope::Object(object_a.clone());
+        let signed = signed_capability_grant(grantor, grantee, scope_a, None, timestamp())?;
+        store.put_actor_capability_grant(&signed)?;
+
+        let heads_b = store.list_capabilities_for_object(&object_b)?;
+        assert!(heads_b.is_empty());
+        let heads_a = store.list_capabilities_for_object(&object_a)?;
+        assert_eq!(heads_a.len(), 1);
         Ok(())
     }
 
