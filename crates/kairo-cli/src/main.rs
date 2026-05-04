@@ -3405,6 +3405,9 @@ fn format_signature_status(status: &SignatureStatus) -> &'static str {
         SignatureStatus::UnsupportedAlgorithm(_) => "unsupported-algorithm",
         SignatureStatus::Malformed { .. } => "malformed",
         SignatureStatus::AlgorithmMismatch => "algorithm-mismatch",
+        SignatureStatus::KeyMismatch { .. } => "key-mismatch",
+        SignatureStatus::KeyRevoked => "key-revoked",
+        SignatureStatus::NoActiveKey => "no-active-key",
         SignatureStatus::NotEvaluated => "not-evaluated",
     }
 }
@@ -3457,6 +3460,18 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
         )),
         SignatureStatus::AlgorithmMismatch => {
             parts.push("signature algorithm does not match resolved key".to_owned());
+        }
+        SignatureStatus::KeyMismatch {
+            signature_key_id,
+            active_key_id,
+        } => parts.push(format!(
+            "signature key {signature_key_id} is not the actor's active key at this causal position (active key is {active_key_id})"
+        )),
+        SignatureStatus::KeyRevoked => {
+            parts.push("signing key is revoked at this causal position".to_owned());
+        }
+        SignatureStatus::NoActiveKey => {
+            parts.push("actor has no active signing key at this causal position".to_owned());
         }
     }
     if parts.is_empty() {

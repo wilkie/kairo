@@ -57,12 +57,14 @@ pub enum ActorResolution {
     SignatureActorMismatch,
 }
 
-/// Whether the signature verified against the resolved initial key.
+/// Whether the signature verified against the actor's active key at the
+/// statement's causal position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignatureStatus {
-    /// Signature verified against the resolved key.
+    /// Signature verified against the actor's active key at
+    /// `created_at`, and that key was not revoked.
     Valid,
-    /// Signature did not verify against the resolved key.
+    /// Signature did not verify against the resolved active key.
     Invalid,
     /// Signature algorithm is not understood by this implementation.
     UnsupportedAlgorithm(String),
@@ -73,6 +75,20 @@ pub enum SignatureStatus {
     },
     /// Algorithm declared on the signature does not match the resolved key.
     AlgorithmMismatch,
+    /// `signature.key_id` does not match the actor's active key at the
+    /// statement's `created_at` per the rotation chain
+    /// (`ACTORS.md` §5.5). Carries both ids for diagnostics.
+    KeyMismatch {
+        signature_key_id: String,
+        active_key_id: String,
+    },
+    /// `signature.key_id` matches the active key at `created_at`, but
+    /// that key is revoked for the actor at that time per the
+    /// revocation set (`ACTORS.md` §5.5).
+    KeyRevoked,
+    /// The actor has no active key at the statement's `created_at`
+    /// (e.g. they revoked their only key). Verification cannot proceed.
+    NoActiveKey,
     /// Signature was not evaluated (e.g. actor could not be resolved).
     NotEvaluated,
 }
@@ -243,6 +259,24 @@ pub trait CapabilityResolver {
         &self,
         object: &ObjectId,
     ) -> Result<Option<Vec<ActorId>>, Self::Error>;
+
+    /// Whether `(actor, key_id)` is revoked at causal position `at`.
+    ///
+    /// Drives the `KeyPinned` constraint check in
+    /// [`evaluate_capability`]: a pinned grant whose pinned key is
+    /// revoked collapses to [`CapabilityEvaluation::Revoked`]
+    /// (`specs/CAPABILITIES.md` §7.2). The default returns `false`,
+    /// preserving the v1 behavior where `KeyPinned` was declarative
+    /// only — backing stores override this to consult their per-actor
+    /// revocation set.
+    fn is_key_revoked_at(
+        &self,
+        _actor: &ActorId,
+        _key_id: &kairo_identity::KeyId,
+        _at: Timestamp,
+    ) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
 }
 
 /// Resolve "does `grantee` have authority to issue statements of
@@ -357,11 +391,16 @@ fn evaluate_inner<R: CapabilityResolver>(
                         break;
                     }
                 }
-                CapabilityConstraint::KeyPinned(_) => {
-                    // §7.2 — auto-invalidation on grantor key
-                    // revocation requires a key-state lookup that
-                    // is not part of this trait in the MVP. Treated
-                    // as informational; deferred.
+                CapabilityConstraint::KeyPinned(key_id) => {
+                    // §7.2 — pinned grant collapses to Revoked the
+                    // moment the named key is revoked, regardless of
+                    // whether the revocation is retroactive. The
+                    // grantor is the authority for the pinned key.
+                    if resolver.is_key_revoked_at(&grantor, key_id, at)? {
+                        constraint_failure =
+                            Some(CapabilityEvaluation::Revoked(grant_id.clone()));
+                        break;
+                    }
                 }
             }
         }
@@ -439,6 +478,7 @@ where
     let statement_id = statement.statement_id();
     let envelope_actor = statement.unsigned().actor().clone();
     let signature_actor = statement.signature().actor().clone();
+    let created_at = statement.unsigned().created_at();
 
     if signature_actor != envelope_actor {
         return VerificationReport {
@@ -451,8 +491,9 @@ where
         };
     }
 
-    let genesis = match resolver.actor_genesis(&envelope_actor) {
-        Ok(Some(genesis)) => genesis,
+    // Confirm the actor exists before consulting the rotation chain.
+    match resolver.actor_genesis(&envelope_actor) {
+        Ok(Some(_)) => {}
         Ok(None) => {
             return VerificationReport {
                 statement_id,
@@ -473,9 +514,82 @@ where
                 trust: TrustEvaluation::Unevaluated,
             };
         }
+    }
+
+    // Resolve the active key at the statement's causal position
+    // (per `ACTORS.md` §5.5 / §6.1). Falls back to the genesis-initial
+    // key automatically when no rotations precede `created_at`.
+    let active_key = match resolver.active_key_at(&envelope_actor, created_at) {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::Resolved,
+                signature: SignatureStatus::NoActiveKey,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+        Err(ActorResolveError::Unavailable(reason)) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::ResolverUnavailable(reason),
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
     };
 
-    let signature = match statement.verify_signature(genesis.initial_key()) {
+    // The signature's `key_id` must match the active key at
+    // `created_at`. A signature carrying a stale `key_id` (e.g. an
+    // already-rotated-out key) is not authorized — even if the bytes
+    // happen to verify against some other historical key.
+    let active_key_id = active_key.key_id();
+    if statement.signature().key_id() != active_key_id.as_str() {
+        return VerificationReport {
+            statement_id,
+            envelope_actor,
+            signature_actor,
+            actor: ActorResolution::Resolved,
+            signature: SignatureStatus::KeyMismatch {
+                signature_key_id: statement.signature().key_id().to_owned(),
+                active_key_id: active_key_id.to_string(),
+            },
+            trust: TrustEvaluation::Unevaluated,
+        };
+    }
+
+    // Active key may have been revoked at or before `created_at`
+    // (or retroactively). A retroactive revocation invalidates this
+    // statement even though `key_id` matches the active-key chain.
+    match resolver.is_key_revoked_at(&envelope_actor, &active_key_id, created_at) {
+        Ok(true) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::Resolved,
+                signature: SignatureStatus::KeyRevoked,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+        Ok(false) => {}
+        Err(ActorResolveError::Unavailable(reason)) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::ResolverUnavailable(reason),
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+    }
+
+    let signature = match statement.verify_signature(&active_key) {
         Ok(_) => SignatureStatus::Valid,
         Err(StatementSignatureError::Verification(
             SignatureVerificationError::InvalidSignature,
@@ -483,14 +597,14 @@ where
         Err(StatementSignatureError::Verification(
             SignatureVerificationError::InvalidPublicKey,
         )) => {
-            // The resolved genesis carries a malformed key. Surface as an
+            // The resolved active key is malformed. Surface as an
             // operational resolver issue rather than an invalid statement.
             return VerificationReport {
                 statement_id,
                 envelope_actor,
                 signature_actor,
                 actor: ActorResolution::ResolverUnavailable(
-                    "actor genesis carries a malformed initial key".to_owned(),
+                    "actor active key is malformed".to_owned(),
                 ),
                 signature: SignatureStatus::NotEvaluated,
                 trust: TrustEvaluation::Unevaluated,
@@ -773,13 +887,46 @@ mod tests {
 
     #[test]
     fn wrong_signing_key() -> Result<(), Box<dyn std::error::Error>> {
-        // Genesis declares key A; statement is signed with key B.
+        // Genesis declares key A; statement is signed with key B and
+        // honestly carries B's key_id. Verification rejects at the
+        // key-id check before even examining the bytes — the active
+        // key for this actor at `created_at` is A, not B.
         let envelope_key = signing_key();
         let genesis = genesis_for(&envelope_key);
         let actor_id = genesis.actor_id();
         let unsigned = unsigned_for_actor(actor_id.clone())?;
         let attacker = other_signing_key();
         let signature = sign_with(&unsigned, &attacker, actor_id, "ed25519", None);
+        let signed = SignedStatement::new(unsigned, signature);
+
+        let report = verify_envelope_statement(&signed, &resolver_with(genesis));
+
+        assert_eq!(report.actor, ActorResolution::Resolved);
+        assert!(matches!(
+            report.signature,
+            SignatureStatus::KeyMismatch { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn forged_key_id_with_attacker_bytes_is_invalid() -> Result<(), Box<dyn std::error::Error>> {
+        // Genesis declares key A. Attacker signs with key B but forges
+        // A's key_id onto the signature (claiming to be A). The key-id
+        // check passes, but the bytes do not verify against A — so the
+        // result is `Invalid`, not `KeyMismatch`.
+        let envelope_key = signing_key();
+        let genesis = genesis_for(&envelope_key);
+        let actor_id = genesis.actor_id();
+        let unsigned = unsigned_for_actor(actor_id.clone())?;
+        let attacker = other_signing_key();
+        let attacker_bytes = attacker.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let signature = Signature::new(
+            actor_id,
+            public_key_for(&envelope_key).key_id().to_string(),
+            "ed25519",
+            attacker_bytes,
+        );
         let signed = SignedStatement::new(unsigned, signature);
 
         let report = verify_envelope_statement(&signed, &resolver_with(genesis));
@@ -977,6 +1124,9 @@ mod tests {
         revocations:
             HashMap<(String, String), SignedStatement<ActorCapabilityRevocationBody>>,
         object_root: HashMap<String, Vec<ActorId>>,
+        /// `(actor, key_id) -> (retroactive, created_at)`. Drives
+        /// `is_key_revoked_at` for KeyPinned tests.
+        revoked_keys: HashMap<(String, String), (bool, Timestamp)>,
     }
 
     impl MemoryCapabilityResolver {
@@ -999,6 +1149,19 @@ mod tests {
 
         fn set_root(&mut self, object: &ObjectId, root: Vec<ActorId>) {
             self.object_root.insert(object.to_string(), root);
+        }
+
+        fn revoke_key(
+            &mut self,
+            actor: &ActorId,
+            key_id: &kairo_identity::KeyId,
+            retroactive: bool,
+            created_at: Timestamp,
+        ) {
+            self.revoked_keys.insert(
+                (actor.to_string(), key_id.to_string()),
+                (retroactive, created_at),
+            );
         }
     }
 
@@ -1064,6 +1227,21 @@ mod tests {
             object: &ObjectId,
         ) -> Result<Option<Vec<ActorId>>, Self::Error> {
             Ok(self.object_root.get(object.as_str()).cloned())
+        }
+
+        fn is_key_revoked_at(
+            &self,
+            actor: &ActorId,
+            key_id: &kairo_identity::KeyId,
+            at: Timestamp,
+        ) -> Result<bool, Self::Error> {
+            Ok(match self
+                .revoked_keys
+                .get(&(actor.to_string(), key_id.to_string()))
+            {
+                Some((retroactive, created_at)) => *retroactive || at >= *created_at,
+                None => false,
+            })
         }
     }
 
@@ -1349,6 +1527,104 @@ mod tests {
     }
 
     #[test]
+    fn key_pinned_collapses_to_revoked_when_pinned_key_is_revoked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Root grants Bob a KeyPinned grant. Root then revokes the
+        // pinned key. evaluate_capability collapses the grant to
+        // Revoked at any time after the revocation, regardless of
+        // whether an explicit ActorCapabilityRevocation was issued.
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let pinned_key = kairo_identity::KeyId::new(
+            "zQmZ12345678901234567890123456789012345678901234".to_owned(),
+        );
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        let grant = signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![CapabilityConstraint::KeyPinned(pinned_key.clone())],
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        resolver.insert_grant(grant);
+
+        // Before the pinned key is revoked: Held.
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Held);
+
+        // Revoke the pinned key (non-retroactive, at t+50).
+        resolver.revoke_key(
+            &root,
+            &pinned_key,
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 50),
+        );
+
+        // Querying at t+100: Revoked.
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Revoked(grant_id));
+        Ok(())
+    }
+
+    #[test]
+    fn key_pinned_retroactive_revocation_invalidates_grant_at_every_timestamp()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = fresh_actor(1);
+        let bob = fresh_actor(2);
+        let object = fresh_object(9);
+        let pinned_key = kairo_identity::KeyId::new(
+            "zQmZ12345678901234567890123456789012345678901234".to_owned(),
+        );
+        let mut resolver = MemoryCapabilityResolver::default();
+        resolver.set_root(&object, vec![root.clone()]);
+        let grant = signed_capability_grant(
+            &root,
+            &bob,
+            CapabilityScope::Object(object.clone()),
+            vec![StatementKind::ObjectVersionTag],
+            false,
+            vec![CapabilityConstraint::KeyPinned(pinned_key.clone())],
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        resolver.insert_grant(grant);
+
+        // Retroactive revocation at t+50 invalidates even queries at t.
+        resolver.revoke_key(
+            &root,
+            &pinned_key,
+            true,
+            Timestamp::from_seconds(timestamp().seconds() + 50),
+        );
+
+        let evaluation = evaluate_capability(
+            &bob,
+            &capability_target(&object, StatementKind::ObjectVersionTag),
+            timestamp(),
+            &resolver,
+        )?;
+        assert_eq!(evaluation, CapabilityEvaluation::Revoked(grant_id));
+        Ok(())
+    }
+
+    #[test]
     fn evaluate_capability_held_in_delegated_chain()
     -> Result<(), Box<dyn std::error::Error>> {
         // root → A (delegable=true, MDD=2) → B (final user)
@@ -1571,6 +1847,158 @@ mod tests {
             &resolver,
         )?;
         assert_eq!(evaluation, CapabilityEvaluation::GrantorLacksAuthority);
+        Ok(())
+    }
+
+    // ---- Key chain integration ----
+
+    fn unsigned_for_actor_at(
+        actor: ActorId,
+        at: Timestamp,
+    ) -> Result<UnsignedStatement<ObjectRevisionBody>, kairo_core::IdError> {
+        Ok(UnsignedStatement::new(actor, object_ref()?, at, revision_body()?))
+    }
+
+    #[test]
+    fn statement_signed_by_rotated_in_key_after_rotation_is_valid()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Genesis declares key A. Actor publishes a rotation to key B
+        // at t+10. A statement signed by B with created_at = t+20
+        // verifies as Valid.
+        let key_a = signing_key();
+        let key_b = other_signing_key();
+        let genesis = genesis_for(&key_a);
+        let actor_id = genesis.actor_id();
+
+        let mut resolver = MemoryActorResolver::new();
+        resolver.insert(genesis);
+        resolver.insert_rotation(
+            actor_id.clone(),
+            kairo_identity::KeyRotationEntry {
+                statement_id: "rot-1".to_owned(),
+                next_key: public_key_for(&key_b),
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 10),
+                supersedes: None,
+            },
+        );
+
+        let unsigned = unsigned_for_actor_at(
+            actor_id.clone(),
+            Timestamp::from_seconds(timestamp().seconds() + 20),
+        )?;
+        let signature = sign_with(&unsigned, &key_b, actor_id, "ed25519", None);
+        let signed = SignedStatement::new(unsigned, signature);
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert_eq!(report.signature, SignatureStatus::Valid);
+        Ok(())
+    }
+
+    #[test]
+    fn statement_signed_by_rotated_out_key_after_rotation_is_key_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Genesis declares key A. Rotation to key B at t+10. A
+        // statement signed by A (the rotated-out key) with
+        // created_at = t+20 fails: at t+20 the active key is B, not A.
+        let key_a = signing_key();
+        let key_b = other_signing_key();
+        let genesis = genesis_for(&key_a);
+        let actor_id = genesis.actor_id();
+
+        let mut resolver = MemoryActorResolver::new();
+        resolver.insert(genesis);
+        resolver.insert_rotation(
+            actor_id.clone(),
+            kairo_identity::KeyRotationEntry {
+                statement_id: "rot-1".to_owned(),
+                next_key: public_key_for(&key_b),
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 10),
+                supersedes: None,
+            },
+        );
+
+        let unsigned = unsigned_for_actor_at(
+            actor_id.clone(),
+            Timestamp::from_seconds(timestamp().seconds() + 20),
+        )?;
+        let signature = sign_with(&unsigned, &key_a, actor_id, "ed25519", None);
+        let signed = SignedStatement::new(unsigned, signature);
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert!(matches!(
+            report.signature,
+            SignatureStatus::KeyMismatch { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn statement_signed_by_revoked_key_is_key_revoked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Genesis declares key A. Actor revokes key A at t+50. A
+        // statement signed by A with created_at = t+100 fails as
+        // KeyRevoked even though A's signature bytes verify.
+        let key_a = signing_key();
+        let genesis = genesis_for(&key_a);
+        let actor_id = genesis.actor_id();
+        let key_a_id = public_key_for(&key_a).key_id();
+
+        let mut resolver = MemoryActorResolver::new();
+        resolver.insert(genesis);
+        resolver.insert_revocation(
+            actor_id.clone(),
+            kairo_identity::KeyRevocationEntry {
+                statement_id: "rev-1".to_owned(),
+                revoked_key: key_a_id,
+                retroactive: false,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 50),
+            },
+        );
+
+        let unsigned = unsigned_for_actor_at(
+            actor_id.clone(),
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        let signature = sign_with(&unsigned, &key_a, actor_id, "ed25519", None);
+        let signed = SignedStatement::new(unsigned, signature);
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert_eq!(report.signature, SignatureStatus::KeyRevoked);
+        Ok(())
+    }
+
+    #[test]
+    fn retroactive_revocation_invalidates_prior_statement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Statement signed at t+10 with key A; later (at t+50) the
+        // actor publishes a retroactive revocation of key A. The
+        // earlier statement now flips to KeyRevoked.
+        let key_a = signing_key();
+        let genesis = genesis_for(&key_a);
+        let actor_id = genesis.actor_id();
+        let key_a_id = public_key_for(&key_a).key_id();
+
+        let mut resolver = MemoryActorResolver::new();
+        resolver.insert(genesis);
+        resolver.insert_revocation(
+            actor_id.clone(),
+            kairo_identity::KeyRevocationEntry {
+                statement_id: "rev-1".to_owned(),
+                revoked_key: key_a_id,
+                retroactive: true,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 50),
+            },
+        );
+
+        let unsigned = unsigned_for_actor_at(
+            actor_id.clone(),
+            Timestamp::from_seconds(timestamp().seconds() + 10),
+        )?;
+        let signature = sign_with(&unsigned, &key_a, actor_id, "ed25519", None);
+        let signed = SignedStatement::new(unsigned, signature);
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert_eq!(report.signature, SignatureStatus::KeyRevoked);
         Ok(())
     }
 }

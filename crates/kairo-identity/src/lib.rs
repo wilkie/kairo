@@ -551,6 +551,7 @@ impl fmt::Display for SignatureVerificationError {
 impl Error for SignatureVerificationError {}
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
 

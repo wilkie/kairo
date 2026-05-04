@@ -46,6 +46,7 @@ mod branches;
 mod capabilities;
 mod capabilities_by_object;
 pub mod error;
+mod keys;
 mod shard;
 mod tags;
 mod trust;
@@ -56,16 +57,19 @@ use std::path::{Path, PathBuf};
 
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
-use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
+use kairo_identity::{
+    ActorGenesisBody, ActorResolveError, ActorResolver, KeyRevocationEntry, KeyRotationEntry,
+};
 use kairo_statement::json::{
     ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
-    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
-    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    ActorKeyRevocationStatementJson, ActorKeyRotationStatementJson, ActorTrustStatementJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, CapabilityScope,
-    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
-    SignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRevocationBody,
+    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ObjectBranchBody, ObjectGenesisStatement,
+    ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
 };
 
 pub use branches::BranchTip;
@@ -86,6 +90,7 @@ const VERSION_TAGS_DIR: &str = "version_tags";
 const TRUST_DIR: &str = "trust";
 const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
 const ACTOR_CAPABILITY_BY_OBJECT_DIR: &str = "actor_capability_by_object";
+const ACTOR_KEYS_DIR: &str = "actor_keys";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -189,6 +194,26 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, StoreError>;
+
+    fn put_actor_key_rotation(
+        &self,
+        statement: &SignedStatement<ActorKeyRotationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_key_rotation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorKeyRotationBody>, StoreError>;
+
+    fn put_actor_key_revocation(
+        &self,
+        statement: &SignedStatement<ActorKeyRevocationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_key_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorKeyRevocationBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -771,6 +796,104 @@ impl StatementStore for FilesystemStore {
         }
         Ok(signed)
     }
+
+    fn put_actor_key_rotation(
+        &self,
+        statement: &SignedStatement<ActorKeyRotationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorKeyRotationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_key_rotation_index(
+            actor,
+            &id,
+            body.next_key(),
+            created_at,
+            body.supersedes(),
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_key_rotation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorKeyRotationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorKeyRotationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+
+    fn put_actor_key_revocation(
+        &self,
+        statement: &SignedStatement<ActorKeyRevocationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorKeyRevocationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_key_revocation_index(
+            actor,
+            &id,
+            body.revoked_key(),
+            body.retroactive(),
+            created_at,
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_key_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorKeyRevocationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorKeyRevocationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
 }
 
 impl FilesystemStore {
@@ -919,6 +1042,61 @@ impl FilesystemStore {
                 Ok(Some(index))
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
+    fn upsert_key_rotation_index(
+        &self,
+        actor: &ActorId,
+        statement_id: &StatementId,
+        next_key: &kairo_identity::PublicKey,
+        created_at: kairo_core::Timestamp,
+        supersedes: Option<&StatementId>,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_key_index_or_default(actor)?;
+        let updated = index.upsert_rotation(statement_id, next_key, created_at, supersedes);
+        if updated {
+            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn upsert_key_revocation_index(
+        &self,
+        actor: &ActorId,
+        statement_id: &StatementId,
+        revoked_key: &kairo_identity::KeyId,
+        retroactive: bool,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_key_index_or_default(actor)?;
+        let updated = index.upsert_revocation(statement_id, revoked_key, retroactive, created_at);
+        if updated {
+            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_key_index_or_default(
+        &self,
+        actor: &ActorId,
+    ) -> Result<keys::KeyEventIndexFile, StoreError> {
+        let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<keys::KeyEventIndexFile>(&bytes).map_err(
+                |error| StoreError::Corrupt {
+                    id: actor.to_string(),
+                    reason: CorruptReason::Parse(format!("invalid key event index: {error}")),
+                },
+            ),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(keys::KeyEventIndexFile::default())
+            }
             Err(error) => Err(StoreError::Unavailable(error)),
         }
     }
@@ -1713,6 +1891,30 @@ impl ActorResolver for FilesystemStore {
             Err(error) => Err(ActorResolveError::Unavailable(error.to_string())),
         }
     }
+
+    fn key_rotations(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
+        let index = self
+            .read_key_index_or_default(actor)
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
+        index
+            .decode_rotations(actor.as_str())
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
+    }
+
+    fn key_revocations(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<KeyRevocationEntry>, ActorResolveError> {
+        let index = self
+            .read_key_index_or_default(actor)
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
+        index
+            .decode_revocations()
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
+    }
 }
 
 impl kairo_statement::verify::TrustResolver for FilesystemStore {
@@ -1769,6 +1971,16 @@ impl kairo_statement::verify::CapabilityResolver for FilesystemStore {
             Err(StoreError::Missing) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    fn is_key_revoked_at(
+        &self,
+        actor: &ActorId,
+        key_id: &kairo_identity::KeyId,
+        at: kairo_core::Timestamp,
+    ) -> Result<bool, Self::Error> {
+        ActorResolver::is_key_revoked_at(self, actor, key_id, at)
+            .map_err(|error| StoreError::Unavailable(io::Error::other(error.to_string())))
     }
 }
 
@@ -3982,6 +4194,246 @@ mod tests {
             &store,
         )?;
         assert_eq!(evaluation, CapabilityEvaluation::Held);
+        Ok(())
+    }
+
+    // ---- ActorKeyRotation / ActorKeyRevocation ----
+
+    fn other_public_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes())
+    }
+
+    fn third_public_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[10; 32]).verifying_key().to_bytes())
+    }
+
+    fn signed_key_rotation(
+        actor: ActorId,
+        next_key: PublicKey,
+        supersedes: Option<StatementId>,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorKeyRotationBody>, Box<dyn std::error::Error>> {
+        let body = ActorKeyRotationBody::new(next_key, supersedes);
+        let subject: KairoRef = format!("actor:{actor}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn signed_key_revocation(
+        actor: ActorId,
+        revoked_key: kairo_identity::KeyId,
+        retroactive: bool,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorKeyRevocationBody>, Box<dyn std::error::Error>> {
+        let body = ActorKeyRevocationBody::new(revoked_key, retroactive, None);
+        let subject: KairoRef = format!("actor:{actor}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn round_trips_actor_key_rotation() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let signed = signed_key_rotation(actor, other_public_key(), None, timestamp())?;
+        let id = store.put_actor_key_rotation(&signed)?;
+        let loaded = store.get_actor_key_rotation(&id)?;
+        assert_eq!(loaded, signed);
+        Ok(())
+    }
+
+    #[test]
+    fn round_trips_actor_key_revocation() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let signed = signed_key_revocation(
+            actor,
+            other_public_key().key_id(),
+            true,
+            timestamp(),
+        )?;
+        let id = store.put_actor_key_revocation(&signed)?;
+        let loaded = store.get_actor_key_revocation(&id)?;
+        assert_eq!(loaded, signed);
+        Ok(())
+    }
+
+    #[test]
+    fn key_event_index_path_is_sharded() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let signed = signed_key_rotation(actor.clone(), other_public_key(), None, timestamp())?;
+        store.put_actor_key_rotation(&signed)?;
+
+        let shard1 = &actor.as_str()[3..5];
+        let shard2 = &actor.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(ACTOR_KEYS_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{actor}.json"));
+        assert!(expected.exists(), "expected key index at {expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn active_key_at_falls_back_to_genesis_initial_when_no_rotations() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let resolved = ActorResolver::active_key_at(
+            &store,
+            &actor,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        assert_eq!(resolved, Some(public_key()));
+        Ok(())
+    }
+
+    #[test]
+    fn active_key_at_walks_persisted_rotation_chain() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        // First rotation at t+10 to other_public_key.
+        let r1 = signed_key_rotation(
+            actor.clone(),
+            other_public_key(),
+            None,
+            Timestamp::from_seconds(timestamp().seconds() + 10),
+        )?;
+        let r1_id = store.put_actor_key_rotation(&r1)?;
+        // Successor at t+20 to third_public_key, supersedes r1.
+        let r2 = signed_key_rotation(
+            actor.clone(),
+            third_public_key(),
+            Some(r1_id),
+            Timestamp::from_seconds(timestamp().seconds() + 20),
+        )?;
+        store.put_actor_key_rotation(&r2)?;
+
+        // Before any rotation: genesis initial.
+        assert_eq!(
+            ActorResolver::active_key_at(&store, &actor, timestamp())?,
+            Some(public_key())
+        );
+        // Between rotations: r1 wins.
+        assert_eq!(
+            ActorResolver::active_key_at(
+                &store,
+                &actor,
+                Timestamp::from_seconds(timestamp().seconds() + 15)
+            )?,
+            Some(other_public_key())
+        );
+        // After both rotations: r2 wins.
+        assert_eq!(
+            ActorResolver::active_key_at(
+                &store,
+                &actor,
+                Timestamp::from_seconds(timestamp().seconds() + 25)
+            )?,
+            Some(third_public_key())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn is_key_revoked_at_default_only_after_created_at() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let key_id = public_key().key_id();
+        let revocation = signed_key_revocation(
+            actor.clone(),
+            key_id.clone(),
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        store.put_actor_key_revocation(&revocation)?;
+
+        assert!(!ActorResolver::is_key_revoked_at(
+            &store, &actor, &key_id, timestamp()
+        )?);
+        assert!(ActorResolver::is_key_revoked_at(
+            &store,
+            &actor,
+            &key_id,
+            Timestamp::from_seconds(timestamp().seconds() + 200)
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn is_key_revoked_at_retroactive_invalidates_history() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let key_id = public_key().key_id();
+        let revocation = signed_key_revocation(
+            actor.clone(),
+            key_id.clone(),
+            true,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        store.put_actor_key_revocation(&revocation)?;
+
+        // Even before created_at, retroactive=true treats the key as
+        // revoked.
+        assert!(ActorResolver::is_key_revoked_at(
+            &store, &actor, &key_id, timestamp()
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn most_restrictive_revocation_wins_in_filesystem_index() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let key_id = public_key().key_id();
+        // First a non-retroactive revocation at t+100.
+        let r_default = signed_key_revocation(
+            actor.clone(),
+            key_id.clone(),
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        store.put_actor_key_revocation(&r_default)?;
+        // Then a retroactive revocation at t+200.
+        let r_retro = signed_key_revocation(
+            actor.clone(),
+            key_id.clone(),
+            true,
+            Timestamp::from_seconds(timestamp().seconds() + 200),
+        )?;
+        store.put_actor_key_revocation(&r_retro)?;
+
+        // Querying at t (before either revocation): the retroactive
+        // one applies and wins.
+        assert!(ActorResolver::is_key_revoked_at(
+            &store, &actor, &key_id, timestamp()
+        )?);
         Ok(())
     }
 }
