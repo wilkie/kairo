@@ -20,6 +20,13 @@
 //! - Excludes: `ActorTrust` statements. Trust is first-person; bundling
 //!   trust opinions inside an object bundle would invite reading them
 //!   as authority. A separate trust-bundle type can land later.
+//! - Excludes: `ActorCapabilityGrant` and `ActorCapabilityRevocation`
+//!   statements. Capabilities are also first-person speech acts (the
+//!   grantor speaks; capabilities make cross-actor claims load-bearing
+//!   per `specs/CAPABILITIES.md` §6.2), and shipping them inside an
+//!   object bundle would similarly mix grantor authority with object
+//!   transport. A separate capability-bundle type for federation
+//!   transport is listed in `CAPABILITIES.md` §8 deferred work.
 //! - Excludes: Git history. The manifest declares which Git commit ids
 //!   the bundle's statements reference (`git_history.expected_commits`)
 //!   and `git_history.included = false`; recipients must obtain those

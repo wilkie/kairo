@@ -1,8 +1,11 @@
 # AGENTS.md
 
-This repository is currently specification-first. Before implementing behavior,
-read the relevant specs under `specs/` and keep changes aligned with the
-decision log.
+This repository is specification-led: substantial implementation now exists
+in `crates/`, but the specs under `specs/` remain authoritative. Before
+implementing or modifying behavior, read the relevant specs and keep
+changes aligned with the decision log. When code disagrees with the spec,
+the spec wins and the code is the bug — unless the change *is* a spec
+update, in which case land both together.
 
 ## Primary Specs
 
@@ -25,6 +28,7 @@ For core semantics, read:
 - `specs/CORE_LIBRARY.md`
 - `specs/STATEMENTS.md`
 - `specs/ACTORS.md`
+- `specs/CAPABILITIES.md`
 - `specs/POLICY.md`
 - `specs/SCHEMA.md`
 
@@ -54,6 +58,18 @@ For user-facing surfaces, read:
 
 `specs/CORE_LIBRARY_SPEC.md` is superseded by `specs/CORE_LIBRARY.md` and should
 not override it.
+
+For phase status and roadmap context, read:
+
+- `specs/PHASE_1.md` — what shipped in the first implementation pass.
+- `specs/PHASE_2.md` — current/next-up work, with completion checkboxes
+  per section.
+
+Per-crate `AGENTS.md` files under `crates/<crate>/AGENTS.md` describe
+crate-specific implementation conventions (statement-type addition flow
+in `kairo-statement`, store-index sharding rules in `kairo-store`, CLI
+command pattern in `kairo-cli`, bundle invariants in `kairo-bundle`).
+Read the relevant one before touching that crate.
 
 ## Implementation Rules
 

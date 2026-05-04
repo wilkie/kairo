@@ -436,3 +436,91 @@ fn export_excludes_actor_trust_statements() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn export_excludes_actor_capability_statements() -> TestResult {
+    use kairo_statement::{
+        ActorCapabilityGrantBody, ActorCapabilityRevocationBody, Capability, CapabilityScope,
+        StatementKind,
+    };
+
+    let src = build_fixture()?;
+    // Add an ActorCapabilityGrant from src.actor to a new grantee on
+    // src.object_id. Per CAPABILITIES.md §8 deferred work, capability
+    // statements must NOT travel inside an object bundle — they're
+    // first-person speech acts and need their own bundle type.
+    let grantee_genesis = ActorGenesisBody::new(
+        ActorKind::person(),
+        PublicKey::ed25519(SigningKey::from_bytes(&[13; 32]).verifying_key().to_bytes()),
+        timestamp(),
+        [88; 32],
+    );
+    let grantee_id = src.store.put_actor(&grantee_genesis)?;
+
+    let capability = Capability::new(
+        CapabilityScope::Object(src.object_id.clone()),
+        vec![StatementKind::ObjectVersionTag],
+        false,
+        vec![],
+    )?;
+    let grant_body = ActorCapabilityGrantBody::new(grantee_id.clone(), capability, None);
+    let grant_subject: KairoRef = format!("actor:{grantee_id}").parse()?;
+    let grant_unsigned = UnsignedStatement::new(
+        src.actor_id.clone(),
+        grant_subject,
+        timestamp(),
+        grant_body,
+    );
+    let grant_sig_bytes = signing_key()
+        .sign(&grant_unsigned.canonical_bytes())
+        .to_bytes();
+    let grant_signature = Signature::new(
+        src.actor_id.clone(),
+        public_key().key_id().to_string(),
+        "ed25519",
+        grant_sig_bytes.to_vec(),
+    );
+    let grant_statement = SignedStatement::new(grant_unsigned, grant_signature);
+    let grant_id = src.store.put_actor_capability_grant(&grant_statement)?;
+
+    // And a revocation against that grant — same exclusion rule.
+    let revoke_body = ActorCapabilityRevocationBody::new(grant_id.clone(), false, None);
+    let revoke_subject: KairoRef = format!("statement:{grant_id}").parse()?;
+    let revoke_unsigned = UnsignedStatement::new(
+        src.actor_id.clone(),
+        revoke_subject,
+        timestamp(),
+        revoke_body,
+    );
+    let revoke_sig_bytes = signing_key()
+        .sign(&revoke_unsigned.canonical_bytes())
+        .to_bytes();
+    let revoke_signature = Signature::new(
+        src.actor_id.clone(),
+        public_key().key_id().to_string(),
+        "ed25519",
+        revoke_sig_bytes.to_vec(),
+    );
+    let revoke_statement = SignedStatement::new(revoke_unsigned, revoke_signature);
+    let revoke_id = src
+        .store
+        .put_actor_capability_revocation(&revoke_statement)?;
+
+    let bundle_dir = TempDir::new()?;
+    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    assert!(
+        !manifest
+            .contents
+            .statements
+            .contains(&grant_id.to_string()),
+        "ActorCapabilityGrant must not be carried in an object bundle"
+    );
+    assert!(
+        !manifest
+            .contents
+            .statements
+            .contains(&revoke_id.to_string()),
+        "ActorCapabilityRevocation must not be carried in an object bundle"
+    );
+    Ok(())
+}

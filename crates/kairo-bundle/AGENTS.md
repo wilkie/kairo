@@ -16,10 +16,23 @@ land in the store undetected — fix the bypass.
 `body.object()` matches the root; every actor that signed any of
 those statements; every blob those statements reference.
 
-**Does not go in:** `ActorTrust` statements. Trust is first-person;
+**Does not go in:** `ActorTrust` statements (trust is first-person —
 shipping it inside an object package would invite reading peers'
-opinions as authority. Adding `ActorTrust` to object bundles would
-silently break that boundary — don't.
+opinions as authority); `ActorCapabilityGrant` /
+`ActorCapabilityRevocation` statements (capabilities are also
+first-person speech acts — the grantor authorizes from their own
+voice, and bundling grants with object data would mix authority
+transport with object transport). The "first-person speech acts go in
+their own bundle type" rule is the same boundary in both cases.
+Adding any of these to object bundles would silently break that
+boundary — don't.
+
+The export-side dispatcher in `src/export.rs` filters by
+`body.object() == target`, which incidentally excludes capability and
+trust statements (they don't have an `object` field). Don't rely on
+that incidental exclusion as the safety net — keep the explicit
+"does not go in" list above as the doctrine, so future statement
+types are evaluated against the boundary intentionally.
 
 If a future statement type's body has no `object` field but is
 relevant to objects (e.g. an attestation about a revision), think
