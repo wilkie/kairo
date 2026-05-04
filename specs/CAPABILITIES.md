@@ -346,6 +346,14 @@ does not honor it. Capability resolution flips that:
 > capability covering `ObjectVersionTag` statements on `S`'s object at
 > the causal position of `S'.created_at`.
 
+Implementation: `kairo-store::FilesystemStore::latest_version_tag` and
+`list_version_tags` start from the same-actor chain leaf and walk
+forward through any authorized cross-actor supersedes edges using
+`evaluate_capability` (`specs/CAPABILITIES.md` §6.1). Same-actor sup
+is automatic; cross-actor sup is honored only when the successor's
+signer holds an `ObjectVersionTag` capability on the object at the
+successor's `created_at`.
+
 The same rule applies to `ObjectBranch v2` cross-actor supersedes when
 that schema bump lands (Phase 2 §12).
 

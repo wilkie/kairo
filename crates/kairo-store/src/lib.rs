@@ -54,7 +54,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
+use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
 use kairo_statement::json::{
@@ -1159,23 +1159,35 @@ impl VersionTagResolver for FilesystemStore {
         let Some(entry) = index.lookup_head(actor, version) else {
             return Ok(None);
         };
-        let statement_id =
-            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
-                id: entry.statement_id.clone(),
+
+        // Step 6 (`specs/CAPABILITIES.md` §6.2): from the same-actor
+        // chain leaf, follow authorized cross-actor supersedes edges
+        // forward. Same-actor sup is automatic; cross-actor sup is
+        // honored iff the successor's signer holds an
+        // ObjectVersionTag capability on this object at the
+        // successor's `created_at`.
+        let final_entry = self.walk_authorized_tag_chain(object, version, entry, &index)?;
+        let statement_id = StatementId::new(final_entry.statement_id.clone()).map_err(
+            |error| StoreError::Corrupt {
+                id: final_entry.statement_id.clone(),
                 reason: CorruptReason::Parse(format!(
                     "invalid statement id in version tag index: {error}"
                 )),
-            })?;
+            },
+        )?;
         let signed = self.get_object_version_tag(&statement_id)?;
 
-        if signed.unsigned().actor() != actor
-            || signed.unsigned().body().object() != object
+        // The walk may legitimately leave us pointing at a statement
+        // signed by a different actor than the query — that's the
+        // whole point of §6.2. Object and version must still match,
+        // since they're the resolution key.
+        if signed.unsigned().body().object() != object
             || signed.unsigned().body().version().as_str() != version
         {
             return Err(StoreError::Corrupt {
                 id: statement_id.to_string(),
                 reason: CorruptReason::Parse(
-                    "version tag index points at a statement with mismatched (actor, object, version)"
+                    "version tag index points at a statement with mismatched (object, version)"
                         .to_owned(),
                 ),
             });
@@ -1188,7 +1200,165 @@ impl VersionTagResolver for FilesystemStore {
         let Some(index) = self.read_version_tag_index(object)? else {
             return Ok(Vec::new());
         };
-        index.into_heads(object)
+        // Per `(perspective_actor, version)`, walk same-actor leaf
+        // forward through authorized cross-actor supersedes edges.
+        // The returned head's `actor` field is the perspective actor;
+        // the head's `statement_id` may have been signed by an
+        // authorized delegate.
+        let mut heads: Vec<VersionTagHead> = Vec::new();
+        for (actor_str, by_version) in &index.by_actor {
+            let actor = ActorId::new(actor_str.clone()).map_err(|error| StoreError::Corrupt {
+                id: actor_str.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid actor id in version tag index: {error}"
+                )),
+            })?;
+            for version in by_version.keys() {
+                let Some(entry) = index.lookup_head(&actor, version) else {
+                    continue;
+                };
+                let final_entry =
+                    self.walk_authorized_tag_chain(object, version, entry, &index)?;
+                let statement_id = StatementId::new(final_entry.statement_id.clone())
+                    .map_err(|error| StoreError::Corrupt {
+                        id: final_entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid statement id in version tag index: {error}"
+                        )),
+                    })?;
+                let created_at: Timestamp =
+                    final_entry.created_at.parse().map_err(|error| {
+                        StoreError::Corrupt {
+                            id: final_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in version tag index: {error}"
+                            )),
+                        }
+                    })?;
+                heads.push(VersionTagHead {
+                    actor: actor.clone(),
+                    object: object.clone(),
+                    version: version.clone(),
+                    statement_id,
+                    created_at,
+                });
+            }
+        }
+        Ok(heads)
+    }
+}
+
+impl FilesystemStore {
+    /// Walk the supersedes chain forward from `start` for the given
+    /// `(object, version)`. Same-actor sups are honored automatically;
+    /// cross-actor sups are honored iff the successor's signer holds
+    /// an `ObjectVersionTag` capability on `object` at the successor's
+    /// `created_at` (per `specs/CAPABILITIES.md` §6.2).
+    ///
+    /// Returns the final leaf entry. The walk is bounded by the total
+    /// entry count for the version, so a malformed cycle in
+    /// `supersedes` cannot loop forever.
+    fn walk_authorized_tag_chain(
+        &self,
+        object: &ObjectId,
+        version: &str,
+        start: &tags::VersionTagEntry,
+        index: &tags::VersionTagIndexFile,
+    ) -> Result<tags::VersionTagEntry, StoreError> {
+        let entries = index.entries_for_version(version);
+        let max_steps = entries.len();
+        let mut current_signer: Option<String> = entries
+            .iter()
+            .find(|(_, e)| e.statement_id == start.statement_id)
+            .map(|(actor_str, _)| (*actor_str).to_string());
+        let mut current = start.clone();
+
+        for _ in 0..max_steps {
+            // Candidates: entries whose supersedes names current.
+            let mut best: Option<(String, &tags::VersionTagEntry)> = None;
+            for (actor_str, entry) in &entries {
+                if entry.supersedes.as_deref() != Some(current.statement_id.as_str()) {
+                    continue;
+                }
+                let is_same_actor = current_signer
+                    .as_deref()
+                    .is_some_and(|cur| cur == *actor_str);
+                let authorized = if is_same_actor {
+                    true
+                } else {
+                    let signer =
+                        ActorId::new(actor_str.to_string()).map_err(|error| {
+                            StoreError::Corrupt {
+                                id: actor_str.to_string(),
+                                reason: CorruptReason::Parse(format!(
+                                    "invalid actor id in version tag index: {error}"
+                                )),
+                            }
+                        })?;
+                    let entry_at: Timestamp = entry.created_at.parse().map_err(|error| {
+                        StoreError::Corrupt {
+                            id: entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in version tag index: {error}"
+                            )),
+                        }
+                    })?;
+                    let evaluation = kairo_statement::verify::evaluate_capability(
+                        &signer,
+                        &kairo_statement::verify::ResolutionTarget::Object {
+                            id: object.clone(),
+                            kind: kairo_statement::StatementKind::ObjectVersionTag,
+                        },
+                        entry_at,
+                        self,
+                    )?;
+                    matches!(
+                        evaluation,
+                        kairo_statement::verify::CapabilityEvaluation::Held
+                    )
+                };
+                if !authorized {
+                    continue;
+                }
+                let candidate = ((*actor_str).to_string(), *entry);
+                match best {
+                    None => best = Some(candidate),
+                    Some((_, existing)) if entry_greater_than_for_walk(entry, existing) => {
+                        best = Some(candidate);
+                    }
+                    _ => {}
+                }
+            }
+            match best {
+                None => return Ok(current),
+                Some((actor_str, entry)) => {
+                    current_signer = Some(actor_str);
+                    current = entry.clone();
+                }
+            }
+        }
+        Ok(current)
+    }
+}
+
+fn entry_greater_than_for_walk(
+    candidate: &tags::VersionTagEntry,
+    current: &tags::VersionTagEntry,
+) -> bool {
+    match (
+        candidate.created_at.parse::<Timestamp>(),
+        current.created_at.parse::<Timestamp>(),
+    ) {
+        (Ok(a), Ok(b)) => {
+            if a > b {
+                return true;
+            }
+            if a < b {
+                return false;
+            }
+            candidate.statement_id > current.statement_id
+        }
+        _ => candidate.statement_id > current.statement_id,
     }
 }
 
@@ -2239,11 +2409,13 @@ mod tests {
     }
 
     #[test]
-    fn cross_actor_supersedes_does_not_replace_per_actor_head() -> TestResult {
+    fn cross_actor_supersedes_without_grant_does_not_replace_per_actor_head() -> TestResult {
         // Actor B signs a tag whose supersedes points at actor A's
-        // tag. The MVP per-actor resolver intentionally does not honor
-        // cross-actor supersession (that requires the §10 capability
-        // model). A's head stays A's tag; B has its own head.
+        // tag, but A has not granted B any ObjectVersionTag
+        // capability on the object. evaluate_capability(B, ...)
+        // returns NotHeld, so the cross-actor edge is rejected and
+        // each actor keeps their own head. This is the negative half
+        // of `specs/CAPABILITIES.md` §6.2.
         let (_dir, store) = open_temp_store()?;
         let actor_a = fresh_genesis().actor_id();
         let actor_b = ActorGenesisBody::new(
@@ -2277,6 +2449,135 @@ mod tests {
         assert_eq!(a_head, Some(a_tag));
         let b_head = store.latest_version_tag(&actor_b, &object, "1.2.3")?;
         assert_eq!(b_head, Some(b_tag));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_actor_supersedes_with_grant_replaces_per_actor_head() -> TestResult {
+        // Step 6 / §6.2 payoff: A is the object's root authority and
+        // grants B an ObjectVersionTag capability on this object. B
+        // then signs a tag whose supersedes points at A's tag. The
+        // cross-actor edge is now honored; latest_version_tag(A, ...)
+        // returns B's tag.
+        let (_dir, store) = open_temp_store()?;
+        // Persist A's actor genesis and an ObjectGenesis whose
+        // root authority (`created_by`) is A.
+        let a_genesis = fresh_genesis();
+        let actor_a = a_genesis.actor_id();
+        store.put_actor(&a_genesis)?;
+        let object_statement = signed_object_genesis(actor_a.clone());
+        let object = store.put_object_genesis(&object_statement)?;
+
+        let actor_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+
+        // A → B: capability covering ObjectVersionTag on this object.
+        let scope = CapabilityScope::Object(object.clone());
+        let grant = signed_capability_grant(
+            actor_a.clone(),
+            actor_b.clone(),
+            scope,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&grant)?;
+
+        // A's tag, then B's tag superseding A's.
+        let a_tag = signed_version_tag(
+            actor_a.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        let a_id = store.put_object_version_tag(&a_tag)?;
+        let b_tag = signed_version_tag(
+            actor_b.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xBB; 32])),
+            Some(a_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_object_version_tag(&b_tag)?;
+
+        // From A's perspective the head has flipped to B's tag.
+        let a_head = store.latest_version_tag(&actor_a, &object, "1.2.3")?;
+        assert_eq!(a_head, Some(b_tag.clone()));
+        // From B's perspective B's tag is also the head (B's same-actor leaf).
+        let b_head = store.latest_version_tag(&actor_b, &object, "1.2.3")?;
+        assert_eq!(b_head, Some(b_tag));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_actor_supersedes_with_revoked_grant_is_not_honored() -> TestResult {
+        // A grants B, B supersedes A's tag, then A revokes the grant
+        // *before* B's tag was created. With a default (non-
+        // retroactive) revocation, B's tag was created strictly
+        // after the revocation and the grant no longer covers it —
+        // the cross-actor edge is rejected, A's tag stays the head.
+        let (_dir, store) = open_temp_store()?;
+        let a_genesis = fresh_genesis();
+        let actor_a = a_genesis.actor_id();
+        store.put_actor(&a_genesis)?;
+        let object_statement = signed_object_genesis(actor_a.clone());
+        let object = store.put_object_genesis(&object_statement)?;
+
+        let actor_b = ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [11; 32],
+        )
+        .actor_id();
+
+        let scope = CapabilityScope::Object(object.clone());
+        let grant = signed_capability_grant(
+            actor_a.clone(),
+            actor_b.clone(),
+            scope,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_capability_grant(&grant)?;
+        // Revocation at t+1; B's tag at t+2. evaluate_capability at
+        // t+2 sees the grant as revoked.
+        let revocation = signed_capability_revocation(
+            actor_a.clone(),
+            grant_id,
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_actor_capability_revocation(&revocation)?;
+
+        let a_tag = signed_version_tag(
+            actor_a.clone(),
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xAA; 32])),
+            None,
+            timestamp(),
+        )?;
+        let a_id = store.put_object_version_tag(&a_tag)?;
+        let b_tag = signed_version_tag(
+            actor_b,
+            object.clone(),
+            "1.2.3",
+            Some(StatementId::from_sha256_digest([0xBB; 32])),
+            Some(a_id),
+            Timestamp::from_seconds(timestamp().seconds() + 2),
+        )?;
+        store.put_object_version_tag(&b_tag)?;
+
+        let a_head = store.latest_version_tag(&actor_a, &object, "1.2.3")?;
+        assert_eq!(a_head, Some(a_tag));
         Ok(())
     }
 

@@ -10,6 +10,15 @@
 //! timestamp-only ordering, so the head can change as new entries
 //! arrive.
 //!
+//! Cross-actor `supersedes` references are recorded on each entry but
+//! the chain-head computation in this module only walks **same-actor**
+//! edges. The authority-aware forward walk that honors cross-actor
+//! supersedes when the successor's signer holds an `ObjectVersionTag`
+//! capability on the object lives in
+//! `FilesystemStore::walk_authorized_tag_chain` and is invoked by the
+//! resolver path on top of this index. See
+//! `specs/CAPABILITIES.md` §6.2.
+//!
 //! The index is a strict materialization of the underlying statements:
 //! if it is lost or corrupt, it can be rebuilt by scanning all
 //! `ObjectVersionTag` statements about an object. The MVP does not
@@ -98,17 +107,20 @@ impl VersionTagIndexFile {
         true
     }
 
-    /// Resolve the head for `(actor, version)`. The head is the
-    /// supersedes-chain leaf: an entry whose `statement_id` does not
-    /// appear in any sibling entry's `supersedes` field. If the chain
-    /// has multiple leaves (a fork), pick the one with the greatest
-    /// `(created_at, statement_id)`.
+    /// Resolve the same-actor chain head for `(actor, version)`. The
+    /// head is the supersedes-chain leaf among `actor`'s own entries:
+    /// an entry whose `statement_id` does not appear in any
+    /// **same-actor** sibling entry's `supersedes` field. If the
+    /// chain has multiple leaves (a fork), pick the one with the
+    /// greatest `(created_at, statement_id)`.
     ///
-    /// Cross-actor `supersedes` references are recorded on the entry
-    /// but do **not** mark same-actor entries as superseded — the MVP
-    /// per-actor resolver only considers this actor's chain. Honoring
-    /// cross-actor supersession requires the §10 trust/authority
-    /// layer, which this resolver intentionally does not enforce.
+    /// Cross-actor `supersedes` references are not consulted by this
+    /// method — that decision needs an authority check
+    /// (`evaluate_capability`) which lives outside the per-object
+    /// index. The Step 6 resolver flip combines this same-actor leaf
+    /// with the authority-aware forward walk in
+    /// `FilesystemStore::walk_authorized_tag_chain` to honor
+    /// cross-actor supersedes per `specs/CAPABILITIES.md` §6.2.
     pub(crate) fn lookup_head(
         &self,
         actor: &ActorId,
@@ -121,6 +133,31 @@ impl VersionTagIndexFile {
         chain_head(entries)
     }
 
+    /// All entries (across actors) for a given `version`. Returned
+    /// pairs are `(actor_id_str, entry)` — used by the cross-actor
+    /// walker to find candidate successors that name the current
+    /// chain leaf via `supersedes`.
+    pub(crate) fn entries_for_version(
+        &self,
+        version: &str,
+    ) -> Vec<(&str, &VersionTagEntry)> {
+        let mut all = Vec::new();
+        for (actor_str, by_version) in &self.by_actor {
+            if let Some(entries) = by_version.get(version) {
+                for entry in entries {
+                    all.push((actor_str.as_str(), entry));
+                }
+            }
+        }
+        all
+    }
+
+    /// Resolve every `(actor, version)` chain head known about
+    /// `object`, considering only same-actor `supersedes` edges.
+    /// Cross-actor authority-aware enumeration is the
+    /// `FilesystemStore::list_version_tags` path; this method is the
+    /// raw same-actor projection used directly by tests.
+    #[cfg(test)]
     pub(crate) fn into_heads(
         self,
         object: &ObjectId,
