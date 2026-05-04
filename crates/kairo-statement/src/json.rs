@@ -4,16 +4,17 @@ use std::fmt;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, TimestampError};
+use kairo_identity::json::{ActorGenesisJsonError, PublicKeyJson};
 use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ActorTrustShapeError,
-    Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError, ObjectBranchBody,
-    ObjectGenesisBody, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
-    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
-    SignedStatement, StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError,
-    UnsignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRevocationBody,
+    ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability, CapabilityConstraint,
+    CapabilityScope, CapabilityShapeError, ObjectBranchBody, ObjectGenesisBody, ObjectKind,
+    ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
+    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
+    StatementKindParseError, TrustDecision, TrustDecisionParseError, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +41,7 @@ pub enum StatementJsonError {
     InvalidTrustShape(ActorTrustShapeError),
     InvalidStatementKind(StatementKindParseError),
     InvalidCapabilityShape(CapabilityShapeError),
+    InvalidPublicKey(ActorGenesisJsonError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -68,6 +70,7 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidTrustShape(error) => write!(f, "{error}"),
             Self::InvalidStatementKind(error) => write!(f, "{error}"),
             Self::InvalidCapabilityShape(error) => write!(f, "{error}"),
+            Self::InvalidPublicKey(error) => write!(f, "invalid public key: {error}"),
         }
     }
 }
@@ -87,6 +90,7 @@ impl Error for StatementJsonError {
             Self::InvalidTrustShape(error) => Some(error),
             Self::InvalidStatementKind(error) => Some(error),
             Self::InvalidCapabilityShape(error) => Some(error),
+            Self::InvalidPublicKey(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -827,6 +831,167 @@ impl ActorCapabilityRevocationBodyJson {
     pub fn from_body(body: &ActorCapabilityRevocationBody) -> Self {
         Self {
             revoked_grant: body.revoked_grant().to_string(),
+            retroactive: body.retroactive(),
+            reason: body.reason().map(|r| r.to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorKeyRotationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorKeyRotationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorKeyRotationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorKeyRotationBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "ActorKeyRotation", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorKeyRotationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorKeyRotation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorKeyRotationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorKeyRotationBodyJson {
+    pub next_key: PublicKeyJson,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+}
+
+impl ActorKeyRotationBodyJson {
+    pub fn to_body(&self) -> Result<ActorKeyRotationBody, StatementJsonError> {
+        let next_key = self
+            .next_key
+            .to_public_key()
+            .map_err(StatementJsonError::InvalidPublicKey)?;
+        let supersedes = match &self.supersedes {
+            Some(value) => Some(
+                StatementId::new(value.clone())
+                    .map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
+        Ok(ActorKeyRotationBody::new(next_key, supersedes))
+    }
+
+    pub fn from_body(body: &ActorKeyRotationBody) -> Self {
+        Self {
+            next_key: PublicKeyJson::from_public_key(body.next_key()),
+            supersedes: body.supersedes().map(|id| id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorKeyRevocationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorKeyRevocationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorKeyRevocationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorKeyRevocationBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "ActorKeyRevocation", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorKeyRevocationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorKeyRevocation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorKeyRevocationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorKeyRevocationBodyJson {
+    pub revoked_key: String,
+    pub retroactive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ActorKeyRevocationBodyJson {
+    pub fn to_body(&self) -> Result<ActorKeyRevocationBody, StatementJsonError> {
+        Ok(ActorKeyRevocationBody::new(
+            KeyId::new(self.revoked_key.clone()),
+            self.retroactive,
+            self.reason.clone(),
+        ))
+    }
+
+    pub fn from_body(body: &ActorKeyRevocationBody) -> Self {
+        Self {
+            revoked_key: body.revoked_key().to_string(),
             retroactive: body.retroactive(),
             reason: body.reason().map(|r| r.to_owned()),
         }
@@ -2029,6 +2194,288 @@ mod tests {
         let dto = ActorCapabilityRevocationStatementJson::from_statement(&retro);
         let round_tripped = dto.to_statement()?;
         assert_eq!(retro.statement_id(), round_tripped.statement_id());
+        Ok(())
+    }
+
+    // ---- ActorKeyRotation ----
+
+    fn key_rotation_genesis_json(signature: &str) -> String {
+        format!(
+            r#"{{
+              "type": "ActorKeyRotation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "next_key": {{
+                  "algorithm": "ed25519",
+                  "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+                }}
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "prior-active",
+                "algorithm": "ed25519",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn key_rotation_successor_json(signature: &str, supersedes: &str) -> String {
+        format!(
+            r#"{{
+              "type": "ActorKeyRotation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "next_key": {{
+                  "algorithm": "ed25519",
+                  "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+                }},
+                "supersedes": "{supersedes}"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "prior-active",
+                "algorithm": "ed25519",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_key_rotation_json(
+        json: &str,
+    ) -> Result<SignedStatement<ActorKeyRotationBody>, serde_json::Error> {
+        let dto: ActorKeyRotationStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_key_rotation_genesis_json() {
+        let parsed = parse_key_rotation_json(&key_rotation_genesis_json("c2ln"));
+        assert!(matches!(
+            parsed,
+            Ok(signed) if signed.unsigned().body().is_genesis()
+        ));
+    }
+
+    #[test]
+    fn parses_key_rotation_successor_json() {
+        let parsed = parse_key_rotation_json(&key_rotation_successor_json(
+            "c2ln",
+            revision_statement_id().as_str(),
+        ));
+        assert!(matches!(
+            parsed,
+            Ok(signed) if signed.unsigned().body().supersedes().is_some()
+        ));
+    }
+
+    #[test]
+    fn rejects_key_rotation_with_invalid_public_key() {
+        let body = ActorKeyRotationBodyJson {
+            next_key: PublicKeyJson {
+                algorithm: "ed25519".to_owned(),
+                bytes: "not-base64!".to_owned(),
+            },
+            supersedes: None,
+        };
+        assert!(matches!(
+            body.to_body(),
+            Err(StatementJsonError::InvalidPublicKey(_))
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_key_rotation_statement_id() {
+        let first = key_rotation_successor_json("c2ln", revision_statement_id().as_str());
+        let revoked = revision_statement_id();
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2ln",
+                "algorithm": "ed25519",
+                "key_id": "prior-active",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "supersedes": "{revoked}",
+                "next_key": {{
+                  "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+                  "algorithm": "ed25519"
+                }}
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "actor:{ACTOR_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ActorKeyRotation"
+            }}"#
+        );
+        let first_id = parse_key_rotation_json(&first).map(|s| s.statement_id());
+        let second_id = parse_key_rotation_json(&second).map(|s| s.statement_id());
+        assert!(matches!(
+            (first_id, second_id),
+            (Ok(first_id), Ok(second_id)) if first_id == second_id
+        ));
+    }
+
+    #[test]
+    fn key_rotation_round_trips_through_from_statement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let genesis = parse_key_rotation_json(&key_rotation_genesis_json("c2ln"))?;
+        let dto = ActorKeyRotationStatementJson::from_statement(&genesis);
+        assert_eq!(genesis.statement_id(), dto.to_statement()?.statement_id());
+
+        let successor = parse_key_rotation_json(&key_rotation_successor_json(
+            "c2ln",
+            revision_statement_id().as_str(),
+        ))?;
+        let dto = ActorKeyRotationStatementJson::from_statement(&successor);
+        assert_eq!(
+            successor.statement_id(),
+            dto.to_statement()?.statement_id()
+        );
+        Ok(())
+    }
+
+    // ---- ActorKeyRevocation ----
+
+    fn key_revocation_default_json(signature: &str, revoked_key: &str) -> String {
+        format!(
+            r#"{{
+              "type": "ActorKeyRevocation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "revoked_key": "{revoked_key}",
+                "retroactive": false,
+                "reason": "rotated out"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "current-active",
+                "algorithm": "ed25519",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn key_revocation_retroactive_json(signature: &str, revoked_key: &str) -> String {
+        format!(
+            r#"{{
+              "type": "ActorKeyRevocation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "actor:{ACTOR_ID}",
+              "created_at": "{CREATED_AT}",
+              "body": {{
+                "revoked_key": "{revoked_key}",
+                "retroactive": true
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "current-active",
+                "algorithm": "ed25519",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_key_revocation_json(
+        json: &str,
+    ) -> Result<SignedStatement<ActorKeyRevocationBody>, serde_json::Error> {
+        let dto: ActorKeyRevocationStatementJson = serde_json::from_str(json)?;
+        dto.to_statement()
+            .map_err(|error| serde_json::Error::io(std::io::Error::other(error)))
+    }
+
+    #[test]
+    fn parses_key_revocation_default_json() {
+        let parsed = parse_key_revocation_json(&key_revocation_default_json(
+            "c2ln",
+            revision_statement_id().as_str(),
+        ));
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if !signed.unsigned().body().retroactive()
+                && signed.unsigned().body().reason() == Some("rotated out")
+        ));
+    }
+
+    #[test]
+    fn parses_key_revocation_retroactive_json() {
+        let parsed = parse_key_revocation_json(&key_revocation_retroactive_json(
+            "c2ln",
+            revision_statement_id().as_str(),
+        ));
+        assert!(matches!(
+            parsed,
+            Ok(signed)
+                if signed.unsigned().body().retroactive()
+                && signed.unsigned().body().reason().is_none()
+        ));
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_key_revocation_statement_id() {
+        let revoked = revision_statement_id();
+        let first = key_revocation_default_json("c2ln", revoked.as_str());
+        let second = format!(
+            r#"{{
+              "signature": {{
+                "bytes": "c2ln",
+                "algorithm": "ed25519",
+                "key_id": "current-active",
+                "actor": "{ACTOR_ID}"
+              }},
+              "body": {{
+                "reason": "rotated out",
+                "retroactive": false,
+                "revoked_key": "{revoked}"
+              }},
+              "created_at": "{CREATED_AT}",
+              "subject": "actor:{ACTOR_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "ActorKeyRevocation"
+            }}"#
+        );
+        let first_id = parse_key_revocation_json(&first).map(|s| s.statement_id());
+        let second_id = parse_key_revocation_json(&second).map(|s| s.statement_id());
+        assert!(matches!(
+            (first_id, second_id),
+            (Ok(first_id), Ok(second_id)) if first_id == second_id
+        ));
+    }
+
+    #[test]
+    fn key_revocation_round_trips_through_from_statement(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let default = parse_key_revocation_json(&key_revocation_default_json(
+            "c2ln",
+            revision_statement_id().as_str(),
+        ))?;
+        let dto = ActorKeyRevocationStatementJson::from_statement(&default);
+        assert_eq!(default.statement_id(), dto.to_statement()?.statement_id());
+
+        let retro = parse_key_revocation_json(&key_revocation_retroactive_json(
+            "c2ln",
+            revision_statement_id().as_str(),
+        ))?;
+        let dto = ActorKeyRevocationStatementJson::from_statement(&retro);
+        assert_eq!(retro.statement_id(), dto.to_statement()?.statement_id());
         Ok(())
     }
 }

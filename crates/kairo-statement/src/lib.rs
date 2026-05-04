@@ -1051,6 +1051,118 @@ impl CanonicalEncode for ActorCapabilityRevocationBody {
     }
 }
 
+/// `ActorKeyRotation` declares the actor's next active signing key.
+///
+/// The signature on this statement is produced by the **prior** active
+/// key — the genesis-initial key on the first rotation, or the chain
+/// leaf's `next_key` thereafter. The body's `next_key` is the key the
+/// actor will sign future statements with after this rotation takes
+/// effect at `created_at`.
+///
+/// `supersedes` chains rotation-to-rotation only. The first rotation
+/// for an actor has `supersedes = None`; the genesis-initial key is
+/// implicit (no statement introduces it). Cross-actor `supersedes` is
+/// invalid — only the actor whose key it is may rotate their own keys
+/// (see `schemas/canonical/actor-key-rotation-v1.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorKeyRotationBody {
+    next_key: PublicKey,
+    supersedes: Option<StatementId>,
+}
+
+impl ActorKeyRotationBody {
+    pub fn new(next_key: PublicKey, supersedes: Option<StatementId>) -> Self {
+        Self {
+            next_key,
+            supersedes,
+        }
+    }
+
+    pub fn next_key(&self) -> &PublicKey {
+        &self.next_key
+    }
+
+    pub fn supersedes(&self) -> Option<&StatementId> {
+        self.supersedes.as_ref()
+    }
+
+    pub fn is_genesis(&self) -> bool {
+        self.supersedes.is_none()
+    }
+}
+
+impl StatementBody for ActorKeyRotationBody {
+    const TYPE: &'static str = "ActorKeyRotation";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ActorKeyRotationBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        self.next_key.encode_canonical(out);
+        encode_option(out, self.supersedes.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+    }
+}
+
+/// `ActorKeyRevocation` retracts the signing authority of a specific
+/// `KeyId` previously held by the envelope actor. Standalone — no
+/// `supersedes` chain.
+///
+/// Default (`retroactive = false`) invalidates statements signed by
+/// `revoked_key` with `created_at` strictly after this revocation.
+/// `retroactive = true` invalidates them from inception. Most-
+/// restrictive interpretation wins on duplicates: any
+/// `retroactive = true` revocation makes the key retroactively
+/// revoked.
+///
+/// In v1 the revocation must be signed by the actor's currently
+/// active key at `created_at` (which may be `revoked_key` itself).
+/// See `schemas/canonical/actor-key-revocation-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorKeyRevocationBody {
+    revoked_key: KeyId,
+    retroactive: bool,
+    reason: Option<String>,
+}
+
+impl ActorKeyRevocationBody {
+    pub fn new(revoked_key: KeyId, retroactive: bool, reason: Option<String>) -> Self {
+        Self {
+            revoked_key,
+            retroactive,
+            reason,
+        }
+    }
+
+    pub fn revoked_key(&self) -> &KeyId {
+        &self.revoked_key
+    }
+
+    pub fn retroactive(&self) -> bool {
+        self.retroactive
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+impl StatementBody for ActorKeyRevocationBody {
+    const TYPE: &'static str = "ActorKeyRevocation";
+    const VERSION: u8 = 1;
+}
+
+impl CanonicalEncode for ActorKeyRevocationBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.revoked_key.as_str());
+        encode_u8(out, if self.retroactive { 1 } else { 0 });
+        encode_option(out, self.reason.as_ref(), |out, reason| {
+            encode_str(out, reason);
+        });
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectGenesisStatement {
     body: ObjectGenesisBody,
@@ -2471,6 +2583,137 @@ mod tests {
                 SignatureVerificationError::InvalidSignature
             ))
         ));
+        Ok(())
+    }
+
+    // ---- ActorKeyRotation ----
+
+    fn unsigned_key_rotation(
+        next_key: PublicKey,
+        supersedes: Option<StatementId>,
+    ) -> Result<UnsignedStatement<ActorKeyRotationBody>, Box<dyn std::error::Error>> {
+        let body = ActorKeyRotationBody::new(next_key, supersedes);
+        let subject: KairoRef = format!("actor:{}", actor_id()?).parse()?;
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            subject,
+            timestamp(),
+            body,
+        ))
+    }
+
+    #[test]
+    fn same_key_rotation_body_produces_same_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_rotation(other_public_key(), None)?;
+        let second = unsigned_key_rotation(other_public_key(), None)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn key_rotation_next_key_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_rotation(other_public_key(), None)?;
+        let second = unsigned_key_rotation(public_key(), None)?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn key_rotation_supersedes_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_rotation(other_public_key(), None)?;
+        let second = unsigned_key_rotation(other_public_key(), Some(statement_id_one()))?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn key_rotation_signature_does_not_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_key_rotation(other_public_key(), None)?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_key_rotation_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_key_rotation(other_public_key(), None)?;
+        let sig = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, sig);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    // ---- ActorKeyRevocation ----
+
+    fn unsigned_key_revocation(
+        revoked_key: KeyId,
+        retroactive: bool,
+        reason: Option<&str>,
+    ) -> Result<UnsignedStatement<ActorKeyRevocationBody>, Box<dyn std::error::Error>> {
+        let body = ActorKeyRevocationBody::new(
+            revoked_key,
+            retroactive,
+            reason.map(|r| r.to_owned()),
+        );
+        let subject: KairoRef = format!("actor:{}", actor_id()?).parse()?;
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            subject,
+            timestamp(),
+            body,
+        ))
+    }
+
+    #[test]
+    fn same_key_revocation_body_produces_same_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_revocation(public_key().key_id(), false, None)?;
+        let second = unsigned_key_revocation(public_key().key_id(), false, None)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn key_revocation_revoked_key_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_revocation(public_key().key_id(), false, None)?;
+        let second = unsigned_key_revocation(other_public_key().key_id(), false, None)?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn key_revocation_retroactive_changes_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_revocation(public_key().key_id(), false, None)?;
+        let second = unsigned_key_revocation(public_key().key_id(), true, None)?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn key_revocation_reason_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let first = unsigned_key_revocation(public_key().key_id(), false, None)?;
+        let second = unsigned_key_revocation(public_key().key_id(), false, Some("compromised"))?;
+        assert_ne!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_key_revocation_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_key_revocation(public_key().key_id(), true, Some("rotated out"))?;
+        let sig = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, sig);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
         Ok(())
     }
 }

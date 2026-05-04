@@ -306,6 +306,32 @@ pub fn verify_signature(
     }
 }
 
+/// One entry in the per-actor rotation chain. The first rotation has
+/// `supersedes = None`; the genesis-initial key is implicit and is
+/// not represented as an entry.
+///
+/// Index modules in `kairo-store` produce these summaries from the
+/// underlying signed `ActorKeyRotation` statements; the resolver
+/// trait consumes them here so verification can stay decoupled from
+/// the storage layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRotationEntry {
+    pub statement_id: String,
+    pub next_key: PublicKey,
+    pub created_at: Timestamp,
+    pub supersedes: Option<String>,
+}
+
+/// One entry in the per-actor revocation set. Revocations are
+/// standalone (no `supersedes` chain).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRevocationEntry {
+    pub statement_id: String,
+    pub revoked_key: KeyId,
+    pub retroactive: bool,
+    pub created_at: Timestamp,
+}
+
 pub trait ActorResolver {
     fn actor_genesis(&self, actor: &ActorId)
         -> Result<Option<ActorGenesisBody>, ActorResolveError>;
@@ -315,11 +341,102 @@ pub trait ActorResolver {
             .actor_genesis(actor)?
             .map(|genesis| genesis.initial_key().clone()))
     }
+
+    /// Per-actor rotation chain in storage order. The default
+    /// implementation returns an empty list, in which case the
+    /// active key collapses to the genesis-initial key for every
+    /// timestamp.
+    fn key_rotations(
+        &self,
+        _actor: &ActorId,
+    ) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
+        Ok(Vec::new())
+    }
+
+    /// Per-actor revocation set in storage order. The default
+    /// implementation returns an empty set, in which case
+    /// `is_key_revoked_at` always returns `false`.
+    fn key_revocations(
+        &self,
+        _actor: &ActorId,
+    ) -> Result<Vec<KeyRevocationEntry>, ActorResolveError> {
+        Ok(Vec::new())
+    }
+
+    /// Resolve the actor's active signing key at causal position `at`.
+    ///
+    /// The active key is the rotation chain leaf with `created_at <= at`,
+    /// considering only same-actor `supersedes` edges. Chain
+    /// precedence wins over `(created_at, statement_id)` ordering;
+    /// fork tiebreak is `(created_at, statement_id)` descending.
+    /// Falls back to `ActorGenesis.initial_key` if no rotation
+    /// precedes `at`.
+    fn active_key_at(
+        &self,
+        actor: &ActorId,
+        at: Timestamp,
+    ) -> Result<Option<PublicKey>, ActorResolveError> {
+        let rotations = self.key_rotations(actor)?;
+        let eligible: Vec<&KeyRotationEntry> = rotations
+            .iter()
+            .filter(|entry| entry.created_at <= at)
+            .collect();
+        if eligible.is_empty() {
+            return self.initial_key(actor);
+        }
+        let superseded: std::collections::HashSet<&str> = eligible
+            .iter()
+            .filter_map(|entry| entry.supersedes.as_deref())
+            .collect();
+        let mut best: Option<&KeyRotationEntry> = None;
+        for entry in &eligible {
+            if superseded.contains(entry.statement_id.as_str()) {
+                continue;
+            }
+            best = Some(match best {
+                None => entry,
+                Some(current) if rotation_greater(entry, current) => entry,
+                Some(current) => current,
+            });
+        }
+        Ok(best.map(|entry| entry.next_key.clone()))
+    }
+
+    /// Whether `(actor, key_id)` is revoked at causal position `at`.
+    ///
+    /// A key is revoked iff some revocation matches with either
+    /// `retroactive = true` or `created_at <= at`. Most-restrictive
+    /// interpretation wins on duplicates.
+    fn is_key_revoked_at(
+        &self,
+        actor: &ActorId,
+        key_id: &KeyId,
+        at: Timestamp,
+    ) -> Result<bool, ActorResolveError> {
+        Ok(self
+            .key_revocations(actor)?
+            .into_iter()
+            .any(|entry| {
+                entry.revoked_key == *key_id && (entry.retroactive || entry.created_at <= at)
+            }))
+    }
+}
+
+fn rotation_greater(candidate: &KeyRotationEntry, current: &KeyRotationEntry) -> bool {
+    if candidate.created_at > current.created_at {
+        return true;
+    }
+    if candidate.created_at < current.created_at {
+        return false;
+    }
+    candidate.statement_id > current.statement_id
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryActorResolver {
     actors: BTreeMap<ActorId, ActorGenesisBody>,
+    rotations: BTreeMap<ActorId, Vec<KeyRotationEntry>>,
+    revocations: BTreeMap<ActorId, Vec<KeyRevocationEntry>>,
 }
 
 impl MemoryActorResolver {
@@ -331,6 +448,14 @@ impl MemoryActorResolver {
         let actor_id = genesis.actor_id();
         self.actors.insert(actor_id.clone(), genesis);
         actor_id
+    }
+
+    pub fn insert_rotation(&mut self, actor: ActorId, entry: KeyRotationEntry) {
+        self.rotations.entry(actor).or_default().push(entry);
+    }
+
+    pub fn insert_revocation(&mut self, actor: ActorId, entry: KeyRevocationEntry) {
+        self.revocations.entry(actor).or_default().push(entry);
     }
 
     pub fn len(&self) -> usize {
@@ -348,6 +473,20 @@ impl ActorResolver for MemoryActorResolver {
         actor: &ActorId,
     ) -> Result<Option<ActorGenesisBody>, ActorResolveError> {
         Ok(self.actors.get(actor).cloned())
+    }
+
+    fn key_rotations(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
+        Ok(self.rotations.get(actor).cloned().unwrap_or_default())
+    }
+
+    fn key_revocations(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<KeyRevocationEntry>, ActorResolveError> {
+        Ok(self.revocations.get(actor).cloned().unwrap_or_default())
     }
 }
 
@@ -573,5 +712,168 @@ mod tests {
         let actor_id = resolver.insert(genesis.clone());
 
         assert_eq!(resolver.initial_key(&actor_id), Ok(Some(public_key())));
+    }
+
+    fn other_public_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes())
+    }
+
+    fn third_public_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes())
+    }
+
+    #[test]
+    fn active_key_falls_back_to_genesis_initial_when_no_rotations() {
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis);
+
+        let resolved = resolver
+            .active_key_at(&actor_id, Timestamp::from_seconds(timestamp().seconds() + 100))
+            .expect("query succeeds");
+        assert_eq!(resolved, Some(public_key()));
+    }
+
+    #[test]
+    fn active_key_at_walks_rotation_chain() {
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis);
+
+        // First rotation moves the active key to other_public_key
+        // at t+10.
+        resolver.insert_rotation(
+            actor_id.clone(),
+            KeyRotationEntry {
+                statement_id: "rotation-1".to_owned(),
+                next_key: other_public_key(),
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 10),
+                supersedes: None,
+            },
+        );
+        // Successor rotation at t+20 names rotation-1 in supersedes
+        // and rotates to third_public_key.
+        resolver.insert_rotation(
+            actor_id.clone(),
+            KeyRotationEntry {
+                statement_id: "rotation-2".to_owned(),
+                next_key: third_public_key(),
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 20),
+                supersedes: Some("rotation-1".to_owned()),
+            },
+        );
+
+        // Before any rotation: genesis-initial wins.
+        assert_eq!(
+            resolver.active_key_at(&actor_id, timestamp()).unwrap(),
+            Some(public_key())
+        );
+        // Between the two rotations: rotation-1's next_key wins.
+        assert_eq!(
+            resolver
+                .active_key_at(&actor_id, Timestamp::from_seconds(timestamp().seconds() + 15))
+                .unwrap(),
+            Some(other_public_key())
+        );
+        // After both rotations: rotation-2's next_key wins.
+        assert_eq!(
+            resolver
+                .active_key_at(&actor_id, Timestamp::from_seconds(timestamp().seconds() + 25))
+                .unwrap(),
+            Some(third_public_key())
+        );
+    }
+
+    #[test]
+    fn revocation_default_only_invalidates_after_created_at() {
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis);
+        let key_id = public_key().key_id();
+
+        resolver.insert_revocation(
+            actor_id.clone(),
+            KeyRevocationEntry {
+                statement_id: "revocation-1".to_owned(),
+                revoked_key: key_id.clone(),
+                retroactive: false,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+            },
+        );
+
+        // Before the revocation: not revoked.
+        assert!(!resolver
+            .is_key_revoked_at(&actor_id, &key_id, timestamp())
+            .unwrap());
+        // After the revocation: revoked.
+        assert!(resolver
+            .is_key_revoked_at(
+                &actor_id,
+                &key_id,
+                Timestamp::from_seconds(timestamp().seconds() + 200)
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn retroactive_revocation_invalidates_at_every_timestamp() {
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis);
+        let key_id = public_key().key_id();
+
+        resolver.insert_revocation(
+            actor_id.clone(),
+            KeyRevocationEntry {
+                statement_id: "revocation-1".to_owned(),
+                revoked_key: key_id.clone(),
+                retroactive: true,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+            },
+        );
+
+        // Even before the revocation's created_at, the key is treated
+        // as revoked because retroactive = true.
+        assert!(resolver
+            .is_key_revoked_at(&actor_id, &key_id, timestamp())
+            .unwrap());
+    }
+
+    #[test]
+    fn most_restrictive_revocation_wins() {
+        let genesis =
+            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis);
+        let key_id = public_key().key_id();
+
+        // First a non-retroactive revocation, then a retroactive one
+        // for the same key. The retroactive one wins.
+        resolver.insert_revocation(
+            actor_id.clone(),
+            KeyRevocationEntry {
+                statement_id: "rev-default".to_owned(),
+                revoked_key: key_id.clone(),
+                retroactive: false,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+            },
+        );
+        resolver.insert_revocation(
+            actor_id.clone(),
+            KeyRevocationEntry {
+                statement_id: "rev-retro".to_owned(),
+                revoked_key: key_id.clone(),
+                retroactive: true,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 200),
+            },
+        );
+
+        assert!(resolver
+            .is_key_revoked_at(&actor_id, &key_id, timestamp())
+            .unwrap());
     }
 }
