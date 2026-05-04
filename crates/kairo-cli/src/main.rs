@@ -25,14 +25,16 @@ use kairo_statement::verify::{
     VerificationReport,
 };
 use kairo_statement::{
-    ActorTrustBody, ActorTrustShapeError, ObjectBranchBody, ObjectGenesisBody,
-    ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
-    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
-    SignedStatement, TrustDecision, UnsignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ActorTrustShapeError,
+    Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError, ObjectBranchBody,
+    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion,
+    Signature, SignedStatement, StatementKind, StatementKindParseError, TrustDecision,
+    UnsignedStatement,
 };
 use kairo_store::{
-    ActorStore, BlobStore, BranchResolver, FilesystemStore, ObjectStore, StatementStore,
-    TrustResolver, VersionTagResolver,
+    ActorStore, BlobStore, BranchResolver, CapabilityHead, CapabilityResolver, FilesystemStore,
+    ObjectStore, StatementStore, TrustResolver, VersionTagResolver,
 };
 
 #[derive(Debug, Parser)]
@@ -86,6 +88,12 @@ enum Command {
     Trust {
         #[command(subcommand)]
         command: TrustCommand,
+    },
+    /// Work with cross-actor capability grants (ActorCapabilityGrant /
+    /// ActorCapabilityRevocation). See specs/CAPABILITIES.md.
+    Capability {
+        #[command(subcommand)]
+        command: CapabilityCommand,
     },
     /// Export and import portable directory bundles for an object.
     Bundle {
@@ -288,6 +296,78 @@ enum TrustCommand {
         of: String,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CapabilityCommand {
+    /// Sign a new ActorCapabilityGrant from --grantor to --grantee on
+    /// --object. If a chain head already exists for the (grantor,
+    /// grantee, object) triple, the new statement supersedes it;
+    /// otherwise it is the genesis grant. Pass --kind once per
+    /// statement kind to authorize.
+    Grant {
+        /// Grantor: the local actor whose key signs this delegation.
+        #[arg(long)]
+        grantor: String,
+        /// Grantee: the actor being authorized.
+        #[arg(long)]
+        grantee: String,
+        /// Object whose surface this grant covers.
+        #[arg(long)]
+        object: String,
+        /// Statement kind the grantee may issue. Repeat for multiple
+        /// (e.g. `--kind ObjectVersionTag --kind ObjectBranch`).
+        #[arg(long = "kind")]
+        kinds: Vec<String>,
+        /// Allow the grantee to further re-grant this capability.
+        #[arg(long)]
+        delegable: bool,
+        /// RFC 3339 UTC seconds. Grant invalid for statements created
+        /// strictly after this timestamp.
+        #[arg(long)]
+        expires_at: Option<String>,
+        /// Maximum re-grant chain depth (0..=255).
+        #[arg(long)]
+        max_delegation_depth: Option<u8>,
+        /// Bind the grant to a specific grantor signing key. Revoking
+        /// that key auto-invalidates the grant. See
+        /// specs/CAPABILITIES.md §7.2.
+        #[arg(long)]
+        key_pinned: Option<String>,
+    },
+    /// Sign an ActorCapabilityRevocation against --grant. The local
+    /// signer must be the grant's original grantor (cross-grantor
+    /// revocation is invalid in v1).
+    Revoke {
+        /// Grantor: the actor whose key signs the revocation. Must
+        /// equal the grant's signer.
+        #[arg(long)]
+        grantor: String,
+        /// StatementId of the ActorCapabilityGrant being revoked.
+        #[arg(long)]
+        grant: String,
+        /// Invalidate the grant from inception (every statement
+        /// issued under it is re-evaluated). Default revocation only
+        /// invalidates statements created strictly after the
+        /// revocation. See specs/CAPABILITIES.md §6.3.
+        #[arg(long)]
+        retroactive: bool,
+        /// Optional human-readable reason. Included in canonical bytes.
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// List capability chain heads. Either `--grantor <id>` (audit
+    /// what an actor has delegated) or `--object <id>` (cross-cutting
+    /// view of who holds capabilities on an object). Exactly one of
+    /// the two flags is required.
+    List {
+        /// List heads of grants signed by this grantor.
+        #[arg(long, conflicts_with = "object")]
+        grantor: Option<String>,
+        /// List heads of grants on this object across grantors.
+        #[arg(long)]
+        object: Option<String>,
     },
 }
 
@@ -530,6 +610,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Branch { command }) => run_branch_command(command, &paths),
         Some(Command::Tag { command }) => run_tag_command(command, &paths),
         Some(Command::Trust { command }) => run_trust_command(command, &paths),
+        Some(Command::Capability { command }) => run_capability_command(command, &paths),
         Some(Command::Bundle { command }) => run_bundle_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         Some(Command::Verify { command }) => run_verify_command(command, &paths),
@@ -1869,6 +1950,302 @@ fn format_trust_history_json(
     output
 }
 
+fn run_capability_command(
+    command: CapabilityCommand,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    match command {
+        CapabilityCommand::Grant {
+            grantor,
+            grantee,
+            object,
+            kinds,
+            delegable,
+            expires_at,
+            max_delegation_depth,
+            key_pinned,
+        } => run_capability_grant(
+            paths,
+            grantor,
+            grantee,
+            object,
+            kinds,
+            delegable,
+            expires_at,
+            max_delegation_depth,
+            key_pinned,
+        ),
+        CapabilityCommand::Revoke {
+            grantor,
+            grant,
+            retroactive,
+            reason,
+        } => run_capability_revoke(paths, grantor, grant, retroactive, reason),
+        CapabilityCommand::List { grantor, object } => {
+            run_capability_list(paths, grantor, object)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_capability_grant(
+    paths: &StorePaths,
+    grantor: String,
+    grantee: String,
+    object: String,
+    kinds: Vec<String>,
+    delegable: bool,
+    expires_at: Option<String>,
+    max_delegation_depth: Option<u8>,
+    key_pinned: Option<String>,
+) -> Result<String, CliError> {
+    let grantor_id = ActorId::new(grantor.clone())
+        .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
+    let grantee_id = ActorId::new(grantee.clone())
+        .map_err(|source| CliError::ParseActorId { actor: grantee, source })?;
+    let object_id = ObjectId::new(object.clone())
+        .map_err(|source| CliError::ParseObjectId { object, source })?;
+
+    if kinds.is_empty() {
+        return Err(CliError::CapabilityKindsRequired);
+    }
+    let mut parsed_kinds: Vec<StatementKind> = Vec::with_capacity(kinds.len());
+    for kind in &kinds {
+        let parsed = StatementKind::parse(kind)
+            .map_err(|source| CliError::ParseStatementKind { kind: kind.clone(), source })?;
+        parsed_kinds.push(parsed);
+    }
+
+    let mut constraints: Vec<CapabilityConstraint> = Vec::new();
+    if let Some(expires_at) = expires_at {
+        let ts: Timestamp = expires_at
+            .parse()
+            .map_err(|source| CliError::ParseTimestamp { value: expires_at, source })?;
+        constraints.push(CapabilityConstraint::ExpiresAt(ts));
+    }
+    if let Some(depth) = max_delegation_depth {
+        constraints.push(CapabilityConstraint::MaxDelegationDepth(depth));
+    }
+    if let Some(key_id) = key_pinned {
+        constraints.push(CapabilityConstraint::KeyPinned(kairo_identity::KeyId::new(
+            key_id,
+        )));
+    }
+
+    let scope = CapabilityScope::Object(object_id.clone());
+    let capability = Capability::new(scope.clone(), parsed_kinds, delegable, constraints)
+        .map_err(CliError::CapabilityShape)?;
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    let actor_body = store
+        .get_actor(&grantor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: grantor_id.clone(),
+            source: error,
+        })?;
+    let secret = keystore
+        .get_signing_key(&grantor_id)
+        .map_err(|error| CliError::ReadKey {
+            actor: grantor_id.clone(),
+            source: error,
+        })?;
+    if &secret.public_key() != actor_body.initial_key() {
+        return Err(CliError::KeyDoesNotMatchActor { actor: grantor_id });
+    }
+
+    // Auto-chain: supersede the existing chain leaf for (grantor,
+    // grantee, scope) if any; otherwise this is the genesis grant.
+    let prior = store
+        .latest_capability(&grantor_id, &grantee_id, &scope)
+        .map_err(CliError::ReadCapability)?;
+    let supersedes = prior.as_ref().map(|signed| signed.statement_id());
+
+    let body = ActorCapabilityGrantBody::new(grantee_id.clone(), capability, supersedes.clone());
+    let subject: KairoRef = format!("actor:{grantee_id}")
+        .parse()
+        .map_err(|source| CliError::BuildActorSubjectRef {
+            actor: grantee_id.clone(),
+            source,
+        })?;
+    let unsigned = UnsignedStatement::new(grantor_id.clone(), subject, Timestamp::now(), body);
+    let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        grantor_id.clone(),
+        secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_capability_grant(&signed)
+        .map_err(|error| CliError::WriteCapabilityGrant {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    let supersedes_line = match supersedes {
+        Some(id) => format!("supersedes = {id}\n"),
+        None => "supersedes = (genesis)\n".to_owned(),
+    };
+    let body = signed.unsigned().body();
+    let cap = body.capability();
+    let kinds_line = cap
+        .statement_kinds()
+        .iter()
+        .map(StatementKind::as_str)
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(format!(
+        "grant capability\nstatement = {statement_id}\ngrantor = {grantor_id}\ngrantee = {grantee_id}\nobject = {object_id}\nkinds = [{kinds_line}]\ndelegable = {}\n{supersedes_line}",
+        cap.delegable()
+    ))
+}
+
+fn run_capability_revoke(
+    paths: &StorePaths,
+    grantor: String,
+    grant: String,
+    retroactive: bool,
+    reason: Option<String>,
+) -> Result<String, CliError> {
+    let grantor_id = ActorId::new(grantor.clone())
+        .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
+    let grant_id = kairo_core::StatementId::new(grant.clone())
+        .map_err(|source| CliError::ParseStatementId { statement: grant, source })?;
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    // The grant must exist locally and have been signed by --grantor
+    // (cross-grantor revocation is invalid in v1).
+    let prior = store
+        .get_actor_capability_grant(&grant_id)
+        .map_err(|error| CliError::ReadGrant {
+            statement: grant_id.clone(),
+            source: error,
+        })?;
+    if prior.unsigned().actor() != &grantor_id {
+        return Err(CliError::RevokeWrongGrantor {
+            grant: grant_id,
+            expected: prior.unsigned().actor().clone(),
+            got: grantor_id,
+        });
+    }
+
+    let actor_body = store
+        .get_actor(&grantor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: grantor_id.clone(),
+            source: error,
+        })?;
+    let secret = keystore
+        .get_signing_key(&grantor_id)
+        .map_err(|error| CliError::ReadKey {
+            actor: grantor_id.clone(),
+            source: error,
+        })?;
+    if &secret.public_key() != actor_body.initial_key() {
+        return Err(CliError::KeyDoesNotMatchActor { actor: grantor_id });
+    }
+
+    let body = ActorCapabilityRevocationBody::new(grant_id.clone(), retroactive, reason);
+    let subject: KairoRef = format!("statement:{grant_id}")
+        .parse()
+        .map_err(|source| CliError::BuildStatementSubjectRef {
+            statement: grant_id.clone(),
+            source,
+        })?;
+    let unsigned = UnsignedStatement::new(grantor_id.clone(), subject, Timestamp::now(), body);
+    let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        grantor_id.clone(),
+        secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_capability_revocation(&signed)
+        .map_err(|error| CliError::WriteCapabilityRevocation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    Ok(format!(
+        "revoke capability\nstatement = {statement_id}\ngrantor = {grantor_id}\nrevoked_grant = {grant_id}\nretroactive = {retroactive}\n",
+    ))
+}
+
+fn run_capability_list(
+    paths: &StorePaths,
+    grantor: Option<String>,
+    object: Option<String>,
+) -> Result<String, CliError> {
+    match (grantor, object) {
+        (Some(_), Some(_)) | (None, None) => Err(CliError::CapabilityListExclusive),
+        (Some(grantor), None) => {
+            let grantor_id = ActorId::new(grantor.clone())
+                .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
+            let store = open_store(paths)?;
+            let heads = store
+                .list_capabilities_from(&grantor_id)
+                .map_err(CliError::ReadCapability)?;
+            Ok(format_capability_list_by_grantor(&grantor_id, &heads))
+        }
+        (None, Some(object)) => {
+            let object_id = ObjectId::new(object.clone())
+                .map_err(|source| CliError::ParseObjectId { object, source })?;
+            let store = open_store(paths)?;
+            let heads = store
+                .list_capabilities_for_object(&object_id)
+                .map_err(CliError::ReadCapability)?;
+            Ok(format_capability_list_by_object(&object_id, &heads))
+        }
+    }
+}
+
+fn format_capability_list_by_grantor(grantor: &ActorId, heads: &[CapabilityHead]) -> String {
+    let mut output = format!("grantor = {grantor}\nheads = {}\n", heads.len());
+    for (idx, head) in heads.iter().enumerate() {
+        let scope_line = match &head.scope {
+            CapabilityScope::Object(id) => format!("object = {id}"),
+            CapabilityScope::Actor(id) => format!("actor = {id}"),
+        };
+        output.push_str(&format!(
+            "\n[{}] grantee = {}\n    {scope_line}\n    statement = {}\n    created_at = {}\n",
+            idx + 1,
+            head.grantee,
+            head.statement_id,
+            head.created_at
+        ));
+    }
+    output
+}
+
+fn format_capability_list_by_object(
+    object: &ObjectId,
+    heads: &[kairo_store::CapabilityByObjectHead],
+) -> String {
+    let mut output = format!("object = {object}\nheads = {}\n", heads.len());
+    for (idx, head) in heads.iter().enumerate() {
+        output.push_str(&format!(
+            "\n[{}] grantor = {}\n    grantee = {}\n    statement = {}\n    created_at = {}\n",
+            idx + 1,
+            head.grantor,
+            head.grantee,
+            head.statement_id,
+            head.created_at
+        ));
+    }
+    output
+}
+
 fn run_bundle_command(command: BundleCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
         BundleCommand::Export { object, output } => {
@@ -3074,7 +3451,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -3216,6 +3593,39 @@ enum CliError {
     BuildActorSubjectRef {
         actor: ActorId,
         source: kairo_core::IdError,
+    },
+    BuildStatementSubjectRef {
+        statement: kairo_core::StatementId,
+        source: kairo_core::IdError,
+    },
+    CapabilityKindsRequired,
+    CapabilityListExclusive,
+    ParseStatementKind {
+        kind: String,
+        source: StatementKindParseError,
+    },
+    ParseTimestamp {
+        value: String,
+        source: kairo_core::TimestampError,
+    },
+    CapabilityShape(CapabilityShapeError),
+    ReadCapability(kairo_store::StoreError),
+    ReadGrant {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    WriteCapabilityGrant {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    WriteCapabilityRevocation {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    RevokeWrongGrantor {
+        grant: kairo_core::StatementId,
+        expected: ActorId,
+        got: ActorId,
     },
     ListKeystore(kairo_keystore::KeystoreError),
     AmbiguousLocalActor {
@@ -3396,6 +3806,39 @@ impl fmt::Display for CliError {
                 f,
                 "could not build subject reference for actor {actor}: {source}"
             ),
+            Self::BuildStatementSubjectRef { statement, source } => write!(
+                f,
+                "could not build subject reference for statement {statement}: {source}"
+            ),
+            Self::CapabilityKindsRequired => f.write_str(
+                "at least one --kind is required (e.g. --kind ObjectVersionTag)",
+            ),
+            Self::CapabilityListExclusive => f.write_str(
+                "kairo capability list takes exactly one of --grantor <id> or --object <id>",
+            ),
+            Self::ParseStatementKind { kind, source } => {
+                write!(f, "invalid statement kind {kind:?}: {source}")
+            }
+            Self::ParseTimestamp { value, source } => {
+                write!(f, "invalid timestamp {value:?}: {source}")
+            }
+            Self::CapabilityShape(error) => write!(f, "{error}"),
+            Self::ReadCapability(error) => write!(f, "failed to read capability: {error}"),
+            Self::ReadGrant { statement, source } => {
+                write!(f, "failed to read capability grant {statement}: {source}")
+            }
+            Self::WriteCapabilityGrant { statement, source } => write!(
+                f,
+                "failed to write capability grant statement {statement}: {source}"
+            ),
+            Self::WriteCapabilityRevocation { statement, source } => write!(
+                f,
+                "failed to write capability revocation statement {statement}: {source}"
+            ),
+            Self::RevokeWrongGrantor { grant, expected, got } => write!(
+                f,
+                "cannot revoke grant {grant}: signer {got} does not match the original grantor {expected}"
+            ),
             Self::ListKeystore(error) => write!(f, "failed to list keystore: {error}"),
             Self::Bundle(error) => write!(f, "{error}"),
             Self::AmbiguousLocalActor { candidates } => {
@@ -3475,13 +3918,18 @@ impl Error for CliError {
             | Self::WriteBranch { source, .. }
             | Self::WriteVersionTag { source, .. }
             | Self::WriteActorTrust { source, .. }
+            | Self::WriteCapabilityGrant { source, .. }
+            | Self::WriteCapabilityRevocation { source, .. }
+            | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)
-            | Self::ReadActorTrust(error) => Some(error),
+            | Self::ReadActorTrust(error)
+            | Self::ReadCapability(error) => Some(error),
             Self::ParseSemver(error) => Some(error),
             Self::TagShape(error) => Some(error),
             Self::TrustShape(error) => Some(error),
+            Self::CapabilityShape(error) => Some(error),
             Self::ComputeSnapshot(error) => Some(error),
             Self::OpenKeystore { source, .. }
             | Self::WriteKey { source, .. }
@@ -3492,7 +3940,10 @@ impl Error for CliError {
             | Self::ParseObjectId { source, .. }
             | Self::ParseStatementId { source, .. }
             | Self::BuildSubjectRef { source, .. }
-            | Self::BuildActorSubjectRef { source, .. } => Some(source),
+            | Self::BuildActorSubjectRef { source, .. }
+            | Self::BuildStatementSubjectRef { source, .. } => Some(source),
+            Self::ParseStatementKind { source, .. } => Some(source),
+            Self::ParseTimestamp { source, .. } => Some(source),
             Self::GenerateKey(error) => Some(error),
             Self::OpenGitRepo { source, .. } | Self::GitOperation { source } => Some(source),
             Self::VerificationFailed(_)
@@ -3506,6 +3957,9 @@ impl Error for CliError {
             | Self::TagNotFound { .. }
             | Self::RevokeWithoutPriorTag { .. }
             | Self::WithdrawWithoutPriorTrust { .. }
+            | Self::CapabilityKindsRequired
+            | Self::CapabilityListExclusive
+            | Self::RevokeWrongGrantor { .. }
             | Self::AmbiguousLocalActor { .. }
             | Self::GitRepoNotDiscovered { .. }
             | Self::ManifestNotUtf8
@@ -5912,6 +6366,290 @@ kind = "tree"
             }),
         });
         assert!(matches!(result, Err(CliError::Bundle(_))));
+        Ok(())
+    }
+
+    fn create_local_actor(
+        store_dir: &std::path::Path,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        parse_field(
+            &run(Cli {
+                store: Some(store_dir.to_path_buf()),
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::Create {
+                        kind: "person".to_owned(),
+                    },
+                }),
+            })?,
+            "actor = ",
+        )
+    }
+
+    fn create_local_object(
+        store_dir: &std::path::Path,
+        actor: &str,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        parse_field(
+            &run(Cli {
+                store: Some(store_dir.to_path_buf()),
+                keys: None,
+                command: Some(Command::Object {
+                    command: ObjectSubcommand::Create {
+                        actor: actor.to_owned(),
+                        kind: "software".to_owned(),
+                        initial_revision: None,
+                    },
+                }),
+            })?,
+            "object = ",
+        )
+    }
+
+    #[test]
+    fn capability_grant_then_list_by_grantor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let grantor = create_local_actor(store_dir.path())?;
+        let grantee = create_local_actor(store_dir.path())?;
+        let object = create_local_object(store_dir.path(), &grantor)?;
+
+        let grant_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Grant {
+                    grantor: grantor.clone(),
+                    grantee: grantee.clone(),
+                    object: object.clone(),
+                    kinds: vec!["ObjectVersionTag".to_owned()],
+                    delegable: false,
+                    expires_at: None,
+                    max_delegation_depth: None,
+                    key_pinned: None,
+                },
+            }),
+        })?;
+        assert!(grant_output.contains("grant capability"));
+        assert!(grant_output.contains("supersedes = (genesis)"));
+        assert!(grant_output.contains("kinds = [ObjectVersionTag]"));
+
+        let list_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::List {
+                    grantor: Some(grantor.clone()),
+                    object: None,
+                },
+            }),
+        })?;
+        assert!(list_output.contains("heads = 1"));
+        assert!(list_output.contains(&grantee));
+        assert!(list_output.contains(&object));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_supersedes_prior_chain_leaf()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let grantor = create_local_actor(store_dir.path())?;
+        let grantee = create_local_actor(store_dir.path())?;
+        let object = create_local_object(store_dir.path(), &grantor)?;
+
+        let first = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Grant {
+                    grantor: grantor.clone(),
+                    grantee: grantee.clone(),
+                    object: object.clone(),
+                    kinds: vec!["ObjectVersionTag".to_owned()],
+                    delegable: false,
+                    expires_at: None,
+                    max_delegation_depth: None,
+                    key_pinned: None,
+                },
+            }),
+        })?;
+        let first_id = parse_field(&first, "statement = ")?;
+
+        // Wait so created_at strictly increases.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let second = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Grant {
+                    grantor: grantor.clone(),
+                    grantee: grantee.clone(),
+                    object: object.clone(),
+                    kinds: vec![
+                        "ObjectVersionTag".to_owned(),
+                        "ObjectBranch".to_owned(),
+                    ],
+                    delegable: true,
+                    expires_at: None,
+                    max_delegation_depth: None,
+                    key_pinned: None,
+                },
+            }),
+        })?;
+        assert!(second.contains(&format!("supersedes = {first_id}")));
+        assert!(second.contains("delegable = true"));
+        assert!(second.contains("kinds = [ObjectBranch,ObjectVersionTag]"));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_revoke_emits_revocation_and_blocks_wrong_grantor()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let grantor = create_local_actor(store_dir.path())?;
+        let grantee = create_local_actor(store_dir.path())?;
+        let intruder = create_local_actor(store_dir.path())?;
+        let object = create_local_object(store_dir.path(), &grantor)?;
+
+        let grant = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Grant {
+                    grantor: grantor.clone(),
+                    grantee,
+                    object,
+                    kinds: vec!["ObjectVersionTag".to_owned()],
+                    delegable: false,
+                    expires_at: None,
+                    max_delegation_depth: None,
+                    key_pinned: None,
+                },
+            }),
+        })?;
+        let grant_id = parse_field(&grant, "statement = ")?;
+
+        // A different actor cannot revoke someone else's grant.
+        let intruder_attempt = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Revoke {
+                    grantor: intruder,
+                    grant: grant_id.clone(),
+                    retroactive: false,
+                    reason: None,
+                },
+            }),
+        });
+        assert!(matches!(
+            intruder_attempt,
+            Err(CliError::RevokeWrongGrantor { .. })
+        ));
+
+        // The original grantor can.
+        let revoke = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Revoke {
+                    grantor,
+                    grant: grant_id.clone(),
+                    retroactive: true,
+                    reason: Some("compromised".to_owned()),
+                },
+            }),
+        })?;
+        assert!(revoke.contains("revoke capability"));
+        assert!(revoke.contains(&format!("revoked_grant = {grant_id}")));
+        assert!(revoke.contains("retroactive = true"));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_list_requires_exactly_one_filter()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let neither = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::List {
+                    grantor: None,
+                    object: None,
+                },
+            }),
+        });
+        assert!(matches!(neither, Err(CliError::CapabilityListExclusive)));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_rejects_empty_kinds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let grantor = create_local_actor(store_dir.path())?;
+        let grantee = create_local_actor(store_dir.path())?;
+        let object = create_local_object(store_dir.path(), &grantor)?;
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Grant {
+                    grantor,
+                    grantee,
+                    object,
+                    kinds: vec![],
+                    delegable: false,
+                    expires_at: None,
+                    max_delegation_depth: None,
+                    key_pinned: None,
+                },
+            }),
+        });
+        assert!(matches!(result, Err(CliError::CapabilityKindsRequired)));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_list_by_object_includes_grantor_grantee()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let grantor = create_local_actor(store_dir.path())?;
+        let grantee = create_local_actor(store_dir.path())?;
+        let object = create_local_object(store_dir.path(), &grantor)?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::Grant {
+                    grantor: grantor.clone(),
+                    grantee: grantee.clone(),
+                    object: object.clone(),
+                    kinds: vec!["ObjectVersionTag".to_owned()],
+                    delegable: false,
+                    expires_at: None,
+                    max_delegation_depth: None,
+                    key_pinned: None,
+                },
+            }),
+        })?;
+
+        let by_object = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Capability {
+                command: CapabilityCommand::List {
+                    grantor: None,
+                    object: Some(object.clone()),
+                },
+            }),
+        })?;
+        assert!(by_object.contains("heads = 1"));
+        assert!(by_object.contains(&grantor));
+        assert!(by_object.contains(&grantee));
         Ok(())
     }
 }

@@ -51,6 +51,7 @@ use std::collections::{BTreeMap, HashSet};
 use kairo_core::{ActorId, ObjectId, StatementId, Timestamp};
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 use crate::error::{CorruptReason, StoreError};
 
 /// On-disk representation of one tag entry.
