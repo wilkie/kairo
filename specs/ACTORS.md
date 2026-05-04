@@ -190,6 +190,22 @@ ed25519
 
 Future algorithms may be supported through explicit algorithm identifiers.
 
+Each actor holds two **disjoint** key surfaces:
+
+- **Signing keys.** The operational surface that signs all routine
+  statements (`ActorKeyRotation`, `ActorKeyRevocation`, `ObjectRevision`,
+  `ObjectBranch`, `ActorTrust`, `ActorCapabilityGrant`, etc.). Actively
+  managed via the rotation chain (§5.5).
+- **Attestation keys.** The cold-storage authority surface that signs
+  emergency key events (`ActorEmergencyKeyRotation`,
+  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`). Declared at
+  `ActorGenesis` and append-only afterwards (§5.5.2). Never used to
+  sign operational statements.
+
+The two surfaces never overlap. A key registered as a signing key
+cannot become an attestation key, and vice versa; the body validator
+rejects any statement that would conflate them.
+
 ### 5.2 Key identifiers
 
 A key should have a stable key ID.
@@ -247,7 +263,11 @@ Each actor has a per-actor key chain composed of:
   prior rotation;
 - zero or more `ActorKeyRevocation` statements (`STATEMENTS.md`
   §4.2g), each naming a `KeyId` whose signing authority is being
-  retracted, optionally retroactively.
+  retracted, optionally retroactively;
+- zero or more `ActorEmergencyKeyRotation` statements (`STATEMENTS.md`
+  §4.2h) and `ActorEmergencyKeyRevocation` statements (§4.2i) — same
+  chain semantics as the routine variants, but signed by the
+  attestation surface instead of the active signing key (see §5.5.2).
 
 Two independent queries fall out of this chain:
 
@@ -303,33 +323,73 @@ The CLI (`kairo actor revoke-key`) refuses to revoke the only active
 key without explicit confirmation. The protocol layer makes no such
 check; direct callers of the bodies must enforce this themselves.
 
-### 5.5.2 Future failsafe: cold-storage attestation keys
+### 5.5.2 Cold-storage attestation keys
 
 Both the bricking risk and the lost-active-key compromise scenario
-point at the same missing primitive: a separate authority surface,
-declared at `ActorGenesis` and add-only afterwards, that can sign
-emergency `ActorKeyRotation` / `ActorKeyRevocation` even when the
-operator has no working active key.
+point at the same primitive: a **separate authority surface**, declared
+at `ActorGenesis` and append-only afterwards, that can sign emergency
+key events even when the operator has no working active key.
 
-Planned shape (Phase 2 §10 follow-on, not v1):
+Shape (v1):
 
-- One or more attestation public keys are declared in `ActorGenesis`
-  alongside `initial_key`, becoming part of the canonical genesis
-  bytes (and therefore of the `ActorId`). An attacker cannot swap
-  them without producing a different `ActorId`.
-- Attestation keys sign **only** emergency key events; they have no
-  authority over operational statements (revisions, branches, tags,
-  capability grants, trust). Kind narrowing is enforced by the
-  verifier.
-- The §6.1 signature rule extends to: active key per the rotation
-  chain at `T`, **or** — for emergency key events only — a declared
-  genesis attestation key. Operational statements stay bound to the
-  active-key-at-`T` rule.
+- One or more attestation public keys are declared in
+  `ActorGenesis.attestation_keys` alongside `initial_key`. They are
+  part of the canonical genesis bytes — and therefore part of the
+  `ActorId`. An attacker cannot swap them out without producing a
+  different actor.
+- Attestation keys sign **only** the three emergency body kinds:
+  `ActorEmergencyKeyRotation` (`STATEMENTS.md` §4.2h),
+  `ActorEmergencyKeyRevocation` (§4.2i), and `ActorAttestationKeyAdd`
+  (§4.2j). They have no authority over operational statements
+  (revisions, branches, tags, capability grants, trust) and the
+  verifier rejects any operational statement signed by an attestation
+  `key_id`.
+- The attestation set may be grown after genesis via
+  `ActorAttestationKeyAdd`, signed by an existing attestation key. The
+  operational signing surface cannot grow the attestation set —
+  separation is enforced at the verifier.
+- Attestation keys are **not revocable** in v1. Compromise of an
+  attestation key has no in-protocol remediation; the operator must
+  publish a fresh `ActorGenesis` (different `ActorId`, continuity
+  re-established socially). A future schema revision may introduce
+  `ActorAttestationKeyRevocation`.
 
-The v1 design intentionally omits attestation keys, to keep the
-genesis shape minimal until the operator-experience needs are
-concrete. The hooks are documented here so the v1 → vN migration is
-contained — see `actor-key-revocation-v1.md` "Future failsafe".
+Resolution rule:
+
+> The attestation key set for `(actor, T)` is
+> `ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
+> ActorAttestationKeyAdd statements signed by actor with
+> created_at ≤ T }`.
+
+Cold-storage discipline:
+
+- Kairo never stores attestation private key material. Operators
+  hold the private halves externally — YubiKey, hardware wallet,
+  air-gapped device, encrypted seed in a safe.
+- The CLI MAY offer a generate-and-print convenience (e.g.
+  `kairo actor create --generate-attestation-key`) that produces a
+  fresh keypair, prints the seed once to stdout with an explicit
+  "this will not be saved" warning, embeds only the public key in
+  the genesis, and drops the seed from process memory before
+  exiting. The operator is responsible for capturing the seed into
+  external cold storage.
+- Operator-presented public keys (`--attestation-key <hex-pubkey>`)
+  are the recommended path because they force the use of a real
+  cold-storage tool to produce the keypair; the private half never
+  enters Kairo's process at all.
+
+Operational implications:
+
+- The v1 bricking risk in §5.5.1 is now recoverable as long as at
+  least one attestation key remains: the operator publishes
+  `ActorEmergencyKeyRotation` from cold storage to introduce a fresh
+  active key, then resumes routine operation.
+- A leaked attestation key alone cannot silently sign forged
+  operational statements. The attacker would have to first
+  emergency-rotate to a key they control, then sign with that —
+  leaving an emergency-rotation event in the audit trail signed by
+  the compromised attestation `key_id`. Operators should monitor for
+  unexpected emergency rotations.
 
 ---
 
@@ -353,21 +413,42 @@ The exact canonical signing payload is defined by `STATEMENTS.md` and `SCHEMA.md
 
 ### 6.1 Signature verification
 
+Each statement kind binds to one of two signing surfaces:
+
+- **Operational kinds** (everything except the three emergency kinds
+  below) — signed by the actor's **active signing key** per the
+  rotation chain (§5.5).
+- **Emergency kinds** — `ActorEmergencyKeyRotation`,
+  `ActorEmergencyKeyRevocation`, and `ActorAttestationKeyAdd` — signed
+  by an **attestation key** in the actor's attestation set at
+  `created_at` (§5.5.2).
+
+The two surfaces never overlap: an operational statement signed by an
+attestation `key_id` is invalid even if the bytes verify; an emergency
+statement signed by an active-signing `key_id` is invalid even if the
+bytes verify. Verifier dispatch is by statement kind.
+
 Core verification must check, in order:
 
-1. The statement's `signature.key_id` matches the actor's **active key**
-   at the statement's `created_at` per the rotation chain in §5.5.
-2. That `key_id` is not revoked for the actor at the statement's
-   `created_at` per the revocation set in §5.5.
-3. The signature bytes verify against the resolved active key's
-   public material under the declared algorithm.
+1. **Surface dispatch.** Determine the expected signing surface from the
+   statement kind (operational vs emergency).
+2. **Key admissibility.**
+   - Operational: `signature.key_id` matches the actor's active key
+     at `created_at` per the rotation chain in §5.5, **and** that
+     `key_id` is not revoked for the actor at `created_at` per the
+     revocation set in §5.5.
+   - Emergency: `signature.key_id` is in the actor's attestation set
+     at `created_at` per §5.5.2.
+3. The signature bytes verify against the resolved key's public
+   material under the declared algorithm.
 4. Statement payload matches signed canonical bytes.
 
 Invalid signatures make statements invalid.
 
-Missing key data (rotation or revocation statements not yet observed
-locally) may make validation indeterminate rather than invalid — same
-handling as missing predecessors elsewhere in the protocol.
+Missing key data (rotation, revocation, or attestation-add statements
+not yet observed locally) may make validation indeterminate rather than
+invalid — same handling as missing predecessors elsewhere in the
+protocol.
 
 ### 6.1.1 Genesis statements are not symmetric
 

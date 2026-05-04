@@ -419,6 +419,100 @@ The canonical ActorKeyRevocation v1 form is documented in:
 schemas/canonical/actor-key-revocation-v1.md
 ```
 
+### 4.2h ActorEmergencyKeyRotation Statement
+
+An `ActorEmergencyKeyRotation` is the cold-storage counterpart to
+`ActorKeyRotation` (§4.2f). The body shape is identical — `next_key`
+plus `supersedes` — but the statement is signed by a **cold-storage
+attestation key** declared in `ActorGenesis.attestation_keys` (or
+appended via `ActorAttestationKeyAdd`, §4.2j) instead of by the actor's
+currently active signing key.
+
+This is the recovery mechanism for the two scenarios in `ACTORS.md`
+§5.5.2 — lost active key and compromised active key. Without it,
+either condition would brick the actor (`ACTORS.md` §5.5.1).
+
+Differences from `ActorKeyRotation`:
+
+1. The verifier accepts the signature iff `signature.key_id` is in the
+   actor's **attestation key set** at `created_at` — never the
+   rotation-chain active key. The two signing surfaces never overlap.
+2. The chain semantics are otherwise identical — emergency rotations
+   contribute leaves to the same per-actor key-event chain, and the
+   active-key-at-causal-position rule walks them transparently.
+3. Cross-actor `supersedes` is **invalid** — including across
+   attestation surfaces. An attestation key controlled by a different
+   actor cannot rotate this actor's keys.
+
+Resolution: same as `ActorKeyRotation` — the active key for `(actor, T)`
+is the chain leaf's `next_key`, regardless of whether the leaf was a
+routine or emergency rotation.
+
+The canonical ActorEmergencyKeyRotation v1 form is documented in:
+
+```text
+schemas/canonical/actor-emergency-key-rotation-v1.md
+```
+
+### 4.2i ActorEmergencyKeyRevocation Statement
+
+An `ActorEmergencyKeyRevocation` is the cold-storage counterpart to
+`ActorKeyRevocation` (§4.2g). The body shape — `revoked_key`,
+`retroactive`, `reason` — is identical, but the signature must be
+produced by an attestation key in the actor's attestation set at
+`created_at`.
+
+This exists so an operator can retract a compromised signing key from
+cold storage without first having to emergency-rotate to a fresh active
+key. The revocation modes (default vs retroactive) and resolution
+semantics are identical to the routine variant; the revocation set for
+`(actor, key_id)` spans both kinds, and the most-restrictive
+interpretation wins.
+
+Attestation keys themselves are **not** revocable in v1 — they are
+append-only via `ActorAttestationKeyAdd`. Compromise of an attestation
+key has no in-protocol remediation in v1; see `ACTORS.md` §5.5.2.
+
+The canonical ActorEmergencyKeyRevocation v1 form is documented in:
+
+```text
+schemas/canonical/actor-emergency-key-revocation-v1.md
+```
+
+### 4.2j ActorAttestationKeyAdd Statement
+
+An `ActorAttestationKeyAdd` statement appends a new public key to the
+actor's attestation key set. The genesis-declared set in
+`ActorGenesis.attestation_keys` is fixed (part of the canonical bytes
+that derive `ActorId`); after genesis, the operator may grow the set by
+publishing one of these statements per added key.
+
+Differences from the rotation/revocation kinds:
+
+1. Attestation keys form a **set**, not a chain. There is no
+   `supersedes` field; ordering is irrelevant. The set is **append-only**
+   in v1 — there is no `ActorAttestationKeyRevocation` and no removal
+   mechanism.
+2. The signature must be produced by an existing attestation key in the
+   set at `created_at`. The operational signing key surface (active key
+   per the rotation chain) **cannot** grow the attestation set, even
+   if it is the only key the operator currently holds. This separation
+   keeps a compromised active key from quietly registering
+   attacker-controlled recovery keys.
+3. `new_key` must be disjoint from any signing key the actor has held.
+   Promoting a signing key into the attestation surface would collapse
+   the cold-storage separation; the body validator rejects it.
+
+Resolution: the attestation set for `(actor, T)` is
+`ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
+ActorAttestationKeyAdd statements signed by actor with created_at ≤ T }`.
+
+The canonical ActorAttestationKeyAdd v1 form is documented in:
+
+```text
+schemas/canonical/actor-attestation-key-add-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo

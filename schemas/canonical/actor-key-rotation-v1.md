@@ -56,12 +56,14 @@ with one tightening:
 ## Resolution Rule
 
 > The actor's current active signing key is the `next_key` of the
-> chain leaf, where the chain spans every `ActorKeyRotation` and
-> `ActorKeyRevocation` statement signed by `actor`. The chain leaf is
-> the statement no other key-event statement supersedes.
+> chain leaf, where the chain spans every `ActorKeyRotation`,
+> `ActorKeyRevocation`, `ActorEmergencyKeyRotation`, and
+> `ActorEmergencyKeyRevocation` statement signed by `actor`. The
+> chain leaf is the statement no other key-event statement supersedes.
 
-If the chain leaf is an `ActorKeyRevocation`, the actor has **no
-active signing key** until they publish a successor `ActorKeyRotation`.
+If the chain leaf is a revocation (routine or emergency), the actor
+has **no active signing key** until they publish a successor rotation
+(routine or emergency).
 
 If there are no key-event statements at all, the actor's active key
 is `ActorGenesis.initial_key`.

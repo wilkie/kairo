@@ -53,23 +53,20 @@ after the fact, mirroring `CAPABILITIES.md` §6.3.
 
 ## Authority to Revoke
 
-In v1, `ActorKeyRevocation` must be signed by the envelope actor's
-**currently active key** at the revocation's `created_at` (resolved
-via the rotation chain — see `actor-key-rotation-v1.md`). That active
-key MAY be `revoked_key` itself (the actor revoking their own current
-key, immediately after which the actor has no active signing surface
-until they publish a successor `ActorKeyRotation`).
+`ActorKeyRevocation` must be signed by the envelope actor's **currently
+active key** at the revocation's `created_at` (resolved via the
+rotation chain — see `actor-key-rotation-v1.md`). That active key MAY
+be `revoked_key` itself (the actor revoking their own current key,
+immediately after which the actor has no active signing surface until
+they publish a successor `ActorKeyRotation`).
 
-Cold-storage attestation keys for emergency revocation when the
-current active key is lost are deferred to Phase 2 §10 follow-on work.
-The practical operator pattern when discovering key compromise is:
-
-1. Publish `ActorKeyRotation` introducing a fresh `next_key`, signed
-   by the still-uncompromised currently active key (must beat the
-   attacker to this).
-2. Publish `ActorKeyRevocation` with `revoked_key = <compromised KeyId>`
-   and `retroactive = true`, signed by the freshly rotated-in active
-   key.
+When the operator no longer holds (or no longer trusts) the active
+signing key, `ActorEmergencyKeyRevocation`
+(`schemas/canonical/actor-emergency-key-revocation-v1.md`) is the
+cold-storage counterpart — same body shape, but signed by an
+attestation key declared in `ActorGenesis.attestation_keys`. Use the
+emergency variant for compromise scenarios where the active key is the
+compromised one.
 
 Cross-actor revocation is **invalid** — only the actor whose key it
 is may revoke their own keys. A capability cannot delegate the right
@@ -77,25 +74,30 @@ to revoke another actor's key.
 
 ### Bricking warning
 
-The protocol does **not** prevent an actor from revoking the only key
-they hold. The sequence "actor with no rotation chain signs an
-`ActorKeyRevocation` targeting the genesis-initial key with that same
-key" is internally consistent — the revocation itself is valid (it
-was signed by the active key at its `created_at`). But after the
+The protocol does **not** prevent an actor from revoking the only
+active signing key they hold. The sequence "actor with no rotation
+chain signs an `ActorKeyRevocation` targeting the genesis-initial key
+with that same key" is internally consistent — the revocation itself
+is valid (signed by the active key at its `created_at`). But after the
 revocation:
 
 - The active-key resolver still falls back to `ActorGenesis.initial_key`
   (no rotation has been published).
 - The revocation makes that key invalid for any new statement.
-- Therefore any subsequent `ActorKeyRotation` the operator tries to
+- Any subsequent routine `ActorKeyRotation` the operator tries to
   publish would have to be signed by the genesis-initial key, whose
   signature now fails verification.
-- The actor is permanently dead. Recovery requires a fresh
-  `ActorGenesis`, which produces a different `ActorId`. Continuity
-  has to be re-established socially (peers update trust, capabilities
-  re-issued).
 
-Operators must always **rotate first, then revoke**:
+Recovery is possible from cold storage as long as at least one
+attestation key remains: publish `ActorEmergencyKeyRotation`
+(`schemas/canonical/actor-emergency-key-rotation-v1.md`) signed by an
+attestation key, introducing a fresh active signing key. If no
+attestation key remains either, the actor is permanently dead;
+recovery requires a fresh `ActorGenesis`, which produces a different
+`ActorId`, with continuity re-established socially.
+
+Operator hygiene: prefer **rotate first, then revoke** for routine key
+hygiene:
 
 1. `ActorKeyRotation { next_key: K1, supersedes: null }` signed by K0.
 2. `ActorKeyRevocation { revoked_key: K0_id, ... }` signed by K1.
@@ -104,38 +106,6 @@ The CLI surface (`kairo actor revoke-key`) refuses to revoke the only
 active key without explicit confirmation; the protocol layer makes no
 such check, so direct callers of the bodies must enforce this
 themselves.
-
-### Future failsafe: cold-storage attestation keys
-
-The bricking risk and the lost-active-key compromise scenario both
-point at the same missing primitive: a separate authority surface,
-declared at actor genesis and strictly add-only afterwards, that can
-sign emergency `ActorKeyRotation` / `ActorKeyRevocation` statements
-even when the operator has no working active key.
-
-Sketch of the planned shape (Phase 2 §10 follow-on, not v1):
-
-- One or more attestation public keys are declared in `ActorGenesis`
-  alongside `initial_key`. They are part of the canonical genesis
-  bytes (and therefore part of the `ActorId`), so an attacker cannot
-  swap them out without producing a different `ActorId`.
-- Attestation keys may sign **only** emergency key events
-  (`ActorKeyRotation` / `ActorKeyRevocation`); they have no authority
-  over operational statements (revisions, branches, tags, capability
-  grants, trust). Verification enforces this kind narrowing.
-- The verifier's signature-validity rule extends to: "active key per
-  the rotation chain at `T`, OR — for emergency key events only — a
-  declared genesis attestation key." Operational statements remain
-  bound to the active-key-at-`T` rule.
-- Attestation keys themselves can be revoked by an attestation key
-  (so a compromised attestation key can be retired by holding any
-  other attestation key); revocation here is intentionally
-  conservative.
-
-The v1 design intentionally does not introduce attestation keys, to
-keep the genesis shape minimal until the operator-experience needs
-are concrete. The hooks are documented here so the v1 → vN
-migration is contained.
 
 ## Resolution Rule
 

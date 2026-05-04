@@ -247,39 +247,39 @@ key. Real-world security needs rotation and revocation.
 
 **Impl slice:**
 
-- [ ] `kairo-statement::{ActorKeyRotationBody, ActorKeyRevocationBody}`
+- [x] `kairo-statement::{ActorKeyRotationBody, ActorKeyRevocationBody}`
       with canonical encoding + JSON DTOs.
-- [ ] Extend `kairo-identity::ActorResolver` (or add a sibling trait)
+- [x] Extend `kairo-identity::ActorResolver` (or add a sibling trait)
       with `active_key_at(actor, at)` and
       `is_key_revoked_at(actor, key_id, at)` — returning the §5.5 query
       results. `MemoryActorResolver` and `FilesystemStore` impls.
-- [ ] Per-actor key-event index in `kairo-store` (sharded on
+- [x] Per-actor key-event index in `kairo-store` (sharded on
       `actor_id`, mirroring trust): `put_actor_key_rotation`,
       `put_actor_key_revocation`, with the materialized index that
       drives the two resolver queries.
-- [ ] Update `verify_envelope_statement` to consume
+- [x] Update `verify_envelope_statement` to consume
       `signature.key_id` and the new resolver methods (the field is
       currently recorded but ignored).
-- [ ] `KeyPinned` constraint enforcement in
+- [x] `KeyPinned` constraint enforcement in
       `kairo-statement::verify::evaluate_capability` — collapses to
       `CapabilityEvaluation::Revoked` when the pinned key is revoked
       at the evaluated causal position.
 
 **CLI slice:**
 
-- [ ] `kairo actor rotate-key --actor <id> [--keys <path>]` — generates
+- [x] `kairo actor rotate-key --actor <id> [--keys <path>]` — generates
       a fresh signing key, signs and persists an `ActorKeyRotation`
       using the prior active key, and stores the new key in the
       keystore alongside the prior one (so the actor retains the
       ability to verify historical statements).
-- [ ] `kairo actor revoke-key --actor <id> --key <key-id>
+- [x] `kairo actor revoke-key --actor <id> --key <key-id>
       [--retroactive] [--reason <text>] [--brick-actor]` — signs and
       persists an `ActorKeyRevocation` using the actor's current
       active key. Refuses to revoke the only active key (which would
       brick the actor per `ACTORS.md` §5.5.1) unless `--brick-actor`
       is passed; the help text points operators at `actor rotate-key`
       as the safe alternative.
-- [ ] `kairo actor key-history --actor <id> [--json]` — diagnostic
+- [x] `kairo actor key-history --actor <id> [--json]` — diagnostic
       surface listing the key chain (genesis-initial + rotations) and
       revocation set in causal order.
 
@@ -359,6 +359,116 @@ Hardening what Phase 1 shipped.
 
 **Why it matters:** the MVP works but is unhardened. Polish here makes
 every later Phase 2 / Phase 3 item cheaper and safer to land.
+
+### 14. Cold-Storage Attestation Keys
+
+`ACTORS.md` §5.5.2 declares a separate cold-storage authority surface
+that signs only emergency key events. This closes the bricking risk in
+§5.5.1 (lost active key is recoverable) and the lost-active-key
+compromise scenario in §10 (compromised active key can be retired from
+cold storage). Pre-deployment, so we land it as a v1 in-place edit of
+`ActorGenesis` rather than a v2 schema bump.
+
+**Spec slice (committed first):**
+
+- [x] `ActorGenesis` v1 grows `attestation_keys: list<PublicKey>`
+      (non-empty, sorted, deduplicated, disjoint from `initial_key`).
+      In-place edit of the existing v1 schema; existing dev-only
+      `~/.kairo` data becomes invalid (different `ActorId`s) and must
+      be wiped.
+- [x] `ActorEmergencyKeyRotation` statement type spec
+      (`schemas/canonical/actor-emergency-key-rotation-v1.md`,
+      `schemas/json/actor-emergency-key-rotation-v1.schema.json`,
+      `STATEMENTS.md` §4.2h).
+- [x] `ActorEmergencyKeyRevocation` statement type spec
+      (`schemas/canonical/actor-emergency-key-revocation-v1.md`,
+      `schemas/json/actor-emergency-key-revocation-v1.schema.json`,
+      `STATEMENTS.md` §4.2i).
+- [x] `ActorAttestationKeyAdd` statement type spec
+      (`schemas/canonical/actor-attestation-key-add-v1.md`,
+      `schemas/json/actor-attestation-key-add-v1.schema.json`,
+      `STATEMENTS.md` §4.2j) — append-only growth of the attestation
+      set, signed by an existing attestation key.
+- [x] `ACTORS.md` §5.5.2 promoted from "future failsafe" to v1
+      design. §5.1 documents the two disjoint key surfaces. §6.1
+      signature rule extended with surface-dispatch by statement kind.
+
+**Impl slice:**
+
+- [ ] `kairo-statement::ActorGenesisBody` grows `attestation_keys:
+      Vec<PublicKey>` with canonical encoding (sorted-dedup) and
+      JSON DTO. Body validator enforces non-empty, disjoint from
+      `initial_key`. Every existing test fixture and example that
+      creates an actor needs at least one attestation key — this is
+      the bulk of the sweep work.
+- [ ] `kairo-statement::{ActorEmergencyKeyRotationBody,
+      ActorEmergencyKeyRevocationBody, ActorAttestationKeyAddBody}`
+      with canonical encoding + JSON DTOs. Body validators enforce
+      same-actor rule, signing-key disjointness for `new_key` on add,
+      etc.
+- [ ] Extend `kairo-identity::ActorResolver` with
+      `attestation_keys_at(actor, at) -> BTreeSet<KeyId>` returning
+      the §5.5.2 set. `MemoryActorResolver` tracks a
+      `Vec<AttestationKeyEntry>` per actor; `FilesystemStore` impl
+      reads from a per-actor materialized index.
+- [ ] Extend the per-actor key-event index in `kairo-store` (added
+      in §10) with attestation-add entries and emergency-rotation /
+      emergency-revocation entries — keep all key-set state in one
+      file per actor. New trait methods:
+      `put_actor_emergency_key_rotation`,
+      `put_actor_emergency_key_revocation`,
+      `put_actor_attestation_key_add`, plus extended materialized
+      index that drives `attestation_keys_at`.
+- [ ] Update `verify_envelope_statement` with surface dispatch:
+      operational kinds use the existing active-key-at-T rule;
+      emergency kinds use `attestation_keys_at`. Surface mismatch
+      (attestation `key_id` on operational kind, or vice versa) is
+      `SignatureStatus::Invalid` with a distinct cause variant for
+      diagnostic clarity.
+- [ ] Active-key resolver walks the unified chain (rotation +
+      revocation + emergency variants) — `active_key_at` already
+      walks "key-event chain leaf"; the chain just gains new
+      contributing kinds.
+
+**CLI slice:**
+
+- [ ] `kairo actor create` grows `--attestation-key <hex-pubkey>`
+      (repeatable, operator-presented) and `--generate-attestation-key`
+      (repeatable, generates a fresh keypair, prints `seed: <base64>
+      pubkey: <hex>` once to stdout, embeds only the pubkey in the
+      genesis, drops the seed before exit). At least one attestation
+      key is required at create-time. Help text recommends the
+      operator-presented path.
+- [ ] `kairo actor recover-key --actor <id>
+      [--attestation-key-seed <path>] [--new-key <path>]
+      [--brick-actor]` — convenience path that reads an attestation
+      seed from a file the operator pulled from cold storage, signs
+      and persists an `ActorEmergencyKeyRotation` introducing a fresh
+      active key, and stores the new active key in the keystore. The
+      seed file is read once and never persisted by Kairo.
+- [ ] `kairo actor recover-key prepare --actor <id>
+      --new-key <pubkey-path> --output <path>` and
+      `kairo actor recover-key import --actor <id>
+      --signed-statement <path>` — the pure two-step path for
+      operators using a YubiKey or HSM. `prepare` emits an unsigned
+      `ActorEmergencyKeyRotation` body to a file; the operator signs
+      it externally on the cold device; `import` ingests the signed
+      envelope.
+- [ ] `kairo actor add-attestation-key --actor <id>
+      [--key <hex-pubkey>] [--generate]
+      [--signing-attestation-key-seed <path>]` — signs and persists
+      an `ActorAttestationKeyAdd` using an existing attestation key
+      (read from a seed file). Same generate-and-forget option as at
+      genesis. Two-step prepare/import variant for HSM-only flows.
+- [ ] `kairo actor key-history` (already in §10) extends to surface
+      the attestation set alongside the rotation chain and
+      revocation set.
+
+**Why it matters:** closes the bricking hole §10 explicitly left open,
+so a lost or compromised active key is no longer the end of an actor's
+identity. Without this, `ACTORS.md` §5.5.1 is the only failsafe — and
+"publish a new genesis and re-establish trust socially" is a poor
+operator story for any real-world deployment.
 
 ## After Phase 2
 

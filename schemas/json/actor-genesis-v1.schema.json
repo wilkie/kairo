@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/actor-genesis-v1.schema.json",
   "title": "Kairo ActorGenesis v1",
   "type": "object",
-  "required": ["type", "version", "actor_kind", "initial_key", "created_at", "nonce"],
+  "required": ["type", "version", "actor_kind", "initial_key", "attestation_keys", "created_at", "nonce"],
   "properties": {
     "type": {
       "const": "ActorGenesis"
@@ -16,6 +16,30 @@
       "minLength": 1
     },
     "initial_key": {
+      "$ref": "#/$defs/publicKey"
+    },
+    "attestation_keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/publicKey"
+      },
+      "description": "Cold-storage authority surface for emergency key events. Sorted by raw public-key bytes ascending in canonical bytes; deduplicated. Disjoint from initial_key. See ACTORS.md §5.5.2."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). No fractional seconds; no offsets other than Z."
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Thirty-two random bytes encoded as lowercase hex."
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "publicKey": {
       "type": "object",
       "required": ["algorithm", "bytes"],
       "properties": {
@@ -29,17 +53,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "created_at": {
-      "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
-      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). No fractional seconds; no offsets other than Z."
-    },
-    "nonce": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$",
-      "description": "Thirty-two random bytes encoded as lowercase hex."
     }
-  },
-  "additionalProperties": false
+  }
 }
