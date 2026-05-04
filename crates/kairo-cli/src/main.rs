@@ -11,7 +11,8 @@ use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{
-    generate_nonce, ActorGenesisBody, ActorKind, MemoryActorResolver, PublicKey, SecretSigningKey,
+    generate_nonce, ActorGenesisBody, ActorKind, ActorResolver, KeyId, MemoryActorResolver,
+    PublicKey, SecretSigningKey,
 };
 use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::{
@@ -25,12 +26,12 @@ use kairo_statement::verify::{
     VerificationReport,
 };
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ActorTrustShapeError,
-    Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError, ObjectBranchBody,
-    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-    ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion,
-    Signature, SignedStatement, StatementKind, StatementKindParseError, TrustDecision,
-    UnsignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRevocationBody,
+    ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability, CapabilityConstraint,
+    CapabilityScope, CapabilityShapeError, ObjectBranchBody, ObjectGenesisBody,
+    ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
+    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
+    SignedStatement, StatementKind, StatementKindParseError, TrustDecision, UnsignedStatement,
 };
 use kairo_store::{
     ActorStore, BlobStore, BranchResolver, CapabilityHead, CapabilityResolver, FilesystemStore,
@@ -483,6 +484,39 @@ enum ActorCommand {
         #[arg(long)]
         genesis: PathBuf,
     },
+    /// Rotate the actor's active signing key. Generates a fresh
+    /// keypair, signs an `ActorKeyRotation` with the prior active
+    /// key, persists it, and replaces the keystore entry with the
+    /// new secret.
+    RotateKey {
+        #[arg(long)]
+        actor: String,
+    },
+    /// Revoke a key the actor previously held. Default revocation
+    /// invalidates statements signed by the key after this point;
+    /// `--retroactive` invalidates them from inception. Refuses to
+    /// revoke the only active key without `--brick-actor` (rotate
+    /// first; see `ACTORS.md` §5.5.1).
+    RevokeKey {
+        #[arg(long)]
+        actor: String,
+        #[arg(long = "key")]
+        key_id: String,
+        #[arg(long)]
+        retroactive: bool,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long = "brick-actor")]
+        brick_actor: bool,
+    },
+    /// Print the actor's key history: genesis-initial key, every
+    /// rotation, every revocation. Useful for diagnostic checks.
+    KeyHistory {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -600,6 +634,37 @@ fn main() -> ExitCode {
     }
 }
 
+/// Resolve the actor's currently active signing key at `now()` and
+/// confirm the keystore holds the matching secret. Replaces the
+/// previous "match keystore against `actor_body.initial_key()`"
+/// pattern, which broke after rotation.
+fn require_active_signing_key(
+    store: &FilesystemStore,
+    keystore: &FilesystemKeystore,
+    actor_id: &ActorId,
+) -> Result<SecretSigningKey, CliError> {
+    let secret = keystore
+        .get_signing_key(actor_id)
+        .map_err(|error| CliError::ReadKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let active_key = ActorResolver::active_key_at(store, actor_id, Timestamp::now())
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .ok_or_else(|| CliError::ActorHasNoActiveKey {
+            actor: actor_id.clone(),
+        })?;
+    if secret.public_key() != active_key {
+        return Err(CliError::KeyDoesNotMatchActor {
+            actor: actor_id.clone(),
+        });
+    }
+    Ok(secret)
+}
+
 fn run(cli: Cli) -> Result<String, CliError> {
     let paths = StorePaths::resolve(cli.store, cli.keys)?;
     match cli.command {
@@ -711,7 +776,295 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
                 paths.keys.display()
             ))
         }
+        ActorCommand::RotateKey { actor } => run_actor_rotate_key(paths, actor),
+        ActorCommand::RevokeKey {
+            actor,
+            key_id,
+            retroactive,
+            reason,
+            brick_actor,
+        } => run_actor_revoke_key(paths, actor, key_id, retroactive, reason, brick_actor),
+        ActorCommand::KeyHistory { actor, json } => run_actor_key_history(paths, actor, json),
     }
+}
+
+fn run_actor_rotate_key(paths: &StorePaths, actor: String) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    // Confirm the actor exists and pull the current active key.
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let now = Timestamp::now();
+    let active_key = ActorResolver::active_key_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .ok_or_else(|| CliError::ActorHasNoActiveKey {
+            actor: actor_id.clone(),
+        })?;
+
+    // The keystore must hold the secret matching the current active
+    // key — otherwise we can't sign the rotation.
+    let prior_secret = keystore
+        .get_signing_key(&actor_id)
+        .map_err(|error| CliError::ReadKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if prior_secret.public_key() != active_key {
+        return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+    }
+
+    // Auto-chain: if any prior key event exists for this actor, the
+    // new rotation supersedes the most-recent rotation chain leaf.
+    // Genesis-initial is implicit — `supersedes = None` for the first
+    // rotation.
+    let supersedes = ActorResolver::key_rotations(&store, &actor_id)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .into_iter()
+        .max_by(|a, b| {
+            a.created_at
+                .seconds()
+                .cmp(&b.created_at.seconds())
+                .then_with(|| a.statement_id.cmp(&b.statement_id))
+        })
+        .map(|entry| {
+            kairo_core::StatementId::new(entry.statement_id).map_err(|source| {
+                CliError::ParseStatementId {
+                    statement: "(rotation chain leaf)".to_owned(),
+                    source,
+                }
+            })
+        })
+        .transpose()?;
+
+    let new_secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+    let body = ActorKeyRotationBody::new(new_secret.public_key(), supersedes.clone());
+    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let signature_bytes = prior_secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        prior_secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_key_rotation(&signed)
+        .map_err(|error| CliError::WriteKeyRotation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    // Replace the keystore entry so future signing uses the new key.
+    let new_key_id = keystore
+        .replace_signing_key(&actor_id, &new_secret)
+        .map_err(|error| CliError::WriteKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let supersedes_line = match supersedes {
+        Some(id) => format!("supersedes = {id}\n"),
+        None => "supersedes = (genesis)\n".to_owned(),
+    };
+    Ok(format!(
+        "rotated key\nstatement = {statement_id}\nactor = {actor_id}\nprior_key_id = {}\nnext_key_id = {new_key_id}\n{supersedes_line}",
+        prior_secret.public_key().key_id()
+    ))
+}
+
+fn run_actor_revoke_key(
+    paths: &StorePaths,
+    actor: String,
+    key_id: String,
+    retroactive: bool,
+    reason: Option<String>,
+    brick_actor: bool,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let revoked_key = KeyId::new(key_id);
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let now = Timestamp::now();
+    let active_key = ActorResolver::active_key_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .ok_or_else(|| CliError::ActorHasNoActiveKey {
+            actor: actor_id.clone(),
+        })?;
+    let active_key_id = active_key.key_id();
+
+    // Bricking guard (`ACTORS.md` §5.5.1): if the operator is
+    // revoking the only key they hold, refuse without an explicit
+    // opt-in. The "only key" test is "no rotations have happened",
+    // i.e. the active key is the genesis-initial key.
+    let rotations = ActorResolver::key_rotations(&store, &actor_id).map_err(|error| {
+        CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        }
+    })?;
+    let revoking_active_key = revoked_key == active_key_id;
+    let only_active_key = rotations.is_empty();
+    if revoking_active_key && only_active_key && !brick_actor {
+        return Err(CliError::WouldBrickActor {
+            actor: actor_id,
+            key_id: revoked_key,
+        });
+    }
+
+    let signing_secret = keystore
+        .get_signing_key(&actor_id)
+        .map_err(|error| CliError::ReadKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if signing_secret.public_key() != active_key {
+        return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
+    }
+
+    let body = ActorKeyRevocationBody::new(revoked_key.clone(), retroactive, reason);
+    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let signature_bytes = signing_secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        signing_secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_key_revocation(&signed)
+        .map_err(|error| CliError::WriteKeyRevocation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    let reason_line = match signed.unsigned().body().reason() {
+        Some(reason) => format!("reason = {reason}\n"),
+        None => String::new(),
+    };
+    Ok(format!(
+        "revoked key\nstatement = {statement_id}\nactor = {actor_id}\nrevoked_key = {revoked_key}\nretroactive = {retroactive}\n{reason_line}"
+    ))
+}
+
+fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+    let store = open_store(paths)?;
+    let actor_body = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let rotations = ActorResolver::key_rotations(&store, &actor_id).map_err(|error| {
+        CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        }
+    })?;
+    let revocations = ActorResolver::key_revocations(&store, &actor_id).map_err(|error| {
+        CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        }
+    })?;
+
+    if json {
+        let value = serde_json::json!({
+            "actor": actor_id.to_string(),
+            "genesis_key_id": actor_body.initial_key().key_id().to_string(),
+            "rotations": rotations
+                .iter()
+                .map(|entry| serde_json::json!({
+                    "statement_id": entry.statement_id,
+                    "next_key_id": entry.next_key.key_id().to_string(),
+                    "created_at": entry.created_at.to_string(),
+                    "supersedes": entry.supersedes,
+                }))
+                .collect::<Vec<_>>(),
+            "revocations": revocations
+                .iter()
+                .map(|entry| serde_json::json!({
+                    "statement_id": entry.statement_id,
+                    "revoked_key": entry.revoked_key.to_string(),
+                    "retroactive": entry.retroactive,
+                    "created_at": entry.created_at.to_string(),
+                }))
+                .collect::<Vec<_>>(),
+        });
+        let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+        output.push('\n');
+        return Ok(output);
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!("actor = {actor_id}\n"));
+    out.push_str(&format!(
+        "genesis_key_id = {}\n",
+        actor_body.initial_key().key_id()
+    ));
+    out.push_str(&format!("rotations = {}\n", rotations.len()));
+    for entry in &rotations {
+        out.push_str(&format!(
+            "  - statement = {}\n    next_key_id = {}\n    created_at = {}\n    supersedes = {}\n",
+            entry.statement_id,
+            entry.next_key.key_id(),
+            entry.created_at,
+            entry.supersedes.as_deref().unwrap_or("(genesis)")
+        ));
+    }
+    out.push_str(&format!("revocations = {}\n", revocations.len()));
+    for entry in &revocations {
+        out.push_str(&format!(
+            "  - statement = {}\n    revoked_key = {}\n    retroactive = {}\n    created_at = {}\n",
+            entry.statement_id, entry.revoked_key, entry.retroactive, entry.created_at
+        ));
+    }
+    Ok(out)
 }
 
 fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<String, CliError> {
@@ -742,22 +1095,13 @@ fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<S
             let store = open_store(paths)?;
             let keystore = open_keystore(paths)?;
 
-            let actor_body = store
+            store
                 .get_actor(&actor_id)
                 .map_err(|error| CliError::ReadActor {
                     actor: actor_id.clone(),
                     source: error,
                 })?;
-            let secret =
-                keystore
-                    .get_signing_key(&actor_id)
-                    .map_err(|error| CliError::ReadKey {
-                        actor: actor_id.clone(),
-                        source: error,
-                    })?;
-            if &secret.public_key() != actor_body.initial_key() {
-                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
-            }
+            let secret = require_active_signing_key(&store, &keystore, &actor_id)?;
 
             let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
             let body = ObjectGenesisBody::new(
@@ -877,22 +1221,13 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
             let store = open_store(paths)?;
             let keystore = open_keystore(paths)?;
 
-            let actor_body = store
+            store
                 .get_actor(&actor_id)
                 .map_err(|error| CliError::ReadActor {
                     actor: actor_id.clone(),
                     source: error,
                 })?;
-            let secret =
-                keystore
-                    .get_signing_key(&actor_id)
-                    .map_err(|error| CliError::ReadKey {
-                        actor: actor_id.clone(),
-                        source: error,
-                    })?;
-            if &secret.public_key() != actor_body.initial_key() {
-                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
-            }
+            let secret = require_active_signing_key(&store, &keystore, &actor_id)?;
 
             let parsed_manifest = read_manifest(manifest)?;
             let manifest_hash = parsed_manifest.manifest_hash();
@@ -1024,22 +1359,13 @@ fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<Stri
             let store = open_store(paths)?;
             let keystore = open_keystore(paths)?;
 
-            let actor_body = store
+            store
                 .get_actor(&actor_id)
                 .map_err(|error| CliError::ReadActor {
                     actor: actor_id.clone(),
                     source: error,
                 })?;
-            let secret =
-                keystore
-                    .get_signing_key(&actor_id)
-                    .map_err(|error| CliError::ReadKey {
-                        actor: actor_id.clone(),
-                        source: error,
-                    })?;
-            if &secret.public_key() != actor_body.initial_key() {
-                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
-            }
+            let secret = require_active_signing_key(&store, &keystore, &actor_id)?;
 
             // Confirm the revision exists locally and binds to the same
             // object — fail fast rather than leaving a dangling branch.
@@ -1221,22 +1547,13 @@ fn run_tag_command(command: TagCommand, paths: &StorePaths) -> Result<String, Cl
             let store = open_store(paths)?;
             let keystore = open_keystore(paths)?;
 
-            let actor_body = store
+            store
                 .get_actor(&actor_id)
                 .map_err(|error| CliError::ReadActor {
                     actor: actor_id.clone(),
                     source: error,
                 })?;
-            let secret =
-                keystore
-                    .get_signing_key(&actor_id)
-                    .map_err(|error| CliError::ReadKey {
-                        actor: actor_id.clone(),
-                        source: error,
-                    })?;
-            if &secret.public_key() != actor_body.initial_key() {
-                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
-            }
+            let secret = require_active_signing_key(&store, &keystore, &actor_id)?;
 
             // Confirm the revision exists locally and binds to the same
             // object — fail fast rather than leaving a dangling tag.
@@ -1315,22 +1632,13 @@ fn run_tag_command(command: TagCommand, paths: &StorePaths) -> Result<String, Cl
             let store = open_store(paths)?;
             let keystore = open_keystore(paths)?;
 
-            let actor_body = store
+            store
                 .get_actor(&actor_id)
                 .map_err(|error| CliError::ReadActor {
                     actor: actor_id.clone(),
                     source: error,
                 })?;
-            let secret =
-                keystore
-                    .get_signing_key(&actor_id)
-                    .map_err(|error| CliError::ReadKey {
-                        actor: actor_id.clone(),
-                        source: error,
-                    })?;
-            if &secret.public_key() != actor_body.initial_key() {
-                return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
-            }
+            let secret = require_active_signing_key(&store, &keystore, &actor_id)?;
 
             // Revocation requires a prior tag to chain off of.
             let prior = store
@@ -1709,21 +2017,13 @@ fn run_trust_decide(
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
 
-    let actor_body = store
+    store
         .get_actor(&by_actor)
         .map_err(|error| CliError::ReadActor {
             actor: by_actor.clone(),
             source: error,
         })?;
-    let secret = keystore
-        .get_signing_key(&by_actor)
-        .map_err(|error| CliError::ReadKey {
-            actor: by_actor.clone(),
-            source: error,
-        })?;
-    if &secret.public_key() != actor_body.initial_key() {
-        return Err(CliError::KeyDoesNotMatchActor { actor: by_actor });
-    }
+    let secret = require_active_signing_key(&store, &keystore, &by_actor)?;
 
     // Auto-chain: if the truster already has a head about this trusted
     // actor, supersede it; otherwise this is the genesis opinion.
@@ -2055,21 +2355,13 @@ fn run_capability_grant(
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
 
-    let actor_body = store
+    store
         .get_actor(&grantor_id)
         .map_err(|error| CliError::ReadActor {
             actor: grantor_id.clone(),
             source: error,
         })?;
-    let secret = keystore
-        .get_signing_key(&grantor_id)
-        .map_err(|error| CliError::ReadKey {
-            actor: grantor_id.clone(),
-            source: error,
-        })?;
-    if &secret.public_key() != actor_body.initial_key() {
-        return Err(CliError::KeyDoesNotMatchActor { actor: grantor_id });
-    }
+    let secret = require_active_signing_key(&store, &keystore, &grantor_id)?;
 
     // Auto-chain: supersede the existing chain leaf for (grantor,
     // grantee, scope) if any; otherwise this is the genesis grant.
@@ -2152,21 +2444,13 @@ fn run_capability_revoke(
         });
     }
 
-    let actor_body = store
+    store
         .get_actor(&grantor_id)
         .map_err(|error| CliError::ReadActor {
             actor: grantor_id.clone(),
             source: error,
         })?;
-    let secret = keystore
-        .get_signing_key(&grantor_id)
-        .map_err(|error| CliError::ReadKey {
-            actor: grantor_id.clone(),
-            source: error,
-        })?;
-    if &secret.public_key() != actor_body.initial_key() {
-        return Err(CliError::KeyDoesNotMatchActor { actor: grantor_id });
-    }
+    let secret = require_active_signing_key(&store, &keystore, &grantor_id)?;
 
     let body = ActorCapabilityRevocationBody::new(grant_id.clone(), retroactive, reason);
     let subject: KairoRef = format!("statement:{grant_id}")
@@ -3482,7 +3766,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -3539,6 +3823,25 @@ enum CliError {
     },
     KeyDoesNotMatchActor {
         actor: ActorId,
+    },
+    ReadActiveKey {
+        actor: ActorId,
+        source: kairo_identity::ActorResolveError,
+    },
+    ActorHasNoActiveKey {
+        actor: ActorId,
+    },
+    WouldBrickActor {
+        actor: ActorId,
+        key_id: KeyId,
+    },
+    WriteKeyRotation {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    WriteKeyRevocation {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
     },
     ParseActorId {
         actor: String,
@@ -3741,7 +4044,26 @@ impl fmt::Display for CliError {
             }
             Self::KeyDoesNotMatchActor { actor } => write!(
                 f,
-                "stored key for actor {actor} does not match the actor's initial public key"
+                "stored key for actor {actor} does not match the actor's currently active public key"
+            ),
+            Self::ReadActiveKey { actor, source } => {
+                write!(f, "failed to resolve active key for actor {actor}: {source}")
+            }
+            Self::ActorHasNoActiveKey { actor } => write!(
+                f,
+                "actor {actor} has no active signing key (rotate-key first)"
+            ),
+            Self::WouldBrickActor { actor, key_id } => write!(
+                f,
+                "refusing to revoke {key_id} because it is the only active key for actor {actor}; rotate-key first or pass --brick-actor (see ACTORS.md §5.5.1)"
+            ),
+            Self::WriteKeyRotation { statement, source } => write!(
+                f,
+                "failed to write key rotation statement {statement}: {source}"
+            ),
+            Self::WriteKeyRevocation { statement, source } => write!(
+                f,
+                "failed to write key revocation statement {statement}: {source}"
             ),
             Self::ParseActorId { actor, source } => {
                 write!(f, "invalid actor id {actor}: {source}")
@@ -3951,8 +4273,11 @@ impl Error for CliError {
             | Self::WriteActorTrust { source, .. }
             | Self::WriteCapabilityGrant { source, .. }
             | Self::WriteCapabilityRevocation { source, .. }
+            | Self::WriteKeyRotation { source, .. }
+            | Self::WriteKeyRevocation { source, .. }
             | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
+            Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)
             | Self::ReadActorTrust(error)
@@ -3997,7 +4322,9 @@ impl Error for CliError {
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs
             | Self::InvalidPublicKeyBase64
-            | Self::InvalidPublicKeyLength { .. } => None,
+            | Self::InvalidPublicKeyLength { .. }
+            | Self::ActorHasNoActiveKey { .. }
+            | Self::WouldBrickActor { .. } => None,
         }
     }
 }
@@ -6681,6 +7008,291 @@ kind = "tree"
         assert!(by_object.contains("heads = 1"));
         assert!(by_object.contains(&grantor));
         assert!(by_object.contains(&grantee));
+        Ok(())
+    }
+
+    // ---- actor key rotation / revocation ----
+
+    #[test]
+    fn parses_actor_rotate_key_command() {
+        let cli = Cli::try_parse_from(["kairo", "actor", "rotate-key", "--actor", "zActor"]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::RotateKey { actor }
+                })
+            }) if actor == "zActor"
+        ));
+    }
+
+    #[test]
+    fn parses_actor_revoke_key_command_with_flags() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "actor",
+            "revoke-key",
+            "--actor",
+            "zActor",
+            "--key",
+            "zKey",
+            "--retroactive",
+            "--reason",
+            "lost device",
+            "--brick-actor",
+        ]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::RevokeKey {
+                        actor,
+                        key_id,
+                        retroactive: true,
+                        reason: Some(reason),
+                        brick_actor: true,
+                    }
+                })
+            }) if actor == "zActor" && key_id == "zKey" && reason == "lost device"
+        ));
+    }
+
+    #[test]
+    fn parses_actor_key_history_command() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "actor",
+            "key-history",
+            "--actor",
+            "zActor",
+            "--json",
+        ]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                store: None,
+                keys: None,
+                command: Some(Command::Actor {
+                    command: ActorCommand::KeyHistory { actor, json: true }
+                })
+            }) if actor == "zActor"
+        ));
+    }
+
+    #[test]
+    fn end_to_end_rotate_key_persists_chain_and_swaps_keystore()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+
+        // 1. Create an actor.
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let initial_key_id = parse_field(&actor_output, "key_id = ")?;
+
+        // 2. Rotate the key. Output records both prior + next key_id
+        // and `supersedes = (genesis)`.
+        let rotate_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RotateKey {
+                    actor: actor_id.clone(),
+                },
+            }),
+        })?;
+        assert!(rotate_output.contains("rotated key"));
+        assert!(rotate_output.contains("supersedes = (genesis)"));
+        let prior_key_id = parse_field(&rotate_output, "prior_key_id = ")?;
+        let next_key_id = parse_field(&rotate_output, "next_key_id = ")?;
+        assert_eq!(prior_key_id, initial_key_id);
+        assert_ne!(next_key_id, initial_key_id);
+
+        // 3. Rotate again — the second rotation must supersede the
+        // first (chain continuity).
+        let rotate_two = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RotateKey {
+                    actor: actor_id.clone(),
+                },
+            }),
+        })?;
+        let rotation_one_statement = parse_field(&rotate_output, "statement = ")?;
+        assert!(rotate_two.contains(&format!("supersedes = {rotation_one_statement}")));
+
+        // 4. key-history reflects both rotations.
+        let history = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(history.contains("rotations = 2"));
+        assert!(history.contains("revocations = 0"));
+        Ok(())
+    }
+
+    #[test]
+    fn revoke_key_refuses_to_brick_actor_without_flag()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let initial_key_id = parse_field(&actor_output, "key_id = ")?;
+
+        // No rotation has happened — initial_key_id is the only
+        // active key. Without --brick-actor, revoking it must error.
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RevokeKey {
+                    actor: actor_id.clone(),
+                    key_id: initial_key_id.clone(),
+                    retroactive: false,
+                    reason: None,
+                    brick_actor: false,
+                },
+            }),
+        });
+        assert!(matches!(result, Err(CliError::WouldBrickActor { .. })));
+
+        // With --brick-actor it succeeds.
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RevokeKey {
+                    actor: actor_id,
+                    key_id: initial_key_id,
+                    retroactive: true,
+                    reason: Some("compromised".to_owned()),
+                    brick_actor: true,
+                },
+            }),
+        })?;
+        assert!(result.contains("revoked key"));
+        assert!(result.contains("retroactive = true"));
+        assert!(result.contains("reason = compromised"));
+        Ok(())
+    }
+
+    #[test]
+    fn signing_command_after_rotation_uses_new_active_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // After the first rotation, signing commands (here,
+        // `object create`) continue to work because the keystore
+        // secret is matched against the active key chain rather than
+        // against `actor_body.initial_key()`. Regression guard for
+        // the require_active_signing_key sweep.
+        let store_dir = tempfile::TempDir::new()?;
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RotateKey {
+                    actor: actor_id.clone(),
+                },
+            }),
+        })?;
+
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id,
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        assert!(object_output.contains("created object"));
+        Ok(())
+    }
+
+    #[test]
+    fn revoke_old_key_after_rotation_does_not_require_brick_flag()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let initial_key_id = parse_field(&actor_output, "key_id = ")?;
+
+        // Rotate first so the actor has a fresh active key.
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RotateKey {
+                    actor: actor_id.clone(),
+                },
+            }),
+        })?;
+
+        // Now revoke the old genesis key. This should not require
+        // --brick-actor because the active key has already moved.
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RevokeKey {
+                    actor: actor_id,
+                    key_id: initial_key_id,
+                    retroactive: false,
+                    reason: None,
+                    brick_actor: false,
+                },
+            }),
+        })?;
+        assert!(result.contains("revoked key"));
         Ok(())
     }
 }

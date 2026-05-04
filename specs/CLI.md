@@ -219,6 +219,9 @@ kairo manifest inspect [path]
 kairo actor id --genesis <actor-genesis.json>
 kairo actor create --kind <kind>
 kairo actor import --genesis <actor-genesis.json>
+kairo actor rotate-key --actor <id>
+kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]
+kairo actor key-history --actor <id> [--json]
 kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]
 kairo object import --statement <object-genesis.json>
 kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]
@@ -286,6 +289,32 @@ JSON records into the local store. Each command re-derives the canonical
 identity (`ActorId`, `ObjectId`, `StatementId`) from the parsed body and
 uses that as the storage key, so import is fixity-checked: a tampered body
 ends up at a different id than its filename or original location.
+
+`actor rotate-key` generates a fresh ed25519 keypair, signs an
+`ActorKeyRotation` statement with the actor's currently active key
+(auto-chaining `supersedes` off any prior rotation), persists the
+statement, and replaces the keystore entry so future signing uses the
+new key. After rotation, every other signing command continues to
+work — the keystore-vs-actor check resolves the active key via the
+rotation chain, not via `ActorGenesis.initial_key`. See
+`schemas/canonical/actor-key-rotation-v1.md`.
+
+`actor revoke-key --actor <id> --key <key-id>` signs an
+`ActorKeyRevocation` retracting `<key-id>`'s signing authority. The
+revocation itself is signed by the actor's currently active key
+(which may be `<key-id>`). `--retroactive` invalidates statements
+signed by the revoked key from inception (compromise mode);
+`--reason <text>` is optional audit text included in canonical bytes.
+The CLI refuses to revoke the only active key (the genesis-initial
+key when no rotations have happened) without `--brick-actor` —
+revoking the only key without rotating first permanently retires the
+actor (`ACTORS.md` §5.5.1). The error message points at `actor rotate-key`
+as the safe alternative.
+
+`actor key-history --actor <id>` is a diagnostic surface that prints
+the actor's full key history: the genesis-initial key, every rotation
+in `supersedes` order, and every revocation in storage order.
+`--json` emits a stable shape for automation.
 
 `revision inspect --statement <id>` reads a stored revision by `StatementId`
 and prints its body fields. `--json` emits a stable JSON shape suitable for

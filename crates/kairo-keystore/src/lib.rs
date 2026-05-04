@@ -45,6 +45,21 @@ pub trait Keystore {
 
     fn has_signing_key(&self, actor_id: &ActorId) -> Result<bool, KeystoreError>;
 
+    /// Replace the actor's signing key with a fresh secret. Used by
+    /// `kairo actor rotate-key`: after publishing an
+    /// `ActorKeyRotation` signed by the prior active key, the
+    /// actor's keystore entry must hold the *new* active key so
+    /// future commands sign with it.
+    ///
+    /// Returns the new [`KeyId`]. Errors with [`KeystoreError::Missing`]
+    /// if no prior key exists for `actor_id`. Unlike `put_signing_key`,
+    /// this method explicitly opts in to overwriting.
+    fn replace_signing_key(
+        &self,
+        actor_id: &ActorId,
+        secret: &SecretSigningKey,
+    ) -> Result<KeyId, KeystoreError>;
+
     /// Enumerate every actor that has a signing key in this keystore.
     /// Order is not guaranteed. Used by callers that need to auto-pick
     /// "the" local actor (e.g. CLI `--as` defaulting) and want to
@@ -131,6 +146,26 @@ impl Keystore for FilesystemKeystore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(KeystoreError::Unavailable(error)),
         }
+    }
+
+    fn replace_signing_key(
+        &self,
+        actor_id: &ActorId,
+        secret: &SecretSigningKey,
+    ) -> Result<KeyId, KeystoreError> {
+        let path = self.path_for(actor_id);
+        if !path.exists() {
+            return Err(KeystoreError::Missing);
+        }
+
+        let json = PrivateKeyJson::from_secret(actor_id, secret);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(|error| KeystoreError::Corrupt {
+            id: actor_id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        atomic_write(&path, &bytes)?;
+        set_file_permissions(&path)?;
+        Ok(secret.public_key().key_id())
     }
 
     fn list_actors(&self) -> Result<Vec<ActorId>, KeystoreError> {

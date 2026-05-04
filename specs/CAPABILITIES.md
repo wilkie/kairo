@@ -476,17 +476,18 @@ at the implementation that fulfills it.
    same-actor sup automatic; cross-actor sup honored iff
    `evaluate_capability` returns `Held` for an `ObjectBranch`-covering
    grant. `kairo branch set` auto-chains on put.
+8. [x] `KeyPinned` constraint enforcement. The
+   `CapabilityResolver` trait gained `is_key_revoked_at(actor, key_id, at)`
+   (default `Ok(false)` to preserve the trait surface for non-store
+   impls). `evaluate_capability` collapses a `KeyPinned`-constrained
+   grant to `CapabilityEvaluation::Revoked(grant_id)` when the
+   pinned key is revoked at the evaluated causal position
+   (retroactive flips invalidate prior queries too). The
+   `FilesystemStore` impl wires through to the per-actor
+   `ActorKeyRevocation` index landed alongside Phase 2 §10.
 
 Deferred to subsequent iterations:
 
-- `KeyPinned` constraint enforcement. Spec'd in §7.2 above; the
-  required `ActorKeyRotation` and `ActorKeyRevocation` statement
-  types are spec'd in `STATEMENTS.md` §4.2f / §4.2g and
-  `schemas/canonical/actor-key-{rotation,revocation}-v1.md`.
-  Implementation lands with the Phase 2 §10 impl slice — the
-  `CapabilityResolver` trait extends to expose the per-key revocation
-  query, and `evaluate_capability` collapses to `Revoked` when a
-  pinned key is revoked at the evaluated causal position.
 - Multi-cosigner / threshold capabilities.
 - Snapshot-, artifact-, runtime-, build-scoped grants.
 - Capability bundle type for federation transport.
