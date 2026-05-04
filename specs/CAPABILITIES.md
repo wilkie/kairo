@@ -424,6 +424,15 @@ high-stakes delegations.
 This means the capability spec does **not** introduce per-key grants as a
 default; per-key behavior is opt-in via `KeyPinned`.
 
+Enforcement: `evaluate_capability` checks that `KeyPinned(KeyId)` is
+not revoked at the causal position being evaluated, using the
+`ActorKeyRevocation` resolution rule from `STATEMENTS.md` §4.2g.
+A revoked pinned key — including a retroactively revoked one —
+collapses the evaluation to `CapabilityEvaluation::Revoked`, the same
+outcome as an explicit `ActorCapabilityRevocation`. The pinned key
+need not be the signing key on the grant itself; it is whatever key
+the grantor chose to anchor the grant to.
+
 ---
 
 ## 8. MVP slice
@@ -470,11 +479,14 @@ at the implementation that fulfills it.
 
 Deferred to subsequent iterations:
 
-- `KeyPinned` constraint enforcement: the constraint is parsed,
-  canonically encoded, and stored, but `evaluate_capability` does not
-  yet auto-invalidate on grantor-key revocation (key-state lookup is
-  outside the current `CapabilityResolver` trait). Pairs with Phase 2
-  §10 (Key Rotation and Revocation).
+- `KeyPinned` constraint enforcement. Spec'd in §7.2 above; the
+  required `ActorKeyRotation` and `ActorKeyRevocation` statement
+  types are spec'd in `STATEMENTS.md` §4.2f / §4.2g and
+  `schemas/canonical/actor-key-{rotation,revocation}-v1.md`.
+  Implementation lands with the Phase 2 §10 impl slice — the
+  `CapabilityResolver` trait extends to expose the per-key revocation
+  query, and `evaluate_capability` collapses to `Revoked` when a
+  pinned key is revoked at the evaluated causal position.
 - Multi-cosigner / threshold capabilities.
 - Snapshot-, artifact-, runtime-, build-scoped grants.
 - Capability bundle type for federation transport.

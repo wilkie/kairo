@@ -325,6 +325,100 @@ The canonical ActorCapabilityRevocation v1 form is documented in:
 schemas/canonical/actor-capability-revocation-v1.md
 ```
 
+### 4.2f ActorKeyRotation Statement
+
+An `ActorKeyRotation` statement is a first-person declaration by an
+actor that, from this point forward, the actor's active signing key is
+the body's `next_key`. It is the routine-hygiene mechanism that lets
+actors swap keys without losing their stable `ActorId` (`ACTORS.md`
+§5.5).
+
+Differences from earlier statement types:
+
+1. The lookup key is `actor` only — there is no per-object scope. Each
+   actor has exactly one rotation chain.
+2. The genesis-initial key from `ActorGenesis` is **implicit** in the
+   chain; no separate key event introduces it. The first
+   `ActorKeyRotation` for an actor has `supersedes = null` and is
+   signed by the genesis-initial key.
+3. Successor rotations carry an explicit `supersedes` chain edge
+   pointing at the prior `ActorKeyRotation`. Resolution honors **chain
+   precedence**: the active key is the chain leaf's `next_key`. The
+   genesis-initial key is the implicit predecessor of the first
+   rotation.
+4. Cross-actor `supersedes` is **invalid** — only the actor whose key
+   it is may rotate their own keys, even with a covering capability.
+5. The signature on the rotation statement itself is produced by the
+   **prior** active key (the genesis-initial key on the first rotation,
+   the chain-leaf's `next_key` thereafter).
+
+Resolution: the active key for `(actor, T)` is the `next_key` of the
+rotation chain leaf with `created_at ≤ T`, falling back to
+`ActorGenesis.initial_key` if no rotation precedes `T`. The verifier
+applies this rule when checking any signed statement from `actor` —
+the `signature.key_id` field selects the candidate, and that candidate
+must equal the resolved active key for `(actor, T)`.
+
+The canonical ActorKeyRotation v1 form is documented in:
+
+```text
+schemas/canonical/actor-key-rotation-v1.md
+```
+
+### 4.2g ActorKeyRevocation Statement
+
+An `ActorKeyRevocation` statement retracts the signing authority of a
+specific `KeyId` previously held by the envelope actor. It exists to
+handle key compromise: the operator declares "any signature attributed
+to this `KeyId` past this point — and optionally retroactively — is
+not authorized."
+
+Differences from `ActorKeyRotation`:
+
+1. Revocation is **standalone** — there is no `supersedes` chain.
+   Duplicate revocations naming the same `(actor, revoked_key)` are
+   tolerated for federation replay; the **most-restrictive**
+   interpretation wins (any `retroactive = true` revocation makes the
+   key retroactively revoked).
+2. Default revocation invalidates statements signed by `revoked_key`
+   with `created_at` strictly **after** the revocation; `retroactive =
+   true` invalidates them from inception. This is symmetric with
+   `ActorCapabilityRevocation.retroactive`.
+3. Cross-actor revocation is **invalid** — only the actor whose key it
+   is may revoke their own keys.
+4. Authority to revoke in v1: the revocation must be signed by the
+   actor's **currently active key** at the revocation's `created_at`
+   (resolved via the rotation chain). That active key MAY be
+   `revoked_key` itself (the actor revoking their own current key).
+   Cold-storage attestation keys for emergency revocation when the
+   current active key is lost are deferred to Phase 2 §10 follow-on
+   work.
+
+Verifier integration: when checking any signed statement from
+`(actor, key_id, T)`, the statement is invalid iff `key_id` is revoked
+for `actor` at `T` (per the resolution rule in
+`actor-key-revocation-v1.md`). This rule composes with the
+active-key-at-causal-position check from rotation:
+
+> A signed statement is cryptographically valid iff (a) `key_id`
+> matches the active key at `T` per the rotation chain, (b) `key_id`
+> is not revoked for `actor` at `T`, and (c) the signature bytes
+> verify against that key's public material.
+
+Retroactive revocation cascades through anything that depended on
+statements signed by the revoked key — including `ActorCapabilityGrant`
+statements (whose subsequent grants then propagate to every
+statement issued under them). The `KeyPinned` capability constraint
+(`CAPABILITIES.md` §7.2) is auto-invalidated when the pinned key is
+revoked, regardless of `retroactive` — pinning is the opt-in coupling
+between a grant and a specific signing key.
+
+The canonical ActorKeyRevocation v1 form is documented in:
+
+```text
+schemas/canonical/actor-key-revocation-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo

@@ -231,6 +231,58 @@ pub enum KeyStatus {
 }
 ```
 
+`Active` and `Revoked` are the v1 surface. `Expired` is reserved for
+future per-key expiry constraints; `Superseded` is the descriptive
+state of any prior rotation that is no longer the chain leaf.
+
+### 5.5 Key chain
+
+Each actor has a per-actor key chain composed of:
+
+- the implicit genesis-initial key from `ActorGenesis.initial_key`
+  (no separate statement introduces it; it is active from the
+  genesis's `created_at` onward);
+- zero or more `ActorKeyRotation` statements (`STATEMENTS.md` §4.2f),
+  each naming the next active key and `supersedes`-chaining at the
+  prior rotation;
+- zero or more `ActorKeyRevocation` statements (`STATEMENTS.md`
+  §4.2g), each naming a `KeyId` whose signing authority is being
+  retracted, optionally retroactively.
+
+Two independent queries fall out of this chain:
+
+1. **Active key at causal position `T`.** Walk the rotation chain;
+   the active public key for `(actor, T)` is the `next_key` of the
+   chain leaf with `created_at ≤ T`, or `ActorGenesis.initial_key` if
+   no rotation precedes `T`. Chain precedence is authoritative; a
+   successor that explicitly names its predecessor wins regardless of
+   `created_at`.
+2. **Revocation status of `(actor, key_id)` at `T`.** A key is
+   revoked at `T` iff there exists an `ActorKeyRevocation` for
+   `(actor, key_id)` such that either `retroactive = true` or
+   `created_at ≤ T`. Revocation is standalone (no chain); the
+   most-restrictive interpretation wins.
+
+These compose into a single rule consumed by `§6.1`:
+
+> A signed statement from `(actor, key_id)` at `created_at = T` is
+> cryptographically valid iff (a) `key_id` matches the active key for
+> `actor` at `T`, (b) `key_id` is not revoked for `actor` at `T`, and
+> (c) the signature bytes verify against that key's public material.
+
+Cross-actor key events (rotation or revocation) are **invalid** —
+only the actor whose key it is may modify their own key chain. No
+covering capability can authorize key authority on someone else's
+behalf.
+
+Retroactive revocation cascades through anything that depended on
+statements signed by the revoked key. Capability grants signed by a
+retroactively-revoked key flip to invalid, which in turn invalidates
+statements that depended on them. The `KeyPinned` capability
+constraint (`CAPABILITIES.md` §7.2) is the opt-in coupling between a
+specific grant and a specific signing key — pinned grants are
+auto-invalidated on revocation regardless of `retroactive`.
+
 ---
 
 ## 6. Signatures
@@ -253,17 +305,21 @@ The exact canonical signing payload is defined by `STATEMENTS.md` and `SCHEMA.md
 
 ### 6.1 Signature verification
 
-Core verification must check:
+Core verification must check, in order:
 
-1. Signature bytes are valid for the declared algorithm.
-2. Public key belongs to the claimed actor.
-3. Key was active at the statement’s causal position.
-4. Key had not been revoked before the statement.
-5. Statement payload matches signed canonical bytes.
+1. The statement's `signature.key_id` matches the actor's **active key**
+   at the statement's `created_at` per the rotation chain in §5.5.
+2. That `key_id` is not revoked for the actor at the statement's
+   `created_at` per the revocation set in §5.5.
+3. The signature bytes verify against the resolved active key's
+   public material under the declared algorithm.
+4. Statement payload matches signed canonical bytes.
 
 Invalid signatures make statements invalid.
 
-Missing key data may make validation indeterminate.
+Missing key data (rotation or revocation statements not yet observed
+locally) may make validation indeterminate rather than invalid — same
+handling as missing predecessors elsewhere in the protocol.
 
 ### 6.1.1 Genesis statements are not symmetric
 
@@ -368,10 +424,14 @@ specific storage layout. Implementations may resolve actors from:
 - archival bundles
 - future databases
 
-The MVP resolver only needs to resolve `ActorGenesis` by derived `ActorId` and
-return the genesis initial key. This is sufficient to verify statements signed
-by the actor's root key. Later key rotation, revocation, delegation, and
-authority checks extend the same resolver boundary.
+The resolver returns the actor's full key surface as defined by §5.5:
+the implicit genesis-initial key from `ActorGenesis`, the rotation
+chain (`ActorKeyRotation` statements), and the revocation set
+(`ActorKeyRevocation` statements). Verifiers consume this through two
+queries — "active key at `T`" and "is `(actor, key_id)` revoked at
+`T`?" — and compose them per §6.1. Delegation and authority checks
+that go beyond identity (capabilities) live in `CAPABILITIES.md` and
+extend the same resolver boundary.
 
 Missing actor data makes validation indeterminate rather than trusted.
 

@@ -224,23 +224,64 @@ trust + verify story.
 
 ### 10. Key Rotation and Revocation
 
-`specs/ACTORS.md` §5.4 describes key status (active / rotated / revoked).
-Phase 1 only deals with each actor's *initial* key. Real-world security
-needs rotation and revocation.
+`specs/ACTORS.md` §5.4 / §5.5 describe the actor key chain (active /
+rotated / revoked). Phase 1 only deals with each actor's *initial*
+key. Real-world security needs rotation and revocation.
 
-- [ ] Spec the `ActorKeyRotation` statement type (signed by current key,
-      names the next key).
-- [ ] Spec the `ActorKeyRevocation` statement type (urgent revocation,
-      possibly by an attestation rather than the key itself).
-- [ ] Update `ActorResolver` to return active-keys-at-causal-position
-      instead of just the initial key.
-- [ ] Update verification to check the key was active at the statement's
-      causal position (already noted in `specs/ACTORS.md` §6.1 as an MVP
-      gap).
-- [ ] Add CLI: `kairo actor rotate-key`, `kairo actor revoke-key`.
+**Spec slice (committed first):**
 
-**Why it matters:** baseline security hygiene; required for any real-world
-multi-year actor identity.
+- [x] `ActorKeyRotation` statement type spec
+      (`schemas/canonical/actor-key-rotation-v1.md`,
+      `schemas/json/actor-key-rotation-v1.schema.json`,
+      `STATEMENTS.md` §4.2f).
+- [x] `ActorKeyRevocation` statement type spec
+      (`schemas/canonical/actor-key-revocation-v1.md`,
+      `schemas/json/actor-key-revocation-v1.schema.json`,
+      `STATEMENTS.md` §4.2g).
+- [x] `ACTORS.md` §5.5 key chain — active-key-at-causal-position
+      and revocation-status-at-causal-position composed into one §6.1
+      verification rule.
+- [x] `CAPABILITIES.md` §7.2 made enforceable: `KeyPinned` is no
+      longer just declarative, the §10 impl slice will wire its
+      enforcement through `evaluate_capability`.
+
+**Impl slice:**
+
+- [ ] `kairo-statement::{ActorKeyRotationBody, ActorKeyRevocationBody}`
+      with canonical encoding + JSON DTOs.
+- [ ] Extend `kairo-identity::ActorResolver` (or add a sibling trait)
+      with `active_key_at(actor, at)` and
+      `is_key_revoked_at(actor, key_id, at)` — returning the §5.5 query
+      results. `MemoryActorResolver` and `FilesystemStore` impls.
+- [ ] Per-actor key-event index in `kairo-store` (sharded on
+      `actor_id`, mirroring trust): `put_actor_key_rotation`,
+      `put_actor_key_revocation`, with the materialized index that
+      drives the two resolver queries.
+- [ ] Update `verify_envelope_statement` to consume
+      `signature.key_id` and the new resolver methods (the field is
+      currently recorded but ignored).
+- [ ] `KeyPinned` constraint enforcement in
+      `kairo-statement::verify::evaluate_capability` — collapses to
+      `CapabilityEvaluation::Revoked` when the pinned key is revoked
+      at the evaluated causal position.
+
+**CLI slice:**
+
+- [ ] `kairo actor rotate-key --actor <id> [--keys <path>]` — generates
+      a fresh signing key, signs and persists an `ActorKeyRotation`
+      using the prior active key, and stores the new key in the
+      keystore alongside the prior one (so the actor retains the
+      ability to verify historical statements).
+- [ ] `kairo actor revoke-key --actor <id> --key <key-id>
+      [--retroactive] [--reason <text>]` — signs and persists an
+      `ActorKeyRevocation` using the actor's current active key.
+- [ ] `kairo actor key-history --actor <id> [--json]` — diagnostic
+      surface listing the key chain (genesis-initial + rotations) and
+      revocation set in causal order.
+
+**Why it matters:** baseline security hygiene; required for any
+real-world multi-year actor identity. Also retires the `KeyPinned`
+deferred bullet in `CAPABILITIES.md` §8.
 
 ### 11. Bundle Extensions
 

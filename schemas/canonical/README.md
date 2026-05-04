@@ -49,4 +49,6 @@ is explicitly a standalone reference.
 - `actor-trust-v1.md`
 - `actor-capability-grant-v1.md`
 - `actor-capability-revocation-v1.md`
+- `actor-key-rotation-v1.md`
+- `actor-key-revocation-v1.md`
 - `snapshot-v1.md`
