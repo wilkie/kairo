@@ -34,7 +34,7 @@
      inkscape:window-x="-9"
      inkscape:window-y="-9"
      inkscape:window-maximized="1"
-     inkscape:current-layer="svg1" />
+     inkscape:current-layer="layer1" />
   <defs
      id="defs1" />
   <g
@@ -58,9 +58,5 @@
        id="path251"
        style="baseline-shift:baseline;display:inline;overflow:visible;vector-effect:none;fill:#007373;fill-opacity:1;stroke-width:2.8326;enable-background:accumulate;stop-color:#000000"
        d="m 134.65032,92.665651 12.9619,12.961839 -12.11585,45.21197 -45.210777,12.10994 -8.203154,-8.20015 -6.551882,11.34729 0.971934,1.6848 9.848404,9.85132 59.895645,-16.05043 14.43595,-53.88933 -25.93847,-14.971641 c -0.0318,-0.01696 -0.0624,-0.03711 -0.0942,-0.05549 z" />
-    <path
-       id="path252"
-       style="baseline-shift:baseline;display:inline;overflow:visible;vector-effect:none;fill:#007373;fill-opacity:1;stroke-width:2.8326;enable-background:accumulate;stop-color:#000000"
-       d="M 126.24807 100.11327 L 112.52074 123.8896 L 99.899807 123.8896 L 92.301305 137.0521 L 120.11614 137.0521 L 134.02331 112.96365 L 135.08991 108.9825 L 126.71109 100.60523 A 11.228171 11.228171 0 0 1 126.24807 100.11327 z " />
   </g>
 </svg>
