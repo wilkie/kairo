@@ -28,8 +28,8 @@ use kairo_identity::{ActorResolveError, ActorResolver, SignatureVerificationErro
 
 use crate::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, CapabilityConstraint,
-    CapabilityScope, SignedStatement, StatementBody, StatementKind, StatementSignatureError,
-    TrustDecision,
+    CapabilityScope, SignedStatement, SigningSurface, StatementBody, StatementKind,
+    StatementSignatureError, TrustDecision,
 };
 
 /// Outcome of verifying a signed statement against a resolver.
@@ -89,6 +89,11 @@ pub enum SignatureStatus {
     /// The actor has no active key at the statement's `created_at`
     /// (e.g. they revoked their only key). Verification cannot proceed.
     NoActiveKey,
+    /// The statement is an emergency body kind, but `signature.key_id`
+    /// is not in the actor's attestation set at `created_at`. Carries
+    /// the signature's `key_id` for diagnostics. See `ACTORS.md`
+    /// §5.5.2 / §6.1.
+    NotInAttestationSet { signature_key_id: String },
     /// Signature was not evaluated (e.g. actor could not be resolved).
     NotEvaluated,
 }
@@ -516,80 +521,122 @@ where
         }
     }
 
-    // Resolve the active key at the statement's causal position
-    // (per `ACTORS.md` §5.5 / §6.1). Falls back to the genesis-initial
-    // key automatically when no rotations precede `created_at`.
-    let active_key = match resolver.active_key_at(&envelope_actor, created_at) {
-        Ok(Some(key)) => key,
-        Ok(None) => {
-            return VerificationReport {
-                statement_id,
-                envelope_actor,
-                signature_actor,
-                actor: ActorResolution::Resolved,
-                signature: SignatureStatus::NoActiveKey,
-                trust: TrustEvaluation::Unevaluated,
+    // Surface dispatch by statement kind. Operational kinds verify
+    // against the active signing key per the rotation chain (§6.1
+    // bullet 2a); emergency kinds verify against the attestation key
+    // set per §5.5.2 (§6.1 bullet 2b). The two surfaces never overlap.
+    let resolved_key = match B::SIGNING_SURFACE {
+        SigningSurface::Operational => {
+            // Resolve the active key at `created_at` per the rotation
+            // chain. Falls back to the genesis-initial key when no
+            // rotations precede `created_at`.
+            let active_key = match resolver.active_key_at(&envelope_actor, created_at) {
+                Ok(Some(key)) => key,
+                Ok(None) => {
+                    return VerificationReport {
+                        statement_id,
+                        envelope_actor,
+                        signature_actor,
+                        actor: ActorResolution::Resolved,
+                        signature: SignatureStatus::NoActiveKey,
+                        trust: TrustEvaluation::Unevaluated,
+                    };
+                }
+                Err(ActorResolveError::Unavailable(reason)) => {
+                    return VerificationReport {
+                        statement_id,
+                        envelope_actor,
+                        signature_actor,
+                        actor: ActorResolution::ResolverUnavailable(reason),
+                        signature: SignatureStatus::NotEvaluated,
+                        trust: TrustEvaluation::Unevaluated,
+                    };
+                }
             };
+
+            let active_key_id = active_key.key_id();
+            if statement.signature().key_id() != active_key_id.as_str() {
+                return VerificationReport {
+                    statement_id,
+                    envelope_actor,
+                    signature_actor,
+                    actor: ActorResolution::Resolved,
+                    signature: SignatureStatus::KeyMismatch {
+                        signature_key_id: statement.signature().key_id().to_owned(),
+                        active_key_id: active_key_id.to_string(),
+                    },
+                    trust: TrustEvaluation::Unevaluated,
+                };
+            }
+
+            match resolver.is_key_revoked_at(&envelope_actor, &active_key_id, created_at) {
+                Ok(true) => {
+                    return VerificationReport {
+                        statement_id,
+                        envelope_actor,
+                        signature_actor,
+                        actor: ActorResolution::Resolved,
+                        signature: SignatureStatus::KeyRevoked,
+                        trust: TrustEvaluation::Unevaluated,
+                    };
+                }
+                Ok(false) => {}
+                Err(ActorResolveError::Unavailable(reason)) => {
+                    return VerificationReport {
+                        statement_id,
+                        envelope_actor,
+                        signature_actor,
+                        actor: ActorResolution::ResolverUnavailable(reason),
+                        signature: SignatureStatus::NotEvaluated,
+                        trust: TrustEvaluation::Unevaluated,
+                    };
+                }
+            }
+
+            active_key
         }
-        Err(ActorResolveError::Unavailable(reason)) => {
-            return VerificationReport {
-                statement_id,
-                envelope_actor,
-                signature_actor,
-                actor: ActorResolution::ResolverUnavailable(reason),
-                signature: SignatureStatus::NotEvaluated,
-                trust: TrustEvaluation::Unevaluated,
+        SigningSurface::Attestation => {
+            // Look up the actor's attestation set at `created_at`. The
+            // signature's `key_id` must be in this set; the matching
+            // public key is then used for byte verification.
+            let attestation_set = match resolver
+                .attestation_keys_at(&envelope_actor, created_at)
+            {
+                Ok(set) => set,
+                Err(ActorResolveError::Unavailable(reason)) => {
+                    return VerificationReport {
+                        statement_id,
+                        envelope_actor,
+                        signature_actor,
+                        actor: ActorResolution::ResolverUnavailable(reason),
+                        signature: SignatureStatus::NotEvaluated,
+                        trust: TrustEvaluation::Unevaluated,
+                    };
+                }
             };
+
+            let signature_key_id = statement.signature().key_id();
+            let lookup =
+                kairo_identity::KeyId::new(signature_key_id.to_owned());
+            match attestation_set.get(&lookup) {
+                Some(key) => key.clone(),
+                None => {
+                    return VerificationReport {
+                        statement_id,
+                        envelope_actor,
+                        signature_actor,
+                        actor: ActorResolution::Resolved,
+                        signature: SignatureStatus::NotInAttestationSet {
+                            signature_key_id: signature_key_id.to_owned(),
+                        },
+                        trust: TrustEvaluation::Unevaluated,
+                    };
+                }
+            }
         }
     };
 
-    // The signature's `key_id` must match the active key at
-    // `created_at`. A signature carrying a stale `key_id` (e.g. an
-    // already-rotated-out key) is not authorized — even if the bytes
-    // happen to verify against some other historical key.
-    let active_key_id = active_key.key_id();
-    if statement.signature().key_id() != active_key_id.as_str() {
-        return VerificationReport {
-            statement_id,
-            envelope_actor,
-            signature_actor,
-            actor: ActorResolution::Resolved,
-            signature: SignatureStatus::KeyMismatch {
-                signature_key_id: statement.signature().key_id().to_owned(),
-                active_key_id: active_key_id.to_string(),
-            },
-            trust: TrustEvaluation::Unevaluated,
-        };
-    }
-
-    // Active key may have been revoked at or before `created_at`
-    // (or retroactively). A retroactive revocation invalidates this
-    // statement even though `key_id` matches the active-key chain.
-    match resolver.is_key_revoked_at(&envelope_actor, &active_key_id, created_at) {
-        Ok(true) => {
-            return VerificationReport {
-                statement_id,
-                envelope_actor,
-                signature_actor,
-                actor: ActorResolution::Resolved,
-                signature: SignatureStatus::KeyRevoked,
-                trust: TrustEvaluation::Unevaluated,
-            };
-        }
-        Ok(false) => {}
-        Err(ActorResolveError::Unavailable(reason)) => {
-            return VerificationReport {
-                statement_id,
-                envelope_actor,
-                signature_actor,
-                actor: ActorResolution::ResolverUnavailable(reason),
-                signature: SignatureStatus::NotEvaluated,
-                trust: TrustEvaluation::Unevaluated,
-            };
-        }
-    }
-
-    let signature = match statement.verify_signature(&active_key) {
+    let signature = match statement.verify_signature(&resolved_key) {
         Ok(_) => SignatureStatus::Valid,
         Err(StatementSignatureError::Verification(
             SignatureVerificationError::InvalidSignature,
@@ -597,14 +644,15 @@ where
         Err(StatementSignatureError::Verification(
             SignatureVerificationError::InvalidPublicKey,
         )) => {
-            // The resolved active key is malformed. Surface as an
-            // operational resolver issue rather than an invalid statement.
+            // The resolved key (operational or attestation) is
+            // malformed. Surface as an operational resolver issue
+            // rather than an invalid statement.
             return VerificationReport {
                 statement_id,
                 envelope_actor,
                 signature_actor,
                 actor: ActorResolution::ResolverUnavailable(
-                    "actor active key is malformed".to_owned(),
+                    "resolved key is malformed".to_owned(),
                 ),
                 signature: SignatureStatus::NotEvaluated,
                 trust: TrustEvaluation::Unevaluated,
@@ -676,13 +724,19 @@ mod tests {
         Timestamp::from_seconds(1_700_000_000)
     }
 
+    fn attestation_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+    }
+
     fn genesis_for(key: &SigningKey) -> ActorGenesisBody {
         ActorGenesisBody::new(
             ActorKind::person(),
             public_key_for(key),
+            vec![attestation_key()],
             timestamp(),
             [9; 32],
         )
+        .expect("genesis well-formed")
     }
 
     fn revision_body() -> Result<ObjectRevisionBody, kairo_core::IdError> {
@@ -1013,9 +1067,11 @@ mod tests {
         ActorGenesisBody::new(
             ActorKind::person(),
             public_key_for(&SigningKey::from_bytes(&[seed; 32])),
+            vec![attestation_key()],
             timestamp(),
             [seed; 32],
         )
+        .expect("genesis well-formed")
         .actor_id()
     }
 
@@ -1879,6 +1935,7 @@ mod tests {
                 next_key: public_key_for(&key_b),
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 10),
                 supersedes: None,
+                surface: kairo_identity::KeySurface::Operational,
             },
         );
 
@@ -1914,6 +1971,7 @@ mod tests {
                 next_key: public_key_for(&key_b),
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 10),
                 supersedes: None,
+                surface: kairo_identity::KeySurface::Operational,
             },
         );
 
@@ -1952,6 +2010,7 @@ mod tests {
                 revoked_key: key_a_id,
                 retroactive: false,
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 50),
+                surface: kairo_identity::KeySurface::Operational,
             },
         );
 
@@ -1987,6 +2046,7 @@ mod tests {
                 revoked_key: key_a_id,
                 retroactive: true,
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 50),
+                surface: kairo_identity::KeySurface::Operational,
             },
         );
 
@@ -1999,6 +2059,143 @@ mod tests {
 
         let report = verify_envelope_statement(&signed, &resolver);
         assert_eq!(report.signature, SignatureStatus::KeyRevoked);
+        Ok(())
+    }
+
+    // ---- Surface dispatch (Phase 2 §14) ----
+
+    use crate::ActorEmergencyKeyRotationBody;
+
+    /// Sign an `ActorEmergencyKeyRotation` with the given key (caller's
+    /// choice — used to stage both the valid and the invalid signing
+    /// surfaces).
+    fn signed_emergency_rotation(
+        actor: ActorId,
+        sig_key: &SigningKey,
+        next_key: PublicKey,
+        at: Timestamp,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, Box<dyn std::error::Error>> {
+        let body = ActorEmergencyKeyRotationBody::new(next_key, None);
+        let subject: KairoRef = format!("actor:{actor}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, at, body);
+        let bytes = sig_key.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let signature = Signature::new(
+            actor,
+            public_key_for(sig_key).key_id().to_string(),
+            "ed25519",
+            bytes,
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    /// Build a `MemoryActorResolver` whose actor genesis declares the
+    /// given attestation public key. The genesis's initial signing key
+    /// is the conventional `signing_key()` (seed [7; 32]).
+    fn resolver_with_attestation(
+        signing_seed: SigningKey,
+        attestation_seed: SigningKey,
+    ) -> Result<(MemoryActorResolver, ActorId), Box<dyn std::error::Error>> {
+        let initial = public_key_for(&signing_seed);
+        let attestation = public_key_for(&attestation_seed);
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            initial,
+            vec![attestation],
+            timestamp(),
+            [9; 32],
+        )?;
+        let actor_id = genesis.actor_id();
+        let mut resolver = MemoryActorResolver::new();
+        resolver.insert(genesis);
+        Ok((resolver, actor_id))
+    }
+
+    #[test]
+    fn emergency_rotation_signed_by_attestation_key_verifies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Genesis declares signing key A (the active key) and
+        // attestation key Z. An emergency rotation signed by Z must
+        // verify under the attestation surface.
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let attestation = SigningKey::from_bytes(&[200; 32]);
+        let next_key = PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        let (resolver, actor_id) = resolver_with_attestation(signing, attestation.clone())?;
+
+        let signed = signed_emergency_rotation(
+            actor_id,
+            &attestation,
+            next_key,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert_eq!(report.signature, SignatureStatus::Valid);
+        Ok(())
+    }
+
+    #[test]
+    fn emergency_rotation_signed_by_active_signing_key_is_not_in_attestation_set()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Same actor as above. An emergency rotation signed by the
+        // active *signing* key A (not by the attestation key Z) must
+        // be rejected — the surfaces don't overlap.
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let attestation = SigningKey::from_bytes(&[200; 32]);
+        let next_key = PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        let (resolver, actor_id) = resolver_with_attestation(signing.clone(), attestation)?;
+
+        let signed = signed_emergency_rotation(
+            actor_id,
+            &signing,
+            next_key,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert!(matches!(
+            report.signature,
+            SignatureStatus::NotInAttestationSet { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn routine_rotation_signed_by_attestation_key_is_key_mismatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The reverse direction: a routine `ActorKeyRotation` signed
+        // by the attestation key (not the active signing key) is
+        // rejected as `KeyMismatch` because the active-key chain rule
+        // applies and the attestation key is not in that chain.
+        let signing = SigningKey::from_bytes(&[7; 32]);
+        let attestation = SigningKey::from_bytes(&[200; 32]);
+        let next_key = PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        let (resolver, actor_id) = resolver_with_attestation(signing, attestation.clone())?;
+
+        let body = crate::ActorKeyRotationBody::new(next_key, None);
+        let subject: KairoRef = format!("actor:{actor_id}").parse()?;
+        let unsigned = UnsignedStatement::new(
+            actor_id.clone(),
+            subject,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+            body,
+        );
+        let bytes = attestation
+            .sign(&unsigned.canonical_bytes())
+            .to_bytes()
+            .to_vec();
+        let signature = Signature::new(
+            actor_id,
+            public_key_for(&attestation).key_id().to_string(),
+            "ed25519",
+            bytes,
+        );
+        let signed = SignedStatement::new(unsigned, signature);
+
+        let report = verify_envelope_statement(&signed, &resolver);
+        assert!(matches!(
+            report.signature,
+            SignatureStatus::KeyMismatch { .. }
+        ));
         Ok(())
     }
 }

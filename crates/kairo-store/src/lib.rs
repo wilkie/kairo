@@ -58,16 +58,19 @@ use std::path::{Path, PathBuf};
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{
-    ActorGenesisBody, ActorResolveError, ActorResolver, KeyRevocationEntry, KeyRotationEntry,
+    ActorGenesisBody, ActorResolveError, ActorResolver, AttestationKeyAddEntry, KeyRevocationEntry,
+    KeyRotationEntry, KeySurface,
 };
 use kairo_statement::json::{
-    ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
-    ActorKeyRevocationStatementJson, ActorKeyRotationStatementJson, ActorTrustStatementJson,
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    ActorAttestationKeyAddStatementJson, ActorCapabilityGrantStatementJson,
+    ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
+    ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
+    ActorKeyRotationStatementJson, ActorTrustStatementJson, ObjectBranchStatementJson,
+    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRevocationBody,
+    ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
+    ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
     ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ObjectBranchBody, ObjectGenesisStatement,
     ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
 };
@@ -214,6 +217,36 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ActorKeyRevocationBody>, StoreError>;
+
+    fn put_actor_emergency_key_rotation(
+        &self,
+        statement: &SignedStatement<ActorEmergencyKeyRotationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_emergency_key_rotation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, StoreError>;
+
+    fn put_actor_emergency_key_revocation(
+        &self,
+        statement: &SignedStatement<ActorEmergencyKeyRevocationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_emergency_key_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRevocationBody>, StoreError>;
+
+    fn put_actor_attestation_key_add(
+        &self,
+        statement: &SignedStatement<ActorAttestationKeyAddBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_attestation_key_add(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -816,6 +849,7 @@ impl StatementStore for FilesystemStore {
             body.next_key(),
             created_at,
             body.supersedes(),
+            KeySurface::Operational,
         )?;
 
         Ok(id)
@@ -865,6 +899,7 @@ impl StatementStore for FilesystemStore {
             body.revoked_key(),
             body.retroactive(),
             created_at,
+            KeySurface::Operational,
         )?;
 
         Ok(id)
@@ -877,6 +912,149 @@ impl StatementStore for FilesystemStore {
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         let bytes = read_or_missing(&path)?;
         let json: ActorKeyRevocationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+
+    fn put_actor_emergency_key_rotation(
+        &self,
+        statement: &SignedStatement<ActorEmergencyKeyRotationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorEmergencyKeyRotationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_key_rotation_index(
+            actor,
+            &id,
+            body.next_key(),
+            created_at,
+            body.supersedes(),
+            KeySurface::Attestation,
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_emergency_key_rotation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorEmergencyKeyRotationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+
+    fn put_actor_emergency_key_revocation(
+        &self,
+        statement: &SignedStatement<ActorEmergencyKeyRevocationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorEmergencyKeyRevocationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_key_revocation_index(
+            actor,
+            &id,
+            body.revoked_key(),
+            body.retroactive(),
+            created_at,
+            KeySurface::Attestation,
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_emergency_key_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRevocationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorEmergencyKeyRevocationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+
+    fn put_actor_attestation_key_add(
+        &self,
+        statement: &SignedStatement<ActorAttestationKeyAddBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorAttestationKeyAddStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_attestation_add_index(actor, &id, body.new_key(), created_at)?;
+
+        Ok(id)
+    }
+
+    fn get_actor_attestation_key_add(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorAttestationKeyAddStatementJson =
             serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
         let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
             id: id.to_string(),
@@ -1053,9 +1231,11 @@ impl FilesystemStore {
         next_key: &kairo_identity::PublicKey,
         created_at: kairo_core::Timestamp,
         supersedes: Option<&StatementId>,
+        surface: kairo_identity::KeySurface,
     ) -> Result<(), StoreError> {
         let mut index = self.read_key_index_or_default(actor)?;
-        let updated = index.upsert_rotation(statement_id, next_key, created_at, supersedes);
+        let updated =
+            index.upsert_rotation(statement_id, next_key, created_at, supersedes, surface);
         if updated {
             let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
             let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
@@ -1071,9 +1251,33 @@ impl FilesystemStore {
         revoked_key: &kairo_identity::KeyId,
         retroactive: bool,
         created_at: kairo_core::Timestamp,
+        surface: kairo_identity::KeySurface,
     ) -> Result<(), StoreError> {
         let mut index = self.read_key_index_or_default(actor)?;
-        let updated = index.upsert_revocation(statement_id, revoked_key, retroactive, created_at);
+        let updated = index.upsert_revocation(
+            statement_id,
+            revoked_key,
+            retroactive,
+            created_at,
+            surface,
+        );
+        if updated {
+            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn upsert_attestation_add_index(
+        &self,
+        actor: &ActorId,
+        statement_id: &StatementId,
+        new_key: &kairo_identity::PublicKey,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_key_index_or_default(actor)?;
+        let updated = index.upsert_attestation_add(statement_id, new_key, created_at);
         if updated {
             let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
             let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
@@ -1915,6 +2119,18 @@ impl ActorResolver for FilesystemStore {
             .decode_revocations()
             .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
     }
+
+    fn attestation_key_adds(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<AttestationKeyAddEntry>, ActorResolveError> {
+        let index = self
+            .read_key_index_or_default(actor)
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
+        index
+            .decode_attestation_adds(actor.as_str())
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
+    }
 }
 
 impl kairo_statement::verify::TrustResolver for FilesystemStore {
@@ -2057,12 +2273,23 @@ mod tests {
         PublicKey::ed25519(signing_key().verifying_key().to_bytes())
     }
 
+    fn attestation_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+    }
+
     fn timestamp() -> Timestamp {
         Timestamp::from_seconds(1_700_000_000)
     }
 
     fn fresh_genesis() -> ActorGenesisBody {
-        ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32])
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed")
     }
 
     fn open_temp_store() -> Result<(TempDir, FilesystemStore), Box<dyn std::error::Error>> {
@@ -2172,7 +2399,7 @@ mod tests {
         // Replace the file with a different valid actor genesis JSON whose
         // derived ActorId will not match the filename.
         let different =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [10; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [10; 32]).expect("genesis well-formed");
         let json = ActorGenesisJson::from_body(&different);
         fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
 
@@ -2571,9 +2798,11 @@ mod tests {
         let actor_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
         let object = ObjectId::new(OBJECT_ID)?;
         let a_branch = signed_branch(
@@ -2618,9 +2847,11 @@ mod tests {
         let actor_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
 
         let scope = CapabilityScope::Object(object.clone());
@@ -2676,9 +2907,11 @@ mod tests {
         let actor_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
 
         let scope = CapabilityScope::Object(object.clone());
@@ -3017,9 +3250,11 @@ mod tests {
         let actor_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
         let object = ObjectId::new(OBJECT_ID)?;
         let a_tag = signed_version_tag(
@@ -3067,9 +3302,11 @@ mod tests {
         let actor_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
 
         // A → B: capability covering ObjectVersionTag on this object.
@@ -3129,9 +3366,11 @@ mod tests {
         let actor_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
 
         let scope = CapabilityScope::Object(object.clone());
@@ -3207,9 +3446,11 @@ mod tests {
         ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [33; 32],
         )
+        .expect("genesis well-formed")
         .actor_id()
     }
 
@@ -3217,9 +3458,11 @@ mod tests {
         ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [44; 32],
         )
+        .expect("genesis well-formed")
         .actor_id()
     }
 
@@ -3421,9 +3664,11 @@ mod tests {
         let truster_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
         let trusted = trusted_actor_id();
 
@@ -3509,9 +3754,11 @@ mod tests {
         let truster_b = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
         let trusted = trusted_actor_id();
 
@@ -3583,9 +3830,11 @@ mod tests {
         ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [55; 32],
         )
+        .expect("genesis well-formed")
         .actor_id()
     }
 
@@ -3593,9 +3842,11 @@ mod tests {
         ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [66; 32],
         )
+        .expect("genesis well-formed")
         .actor_id()
     }
 
@@ -3992,9 +4243,11 @@ mod tests {
         let grantor_two = ActorGenesisBody::new(
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
+            vec![attestation_key()],
             timestamp(),
             [11; 32],
         )
+        .expect("genesis well-formed")
         .actor_id();
         let grantee_one = grantee_actor();
         let grantee_two = other_grantee_actor();

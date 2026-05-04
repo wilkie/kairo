@@ -44,8 +44,19 @@ fn timestamp() -> Timestamp {
     Timestamp::from_seconds(1_700_000_000)
 }
 
+fn attestation_key() -> PublicKey {
+    PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+}
+
 fn actor_genesis() -> ActorGenesisBody {
-    ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32])
+    ActorGenesisBody::new(
+        ActorKind::person(),
+        public_key(),
+        vec![attestation_key()],
+        timestamp(),
+        [9; 32],
+    )
+    .expect("genesis well-formed")
 }
 
 fn manifest_blob() -> (BlobId, Vec<u8>, ObjectManifest) {
@@ -403,9 +414,11 @@ fn export_excludes_actor_trust_statements() -> TestResult {
     let trusted_actor_genesis = ActorGenesisBody::new(
         ActorKind::person(),
         PublicKey::ed25519(SigningKey::from_bytes(&[12; 32]).verifying_key().to_bytes()),
+        vec![attestation_key()],
         timestamp(),
         [99; 32],
-    );
+    )
+    .expect("genesis well-formed");
     let trusted_actor_id = src.store.put_actor(&trusted_actor_genesis)?;
     let body = ActorTrustBody::new(
         trusted_actor_id.clone(),
@@ -452,9 +465,11 @@ fn export_excludes_actor_capability_statements() -> TestResult {
     let grantee_genesis = ActorGenesisBody::new(
         ActorKind::person(),
         PublicKey::ed25519(SigningKey::from_bytes(&[13; 32]).verifying_key().to_bytes()),
+        vec![attestation_key()],
         timestamp(),
         [88; 32],
-    );
+    )
+    .expect("genesis well-formed");
     let grantee_id = src.store.put_actor(&grantee_genesis)?;
 
     let capability = Capability::new(

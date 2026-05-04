@@ -8,7 +8,7 @@ use std::fmt;
 use std::collections::BTreeMap;
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
-use kairo_core::canonical::{encode_bytes, encode_str, encode_u8, CanonicalEncode};
+use kairo_core::canonical::{encode_bytes, encode_list, encode_str, encode_u8, CanonicalEncode};
 pub use kairo_core::ActorId;
 use kairo_core::{BlobId, Timestamp};
 
@@ -21,23 +21,45 @@ const ACTOR_KEY_DOMAIN: &[u8] = b"kairo.actor.key.v1";
 pub struct ActorGenesisBody {
     actor_kind: ActorKind,
     initial_key: PublicKey,
+    /// Cold-storage attestation keys. Always non-empty, sorted by raw
+    /// public-key bytes ascending (set at construction time), and
+    /// disjoint from `initial_key`. Part of canonical bytes / `ActorId`.
+    /// See `schemas/canonical/actor-genesis-v1.md` and `ACTORS.md` §5.5.2.
+    attestation_keys: Vec<PublicKey>,
     created_at: Timestamp,
     nonce: [u8; 32],
 }
 
 impl ActorGenesisBody {
+    /// Construct an `ActorGenesisBody`.
+    ///
+    /// `attestation_keys` must be non-empty and disjoint from
+    /// `initial_key`. The constructor sorts and deduplicates the
+    /// attestation set so identical inputs (modulo order) produce the
+    /// same canonical bytes and therefore the same `ActorId`.
     pub fn new(
         actor_kind: ActorKind,
         initial_key: PublicKey,
+        attestation_keys: Vec<PublicKey>,
         created_at: Timestamp,
         nonce: [u8; 32],
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ActorGenesisShapeError> {
+        if attestation_keys.is_empty() {
+            return Err(ActorGenesisShapeError::EmptyAttestationKeys);
+        }
+        let mut sorted: Vec<PublicKey> = attestation_keys;
+        sorted.sort_by(|a, b| a.bytes().cmp(b.bytes()));
+        sorted.dedup_by(|a, b| a.bytes() == b.bytes());
+        if sorted.iter().any(|key| key.bytes() == initial_key.bytes()) {
+            return Err(ActorGenesisShapeError::AttestationKeySharesSigningKey);
+        }
+        Ok(Self {
             actor_kind,
             initial_key,
+            attestation_keys: sorted,
             created_at,
             nonce,
-        }
+        })
     }
 
     pub fn actor_kind(&self) -> &ActorKind {
@@ -46,6 +68,10 @@ impl ActorGenesisBody {
 
     pub fn initial_key(&self) -> &PublicKey {
         &self.initial_key
+    }
+
+    pub fn attestation_keys(&self) -> &[PublicKey] {
+        &self.attestation_keys
     }
 
     pub fn created_at(&self) -> Timestamp {
@@ -67,10 +93,34 @@ impl CanonicalEncode for ActorGenesisBody {
         encode_u8(out, 1);
         encode_str(out, self.actor_kind.as_str());
         self.initial_key.encode_canonical(out);
+        encode_list(out, &self.attestation_keys, |out, key| {
+            key.encode_canonical(out);
+        });
         self.created_at.encode_canonical(out);
         encode_bytes(out, &self.nonce);
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorGenesisShapeError {
+    EmptyAttestationKeys,
+    AttestationKeySharesSigningKey,
+}
+
+impl fmt::Display for ActorGenesisShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyAttestationKeys => f.write_str(
+                "ActorGenesis requires at least one attestation key (see ACTORS.md §5.5.2)",
+            ),
+            Self::AttestationKeySharesSigningKey => f.write_str(
+                "ActorGenesis attestation_keys must be disjoint from initial_key",
+            ),
+        }
+    }
+}
+
+impl Error for ActorGenesisShapeError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorKind(String);
@@ -101,7 +151,7 @@ impl ActorKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeyId(String);
 
 impl KeyId {
@@ -306,29 +356,61 @@ pub fn verify_signature(
     }
 }
 
+/// Which signing surface produced a key event.
+///
+/// - `Operational`: signed by the actor's currently active signing key
+///   (`ActorKeyRotation`, `ActorKeyRevocation`).
+/// - `Attestation`: signed by an attestation key
+///   (`ActorEmergencyKeyRotation`, `ActorEmergencyKeyRevocation`).
+///
+/// Both surfaces contribute to the same per-actor key-event chain; the
+/// distinction matters only for the verifier's signing-surface dispatch.
+/// See `ACTORS.md` §5.5.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySurface {
+    Operational,
+    Attestation,
+}
+
 /// One entry in the per-actor rotation chain. The first rotation has
 /// `supersedes = None`; the genesis-initial key is implicit and is
 /// not represented as an entry.
 ///
 /// Index modules in `kairo-store` produce these summaries from the
-/// underlying signed `ActorKeyRotation` statements; the resolver
-/// trait consumes them here so verification can stay decoupled from
-/// the storage layout.
+/// underlying signed rotation statements (routine and emergency); the
+/// resolver trait consumes them here so verification can stay decoupled
+/// from the storage layout. `surface` records which signing surface
+/// produced the rotation — informational for the resolver, used by the
+/// verifier when checking the signing-surface rule on the rotation
+/// statement itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyRotationEntry {
     pub statement_id: String,
     pub next_key: PublicKey,
     pub created_at: Timestamp,
     pub supersedes: Option<String>,
+    pub surface: KeySurface,
 }
 
 /// One entry in the per-actor revocation set. Revocations are
-/// standalone (no `supersedes` chain).
+/// standalone (no `supersedes` chain). `surface` records which
+/// signing surface produced the revocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyRevocationEntry {
     pub statement_id: String,
     pub revoked_key: KeyId,
     pub retroactive: bool,
+    pub created_at: Timestamp,
+    pub surface: KeySurface,
+}
+
+/// One entry in the per-actor attestation-key add set. Order does not
+/// matter; duplicates collapse via key bytes equality. See
+/// `schemas/canonical/actor-attestation-key-add-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttestationKeyAddEntry {
+    pub statement_id: String,
+    pub new_key: PublicKey,
     pub created_at: Timestamp,
 }
 
@@ -361,6 +443,46 @@ pub trait ActorResolver {
         _actor: &ActorId,
     ) -> Result<Vec<KeyRevocationEntry>, ActorResolveError> {
         Ok(Vec::new())
+    }
+
+    /// Per-actor `ActorAttestationKeyAdd` entries in storage order.
+    /// The default implementation returns an empty list, in which case
+    /// `attestation_keys_at` collapses to the genesis-declared
+    /// attestation set.
+    fn attestation_key_adds(
+        &self,
+        _actor: &ActorId,
+    ) -> Result<Vec<AttestationKeyAddEntry>, ActorResolveError> {
+        Ok(Vec::new())
+    }
+
+    /// Resolve the actor's attestation key set at causal position `at`.
+    ///
+    /// The set is `ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
+    /// attestation_key_adds(actor) where add.created_at <= at }`. Order
+    /// is irrelevant; duplicates collapse via `KeyId` equality. The
+    /// returned map is keyed by `KeyId` to make the verifier's
+    /// "is this signature key id in the set?" lookup O(log n), and
+    /// carries the `PublicKey` material so the verifier can check the
+    /// signature bytes without a second trip through the resolver. See
+    /// `ACTORS.md` §5.5.2.
+    fn attestation_keys_at(
+        &self,
+        actor: &ActorId,
+        at: Timestamp,
+    ) -> Result<BTreeMap<KeyId, PublicKey>, ActorResolveError> {
+        let mut set: BTreeMap<KeyId, PublicKey> = BTreeMap::new();
+        if let Some(genesis) = self.actor_genesis(actor)? {
+            for key in genesis.attestation_keys() {
+                set.insert(key.key_id(), key.clone());
+            }
+        }
+        for entry in self.attestation_key_adds(actor)? {
+            if entry.created_at <= at {
+                set.insert(entry.new_key.key_id(), entry.new_key);
+            }
+        }
+        Ok(set)
     }
 
     /// Resolve the actor's active signing key at causal position `at`.
@@ -437,6 +559,7 @@ pub struct MemoryActorResolver {
     actors: BTreeMap<ActorId, ActorGenesisBody>,
     rotations: BTreeMap<ActorId, Vec<KeyRotationEntry>>,
     revocations: BTreeMap<ActorId, Vec<KeyRevocationEntry>>,
+    attestation_adds: BTreeMap<ActorId, Vec<AttestationKeyAddEntry>>,
 }
 
 impl MemoryActorResolver {
@@ -456,6 +579,10 @@ impl MemoryActorResolver {
 
     pub fn insert_revocation(&mut self, actor: ActorId, entry: KeyRevocationEntry) {
         self.revocations.entry(actor).or_default().push(entry);
+    }
+
+    pub fn insert_attestation_add(&mut self, actor: ActorId, entry: AttestationKeyAddEntry) {
+        self.attestation_adds.entry(actor).or_default().push(entry);
     }
 
     pub fn len(&self) -> usize {
@@ -487,6 +614,13 @@ impl ActorResolver for MemoryActorResolver {
         actor: &ActorId,
     ) -> Result<Vec<KeyRevocationEntry>, ActorResolveError> {
         Ok(self.revocations.get(actor).cloned().unwrap_or_default())
+    }
+
+    fn attestation_key_adds(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<AttestationKeyAddEntry>, ActorResolveError> {
+        Ok(self.attestation_adds.get(actor).cloned().unwrap_or_default())
     }
 }
 
@@ -565,46 +699,56 @@ mod tests {
         PublicKey::ed25519(signing_key().verifying_key().to_bytes())
     }
 
+    /// Test attestation key. Disjoint from `public_key()` (seed [7; 32]),
+    /// `other_public_key()` (seed [8; 32]), and `third_public_key()`
+    /// (seed [9; 32]) so no test fixture's attestation set collides with
+    /// the operational signing surface.
+    fn attestation_key() -> PublicKey {
+        PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+    }
+
     fn timestamp() -> Timestamp {
         Timestamp::from_seconds(1_700_000_000)
     }
 
     #[test]
     fn same_actor_genesis_produces_same_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
-        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
 
         assert_eq!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_nonce_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let second =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [10; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [10; 32]).expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_key_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let second_key =
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
-        let second = ActorGenesisBody::new(ActorKind::person(), second_key, timestamp(), [9; 32]);
+        let second = ActorGenesisBody::new(ActorKind::person(), second_key, vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_created_at_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let second = ActorGenesisBody::new(
             ActorKind::person(),
             public_key(),
+            vec![attestation_key()],
             Timestamp::from_seconds(timestamp().seconds() + 1),
             [9; 32],
-        );
+        )
+        .expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
@@ -688,7 +832,7 @@ mod tests {
     #[test]
     fn memory_resolver_finds_actor_genesis_by_derived_actor_id() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -699,7 +843,7 @@ mod tests {
     fn memory_resolver_returns_none_for_missing_actor() {
         let resolver = MemoryActorResolver::new();
         let missing_actor =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32])
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed")
                 .actor_id();
 
         assert_eq!(resolver.actor_genesis(&missing_actor), Ok(None));
@@ -708,7 +852,7 @@ mod tests {
     #[test]
     fn memory_resolver_resolves_initial_key() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -726,7 +870,7 @@ mod tests {
     #[test]
     fn active_key_falls_back_to_genesis_initial_when_no_rotations() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
 
@@ -739,7 +883,7 @@ mod tests {
     #[test]
     fn active_key_at_walks_rotation_chain() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
 
@@ -752,6 +896,7 @@ mod tests {
                 next_key: other_public_key(),
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 10),
                 supersedes: None,
+                surface: KeySurface::Operational,
             },
         );
         // Successor rotation at t+20 names rotation-1 in supersedes
@@ -763,6 +908,7 @@ mod tests {
                 next_key: third_public_key(),
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 20),
                 supersedes: Some("rotation-1".to_owned()),
+                surface: KeySurface::Operational,
             },
         );
 
@@ -790,7 +936,7 @@ mod tests {
     #[test]
     fn revocation_default_only_invalidates_after_created_at() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -802,6 +948,7 @@ mod tests {
                 revoked_key: key_id.clone(),
                 retroactive: false,
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+                surface: KeySurface::Operational,
             },
         );
 
@@ -822,7 +969,7 @@ mod tests {
     #[test]
     fn retroactive_revocation_invalidates_at_every_timestamp() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -834,6 +981,7 @@ mod tests {
                 revoked_key: key_id.clone(),
                 retroactive: true,
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+                surface: KeySurface::Operational,
             },
         );
 
@@ -847,7 +995,7 @@ mod tests {
     #[test]
     fn most_restrictive_revocation_wins() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), timestamp(), [9; 32]);
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -861,6 +1009,7 @@ mod tests {
                 revoked_key: key_id.clone(),
                 retroactive: false,
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+                surface: KeySurface::Operational,
             },
         );
         resolver.insert_revocation(
@@ -870,6 +1019,7 @@ mod tests {
                 revoked_key: key_id.clone(),
                 retroactive: true,
                 created_at: Timestamp::from_seconds(timestamp().seconds() + 200),
+                surface: KeySurface::Operational,
             },
         );
 

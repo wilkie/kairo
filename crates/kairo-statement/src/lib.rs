@@ -56,9 +56,24 @@ impl StatementEnvelope {
     }
 }
 
+/// Which signing surface a statement kind binds to. See `ACTORS.md`
+/// §6.1 — operational kinds bind to the active signing key per the
+/// rotation chain; emergency kinds bind to an attestation key in the
+/// actor's attestation set at `created_at`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningSurface {
+    Operational,
+    Attestation,
+}
+
 pub trait StatementBody: CanonicalEncode {
     const TYPE: &'static str;
     const VERSION: u8;
+    /// Which signing surface verifies this body. Defaults to
+    /// `Operational`. The three emergency kinds
+    /// (`ActorEmergencyKeyRotation`, `ActorEmergencyKeyRevocation`,
+    /// `ActorAttestationKeyAdd`) override to `Attestation`.
+    const SIGNING_SURFACE: SigningSurface = SigningSurface::Operational;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1160,6 +1175,145 @@ impl CanonicalEncode for ActorKeyRevocationBody {
         encode_option(out, self.reason.as_ref(), |out, reason| {
             encode_str(out, reason);
         });
+    }
+}
+
+/// `ActorEmergencyKeyRotation` is the cold-storage counterpart to
+/// `ActorKeyRotation`. Body shape (and canonical encoding) is identical;
+/// the verifier accepts a different signing surface (an attestation key
+/// declared in `ActorGenesis.attestation_keys` or appended via
+/// `ActorAttestationKeyAdd`) instead of the actor's currently active
+/// signing key. Routine and emergency rotations share one chain.
+///
+/// See `schemas/canonical/actor-emergency-key-rotation-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorEmergencyKeyRotationBody {
+    next_key: PublicKey,
+    supersedes: Option<StatementId>,
+}
+
+impl ActorEmergencyKeyRotationBody {
+    pub fn new(next_key: PublicKey, supersedes: Option<StatementId>) -> Self {
+        Self {
+            next_key,
+            supersedes,
+        }
+    }
+
+    pub fn next_key(&self) -> &PublicKey {
+        &self.next_key
+    }
+
+    pub fn supersedes(&self) -> Option<&StatementId> {
+        self.supersedes.as_ref()
+    }
+
+    pub fn is_genesis(&self) -> bool {
+        self.supersedes.is_none()
+    }
+}
+
+impl StatementBody for ActorEmergencyKeyRotationBody {
+    const TYPE: &'static str = "ActorEmergencyKeyRotation";
+    const VERSION: u8 = 1;
+    const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+}
+
+impl CanonicalEncode for ActorEmergencyKeyRotationBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        self.next_key.encode_canonical(out);
+        encode_option(out, self.supersedes.as_ref(), |out, statement_id| {
+            encode_str(out, statement_id.as_str());
+        });
+    }
+}
+
+/// `ActorEmergencyKeyRevocation` is the cold-storage counterpart to
+/// `ActorKeyRevocation`. Body shape (and canonical encoding) is identical;
+/// the signature must be produced by an attestation key in the actor's
+/// attestation set at `created_at`. Routine and emergency revocations
+/// share one revocation set; the most-restrictive interpretation wins.
+///
+/// Attestation keys themselves are not revocable in v1.
+///
+/// See `schemas/canonical/actor-emergency-key-revocation-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorEmergencyKeyRevocationBody {
+    revoked_key: KeyId,
+    retroactive: bool,
+    reason: Option<String>,
+}
+
+impl ActorEmergencyKeyRevocationBody {
+    pub fn new(revoked_key: KeyId, retroactive: bool, reason: Option<String>) -> Self {
+        Self {
+            revoked_key,
+            retroactive,
+            reason,
+        }
+    }
+
+    pub fn revoked_key(&self) -> &KeyId {
+        &self.revoked_key
+    }
+
+    pub fn retroactive(&self) -> bool {
+        self.retroactive
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+impl StatementBody for ActorEmergencyKeyRevocationBody {
+    const TYPE: &'static str = "ActorEmergencyKeyRevocation";
+    const VERSION: u8 = 1;
+    const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+}
+
+impl CanonicalEncode for ActorEmergencyKeyRevocationBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.revoked_key.as_str());
+        encode_u8(out, if self.retroactive { 1 } else { 0 });
+        encode_option(out, self.reason.as_ref(), |out, reason| {
+            encode_str(out, reason);
+        });
+    }
+}
+
+/// `ActorAttestationKeyAdd` appends a new public key to the actor's
+/// attestation key set. Signed by an existing attestation key; signing
+/// keys cannot grow the attestation set. The set is append-only in v1
+/// (no removal). `new_key` must be disjoint from any signing key the
+/// actor has held — the resolver-side validator enforces this when
+/// possible (introducing rotation may not yet be observed locally).
+///
+/// See `schemas/canonical/actor-attestation-key-add-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorAttestationKeyAddBody {
+    new_key: PublicKey,
+}
+
+impl ActorAttestationKeyAddBody {
+    pub fn new(new_key: PublicKey) -> Self {
+        Self { new_key }
+    }
+
+    pub fn new_key(&self) -> &PublicKey {
+        &self.new_key
+    }
+}
+
+impl StatementBody for ActorAttestationKeyAddBody {
+    const TYPE: &'static str = "ActorAttestationKeyAdd";
+    const VERSION: u8 = 1;
+    const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+}
+
+impl CanonicalEncode for ActorAttestationKeyAddBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        self.new_key.encode_canonical(out);
     }
 }
 
@@ -2714,6 +2868,93 @@ mod tests {
             signed.verify_signature(&public_key()),
             Ok(VerifiedSignature)
         );
+        Ok(())
+    }
+
+    // ---- ActorEmergencyKeyRotation / Revocation / AttestationKeyAdd ----
+
+    #[test]
+    fn emergency_rotation_body_canonical_matches_routine_body_canonical_for_same_payload(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Same `next_key` and `supersedes` payload; the body bytes are
+        // identical between routine and emergency rotation. Only the
+        // wrapping unsigned-statement bytes (which include B::TYPE)
+        // differ. This is the property the spec calls out — distinct
+        // type marker, identical body shape.
+        let routine = ActorKeyRotationBody::new(other_public_key(), None);
+        let emergency = ActorEmergencyKeyRotationBody::new(other_public_key(), None);
+        assert_eq!(routine.canonical_bytes(), emergency.canonical_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn emergency_rotation_signing_surface_is_attestation() {
+        assert_eq!(
+            ActorEmergencyKeyRotationBody::SIGNING_SURFACE,
+            SigningSurface::Attestation
+        );
+        assert_eq!(
+            ActorEmergencyKeyRevocationBody::SIGNING_SURFACE,
+            SigningSurface::Attestation
+        );
+        assert_eq!(
+            ActorAttestationKeyAddBody::SIGNING_SURFACE,
+            SigningSurface::Attestation
+        );
+    }
+
+    #[test]
+    fn routine_rotation_signing_surface_stays_operational() {
+        // Existing operational kinds must not have their default
+        // SIGNING_SURFACE perturbed.
+        assert_eq!(
+            ActorKeyRotationBody::SIGNING_SURFACE,
+            SigningSurface::Operational
+        );
+        assert_eq!(
+            ActorKeyRevocationBody::SIGNING_SURFACE,
+            SigningSurface::Operational
+        );
+        assert_eq!(
+            ObjectRevisionBody::SIGNING_SURFACE,
+            SigningSurface::Operational
+        );
+    }
+
+    #[test]
+    fn emergency_and_routine_rotation_unsigned_statement_ids_differ(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // The wrapping envelope serializes B::TYPE before the body,
+        // so identical bodies of different kinds derive different
+        // statement IDs. Important property: one can't substitute an
+        // emergency rotation for a routine one (or vice versa) and
+        // claim "same statement."
+        let subject: KairoRef = format!("actor:{}", actor_id()?).parse()?;
+        let routine = UnsignedStatement::new(
+            actor_id()?,
+            subject.clone(),
+            timestamp(),
+            ActorKeyRotationBody::new(other_public_key(), None),
+        );
+        let emergency = UnsignedStatement::new(
+            actor_id()?,
+            subject,
+            timestamp(),
+            ActorEmergencyKeyRotationBody::new(other_public_key(), None),
+        );
+        assert_ne!(routine.statement_id(), emergency.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_key_add_body_round_trips_canonical(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body_a = ActorAttestationKeyAddBody::new(other_public_key());
+        let body_b = ActorAttestationKeyAddBody::new(other_public_key());
+        assert_eq!(body_a.canonical_bytes(), body_b.canonical_bytes());
+
+        let body_c = ActorAttestationKeyAddBody::new(public_key());
+        assert_ne!(body_a.canonical_bytes(), body_c.canonical_bytes());
         Ok(())
     }
 }

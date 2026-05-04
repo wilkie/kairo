@@ -6,7 +6,7 @@ use base64::Engine;
 use kairo_core::{Timestamp, TimestampError};
 use serde::{Deserialize, Serialize};
 
-use crate::{ActorGenesisBody, ActorKind, PublicKey};
+use crate::{ActorGenesisBody, ActorGenesisShapeError, ActorKind, PublicKey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorGenesisJsonError {
@@ -26,6 +26,7 @@ pub enum ActorGenesisJsonError {
     },
     InvalidNonceHex,
     InvalidCreatedAt(TimestampError),
+    InvalidShape(ActorGenesisShapeError),
 }
 
 impl fmt::Display for ActorGenesisJsonError {
@@ -52,6 +53,7 @@ impl fmt::Display for ActorGenesisJsonError {
             }
             Self::InvalidNonceHex => f.write_str("invalid ActorGenesis nonce hex"),
             Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
+            Self::InvalidShape(error) => write!(f, "{error}"),
         }
     }
 }
@@ -60,6 +62,7 @@ impl Error for ActorGenesisJsonError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InvalidCreatedAt(error) => Some(error),
+            Self::InvalidShape(error) => Some(error),
             _ => None,
         }
     }
@@ -72,6 +75,7 @@ pub struct ActorGenesisJson {
     pub version: u8,
     pub actor_kind: String,
     pub initial_key: PublicKeyJson,
+    pub attestation_keys: Vec<PublicKeyJson>,
     pub created_at: String,
     pub nonce: String,
 }
@@ -85,12 +89,19 @@ impl ActorGenesisJson {
             .parse()
             .map_err(ActorGenesisJsonError::InvalidCreatedAt)?;
 
-        Ok(ActorGenesisBody::new(
+        let mut attestation_keys = Vec::with_capacity(self.attestation_keys.len());
+        for key in &self.attestation_keys {
+            attestation_keys.push(key.to_public_key()?);
+        }
+
+        ActorGenesisBody::new(
             ActorKind::new(self.actor_kind.clone()),
             self.initial_key.to_public_key()?,
+            attestation_keys,
             created_at,
             decode_nonce_hex(&self.nonce)?,
-        ))
+        )
+        .map_err(ActorGenesisJsonError::InvalidShape)
     }
 
     pub fn from_body(body: &ActorGenesisBody) -> Self {
@@ -99,6 +110,11 @@ impl ActorGenesisJson {
             version: 1,
             actor_kind: body.actor_kind().as_str().to_owned(),
             initial_key: PublicKeyJson::from_public_key(body.initial_key()),
+            attestation_keys: body
+                .attestation_keys()
+                .iter()
+                .map(PublicKeyJson::from_public_key)
+                .collect(),
             created_at: body.created_at().to_string(),
             nonce: encode_nonce_hex(body.nonce()),
         }
@@ -250,6 +266,11 @@ mod tests {
                 algorithm: "ed25519".to_owned(),
                 bytes: STANDARD.encode(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()),
             },
+            attestation_keys: vec![PublicKeyJson {
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD
+                    .encode(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes()),
+            }],
             created_at: "2026-05-01T14:32:07Z".to_owned(),
             nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
         }

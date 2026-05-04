@@ -245,6 +245,7 @@ fn set_file_permissions(_path: &Path) -> Result<(), KeystoreError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::fs;
 
@@ -261,12 +262,15 @@ mod tests {
     }
 
     fn fresh_actor_id(secret: &SecretSigningKey) -> ActorId {
+        let attestation = SecretSigningKey::ed25519([200; 32]).public_key();
         ActorGenesisBody::new(
             ActorKind::person(),
             secret.public_key(),
+            vec![attestation],
             Timestamp::from_seconds(1_700_000_000),
             [9; 32],
         )
+        .expect("genesis well-formed")
         .actor_id()
     }
 

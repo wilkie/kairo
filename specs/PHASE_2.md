@@ -395,37 +395,41 @@ cold storage). Pre-deployment, so we land it as a v1 in-place edit of
 
 **Impl slice:**
 
-- [ ] `kairo-statement::ActorGenesisBody` grows `attestation_keys:
+- [x] `kairo-statement::ActorGenesisBody` grows `attestation_keys:
       Vec<PublicKey>` with canonical encoding (sorted-dedup) and
       JSON DTO. Body validator enforces non-empty, disjoint from
       `initial_key`. Every existing test fixture and example that
       creates an actor needs at least one attestation key — this is
       the bulk of the sweep work.
-- [ ] `kairo-statement::{ActorEmergencyKeyRotationBody,
+- [x] `kairo-statement::{ActorEmergencyKeyRotationBody,
       ActorEmergencyKeyRevocationBody, ActorAttestationKeyAddBody}`
-      with canonical encoding + JSON DTOs. Body validators enforce
-      same-actor rule, signing-key disjointness for `new_key` on add,
-      etc.
-- [ ] Extend `kairo-identity::ActorResolver` with
-      `attestation_keys_at(actor, at) -> BTreeSet<KeyId>` returning
-      the §5.5.2 set. `MemoryActorResolver` tracks a
-      `Vec<AttestationKeyEntry>` per actor; `FilesystemStore` impl
-      reads from a per-actor materialized index.
-- [ ] Extend the per-actor key-event index in `kairo-store` (added
-      in §10) with attestation-add entries and emergency-rotation /
-      emergency-revocation entries — keep all key-set state in one
-      file per actor. New trait methods:
+      with canonical encoding + JSON DTOs. New `SigningSurface`
+      enum (`Operational` / `Attestation`) tags each `StatementBody`
+      via const default; the three new bodies override to
+      `Attestation`.
+- [x] Extend `kairo-identity::ActorResolver` with
+      `attestation_keys_at(actor, at) -> BTreeMap<KeyId, PublicKey>`
+      returning the §5.5.2 set (map shape so the verifier gets bytes,
+      not just IDs, in one resolver call). New `KeySurface` field on
+      `KeyRotationEntry`/`KeyRevocationEntry`; new
+      `AttestationKeyAddEntry` type. `MemoryActorResolver` tracks a
+      `Vec<AttestationKeyAddEntry>` per actor with
+      `insert_attestation_add`.
+- [x] Extend the per-actor key-event index in `kairo-store` (added
+      in §10) with `attestation_adds` plus per-entry surface markers
+      on rotations / revocations. Keep all key-set state in one file
+      per actor. New trait methods:
       `put_actor_emergency_key_rotation`,
       `put_actor_emergency_key_revocation`,
-      `put_actor_attestation_key_add`, plus extended materialized
-      index that drives `attestation_keys_at`.
-- [ ] Update `verify_envelope_statement` with surface dispatch:
+      `put_actor_attestation_key_add`, plus matching `get_*` and a
+      `decode_attestation_adds` that drives
+      `FilesystemStore::ActorResolver::attestation_key_adds`.
+- [x] Update `verify_envelope_statement` with surface dispatch:
       operational kinds use the existing active-key-at-T rule;
-      emergency kinds use `attestation_keys_at`. Surface mismatch
-      (attestation `key_id` on operational kind, or vice versa) is
-      `SignatureStatus::Invalid` with a distinct cause variant for
-      diagnostic clarity.
-- [ ] Active-key resolver walks the unified chain (rotation +
+      emergency kinds use `attestation_keys_at`. New
+      `SignatureStatus::NotInAttestationSet { signature_key_id }`
+      variant for surface failures.
+- [x] Active-key resolver walks the unified chain (rotation +
       revocation + emergency variants) — `active_key_at` already
       walks "key-event chain leaf"; the chain just gains new
       contributing kinds.

@@ -9,7 +9,8 @@ use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRevocationBody,
+    ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
+    ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
     ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability, CapabilityConstraint,
     CapabilityScope, CapabilityShapeError, ObjectBranchBody, ObjectGenesisBody, ObjectKind,
     ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
@@ -994,6 +995,255 @@ impl ActorKeyRevocationBodyJson {
             revoked_key: body.revoked_key().to_string(),
             retroactive: body.retroactive(),
             reason: body.reason().map(|r| r.to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorEmergencyKeyRotationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorEmergencyKeyRotationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorEmergencyKeyRotationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, StatementJsonError> {
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorEmergencyKeyRotation",
+            1,
+        )?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorEmergencyKeyRotationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorEmergencyKeyRotation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorEmergencyKeyRotationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorEmergencyKeyRotationBodyJson {
+    pub next_key: PublicKeyJson,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+}
+
+impl ActorEmergencyKeyRotationBodyJson {
+    pub fn to_body(&self) -> Result<ActorEmergencyKeyRotationBody, StatementJsonError> {
+        let next_key = self
+            .next_key
+            .to_public_key()
+            .map_err(StatementJsonError::InvalidPublicKey)?;
+        let supersedes = match &self.supersedes {
+            Some(value) => Some(
+                StatementId::new(value.clone())
+                    .map_err(StatementJsonError::InvalidStatement)?,
+            ),
+            None => None,
+        };
+        Ok(ActorEmergencyKeyRotationBody::new(next_key, supersedes))
+    }
+
+    pub fn from_body(body: &ActorEmergencyKeyRotationBody) -> Self {
+        Self {
+            next_key: PublicKeyJson::from_public_key(body.next_key()),
+            supersedes: body.supersedes().map(|id| id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorEmergencyKeyRevocationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorEmergencyKeyRevocationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorEmergencyKeyRevocationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorEmergencyKeyRevocationBody>, StatementJsonError> {
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorEmergencyKeyRevocation",
+            1,
+        )?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorEmergencyKeyRevocationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorEmergencyKeyRevocation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorEmergencyKeyRevocationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorEmergencyKeyRevocationBodyJson {
+    pub revoked_key: String,
+    pub retroactive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ActorEmergencyKeyRevocationBodyJson {
+    pub fn to_body(&self) -> Result<ActorEmergencyKeyRevocationBody, StatementJsonError> {
+        Ok(ActorEmergencyKeyRevocationBody::new(
+            KeyId::new(self.revoked_key.clone()),
+            self.retroactive,
+            self.reason.clone(),
+        ))
+    }
+
+    pub fn from_body(body: &ActorEmergencyKeyRevocationBody) -> Self {
+        Self {
+            revoked_key: body.revoked_key().to_string(),
+            retroactive: body.retroactive(),
+            reason: body.reason().map(|r| r.to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorAttestationKeyAddStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorAttestationKeyAddBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorAttestationKeyAddStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StatementJsonError> {
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorAttestationKeyAdd",
+            1,
+        )?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<ActorAttestationKeyAddBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorAttestationKeyAdd".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorAttestationKeyAddBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorAttestationKeyAddBodyJson {
+    pub new_key: PublicKeyJson,
+}
+
+impl ActorAttestationKeyAddBodyJson {
+    pub fn to_body(&self) -> Result<ActorAttestationKeyAddBody, StatementJsonError> {
+        let new_key = self
+            .new_key
+            .to_public_key()
+            .map_err(StatementJsonError::InvalidPublicKey)?;
+        Ok(ActorAttestationKeyAddBody::new(new_key))
+    }
+
+    pub fn from_body(body: &ActorAttestationKeyAddBody) -> Self {
+        Self {
+            new_key: PublicKeyJson::from_public_key(body.new_key()),
         }
     }
 }

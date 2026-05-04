@@ -748,12 +748,29 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
             let secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
             let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
 
+            // Phase 2 §14 impl slice: every actor needs at least one
+            // cold-storage attestation key. The CLI slice will add
+            // `--attestation-key` (operator-presented) and
+            // `--generate-attestation-key` (generate-and-print) flags
+            // per `ACTORS.md` §5.5.2. Until then this silently generates
+            // an attestation key whose seed is *not surfaced to the
+            // operator* — recovery is not possible from this CLI surface
+            // yet. The seed leaves scope at the end of this match arm
+            // and is overwritten on next allocation; a future revision
+            // should integrate the `zeroize` crate for explicit wipe.
+            let attestation_secret =
+                SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+            let attestation_public = attestation_secret.public_key();
+            let attestation_key_id = attestation_public.key_id();
+
             let body = ActorGenesisBody::new(
                 ActorKind::new(kind),
                 secret.public_key(),
+                vec![attestation_public],
                 Timestamp::now(),
                 nonce,
-            );
+            )
+            .map_err(CliError::ActorGenesisShape)?;
             let actor_id = body.actor_id();
 
             keystore
@@ -770,7 +787,7 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
                 })?;
 
             Ok(format!(
-                "created actor\nactor = {actor_id}\nkey_id = {}\nstore = {}\nkeys = {}\n",
+                "created actor\nactor = {actor_id}\nkey_id = {}\nattestation_key_id = {attestation_key_id}\nstore = {}\nkeys = {}\n",
                 secret.public_key().key_id(),
                 paths.store.display(),
                 paths.keys.display()
@@ -3692,6 +3709,7 @@ fn format_signature_status(status: &SignatureStatus) -> &'static str {
         SignatureStatus::KeyMismatch { .. } => "key-mismatch",
         SignatureStatus::KeyRevoked => "key-revoked",
         SignatureStatus::NoActiveKey => "no-active-key",
+        SignatureStatus::NotInAttestationSet { .. } => "not-in-attestation-set",
         SignatureStatus::NotEvaluated => "not-evaluated",
     }
 }
@@ -3757,6 +3775,11 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
         SignatureStatus::NoActiveKey => {
             parts.push("actor has no active signing key at this causal position".to_owned());
         }
+        SignatureStatus::NotInAttestationSet { signature_key_id } => {
+            parts.push(format!(
+                "signature key {signature_key_id} is not in the actor's attestation set at this causal position"
+            ));
+        }
     }
     if parts.is_empty() {
         "verification failed".to_owned()
@@ -3805,6 +3828,7 @@ enum CliError {
         source: kairo_keystore::KeystoreError,
     },
     GenerateKey(kairo_identity::KeyGenerationError),
+    ActorGenesisShape(kairo_identity::ActorGenesisShapeError),
     WriteKey {
         actor: ActorId,
         source: kairo_keystore::KeystoreError,
@@ -4030,6 +4054,7 @@ impl fmt::Display for CliError {
                 write!(f, "failed to open keystore at {}: {source}", path.display())
             }
             Self::GenerateKey(error) => write!(f, "{error}"),
+            Self::ActorGenesisShape(error) => write!(f, "{error}"),
             Self::WriteKey { actor, source } => {
                 write!(f, "failed to write key for actor {actor}: {source}")
             }
@@ -4301,6 +4326,7 @@ impl Error for CliError {
             Self::ParseStatementKind { source, .. } => Some(source),
             Self::ParseTimestamp { source, .. } => Some(source),
             Self::GenerateKey(error) => Some(error),
+            Self::ActorGenesisShape(error) => Some(error),
             Self::OpenGitRepo { source, .. } | Self::GitOperation { source } => Some(source),
             Self::VerificationFailed(_)
             | Self::ObjectVerificationFailed(_)
@@ -4635,6 +4661,11 @@ mod tests {
                 algorithm: "ed25519".to_owned(),
                 bytes: STANDARD.encode(signing_key().verifying_key().to_bytes()),
             },
+            attestation_keys: vec![PublicKeyJson {
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD
+                    .encode(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes()),
+            }],
             created_at: "2026-05-01T14:32:07Z".to_owned(),
             nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
         }
