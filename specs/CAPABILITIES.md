@@ -236,18 +236,27 @@ issued underneath it) are out of scope for the MVP.
 
 ### 5.3 Sharding and indexing
 
-Stored under:
+Following the `ActorTrust` precedent and the
+`kairo-store/AGENTS.md` "uniformity" rule, signed grants and
+revocations live in the shared statements directory
+(`statements/<XX>/<YY>/<statement-id>.json`), and the per-grantor
+materialized index lives at:
 
 ```text
-actor_capability/<grantor-shard>/<grantor-id>/<grantee-id>/<statement-id>.json
+actor_capability/<XX>/<YY>/<grantor-id>.json
 ```
 
-Per-grantor sharding follows the `ActorTrust` precedent. The dominant
-write-path query is "for this `(grantor, grantee)`, what is in effect?"
+The index file nests `grantee → scope → chain entries`, with a sibling
+`revocations` map keyed by the revoked grant's StatementId. Per-grantor
+sharding matches the duty model: the grantor maintains and revokes the
+grants they issue (Decision A in §9), and the dominant write-path
+query — "for this `(grantor, grantee, scope)` triple, what is in
+effect?" — is O(1) once the file is loaded.
+
 The cross-cutting "for this `(object, grantee)`, is there any covering
-capability?" query is satisfied via a materialized object-scoped index
-(parallel to the per-truster reverse trust index discussed in
-Phase 2 §11).
+capability?" query is satisfied via a materialized object-scoped
+reverse index (§8 item 6), parallel to the per-truster reverse trust
+index discussed in Phase 2 §11.
 
 Canonical encoding follows the project convention
 (`schemas/canonical/`) — domain-tagged binary, signed envelope as defined

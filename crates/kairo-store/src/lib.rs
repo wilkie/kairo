@@ -10,7 +10,8 @@
 //! - [`ObjectStore`] — signed `ObjectGenesis` statements, indexed by
 //!   [`ObjectId`].
 //! - [`StatementStore`] — signed envelope statements (`ObjectRevision`,
-//!   `ObjectBranch`, `ObjectVersionTag`, `ActorTrust`), indexed by
+//!   `ObjectBranch`, `ObjectVersionTag`, `ActorTrust`,
+//!   `ActorCapabilityGrant`, `ActorCapabilityRevocation`), indexed by
 //!   [`StatementId`].
 //! - [`BlobStore`] — raw bytes addressed by a caller-supplied [`BlobId`].
 //!
@@ -21,7 +22,11 @@
 //! parallel index maintained by `put_object_version_tag`.
 //! [`TrustResolver`] resolves the current `(by_actor, trusted_actor)`
 //! `ActorTrust` head via a per-truster materialized index maintained
-//! by `put_actor_trust`.
+//! by `put_actor_trust`. [`CapabilityResolver`] resolves the current
+//! `(grantor, grantee, scope)` `ActorCapabilityGrant` head — and any
+//! effective `ActorCapabilityRevocation` for a grant — via a per-
+//! grantor materialized index maintained by
+//! `put_actor_capability_grant` / `put_actor_capability_revocation`.
 //!
 //! [`FilesystemStore`] implements all of these. It also implements
 //! [`ActorResolver`] so `kairo-statement::verify` consumes a store directly.
@@ -34,6 +39,7 @@
 //!   bytes for federation/package exchange: revisit at TODO §9.
 
 mod branches;
+mod capabilities;
 pub mod error;
 mod shard;
 mod tags;
@@ -47,15 +53,18 @@ use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorGenesisBody, ActorResolveError, ActorResolver};
 use kairo_statement::json::{
+    ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
     ActorTrustStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
     ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorTrustBody, ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody,
-    ObjectVersionTagBody, SignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, CapabilityScope,
+    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
+    SignedStatement,
 };
 
 pub use branches::BranchTip;
+pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use error::{CorruptReason, StoreError};
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
@@ -69,6 +78,7 @@ const STATEMENTS_DIR: &str = "statements";
 const BRANCHES_DIR: &str = "branches";
 const VERSION_TAGS_DIR: &str = "version_tags";
 const TRUST_DIR: &str = "trust";
+const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -100,15 +110,18 @@ pub trait ObjectStore {
 
 /// Persistence interface for envelope-wrapped signed statements.
 ///
-/// Today `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`, and
-/// `ActorTrust` are supported. New statement types add new methods
-/// alongside; do not collapse them into a single generic until the
-/// shape of more statement types is known.
+/// Today `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`,
+/// `ActorTrust`, `ActorCapabilityGrant`, and `ActorCapabilityRevocation`
+/// are supported. New statement types add new methods alongside; do
+/// not collapse them into a single generic until the shape of more
+/// statement types is known.
 ///
-/// `put_object_branch`, `put_object_version_tag`, and `put_actor_trust`
+/// `put_object_branch`, `put_object_version_tag`, `put_actor_trust`,
+/// `put_actor_capability_grant`, and `put_actor_capability_revocation`
 /// also update their respective materialized indices, so later
-/// `BranchResolver` / `VersionTagResolver` / `TrustResolver` calls
-/// return the latest head without scanning all underlying statements.
+/// `BranchResolver` / `VersionTagResolver` / `TrustResolver` /
+/// `CapabilityResolver` calls return the latest head without scanning
+/// all underlying statements.
 pub trait StatementStore {
     fn put_object_revision(
         &self,
@@ -149,6 +162,26 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ActorTrustBody>, StoreError>;
+
+    fn put_actor_capability_grant(
+        &self,
+        statement: &SignedStatement<ActorCapabilityGrantBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_capability_grant(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorCapabilityGrantBody>, StoreError>;
+
+    fn put_actor_capability_revocation(
+        &self,
+        statement: &SignedStatement<ActorCapabilityRevocationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_capability_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -239,6 +272,61 @@ pub trait TrustResolver {
         &self,
         trusted_actor: &ActorId,
     ) -> Result<Vec<TrustHead>, StoreError>;
+}
+
+/// Resolver for the current `(grantor, grantee, scope)`
+/// `ActorCapabilityGrant` head and any effective
+/// `ActorCapabilityRevocation` for a particular grant.
+///
+/// Backed by the per-grantor materialized index in
+/// `<root>/actor_capability/<XX>/<YY>/<grantor-id>.json`. Each file
+/// nests `grantee -> scope -> chain entries`, so the dominant
+/// "for this `(grantor, grantee, scope)` triple, what is in effect?"
+/// query is O(1) once the file is loaded. Sharding on the *grantor*
+/// matches the duty model: the grantor maintains and revokes the
+/// grants they issue (`specs/CAPABILITIES.md` Decision A, §9).
+///
+/// Resolution honors chain precedence (a successor with `supersedes`
+/// wins over its predecessor regardless of `(created_at, statement_id)`
+/// order); fork tiebreak falls back to greatest `(created_at,
+/// statement_id)`. This mirrors `TrustResolver` and `VersionTagResolver`.
+///
+/// Revocations: only the original grantor may revoke (v1; see
+/// `specs/CAPABILITIES.md` §5.2). Multiple revocations targeting the
+/// same grant are tolerated (replay tolerance, §6.3); the most-
+/// restrictive wins on read.
+///
+/// This resolver answers the structural questions ("is there a chain
+/// leaf?", "is it revoked?"). The full
+/// `evaluate_capability(grantee, target, at)` resolver from
+/// `specs/CAPABILITIES.md` §6.1 — including delegation-depth checks,
+/// expiration, and recursive grantor-authority verification — lands
+/// in `kairo-statement::verify` on top of these primitives.
+pub trait CapabilityResolver {
+    /// Latest `ActorCapabilityGrant` for `(grantor, grantee, scope)`,
+    /// resolved by chain precedence. Returns `None` if `grantor` has
+    /// never issued a grant for that triple.
+    fn latest_capability(
+        &self,
+        grantor: &ActorId,
+        grantee: &ActorId,
+        scope: &CapabilityScope,
+    ) -> Result<Option<SignedStatement<ActorCapabilityGrantBody>>, StoreError>;
+
+    /// Most-restrictive `ActorCapabilityRevocation` issued by
+    /// `grantor` against `revoked_grant`, if any. Returns `None` if
+    /// no revocation is known.
+    fn latest_capability_revocation(
+        &self,
+        grantor: &ActorId,
+        revoked_grant: &StatementId,
+    ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, StoreError>;
+
+    /// All known `(grantee, scope)` chain heads issued by `grantor`.
+    /// One head per triple. Drives the §7.1 audit query (enumerate a
+    /// grantor's outstanding grants for key-compromise cleanup).
+    fn list_capabilities_from(&self, grantor: &ActorId)
+        -> Result<Vec<CapabilityHead>, StoreError>;
 }
 
 /// Persistence interface for raw byte blobs.
@@ -551,6 +639,105 @@ impl StatementStore for FilesystemStore {
         }
         Ok(signed)
     }
+
+    fn put_actor_capability_grant(
+        &self,
+        statement: &SignedStatement<ActorCapabilityGrantBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorCapabilityGrantStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let grantor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let grantee = body.grantee();
+        let scope = body.capability().scope();
+        let created_at = statement.unsigned().created_at();
+        let supersedes = body.supersedes();
+        self.upsert_capability_grant_index(
+            grantor, grantee, scope, &id, created_at, supersedes,
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_capability_grant(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorCapabilityGrantBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorCapabilityGrantStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+
+    fn put_actor_capability_revocation(
+        &self,
+        statement: &SignedStatement<ActorCapabilityRevocationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = ActorCapabilityRevocationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        let grantor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let revoked_grant = body.revoked_grant();
+        let created_at = statement.unsigned().created_at();
+        let retroactive = body.retroactive();
+        self.upsert_capability_revocation_index(
+            grantor,
+            revoked_grant,
+            &id,
+            created_at,
+            retroactive,
+        )?;
+
+        Ok(id)
+    }
+
+    fn get_actor_capability_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorCapabilityRevocationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
 }
 
 impl FilesystemStore {
@@ -694,6 +881,74 @@ impl FilesystemStore {
                     serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
                         id: trusted_actor.to_string(),
                         reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
+    fn upsert_capability_grant_index(
+        &self,
+        grantor: &ActorId,
+        grantee: &ActorId,
+        scope: &CapabilityScope,
+        statement_id: &StatementId,
+        created_at: kairo_core::Timestamp,
+        supersedes: Option<&StatementId>,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_capability_index_or_default(grantor)?;
+        let updated = index.upsert_grant(grantee, scope, statement_id, created_at, supersedes);
+        if updated {
+            let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn upsert_capability_revocation_index(
+        &self,
+        grantor: &ActorId,
+        revoked_grant: &StatementId,
+        statement_id: &StatementId,
+        created_at: kairo_core::Timestamp,
+        retroactive: bool,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_capability_index_or_default(grantor)?;
+        let updated =
+            index.upsert_revocation(revoked_grant, statement_id, created_at, retroactive);
+        if updated {
+            let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_capability_index_or_default(
+        &self,
+        grantor: &ActorId,
+    ) -> Result<capabilities::CapabilityIndexFile, StoreError> {
+        Ok(self
+            .read_capability_index(grantor)?
+            .unwrap_or_default())
+    }
+
+    fn read_capability_index(
+        &self,
+        grantor: &ActorId,
+    ) -> Result<Option<capabilities::CapabilityIndexFile>, StoreError> {
+        let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: capabilities::CapabilityIndexFile = serde_json::from_slice(&bytes)
+                    .map_err(|error| StoreError::Corrupt {
+                        id: grantor.to_string(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid capability index: {error}"
+                        )),
                     })?;
                 Ok(Some(index))
             }
@@ -909,6 +1164,90 @@ impl TrustResolver for FilesystemStore {
     }
 }
 
+impl CapabilityResolver for FilesystemStore {
+    fn latest_capability(
+        &self,
+        grantor: &ActorId,
+        grantee: &ActorId,
+        scope: &CapabilityScope,
+    ) -> Result<Option<SignedStatement<ActorCapabilityGrantBody>>, StoreError> {
+        let Some(index) = self.read_capability_index(grantor)? else {
+            return Ok(None);
+        };
+        let Some(entry) = index.lookup_grant_head(grantee, scope) else {
+            return Ok(None);
+        };
+        let statement_id =
+            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
+                id: entry.statement_id.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid statement id in capability index: {error}"
+                )),
+            })?;
+        let signed = self.get_actor_capability_grant(&statement_id)?;
+
+        if signed.unsigned().actor() != grantor
+            || signed.unsigned().body().grantee() != grantee
+            || signed.unsigned().body().capability().scope() != scope
+        {
+            return Err(StoreError::Corrupt {
+                id: statement_id.to_string(),
+                reason: CorruptReason::Parse(
+                    "capability index points at a statement with mismatched (grantor, grantee, scope)"
+                        .to_owned(),
+                ),
+            });
+        }
+
+        Ok(Some(signed))
+    }
+
+    fn latest_capability_revocation(
+        &self,
+        grantor: &ActorId,
+        revoked_grant: &StatementId,
+    ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, StoreError> {
+        let Some(index) = self.read_capability_index(grantor)? else {
+            return Ok(None);
+        };
+        let Some(entry) = index.lookup_revocation(revoked_grant) else {
+            return Ok(None);
+        };
+        let statement_id =
+            StatementId::new(entry.statement_id.clone()).map_err(|error| StoreError::Corrupt {
+                id: entry.statement_id.clone(),
+                reason: CorruptReason::Parse(format!(
+                    "invalid statement id in capability index: {error}"
+                )),
+            })?;
+        let signed = self.get_actor_capability_revocation(&statement_id)?;
+
+        if signed.unsigned().actor() != grantor
+            || signed.unsigned().body().revoked_grant() != revoked_grant
+        {
+            return Err(StoreError::Corrupt {
+                id: statement_id.to_string(),
+                reason: CorruptReason::Parse(
+                    "capability index points at a revocation with mismatched (grantor, revoked_grant)"
+                        .to_owned(),
+                ),
+            });
+        }
+
+        Ok(Some(signed))
+    }
+
+    fn list_capabilities_from(
+        &self,
+        grantor: &ActorId,
+    ) -> Result<Vec<CapabilityHead>, StoreError> {
+        let Some(index) = self.read_capability_index(grantor)? else {
+            return Ok(Vec::new());
+        };
+        index.into_heads(grantor)
+    }
+}
+
 impl BlobStore for FilesystemStore {
     fn put_blob(&self, id: &BlobId, bytes: &[u8]) -> Result<(), StoreError> {
         let path = self.shard_path(BLOBS_DIR, id.as_str(), BLOB_SUFFIX)?;
@@ -994,9 +1333,10 @@ mod tests {
     use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey};
     use kairo_statement::verify::{verify_envelope_statement, ActorResolution, SignatureStatus};
     use kairo_statement::{
-        ActorTrustBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-        ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement,
-        TrustDecision, UnsignedStatement,
+        ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, Capability,
+        CapabilityScope, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
+        ObjectRevisionBody, ObjectVersionTagBody, RevisionId, SemverVersion, Signature,
+        SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
     };
     use tempfile::TempDir;
 
@@ -2192,6 +2532,448 @@ mod tests {
         assert!(matches!(
             resolved,
             Some(s) if s.unsigned().body().is_withdrawal()
+        ));
+        Ok(())
+    }
+
+    fn grantee_actor() -> ActorId {
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [55; 32],
+        )
+        .actor_id()
+    }
+
+    fn other_grantee_actor() -> ActorId {
+        ActorGenesisBody::new(
+            ActorKind::person(),
+            PublicKey::ed25519(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()),
+            timestamp(),
+            [66; 32],
+        )
+        .actor_id()
+    }
+
+    fn capability_for(scope: CapabilityScope) -> Result<Capability, Box<dyn std::error::Error>> {
+        Ok(Capability::new(
+            scope,
+            vec![
+                StatementKind::ObjectRevision,
+                StatementKind::ObjectVersionTag,
+            ],
+            true,
+            vec![],
+        )?)
+    }
+
+    fn signed_capability_grant(
+        grantor: ActorId,
+        grantee: ActorId,
+        scope: CapabilityScope,
+        supersedes: Option<StatementId>,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorCapabilityGrantBody>, Box<dyn std::error::Error>> {
+        let capability = capability_for(scope)?;
+        let body = ActorCapabilityGrantBody::new(grantee.clone(), capability, supersedes);
+        let subject: KairoRef = format!("actor:{grantee}").parse()?;
+        let unsigned = UnsignedStatement::new(grantor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            grantor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn signed_capability_revocation(
+        grantor: ActorId,
+        revoked_grant: StatementId,
+        retroactive: bool,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, Box<dyn std::error::Error>> {
+        let body =
+            ActorCapabilityRevocationBody::new(revoked_grant.clone(), retroactive, None);
+        let subject: KairoRef = format!("statement:{revoked_grant}").parse()?;
+        let unsigned = UnsignedStatement::new(grantor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            grantor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn round_trips_actor_capability_grant() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let signed = signed_capability_grant(grantor, grantee, scope, None, timestamp())?;
+        let id = store.put_actor_capability_grant(&signed)?;
+        let loaded = store.get_actor_capability_grant(&id)?;
+        assert_eq!(loaded, signed);
+        Ok(())
+    }
+
+    #[test]
+    fn round_trips_actor_capability_revocation() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let grant = signed_capability_grant(
+            grantor.clone(),
+            grantee,
+            scope,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_capability_grant(&grant)?;
+        let revocation = signed_capability_revocation(
+            grantor,
+            grant_id,
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        let revocation_id = store.put_actor_capability_revocation(&revocation)?;
+        let loaded = store.get_actor_capability_revocation(&revocation_id)?;
+        assert_eq!(loaded, revocation);
+        Ok(())
+    }
+
+    #[test]
+    fn missing_capability_returns_none() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let resolved = store.latest_capability(&grantor, &grantee, &scope)?;
+        assert!(resolved.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_capability_revocation_returns_none() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let revoked_grant = StatementId::from_sha256_digest([0xAA; 32]);
+        let resolved = store.latest_capability_revocation(&grantor, &revoked_grant)?;
+        assert!(resolved.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn latest_capability_returns_chain_leaf() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let genesis = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let genesis_id = store.put_actor_capability_grant(&genesis)?;
+        let successor = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            Some(genesis_id),
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_actor_capability_grant(&successor)?;
+
+        let resolved = store.latest_capability(&grantor, &grantee, &scope)?;
+        assert_eq!(resolved, Some(successor));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_chain_precedence_overrides_timestamp_tiebreak() -> TestResult {
+        // Genesis grant signed first; successor at same created_at
+        // explicitly supersedes it. Chain-precedence picks the successor
+        // regardless of statement-id ordering.
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let genesis = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let genesis_id = store.put_actor_capability_grant(&genesis)?;
+        let successor = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            Some(genesis_id),
+            timestamp(), // same created_at — would tie under pure timestamp+id rule
+        )?;
+        let successor_id = store.put_actor_capability_grant(&successor)?;
+
+        let resolved = store.latest_capability(&grantor, &grantee, &scope)?;
+        assert_eq!(
+            resolved.map(|s| s.statement_id()),
+            Some(successor_id),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capabilities_are_independent_per_grantee_and_scope() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee_one = grantee_actor();
+        let grantee_two = other_grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+
+        let grant_one = signed_capability_grant(
+            grantor.clone(),
+            grantee_one.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let grant_two = signed_capability_grant(
+            grantor.clone(),
+            grantee_two.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&grant_one)?;
+        store.put_actor_capability_grant(&grant_two)?;
+
+        assert_eq!(
+            store.latest_capability(&grantor, &grantee_one, &scope)?,
+            Some(grant_one)
+        );
+        assert_eq!(
+            store.latest_capability(&grantor, &grantee_two, &scope)?,
+            Some(grant_two)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn revocation_is_recorded_independently_of_grant_chain() -> TestResult {
+        // The revocation does not move the grant chain head. The
+        // resolver returns the (still-valid) chain leaf and the
+        // revocation separately; the full capability evaluator
+        // (Step 5) combines them.
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let grant = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_capability_grant(&grant)?;
+        let revocation = signed_capability_revocation(
+            grantor.clone(),
+            grant_id.clone(),
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        store.put_actor_capability_revocation(&revocation)?;
+
+        // Chain head is still the grant.
+        let head = store.latest_capability(&grantor, &grantee, &scope)?;
+        assert_eq!(head, Some(grant));
+        // But the revocation is reachable via the dedicated lookup.
+        let resolved_revocation =
+            store.latest_capability_revocation(&grantor, &grant_id)?;
+        assert_eq!(resolved_revocation, Some(revocation));
+        Ok(())
+    }
+
+    #[test]
+    fn retroactive_revocation_overrides_non_retroactive_for_same_grant() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let grant = signed_capability_grant(
+            grantor.clone(),
+            grantee,
+            scope,
+            None,
+            timestamp(),
+        )?;
+        let grant_id = store.put_actor_capability_grant(&grant)?;
+        let non_retroactive = signed_capability_revocation(
+            grantor.clone(),
+            grant_id.clone(),
+            false,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        let retroactive = signed_capability_revocation(
+            grantor.clone(),
+            grant_id.clone(),
+            true,
+            Timestamp::from_seconds(timestamp().seconds() + 2),
+        )?;
+        store.put_actor_capability_revocation(&non_retroactive)?;
+        store.put_actor_capability_revocation(&retroactive)?;
+
+        let effective = store.latest_capability_revocation(&grantor, &grant_id)?;
+        assert!(matches!(
+            effective,
+            Some(signed) if signed.unsigned().body().retroactive()
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn list_capabilities_returns_all_chain_heads_for_grantor() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee_one = grantee_actor();
+        let grantee_two = other_grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let grant_one = signed_capability_grant(
+            grantor.clone(),
+            grantee_one.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let grant_two = signed_capability_grant(
+            grantor.clone(),
+            grantee_two.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&grant_one)?;
+        store.put_actor_capability_grant(&grant_two)?;
+
+        let heads = store.list_capabilities_from(&grantor)?;
+        assert_eq!(heads.len(), 2);
+        let grantees: Vec<_> = heads.iter().map(|h| h.grantee.clone()).collect();
+        assert!(grantees.contains(&grantee_one));
+        assert!(grantees.contains(&grantee_two));
+        Ok(())
+    }
+
+    #[test]
+    fn list_capabilities_for_unknown_grantor_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let heads = store.list_capabilities_from(&grantor)?;
+        assert!(heads.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn capability_index_path_is_sharded_on_grantor() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let signed = signed_capability_grant(
+            grantor.clone(),
+            grantee,
+            scope,
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&signed)?;
+
+        let shard1 = &grantor.as_str()[3..5];
+        let shard2 = &grantor.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(ACTOR_CAPABILITY_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{grantor}.json"));
+        assert!(
+            expected.exists(),
+            "expected capability index at {expected:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn capability_grant_statement_path_is_sharded() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let signed = signed_capability_grant(
+            grantor,
+            grantee,
+            scope,
+            None,
+            timestamp(),
+        )?;
+        let id = store.put_actor_capability_grant(&signed)?;
+
+        let shard1 = &id.as_str()[3..5];
+        let shard2 = &id.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(STATEMENTS_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{id}.json"));
+        assert!(expected.exists(), "expected sharded path {expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn tampered_capability_grant_file_is_corrupt() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = grantee_actor();
+        let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
+        let signed = signed_capability_grant(
+            grantor.clone(),
+            grantee.clone(),
+            scope.clone(),
+            None,
+            timestamp(),
+        )?;
+        let id = store.put_actor_capability_grant(&signed)?;
+
+        // Replace the file with a different valid grant whose derived
+        // StatementId will not match the original filename.
+        let other_scope = CapabilityScope::Object(ObjectId::from_sha256_digest([99; 32]));
+        let other = signed_capability_grant(
+            grantor,
+            grantee,
+            other_scope,
+            None,
+            timestamp(),
+        )?;
+        let path = shard::shard_path(dir.path(), STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)
+            .map_err(|error| error.to_string())?;
+        let json = ActorCapabilityGrantStatementJson::from_statement(&other);
+        fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
+
+        assert!(matches!(
+            store.get_actor_capability_grant(&id),
+            Err(StoreError::Corrupt {
+                reason: CorruptReason::HashMismatch { .. },
+                ..
+            })
         ));
         Ok(())
     }
