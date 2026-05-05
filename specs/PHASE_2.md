@@ -517,8 +517,61 @@ key remains authoritative forever (`THREAT_MODEL.md` §5.11, §5.12,
   "all attestation keys compromised" scenario — that remains social
   recovery (`THREAT_MODEL.md` §7).
 
-Spec / impl / CLI slices to follow when scheduled; not blocking any
-other Phase 2 item.
+**Spec slice:**
+
+- [x] `ActorAttestationKeyRevocation` statement type spec
+      (`schemas/canonical/actor-attestation-key-revocation-v1.md`,
+      `schemas/json/actor-attestation-key-revocation-v1.schema.json`,
+      `STATEMENTS.md` §4.2k).
+- [x] `ACTORS.md` §5.5.2 promoted from append-only to non-empty
+      mutable set; surface dispatch line in §6.1 extended with the
+      fourth emergency kind; §5.1 description of the attestation
+      surface updated.
+
+**Impl slice:**
+
+- [ ] `kairo-statement::ActorAttestationKeyRevocationBody` with
+      canonical encoding + JSON DTO. `SigningSurface = Attestation`.
+      Body validator checks `revoked_key` shape only; the non-empty
+      and "in current set" checks live at the resolver/store layer
+      (the body alone cannot know the live set state).
+- [ ] Extend `kairo-identity::ActorResolver`: `attestation_keys_at`
+      now composes `genesis ∪ adds − revocations`. New
+      `AttestationKeyRevocationEntry` type; new
+      `attestation_key_revocations(actor) -> Vec<…>` resolver method.
+      `MemoryActorResolver` tracks revocations alongside adds.
+- [ ] Extend the per-actor key-event index in `kairo-store` with
+      `attestation_revocations`. New trait method
+      `put_actor_attestation_key_revocation` plus matching `get_*` and
+      a `decode_attestation_revocations` that drives
+      `FilesystemStore::ActorResolver::attestation_key_revocations`.
+      The store's put-time validator refuses to persist a revocation
+      that would empty the resulting attestation set (the symmetric
+      bricking guard).
+- [ ] `verify_envelope_statement` requires no new dispatch (the
+      fourth emergency kind reuses the existing attestation-surface
+      branch). Self-revocation (signing key == revoked key) succeeds
+      because the signing key is still in the set at `created_at`.
+
+**CLI slice:**
+
+- [ ] `kairo actor revoke-attestation-key sign --actor <id>
+      --signing-attestation-key-seed <path> --revoke-key <key-id>
+      [--reason <text>]` — convenience flow mirroring
+      `recover-key sign`. Refuses to construct a revocation that
+      would empty the attestation set; suggests
+      `add-attestation-key sign` first.
+- [ ] `kairo actor revoke-attestation-key prepare --actor <id>
+      --revoke-key <key-id> [--reason <text>] --output <path>` and
+      `kairo actor revoke-attestation-key import --prepared <path>
+      --signature <path>` — pure two-step path for HSM/YubiKey
+      operators, mirroring `recover-key prepare`/`import` and
+      `add-attestation-key prepare`/`import`. Auto-detects the
+      signing attestation key from the signature.
+- [ ] `kairo actor key-history` extended to list
+      `ActorAttestationKeyRevocation` entries alongside adds, with
+      surface markers and the resulting attestation set after each
+      event. Both text and `--json` modes.
 
 ## After Phase 2
 

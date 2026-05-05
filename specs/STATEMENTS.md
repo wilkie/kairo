@@ -513,6 +513,54 @@ The canonical ActorAttestationKeyAdd v1 form is documented in:
 schemas/canonical/actor-attestation-key-add-v1.md
 ```
 
+### 4.2k ActorAttestationKeyRevocation Statement
+
+An `ActorAttestationKeyRevocation` statement retracts the recovery
+authority of an attestation key the actor has previously held. The
+attestation key set is no longer append-only — it shrinks by valid
+revocations and grows by `ActorAttestationKeyAdd` (§4.2j).
+
+Differences from the routine and emergency revocation kinds:
+
+1. The body has **no `retroactive` field**. Asymmetric with
+   `ActorKeyRevocation` (§4.2g) and `ActorEmergencyKeyRevocation`
+   (§4.2i) by design: attestation keys never sign consequential
+   statements directly — they only sign emergency events that
+   introduce or modify operational keys. Cleanup of historical
+   damage flows through routine `ActorKeyRevocation { retroactive:
+   true }` against the operational keys those emergency events
+   introduced. Events signed by a revoked attestation key before its
+   revocation's `created_at` remain valid.
+2. The signature must be produced by an attestation key in the set
+   at `created_at`. The signing key MAY be `revoked_key` itself
+   (self-revocation). The operational signing surface (active key
+   per the rotation chain) **cannot** revoke attestation keys, even
+   if it is the only key the operator currently holds.
+3. The **resulting attestation set must be non-empty**. A revocation
+   that would leave the actor with zero attestation keys is invalid.
+   Operators with only one attestation key must
+   `ActorAttestationKeyAdd` first, then revoke. Symmetric with
+   `ACTORS.md` §5.5.1's bricking guard at the operational surface.
+
+Resolution: the attestation set for `(actor, T)` is
+
+```text
+(ActorGenesis.attestation_keys
+ ∪ { add.new_key | add ∈ valid_adds(actor), add.created_at ≤ T })
+∖ { rev.revoked_key | rev ∈ valid_revs(actor), rev.created_at ≤ T }
+```
+
+A revocation referencing a `KeyId` the actor never held in their
+attestation set is `Indeterminate` until predecessor events are
+observed; once observed, a revocation of an unknown attestation key
+is treated as a redundant no-op.
+
+The canonical ActorAttestationKeyRevocation v1 form is documented in:
+
+```text
+schemas/canonical/actor-attestation-key-revocation-v1.md
+```
+
 ### 4.2 ObjectRevision Statement
 
 Records that an actor claims a storage revision belongs to a specific Kairo

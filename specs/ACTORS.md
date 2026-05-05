@@ -198,9 +198,11 @@ Each actor holds two **disjoint** key surfaces:
   managed via the rotation chain (§5.5).
 - **Attestation keys.** The cold-storage authority surface that signs
   emergency key events (`ActorEmergencyKeyRotation`,
-  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`). Declared at
-  `ActorGenesis` and append-only afterwards (§5.5.2). Never used to
-  sign operational statements.
+  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`,
+  `ActorAttestationKeyRevocation`). Declared at `ActorGenesis` and
+  mutated afterwards by attestation-signed adds and revocations,
+  subject to a non-empty-set rule (§5.5.2). Never used to sign
+  operational statements.
 
 The two surfaces never overlap. A key registered as a signing key
 cannot become an attestation key, and vice versa; the body validator
@@ -327,8 +329,9 @@ check; direct callers of the bodies must enforce this themselves.
 
 Both the bricking risk and the lost-active-key compromise scenario
 point at the same primitive: a **separate authority surface**, declared
-at `ActorGenesis` and append-only afterwards, that can sign emergency
-key events even when the operator has no working active key.
+at `ActorGenesis` and constrained to a non-empty set thereafter, that
+can sign emergency key events even when the operator has no working
+active key.
 
 Shape (v1):
 
@@ -337,29 +340,44 @@ Shape (v1):
   part of the canonical genesis bytes — and therefore part of the
   `ActorId`. An attacker cannot swap them out without producing a
   different actor.
-- Attestation keys sign **only** the three emergency body kinds:
+- Attestation keys sign **only** the four emergency body kinds:
   `ActorEmergencyKeyRotation` (`STATEMENTS.md` §4.2h),
-  `ActorEmergencyKeyRevocation` (§4.2i), and `ActorAttestationKeyAdd`
-  (§4.2j). They have no authority over operational statements
-  (revisions, branches, tags, capability grants, trust) and the
-  verifier rejects any operational statement signed by an attestation
-  `key_id`.
+  `ActorEmergencyKeyRevocation` (§4.2i), `ActorAttestationKeyAdd`
+  (§4.2j), and `ActorAttestationKeyRevocation` (§4.2k). They have no
+  authority over operational statements (revisions, branches, tags,
+  capability grants, trust) and the verifier rejects any operational
+  statement signed by an attestation `key_id`.
 - The attestation set may be grown after genesis via
-  `ActorAttestationKeyAdd`, signed by an existing attestation key. The
-  operational signing surface cannot grow the attestation set —
-  separation is enforced at the verifier.
-- Attestation keys are **not revocable** in v1. Compromise of an
-  attestation key has no in-protocol remediation; the operator must
-  publish a fresh `ActorGenesis` (different `ActorId`, continuity
-  re-established socially). A future schema revision may introduce
-  `ActorAttestationKeyRevocation`.
+  `ActorAttestationKeyAdd`, signed by an existing attestation key, and
+  shrunk via `ActorAttestationKeyRevocation`, also signed by an
+  existing attestation key (including, legitimately, the key being
+  revoked). The operational signing surface cannot mutate the
+  attestation set — separation is enforced at the verifier.
+- The **resulting attestation set must remain non-empty**. A
+  revocation that would empty the set is invalid (mirrors §5.5.1's
+  bricking guard). Operators with only one attestation key must
+  `ActorAttestationKeyAdd` first, then revoke. Compromise of every
+  attestation key simultaneously still has no in-protocol
+  remediation; the operator must publish a fresh `ActorGenesis`
+  (different `ActorId`, continuity re-established socially).
+- `ActorAttestationKeyRevocation` has **no `retroactive` field**.
+  Asymmetric with routine `ActorKeyRevocation` by design: attestation
+  keys never sign consequential statements directly — they only sign
+  emergency events that introduce or modify operational keys.
+  Cleanup of historical damage from a compromised attestation key is
+  a routine `ActorKeyRevocation { retroactive: true }` against the
+  malicious operational key the emergency event introduced. The
+  attestation revocation only stops further emergency events from
+  the revoked key.
 
 Resolution rule:
 
 > The attestation key set for `(actor, T)` is
-> `ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
+> `(ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
 > ActorAttestationKeyAdd statements signed by actor with
-> created_at ≤ T }`.
+> created_at ≤ T })
+> ∖ { rev.revoked_key | rev ∈ ActorAttestationKeyRevocation
+> statements signed by actor with created_at ≤ T }`.
 
 Cold-storage discipline:
 
@@ -390,6 +408,16 @@ Operational implications:
   leaving an emergency-rotation event in the audit trail signed by
   the compromised attestation `key_id`. Operators should monitor for
   unexpected emergency rotations.
+- An operator who detects attestation-key compromise can revoke the
+  compromised key from another attestation key they still hold via
+  `ActorAttestationKeyRevocation`. Recovery-surface symmetry remains:
+  any power the attestation surface gives the operator, it gives the
+  attacker — a compromised attestation key can also revoke legitimate
+  attestation keys (subject to the non-empty-set rule) before being
+  revoked itself. The primitive reduces the attack window from
+  "permanent" to "race against the operator's monitoring" but does
+  not close the "all attestation keys compromised" scenario, which
+  remains social recovery (`THREAT_MODEL.md` §7).
 
 ---
 
@@ -419,9 +447,9 @@ Each statement kind binds to one of two signing surfaces:
   below) — signed by the actor's **active signing key** per the
   rotation chain (§5.5).
 - **Emergency kinds** — `ActorEmergencyKeyRotation`,
-  `ActorEmergencyKeyRevocation`, and `ActorAttestationKeyAdd` — signed
-  by an **attestation key** in the actor's attestation set at
-  `created_at` (§5.5.2).
+  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`, and
+  `ActorAttestationKeyRevocation` — signed by an **attestation key**
+  in the actor's attestation set at `created_at` (§5.5.2).
 
 The two surfaces never overlap: an operational statement signed by an
 attestation `key_id` is invalid even if the bytes verify; an emergency
@@ -445,10 +473,10 @@ Core verification must check, in order:
 
 Invalid signatures make statements invalid.
 
-Missing key data (rotation, revocation, or attestation-add statements
-not yet observed locally) may make validation indeterminate rather than
-invalid — same handling as missing predecessors elsewhere in the
-protocol.
+Missing key data (rotation, revocation, attestation-add, or
+attestation-revocation statements not yet observed locally) may make
+validation indeterminate rather than invalid — same handling as
+missing predecessors elsewhere in the protocol.
 
 ### 6.1.1 Genesis statements are not symmetric
 

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/actor-attestation-key-revocation-v1.schema.json",
+  "title": "Kairo ActorAttestationKeyRevocation Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "properties": {
+    "type": {
+      "const": "ActorAttestationKeyRevocation"
+    },
+    "version": {
+      "const": 1
+    },
+    "actor": {
+      "type": "string",
+      "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "The actor whose attestation key is being revoked. Must agree with the envelope subject. Cross-actor attestation revocation is invalid."
+    },
+    "subject": {
+      "type": "string",
+      "pattern": "^actor:z[1-9A-HJ-NP-Za-km-z]+$",
+      "description": "Internal reference of the same actor: 'actor:<self-actor-id>'."
+    },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). Emergency events signed by revoked_key with created_at strictly after this time are rejected; events signed before remain valid (no retroactive mode)."
+    },
+    "body": {
+      "type": "object",
+      "required": ["revoked_key"],
+      "properties": {
+        "revoked_key": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "KeyId of the attestation key being revoked. Must be in the actor's attestation set at created_at (genesis-declared or appended via ActorAttestationKeyAdd). The resulting attestation set must be non-empty."
+        },
+        "reason": {
+          "type": "string",
+          "description": "Optional human-readable reason. Included in canonical bytes."
+        }
+      },
+      "additionalProperties": false
+    },
+    "signature": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signature",
+      "description": "Must be produced by a key in the actor's attestation set at created_at. Self-revocation (signing key == revoked_key) is permitted. Operational signing keys cannot revoke attestation keys. See ACTORS.md §5.5.2."
+    }
+  },
+  "additionalProperties": false
+}
