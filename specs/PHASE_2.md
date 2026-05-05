@@ -436,37 +436,44 @@ cold storage). Pre-deployment, so we land it as a v1 in-place edit of
 
 **CLI slice:**
 
-- [ ] `kairo actor create` grows `--attestation-key <hex-pubkey>`
+- [x] `kairo actor create` grows `--attestation-key <hex-pubkey>`
       (repeatable, operator-presented) and `--generate-attestation-key`
-      (repeatable, generates a fresh keypair, prints `seed: <base64>
-      pubkey: <hex>` once to stdout, embeds only the pubkey in the
-      genesis, drops the seed before exit). At least one attestation
-      key is required at create-time. Help text recommends the
-      operator-presented path.
-- [ ] `kairo actor recover-key --actor <id>
-      [--attestation-key-seed <path>] [--new-key <path>]
-      [--brick-actor]` — convenience path that reads an attestation
-      seed from a file the operator pulled from cold storage, signs
-      and persists an `ActorEmergencyKeyRotation` introducing a fresh
-      active key, and stores the new active key in the keystore. The
-      seed file is read once and never persisted by Kairo.
-- [ ] `kairo actor recover-key prepare --actor <id>
-      --new-key <pubkey-path> --output <path>` and
-      `kairo actor recover-key import --actor <id>
-      --signed-statement <path>` — the pure two-step path for
-      operators using a YubiKey or HSM. `prepare` emits an unsigned
-      `ActorEmergencyKeyRotation` body to a file; the operator signs
-      it externally on the cold device; `import` ingests the signed
-      envelope.
-- [ ] `kairo actor add-attestation-key --actor <id>
-      [--key <hex-pubkey>] [--generate]
-      [--signing-attestation-key-seed <path>]` — signs and persists
-      an `ActorAttestationKeyAdd` using an existing attestation key
-      (read from a seed file). Same generate-and-forget option as at
-      genesis. Two-step prepare/import variant for HSM-only flows.
-- [ ] `kairo actor key-history` (already in §10) extends to surface
-      the attestation set alongside the rotation chain and
-      revocation set.
+      (repeatable; clap `ArgAction::Count` so `--generate-attestation-key`
+      can be passed N times). Each generate produces a fresh
+      keypair, prints `seed = <base64>  pubkey = <hex>
+      attestation_key_id = <id>` to stdout (the returned String, so
+      `kairo actor create > out.txt` captures all seeds at once),
+      and emits a stderr "RECORD THIS, IT WILL NOT BE SAVED"
+      warning. At least one attestation key is required across the
+      union of both flags.
+- [x] `kairo actor recover-key sign --actor <id>
+      --attestation-key-seed <path>` — convenience: reads a
+      base64-encoded attestation seed file, generates a fresh
+      active signing key, signs and persists
+      `ActorEmergencyKeyRotation`, and stores the new signing
+      secret in the keystore (put-then-replace handles the
+      lost-keystore recovery scenario). Seed is read once and
+      never persisted by Kairo.
+- [x] `kairo actor recover-key prepare --actor <id> --new-key <hex>
+      --output <path>` and `kairo actor recover-key import
+      --prepared <path> --signature <path>` — pure two-step path
+      for HSM/YubiKey operators. `prepare` emits a partially-filled
+      JSON envelope plus a sibling `<output>.payload` containing
+      raw canonical bytes for external signing. `import` auto-
+      detects which attestation key produced the signature by
+      trying each one in the actor's attestation set. The new
+      active signing key's secret stays operator-managed (not
+      written to the keystore) — surfaced in the success message.
+- [x] `kairo actor add-attestation-key sign --actor <id>
+      --signing-attestation-key-seed <path>
+      (--key <hex> | --generate)` plus matching `prepare`/`import`
+      subcommands. Mirrors the `recover-key` shape. Body validator
+      rejects duplicates and signing-surface collisions before
+      persisting.
+- [x] `kairo actor key-history` (already in §10) extended to
+      surface the genesis-declared attestation set, every
+      `ActorAttestationKeyAdd`, and per-entry `surface` markers on
+      rotations + revocations. Both text and `--json` modes.
 
 **Why it matters:** closes the bricking hole §10 explicitly left open,
 so a lost or compromised active key is no longer the end of an actor's

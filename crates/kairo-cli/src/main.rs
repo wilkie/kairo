@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use kairo_bundle::{import_bundle, write_bundle, BundleError, ImportSummary};
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
@@ -20,18 +20,22 @@ use kairo_object::{
     DependencyDeclaration, ManifestBindingCheck, ObjectConsistencyCheck, ObjectDependencySelector,
     ObjectManifest, ObjectRevisionValidationReport, ParentReferenceCheck, Snapshot, SnapshotError,
 };
-use kairo_statement::json::{ObjectGenesisStatementJson, ObjectRevisionStatementJson};
+use kairo_statement::json::{
+    ActorAttestationKeyAddStatementJson, ActorEmergencyKeyRotationStatementJson,
+    ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+};
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, TrustEvaluation,
     VerificationReport,
 };
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRevocationBody,
-    ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability, CapabilityConstraint,
-    CapabilityScope, CapabilityShapeError, ObjectBranchBody, ObjectGenesisBody,
-    ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
-    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
-    SignedStatement, StatementKind, StatementKindParseError, TrustDecision, UnsignedStatement,
+    ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
+    ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
+    ActorTrustShapeError, Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError,
+    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion,
+    Signature, SignedStatement, StatementKind, StatementKindParseError, TrustDecision,
+    UnsignedStatement,
 };
 use kairo_store::{
     ActorStore, BlobStore, BranchResolver, CapabilityHead, CapabilityResolver, FilesystemStore,
@@ -474,10 +478,29 @@ enum ActorCommand {
         genesis: PathBuf,
     },
     /// Generate a fresh actor (keypair + ActorGenesis) and persist it.
+    ///
+    /// Every actor needs at least one cold-storage attestation key
+    /// declared at genesis (`ACTORS.md` §5.5.2). Pass an
+    /// operator-presented public key with `--attestation-key`
+    /// (recommended; the private half stays in your hardware wallet /
+    /// air-gapped device / safe), or use `--generate-attestation-key`
+    /// to have Kairo generate one and print the seed once. Both flags
+    /// are repeatable and can be mixed.
     Create {
         /// Actor kind, e.g. person, project, organization, service.
         #[arg(long)]
         kind: String,
+        /// Operator-presented attestation public key (hex-encoded raw
+        /// ed25519 bytes; 64 hex chars). Repeatable. Kairo never sees
+        /// the private half — this is the recommended path.
+        #[arg(long = "attestation-key")]
+        attestation_keys: Vec<String>,
+        /// Generate a fresh attestation keypair, print the seed once
+        /// to stdout, and embed only the public key in the genesis.
+        /// Repeatable. The seed is not saved by Kairo — record it
+        /// externally before continuing.
+        #[arg(long = "generate-attestation-key", action = ArgAction::Count)]
+        generate_attestation_keys: u8,
     },
     /// Import an ActorGenesis JSON document into the local store.
     Import {
@@ -510,12 +533,132 @@ enum ActorCommand {
         brick_actor: bool,
     },
     /// Print the actor's key history: genesis-initial key, every
-    /// rotation, every revocation. Useful for diagnostic checks.
+    /// rotation, every revocation, and the attestation set. Useful
+    /// for diagnostic checks.
     KeyHistory {
         #[arg(long)]
         actor: String,
         #[arg(long)]
         json: bool,
+    },
+    /// Recover from a lost or compromised active signing key by
+    /// signing an `ActorEmergencyKeyRotation` with a cold-storage
+    /// attestation key (`ACTORS.md` §5.5.2). Two flows:
+    /// `sign` reads the attestation seed in-process; `prepare` /
+    /// `import` lets the operator sign externally on a YubiKey/HSM.
+    RecoverKey {
+        #[command(subcommand)]
+        command: RecoverKeyCommand,
+    },
+    /// Append a new attestation key to the actor's append-only
+    /// attestation set (`ACTORS.md` §5.5.2). Signed by an existing
+    /// attestation key the operator pulls from cold storage. Same
+    /// `sign` / `prepare` / `import` flows as `recover-key`.
+    AddAttestationKey {
+        #[command(subcommand)]
+        command: AddAttestationKeyCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RecoverKeyCommand {
+    /// Convenience: read the attestation seed from a file the
+    /// operator pulled from cold storage, generate a fresh active
+    /// signing key, sign and persist an `ActorEmergencyKeyRotation`,
+    /// and store the new active signing key in the keystore. The
+    /// seed file is read once and never persisted by Kairo.
+    Sign {
+        #[arg(long)]
+        actor: String,
+        /// File containing the attestation key seed as base64
+        /// (single line; trailing newline tolerated). 32 raw bytes
+        /// when decoded.
+        #[arg(long)]
+        attestation_key_seed: PathBuf,
+    },
+    /// Pure two-step prepare: emit an unsigned
+    /// `ActorEmergencyKeyRotation` JSON envelope plus the canonical
+    /// bytes the operator must sign externally. Kairo never sees
+    /// the attestation seed or the new active signing key's secret
+    /// — both are operator-managed externally (e.g. on a YubiKey).
+    Prepare {
+        #[arg(long)]
+        actor: String,
+        /// Hex-encoded raw ed25519 public key for the new active
+        /// signing key. The operator holds the private half
+        /// externally.
+        #[arg(long)]
+        new_key: String,
+        /// Output path for the partially-filled JSON envelope. A
+        /// sibling `<output>.payload` is written with the raw
+        /// canonical bytes the operator must sign.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Pure two-step import: ingest a prepared envelope plus the
+    /// operator's external signature. Auto-detects which
+    /// attestation key produced the signature by trying each one
+    /// in the actor's attestation set at `created_at`.
+    Import {
+        /// Path to the JSON envelope written by `prepare`.
+        #[arg(long)]
+        prepared: PathBuf,
+        /// Path to the operator's base64-encoded ed25519 signature
+        /// of the prepared payload (single line; trailing newline
+        /// tolerated).
+        #[arg(long)]
+        signature: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AddAttestationKeyCommand {
+    /// Convenience: read an existing attestation seed from a file,
+    /// sign and persist an `ActorAttestationKeyAdd`. The new key is
+    /// either operator-presented (`--key <hex>`) or generated and
+    /// printed once (`--generate`); the latter mirrors the
+    /// generate-and-forget UX of `actor create
+    /// --generate-attestation-key`.
+    Sign {
+        #[arg(long)]
+        actor: String,
+        /// File containing an existing attestation seed (base64).
+        /// The seed signs the add and is not persisted by Kairo.
+        #[arg(long)]
+        signing_attestation_key_seed: PathBuf,
+        /// Operator-presented hex public key for the new attestation
+        /// key. Mutually exclusive with `--generate`.
+        #[arg(long, conflicts_with = "generate")]
+        key: Option<String>,
+        /// Generate a fresh attestation keypair and print the seed
+        /// once. Mutually exclusive with `--key`.
+        #[arg(long, conflicts_with = "key")]
+        generate: bool,
+    },
+    /// Pure two-step prepare: emit an unsigned
+    /// `ActorAttestationKeyAdd` JSON envelope plus the canonical
+    /// bytes the operator must sign externally.
+    Prepare {
+        #[arg(long)]
+        actor: String,
+        /// Hex public key of the new attestation key (operator-
+        /// presented; the operator must hold the private half).
+        #[arg(long)]
+        new_key: String,
+        /// Output path for the partially-filled JSON envelope. A
+        /// sibling `<output>.payload` is written with the raw
+        /// canonical bytes the operator must sign.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Pure two-step import: ingest a prepared envelope plus the
+    /// operator's external signature. Auto-detects which existing
+    /// attestation key produced the signature.
+    Import {
+        #[arg(long)]
+        prepared: PathBuf,
+        #[arg(long)]
+        signature: PathBuf,
     },
 }
 
@@ -741,58 +884,16 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
                 paths.store.display()
             ))
         }
-        ActorCommand::Create { kind } => {
-            let store = open_store(paths)?;
-            let keystore = open_keystore(paths)?;
-
-            let secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
-            let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
-
-            // Phase 2 §14 impl slice: every actor needs at least one
-            // cold-storage attestation key. The CLI slice will add
-            // `--attestation-key` (operator-presented) and
-            // `--generate-attestation-key` (generate-and-print) flags
-            // per `ACTORS.md` §5.5.2. Until then this silently generates
-            // an attestation key whose seed is *not surfaced to the
-            // operator* — recovery is not possible from this CLI surface
-            // yet. The seed leaves scope at the end of this match arm
-            // and is overwritten on next allocation; a future revision
-            // should integrate the `zeroize` crate for explicit wipe.
-            let attestation_secret =
-                SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
-            let attestation_public = attestation_secret.public_key();
-            let attestation_key_id = attestation_public.key_id();
-
-            let body = ActorGenesisBody::new(
-                ActorKind::new(kind),
-                secret.public_key(),
-                vec![attestation_public],
-                Timestamp::now(),
-                nonce,
-            )
-            .map_err(CliError::ActorGenesisShape)?;
-            let actor_id = body.actor_id();
-
-            keystore
-                .put_signing_key(&actor_id, &secret)
-                .map_err(|error| CliError::WriteKey {
-                    actor: actor_id.clone(),
-                    source: error,
-                })?;
-            store
-                .put_actor(&body)
-                .map_err(|error| CliError::WriteActor {
-                    actor: actor_id.clone(),
-                    source: error,
-                })?;
-
-            Ok(format!(
-                "created actor\nactor = {actor_id}\nkey_id = {}\nattestation_key_id = {attestation_key_id}\nstore = {}\nkeys = {}\n",
-                secret.public_key().key_id(),
-                paths.store.display(),
-                paths.keys.display()
-            ))
-        }
+        ActorCommand::Create {
+            kind,
+            attestation_keys,
+            generate_attestation_keys,
+        } => run_actor_create(
+            paths,
+            kind,
+            attestation_keys,
+            generate_attestation_keys,
+        ),
         ActorCommand::RotateKey { actor } => run_actor_rotate_key(paths, actor),
         ActorCommand::RevokeKey {
             actor,
@@ -802,6 +903,853 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
             brick_actor,
         } => run_actor_revoke_key(paths, actor, key_id, retroactive, reason, brick_actor),
         ActorCommand::KeyHistory { actor, json } => run_actor_key_history(paths, actor, json),
+        ActorCommand::RecoverKey { command } => run_actor_recover_key(paths, command),
+        ActorCommand::AddAttestationKey { command } => {
+            run_actor_add_attestation_key(paths, command)
+        }
+    }
+}
+
+fn run_actor_create(
+    paths: &StorePaths,
+    kind: String,
+    attestation_keys_hex: Vec<String>,
+    generate_attestation_keys: u8,
+) -> Result<String, CliError> {
+    if attestation_keys_hex.is_empty() && generate_attestation_keys == 0 {
+        return Err(CliError::NoAttestationKeyProvided);
+    }
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    // Operator-presented attestation public keys.
+    let mut attestation_publics: Vec<PublicKey> =
+        Vec::with_capacity(attestation_keys_hex.len() + usize::from(generate_attestation_keys));
+    for hex_str in &attestation_keys_hex {
+        attestation_publics.push(parse_attestation_key_hex(hex_str)?);
+    }
+
+    // Generate-and-print attestation keys. Each emits a single line of
+    // `seed = <base64>  pubkey = <hex>  key_id = <id>` to the returned
+    // output (which prints to stdout) plus a stderr warning. Kairo
+    // does NOT save the seed; the operator is responsible for moving
+    // it to cold storage before continuing.
+    let mut generated_block = String::new();
+    if generate_attestation_keys > 0 {
+        eprintln!(
+            "WARNING: {} attestation seed(s) below will not be saved by Kairo. \
+             Record them in cold storage now (YubiKey, air-gapped device, encrypted \
+             text in a safe). Kairo will never display them again. See ACTORS.md \
+             §5.5.2.",
+            generate_attestation_keys
+        );
+        generated_block.push_str(&format!(
+            "generated_attestation_keys = {generate_attestation_keys}\n"
+        ));
+        for index in 0..generate_attestation_keys {
+            let secret =
+                SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+            let public = secret.public_key();
+            let seed_b64 = STANDARD.encode(secret.seed_bytes());
+            let pubkey_hex = encode_public_key_hex(&public);
+            let key_id = public.key_id();
+            generated_block.push_str(&format!(
+                "  - index = {index}\n    seed = {seed_b64}\n    pubkey = {pubkey_hex}\n    attestation_key_id = {key_id}\n"
+            ));
+            attestation_publics.push(public);
+            // `secret` leaves scope here; the seed will be overwritten
+            // on next allocation. A future revision should integrate
+            // the `zeroize` crate for explicit wipe.
+        }
+    }
+
+    let secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+    let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
+
+    let body = ActorGenesisBody::new(
+        ActorKind::new(kind),
+        secret.public_key(),
+        attestation_publics.clone(),
+        Timestamp::now(),
+        nonce,
+    )
+    .map_err(CliError::ActorGenesisShape)?;
+    let actor_id = body.actor_id();
+
+    keystore
+        .put_signing_key(&actor_id, &secret)
+        .map_err(|error| CliError::WriteKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    store
+        .put_actor(&body)
+        .map_err(|error| CliError::WriteActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let mut attestation_summary = String::new();
+    attestation_summary.push_str(&format!(
+        "attestation_keys = {}\n",
+        attestation_publics.len()
+    ));
+    for key in &attestation_publics {
+        attestation_summary.push_str(&format!("  - key_id = {}\n", key.key_id()));
+    }
+
+    Ok(format!(
+        "created actor\nactor = {actor_id}\nkey_id = {}\nstore = {}\nkeys = {}\n{attestation_summary}{generated_block}",
+        secret.public_key().key_id(),
+        paths.store.display(),
+        paths.keys.display(),
+    ))
+}
+
+fn parse_attestation_key_hex(hex_str: &str) -> Result<PublicKey, CliError> {
+    let bytes = decode_hex_32(hex_str).ok_or_else(|| CliError::InvalidAttestationKeyHex {
+        provided: hex_str.to_owned(),
+    })?;
+    Ok(PublicKey::ed25519(bytes))
+}
+
+fn encode_public_key_hex(public: &PublicKey) -> String {
+    let bytes = public.bytes();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0_u8; 32];
+    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+        let high = hex_nibble(chunk[0])?;
+        let low = hex_nibble(chunk[1])?;
+        out[index] = (high << 4) | low;
+    }
+    Some(out)
+}
+
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn run_actor_recover_key(
+    paths: &StorePaths,
+    command: RecoverKeyCommand,
+) -> Result<String, CliError> {
+    match command {
+        RecoverKeyCommand::Sign {
+            actor,
+            attestation_key_seed,
+        } => run_actor_recover_key_sign(paths, actor, attestation_key_seed),
+        RecoverKeyCommand::Prepare {
+            actor,
+            new_key,
+            output,
+        } => run_actor_recover_key_prepare(paths, actor, new_key, output),
+        RecoverKeyCommand::Import {
+            prepared,
+            signature,
+        } => run_actor_recover_key_import(paths, prepared, signature),
+    }
+}
+
+fn run_actor_recover_key_sign(
+    paths: &StorePaths,
+    actor: String,
+    attestation_key_seed: PathBuf,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+
+    // Confirm the actor exists.
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    // Read & decode the attestation seed. The seed file leaves
+    // process memory once we've built `SecretSigningKey`; future
+    // revisions should integrate `zeroize` for explicit wipe.
+    let attestation_secret = read_attestation_seed(&attestation_key_seed)?;
+    let attestation_public = attestation_secret.public_key();
+    let attestation_key_id = attestation_public.key_id();
+
+    // The attestation key must be in the actor's attestation set at
+    // `now`. Genesis-declared + later `ActorAttestationKeyAdd` adds.
+    let now = Timestamp::now();
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if !attestation_set.contains_key(&attestation_key_id) {
+        return Err(CliError::AttestationKeyNotInSet {
+            actor: actor_id,
+            key_id: attestation_key_id,
+        });
+    }
+
+    // Auto-chain: emergency rotations participate in the same chain
+    // as routine ones. Supersedes the most-recent rotation chain
+    // leaf, if any. Genesis-initial is implicit when the chain is
+    // empty (`supersedes = None`).
+    let supersedes = latest_rotation_supersedes(&store, &actor_id)?;
+
+    // Generate a fresh active signing key.
+    let new_secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+
+    // Build & sign the emergency rotation.
+    let body = ActorEmergencyKeyRotationBody::new(new_secret.public_key(), supersedes.clone());
+    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let signature_bytes = attestation_secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        attestation_key_id.to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_emergency_key_rotation(&signed)
+        .map_err(|error| CliError::WriteEmergencyKeyRotation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    // Place the new active signing key in the keystore. Use put if
+    // there's no prior key (recovery scenario where the operator
+    // lost everything), otherwise replace.
+    let new_key_id = match keystore.put_signing_key(&actor_id, &new_secret) {
+        Ok(id) => id,
+        Err(kairo_keystore::KeystoreError::Corrupt {
+            reason: kairo_keystore::CorruptReason::AlreadyExists,
+            ..
+        }) => keystore
+            .replace_signing_key(&actor_id, &new_secret)
+            .map_err(|error| CliError::WriteKey {
+                actor: actor_id.clone(),
+                source: error,
+            })?,
+        Err(error) => {
+            return Err(CliError::WriteKey {
+                actor: actor_id,
+                source: error,
+            });
+        }
+    };
+
+    let supersedes_line = match supersedes {
+        Some(id) => format!("supersedes = {id}\n"),
+        None => "supersedes = (genesis)\n".to_owned(),
+    };
+    Ok(format!(
+        "recovered active key (emergency rotation)\nstatement = {statement_id}\nactor = {actor_id}\nattestation_key_id = {attestation_key_id}\nnext_key_id = {new_key_id}\n{supersedes_line}"
+    ))
+}
+
+fn run_actor_recover_key_prepare(
+    paths: &StorePaths,
+    actor: String,
+    new_key_hex: String,
+    output: PathBuf,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+    let store = open_store(paths)?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let next_key = parse_attestation_key_hex(&new_key_hex)?;
+    let supersedes = latest_rotation_supersedes(&store, &actor_id)?;
+    let now = Timestamp::now();
+    let body = ActorEmergencyKeyRotationBody::new(next_key.clone(), supersedes.clone());
+    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let canonical_bytes = unsigned.canonical_bytes();
+
+    // Wrap as a SignedStatement with placeholder signature fields so
+    // import can deserialize it through the existing JSON DTO path.
+    // Operator fills in `signature.bytes` and `signature.key_id` after
+    // signing externally; import auto-detects the key.
+    let placeholder_sig = Signature::new(
+        actor_id.clone(),
+        "(unsigned: filled by import after external signature)",
+        "ed25519",
+        Vec::new(),
+    );
+    let placeholder_signed = SignedStatement::new(unsigned, placeholder_sig);
+    let envelope_json =
+        ActorEmergencyKeyRotationStatementJson::from_statement(&placeholder_signed);
+    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
+        .map_err(CliError::SerializePreparedEnvelope)?;
+
+    std::fs::write(&output, &envelope_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: output.clone(),
+            source,
+        }
+    })?;
+    let payload_path = payload_path_for(&output);
+    std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: payload_path.clone(),
+            source,
+        }
+    })?;
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let mut attestation_lines = String::new();
+    for key in attestation_set.keys() {
+        attestation_lines.push_str(&format!("  - {key}\n"));
+    }
+
+    Ok(format!(
+        "prepared emergency rotation envelope\nactor = {actor_id}\nnext_key_id = {}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Sign {} with one of the actor's attestation keys (see list below):\n{attestation_lines}  2. Run `kairo actor recover-key import --prepared {} --signature <path-to-base64-sig>`.\n",
+        next_key.key_id(),
+        output.display(),
+        payload_path.display(),
+        payload_path.display(),
+        output.display(),
+    ))
+}
+
+fn run_actor_recover_key_import(
+    paths: &StorePaths,
+    prepared: PathBuf,
+    signature: PathBuf,
+) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+
+    // Read and parse the prepared envelope.
+    let envelope_bytes =
+        std::fs::read(&prepared).map_err(|source| CliError::ReadPreparedEnvelope {
+            path: prepared.clone(),
+            source,
+        })?;
+    let envelope_json: ActorEmergencyKeyRotationStatementJson =
+        serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
+
+    // Read & decode the operator's signature.
+    let sig_bytes = read_signature_bytes(&signature)?;
+
+    // Resolve the actor and rebuild the canonical bytes locally so
+    // we can verify the signature against the attestation set.
+    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
+        CliError::ParseActorId {
+            actor: envelope_json.actor.clone(),
+            source,
+        }
+    })?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let body_unsigned = envelope_json
+        .body
+        .to_body()
+        .map_err(CliError::ParseStatement)?;
+    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let created_at: Timestamp =
+        envelope_json
+            .created_at
+            .parse()
+            .map_err(|source| CliError::ParseTimestamp {
+                source,
+                value: envelope_json.created_at.clone(),
+            })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let canonical = unsigned.canonical_bytes();
+
+    // Try each attestation key in the set at `created_at`. The first
+    // one whose public material verifies the signature is accepted.
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
+    let mut signing_key_id = None;
+    for (key_id, public) in &attestation_set {
+        if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
+            signing_key_id = Some(key_id.clone());
+            break;
+        }
+    }
+    let signing_key_id = signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
+        actor: actor_id.clone(),
+    })?;
+
+    // Build the final SignedStatement and persist it.
+    let final_signature = Signature::new(
+        actor_id.clone(),
+        signing_key_id.to_string(),
+        "ed25519",
+        sig_bytes.to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, final_signature);
+    let statement_id = signed.statement_id();
+    store
+        .put_actor_emergency_key_rotation(&signed)
+        .map_err(|error| CliError::WriteEmergencyKeyRotation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    let next_key_id = signed.unsigned().body().next_key().key_id();
+    Ok(format!(
+        "imported emergency rotation\nstatement = {statement_id}\nactor = {actor_id}\nattestation_key_id = {signing_key_id}\nnext_key_id = {next_key_id}\nNote: the new active signing key is operator-managed (not in the keystore). Sign future statements externally or import the secret separately.\n"
+    ))
+}
+
+fn run_actor_add_attestation_key(
+    paths: &StorePaths,
+    command: AddAttestationKeyCommand,
+) -> Result<String, CliError> {
+    match command {
+        AddAttestationKeyCommand::Sign {
+            actor,
+            signing_attestation_key_seed,
+            key,
+            generate,
+        } => run_actor_add_attestation_key_sign(
+            paths,
+            actor,
+            signing_attestation_key_seed,
+            key,
+            generate,
+        ),
+        AddAttestationKeyCommand::Prepare {
+            actor,
+            new_key,
+            output,
+        } => run_actor_add_attestation_key_prepare(paths, actor, new_key, output),
+        AddAttestationKeyCommand::Import {
+            prepared,
+            signature,
+        } => run_actor_add_attestation_key_import(paths, prepared, signature),
+    }
+}
+
+fn run_actor_add_attestation_key_sign(
+    paths: &StorePaths,
+    actor: String,
+    signing_attestation_key_seed: PathBuf,
+    key: Option<String>,
+    generate: bool,
+) -> Result<String, CliError> {
+    if key.is_none() && !generate {
+        return Err(CliError::AddAttestationKeyMissingKeySource);
+    }
+
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+    let store = open_store(paths)?;
+
+    // Confirm the actor exists.
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    // Resolve the new attestation public key. Either operator-
+    // presented or generated-and-printed; in the generate case the
+    // seed leaves scope at the end of this function.
+    let mut generated_block = String::new();
+    let new_attestation_public = if let Some(hex) = key {
+        parse_attestation_key_hex(&hex)?
+    } else {
+        eprintln!(
+            "WARNING: a fresh attestation seed will be printed below and not saved by Kairo. \
+             Record it in cold storage now. See ACTORS.md §5.5.2."
+        );
+        let secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+        let public = secret.public_key();
+        let seed_b64 = STANDARD.encode(secret.seed_bytes());
+        let pubkey_hex = encode_public_key_hex(&public);
+        generated_block.push_str(&format!(
+            "generated_attestation_seed = {seed_b64}\ngenerated_attestation_pubkey = {pubkey_hex}\n"
+        ));
+        public
+    };
+
+    // Read & decode the signing attestation seed (existing one).
+    let signing_secret = read_attestation_seed(&signing_attestation_key_seed)?;
+    let signing_public = signing_secret.public_key();
+    let signing_key_id = signing_public.key_id();
+
+    let now = Timestamp::now();
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if !attestation_set.contains_key(&signing_key_id) {
+        return Err(CliError::AttestationKeyNotInSet {
+            actor: actor_id,
+            key_id: signing_key_id,
+        });
+    }
+
+    // Validation (`ACTORS.md` §5.5.2 / canonical spec): new_key must
+    // not already be in the attestation set, and must be disjoint
+    // from any signing key the actor has held.
+    let new_attestation_key_id = new_attestation_public.key_id();
+    if attestation_set.contains_key(&new_attestation_key_id) {
+        return Err(CliError::AttestationKeyAlreadyInSet {
+            actor: actor_id,
+            key_id: new_attestation_key_id,
+        });
+    }
+    let actor_body = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if actor_body.initial_key().bytes() == new_attestation_public.bytes() {
+        return Err(CliError::AttestationKeySharesSigningKey {
+            actor: actor_id,
+            key_id: new_attestation_key_id,
+        });
+    }
+    let rotations = ActorResolver::key_rotations(&store, &actor_id).map_err(|error| {
+        CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        }
+    })?;
+    if rotations
+        .iter()
+        .any(|entry| entry.next_key.bytes() == new_attestation_public.bytes())
+    {
+        return Err(CliError::AttestationKeySharesSigningKey {
+            actor: actor_id,
+            key_id: new_attestation_key_id,
+        });
+    }
+
+    let body = ActorAttestationKeyAddBody::new(new_attestation_public);
+    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let signature_bytes = signing_secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        signing_key_id.to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let statement_id = signed.statement_id();
+
+    store
+        .put_actor_attestation_key_add(&signed)
+        .map_err(|error| CliError::WriteAttestationKeyAdd {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    Ok(format!(
+        "added attestation key\nstatement = {statement_id}\nactor = {actor_id}\nsigning_attestation_key_id = {signing_key_id}\nnew_attestation_key_id = {new_attestation_key_id}\n{generated_block}"
+    ))
+}
+
+fn run_actor_add_attestation_key_prepare(
+    paths: &StorePaths,
+    actor: String,
+    new_key_hex: String,
+    output: PathBuf,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+
+    let store = open_store(paths)?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let new_key = parse_attestation_key_hex(&new_key_hex)?;
+    let now = Timestamp::now();
+    let body = ActorAttestationKeyAddBody::new(new_key.clone());
+    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let canonical_bytes = unsigned.canonical_bytes();
+
+    let placeholder_sig = Signature::new(
+        actor_id.clone(),
+        "(unsigned: filled by import after external signature)",
+        "ed25519",
+        Vec::new(),
+    );
+    let placeholder_signed = SignedStatement::new(unsigned, placeholder_sig);
+    let envelope_json = ActorAttestationKeyAddStatementJson::from_statement(&placeholder_signed);
+    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
+        .map_err(CliError::SerializePreparedEnvelope)?;
+
+    std::fs::write(&output, &envelope_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: output.clone(),
+            source,
+        }
+    })?;
+    let payload_path = payload_path_for(&output);
+    std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: payload_path.clone(),
+            source,
+        }
+    })?;
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let mut attestation_lines = String::new();
+    for key in attestation_set.keys() {
+        attestation_lines.push_str(&format!("  - {key}\n"));
+    }
+
+    Ok(format!(
+        "prepared attestation-key-add envelope\nactor = {actor_id}\nnew_attestation_key_id = {}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Sign {} with one of the actor's existing attestation keys (see list below):\n{attestation_lines}  2. Run `kairo actor add-attestation-key import --prepared {} --signature <path-to-base64-sig>`.\n",
+        new_key.key_id(),
+        output.display(),
+        payload_path.display(),
+        payload_path.display(),
+        output.display(),
+    ))
+}
+
+fn run_actor_add_attestation_key_import(
+    paths: &StorePaths,
+    prepared: PathBuf,
+    signature: PathBuf,
+) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+
+    let envelope_bytes =
+        std::fs::read(&prepared).map_err(|source| CliError::ReadPreparedEnvelope {
+            path: prepared.clone(),
+            source,
+        })?;
+    let envelope_json: ActorAttestationKeyAddStatementJson =
+        serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
+    let sig_bytes = read_signature_bytes(&signature)?;
+
+    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
+        CliError::ParseActorId {
+            actor: envelope_json.actor.clone(),
+            source,
+        }
+    })?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let body_unsigned = envelope_json
+        .body
+        .to_body()
+        .map_err(CliError::ParseStatement)?;
+    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let created_at: Timestamp =
+        envelope_json
+            .created_at
+            .parse()
+            .map_err(|source| CliError::ParseTimestamp {
+                source,
+                value: envelope_json.created_at.clone(),
+            })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let canonical = unsigned.canonical_bytes();
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
+    let mut signing_key_id = None;
+    for (key_id, public) in &attestation_set {
+        if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
+            signing_key_id = Some(key_id.clone());
+            break;
+        }
+    }
+    let signing_key_id = signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
+        actor: actor_id.clone(),
+    })?;
+
+    let final_signature = Signature::new(
+        actor_id.clone(),
+        signing_key_id.to_string(),
+        "ed25519",
+        sig_bytes.to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, final_signature);
+    let statement_id = signed.statement_id();
+    store
+        .put_actor_attestation_key_add(&signed)
+        .map_err(|error| CliError::WriteAttestationKeyAdd {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    let new_attestation_key_id = signed.unsigned().body().new_key().key_id();
+    Ok(format!(
+        "imported attestation-key-add\nstatement = {statement_id}\nactor = {actor_id}\nsigning_attestation_key_id = {signing_key_id}\nnew_attestation_key_id = {new_attestation_key_id}\n"
+    ))
+}
+
+/// Read an attestation seed file (single line of base64) and build a
+/// `SecretSigningKey` from it. The decoded bytes leave process memory
+/// once the secret is constructed.
+fn read_attestation_seed(path: &Path) -> Result<SecretSigningKey, CliError> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|source| CliError::ReadAttestationSeed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let trimmed = raw.trim();
+    let decoded = STANDARD
+        .decode(trimmed)
+        .map_err(|_| CliError::InvalidAttestationSeedBase64 {
+            path: path.to_path_buf(),
+        })?;
+    let bytes = <[u8; 32]>::try_from(decoded.as_slice()).map_err(|_| {
+        CliError::InvalidAttestationSeedLength {
+            path: path.to_path_buf(),
+            actual: decoded.len(),
+        }
+    })?;
+    Ok(SecretSigningKey::ed25519(bytes))
+}
+
+/// Read a base64-encoded ed25519 signature file.
+fn read_signature_bytes(path: &Path) -> Result<[u8; 64], CliError> {
+    let raw =
+        std::fs::read_to_string(path).map_err(|source| CliError::ReadSignatureFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let trimmed = raw.trim();
+    let decoded = STANDARD
+        .decode(trimmed)
+        .map_err(|_| CliError::InvalidSignatureBase64Path {
+            path: path.to_path_buf(),
+        })?;
+    <[u8; 64]>::try_from(decoded.as_slice()).map_err(|_| CliError::InvalidSignatureLength {
+        path: path.to_path_buf(),
+        actual: decoded.len(),
+    })
+}
+
+fn payload_path_for(envelope_path: &Path) -> PathBuf {
+    let mut payload = envelope_path.as_os_str().to_owned();
+    payload.push(".payload");
+    PathBuf::from(payload)
+}
+
+/// Walk the actor's rotation chain and return the chain leaf's
+/// `StatementId` to use as `supersedes` for a new rotation. Returns
+/// `None` for an actor that has never rotated (genesis-initial is
+/// implicit; first rotation has `supersedes = None`).
+fn latest_rotation_supersedes(
+    store: &FilesystemStore,
+    actor_id: &ActorId,
+) -> Result<Option<kairo_core::StatementId>, CliError> {
+    let rotations = ActorResolver::key_rotations(store, actor_id).map_err(|error| {
+        CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        }
+    })?;
+    let leaf = rotations.into_iter().max_by(|a, b| {
+        a.created_at
+            .seconds()
+            .cmp(&b.created_at.seconds())
+            .then_with(|| a.statement_id.cmp(&b.statement_id))
+    });
+    match leaf {
+        None => Ok(None),
+        Some(entry) => Ok(Some(
+            kairo_core::StatementId::new(entry.statement_id).map_err(|source| {
+                CliError::ParseStatementId {
+                    statement: "(rotation chain leaf)".to_owned(),
+                    source,
+                }
+            })?,
+        )),
     }
 }
 
@@ -1029,11 +1977,22 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
             source: error,
         }
     })?;
+    let attestation_adds = ActorResolver::attestation_key_adds(&store, &actor_id).map_err(
+        |error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        },
+    )?;
 
     if json {
         let value = serde_json::json!({
             "actor": actor_id.to_string(),
             "genesis_key_id": actor_body.initial_key().key_id().to_string(),
+            "genesis_attestation_keys": actor_body
+                .attestation_keys()
+                .iter()
+                .map(|key| key.key_id().to_string())
+                .collect::<Vec<_>>(),
             "rotations": rotations
                 .iter()
                 .map(|entry| serde_json::json!({
@@ -1041,6 +2000,7 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
                     "next_key_id": entry.next_key.key_id().to_string(),
                     "created_at": entry.created_at.to_string(),
                     "supersedes": entry.supersedes,
+                    "surface": surface_str(entry.surface),
                 }))
                 .collect::<Vec<_>>(),
             "revocations": revocations
@@ -1049,6 +2009,15 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
                     "statement_id": entry.statement_id,
                     "revoked_key": entry.revoked_key.to_string(),
                     "retroactive": entry.retroactive,
+                    "created_at": entry.created_at.to_string(),
+                    "surface": surface_str(entry.surface),
+                }))
+                .collect::<Vec<_>>(),
+            "attestation_adds": attestation_adds
+                .iter()
+                .map(|entry| serde_json::json!({
+                    "statement_id": entry.statement_id,
+                    "new_attestation_key_id": entry.new_key.key_id().to_string(),
                     "created_at": entry.created_at.to_string(),
                 }))
                 .collect::<Vec<_>>(),
@@ -1064,24 +2033,52 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
         "genesis_key_id = {}\n",
         actor_body.initial_key().key_id()
     ));
+    out.push_str(&format!(
+        "genesis_attestation_keys = {}\n",
+        actor_body.attestation_keys().len()
+    ));
+    for key in actor_body.attestation_keys() {
+        out.push_str(&format!("  - {}\n", key.key_id()));
+    }
     out.push_str(&format!("rotations = {}\n", rotations.len()));
     for entry in &rotations {
         out.push_str(&format!(
-            "  - statement = {}\n    next_key_id = {}\n    created_at = {}\n    supersedes = {}\n",
+            "  - statement = {}\n    next_key_id = {}\n    created_at = {}\n    supersedes = {}\n    surface = {}\n",
             entry.statement_id,
             entry.next_key.key_id(),
             entry.created_at,
-            entry.supersedes.as_deref().unwrap_or("(genesis)")
+            entry.supersedes.as_deref().unwrap_or("(genesis)"),
+            surface_str(entry.surface),
         ));
     }
     out.push_str(&format!("revocations = {}\n", revocations.len()));
     for entry in &revocations {
         out.push_str(&format!(
-            "  - statement = {}\n    revoked_key = {}\n    retroactive = {}\n    created_at = {}\n",
-            entry.statement_id, entry.revoked_key, entry.retroactive, entry.created_at
+            "  - statement = {}\n    revoked_key = {}\n    retroactive = {}\n    created_at = {}\n    surface = {}\n",
+            entry.statement_id,
+            entry.revoked_key,
+            entry.retroactive,
+            entry.created_at,
+            surface_str(entry.surface),
+        ));
+    }
+    out.push_str(&format!("attestation_adds = {}\n", attestation_adds.len()));
+    for entry in &attestation_adds {
+        out.push_str(&format!(
+            "  - statement = {}\n    new_attestation_key_id = {}\n    created_at = {}\n",
+            entry.statement_id,
+            entry.new_key.key_id(),
+            entry.created_at,
         ));
     }
     Ok(out)
+}
+
+fn surface_str(surface: kairo_identity::KeySurface) -> &'static str {
+    match surface {
+        kairo_identity::KeySurface::Operational => "operational",
+        kairo_identity::KeySurface::Attestation => "attestation",
+    }
 }
 
 fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<String, CliError> {
@@ -3789,7 +4786,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind>\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key import --prepared <path> --signature <path>\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key import --prepared <path> --signature <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -3829,6 +4826,10 @@ enum CliError {
     },
     GenerateKey(kairo_identity::KeyGenerationError),
     ActorGenesisShape(kairo_identity::ActorGenesisShapeError),
+    NoAttestationKeyProvided,
+    InvalidAttestationKeyHex {
+        provided: String,
+    },
     WriteKey {
         actor: ActorId,
         source: kairo_keystore::KeystoreError,
@@ -3864,6 +4865,61 @@ enum CliError {
         source: kairo_store::StoreError,
     },
     WriteKeyRevocation {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    WriteEmergencyKeyRotation {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    AttestationKeyNotInSet {
+        actor: ActorId,
+        key_id: KeyId,
+    },
+    ReadAttestationSeed {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    InvalidAttestationSeedBase64 {
+        path: PathBuf,
+    },
+    InvalidAttestationSeedLength {
+        path: PathBuf,
+        actual: usize,
+    },
+    ReadSignatureFile {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    InvalidSignatureBase64Path {
+        path: PathBuf,
+    },
+    InvalidSignatureLength {
+        path: PathBuf,
+        actual: usize,
+    },
+    SignatureNoAttestationMatch {
+        actor: ActorId,
+    },
+    SerializePreparedEnvelope(serde_json::Error),
+    WritePreparedEnvelope {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    ReadPreparedEnvelope {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    AddAttestationKeyMissingKeySource,
+    AttestationKeyAlreadyInSet {
+        actor: ActorId,
+        key_id: KeyId,
+    },
+    AttestationKeySharesSigningKey {
+        actor: ActorId,
+        key_id: KeyId,
+    },
+    WriteAttestationKeyAdd {
         statement: kairo_core::StatementId,
         source: kairo_store::StoreError,
     },
@@ -4055,6 +5111,17 @@ impl fmt::Display for CliError {
             }
             Self::GenerateKey(error) => write!(f, "{error}"),
             Self::ActorGenesisShape(error) => write!(f, "{error}"),
+            Self::NoAttestationKeyProvided => f.write_str(
+                "actor create requires at least one attestation key: pass \
+                 --attestation-key <hex-pubkey> (operator-presented, recommended) or \
+                 --generate-attestation-key (Kairo generates and prints the seed once). \
+                 See ACTORS.md §5.5.2.",
+            ),
+            Self::InvalidAttestationKeyHex { provided } => write!(
+                f,
+                "invalid attestation key hex (expected 64 lowercase hex chars for raw ed25519 pubkey, got {:?})",
+                provided
+            ),
             Self::WriteKey { actor, source } => {
                 write!(f, "failed to write key for actor {actor}: {source}")
             }
@@ -4089,6 +5156,77 @@ impl fmt::Display for CliError {
             Self::WriteKeyRevocation { statement, source } => write!(
                 f,
                 "failed to write key revocation statement {statement}: {source}"
+            ),
+            Self::WriteEmergencyKeyRotation { statement, source } => write!(
+                f,
+                "failed to write emergency key rotation statement {statement}: {source}"
+            ),
+            Self::AttestationKeyNotInSet { actor, key_id } => write!(
+                f,
+                "attestation key {key_id} is not in actor {actor}'s attestation set; check the seed file or use a different attestation key (see ACTORS.md §5.5.2)"
+            ),
+            Self::ReadAttestationSeed { path, source } => write!(
+                f,
+                "failed to read attestation seed file {}: {source}",
+                path.display()
+            ),
+            Self::InvalidAttestationSeedBase64 { path } => write!(
+                f,
+                "attestation seed file {} is not valid base64 (expected the same format printed by `actor create --generate-attestation-key`)",
+                path.display()
+            ),
+            Self::InvalidAttestationSeedLength { path, actual } => write!(
+                f,
+                "attestation seed file {} decoded to {actual} bytes; expected exactly 32",
+                path.display()
+            ),
+            Self::ReadSignatureFile { path, source } => write!(
+                f,
+                "failed to read signature file {}: {source}",
+                path.display()
+            ),
+            Self::InvalidSignatureBase64Path { path } => write!(
+                f,
+                "signature file {} is not valid base64",
+                path.display()
+            ),
+            Self::InvalidSignatureLength { path, actual } => write!(
+                f,
+                "signature file {} decoded to {actual} bytes; expected exactly 64",
+                path.display()
+            ),
+            Self::SignatureNoAttestationMatch { actor } => write!(
+                f,
+                "signature did not verify against any of actor {actor}'s attestation keys; check the prepared envelope and signature were paired correctly"
+            ),
+            Self::SerializePreparedEnvelope(error) => write!(
+                f,
+                "failed to serialize prepared envelope: {error}"
+            ),
+            Self::WritePreparedEnvelope { path, source } => write!(
+                f,
+                "failed to write prepared envelope {}: {source}",
+                path.display()
+            ),
+            Self::ReadPreparedEnvelope { path, source } => write!(
+                f,
+                "failed to read prepared envelope {}: {source}",
+                path.display()
+            ),
+            Self::AddAttestationKeyMissingKeySource => f.write_str(
+                "actor add-attestation-key sign requires either --key <hex> (operator-presented) or --generate (Kairo generates and prints the seed once)",
+            ),
+            Self::AttestationKeyAlreadyInSet { actor, key_id } => write!(
+                f,
+                "attestation key {key_id} is already in actor {actor}'s attestation set"
+            ),
+            Self::AttestationKeySharesSigningKey { actor, key_id } => write!(
+                f,
+                "attestation key {key_id} collides with one of actor {actor}'s signing keys; the surfaces must stay disjoint (see ACTORS.md §5.1)"
+            ),
+            Self::WriteAttestationKeyAdd { statement, source } => write!(
+                f,
+                "failed to write attestation-key-add statement {statement}: {source}"
             ),
             Self::ParseActorId { actor, source } => {
                 write!(f, "invalid actor id {actor}: {source}")
@@ -4279,9 +5417,15 @@ impl Error for CliError {
             | Self::ReadPublicKey { source, .. }
             | Self::ReadActorGenesis { source, .. }
             | Self::ScanStatements { source, .. }
-            | Self::CwdUnavailable { source } => Some(source),
+            | Self::CwdUnavailable { source }
+            | Self::ReadAttestationSeed { source, .. }
+            | Self::ReadSignatureFile { source, .. }
+            | Self::WritePreparedEnvelope { source, .. }
+            | Self::ReadPreparedEnvelope { source, .. } => Some(source),
             Self::ParseManifest(error) => Some(error),
-            Self::ParseActorGenesisJson(error) | Self::ParseStatementJson(error) => Some(error),
+            Self::ParseActorGenesisJson(error)
+            | Self::ParseStatementJson(error)
+            | Self::SerializePreparedEnvelope(error) => Some(error),
             Self::ParseActorGenesis(error) => Some(error),
             Self::ParseStatement(error) => Some(error),
             Self::ValidateRevisionManifest(error) => Some(error),
@@ -4300,6 +5444,8 @@ impl Error for CliError {
             | Self::WriteCapabilityRevocation { source, .. }
             | Self::WriteKeyRotation { source, .. }
             | Self::WriteKeyRevocation { source, .. }
+            | Self::WriteEmergencyKeyRotation { source, .. }
+            | Self::WriteAttestationKeyAdd { source, .. }
             | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
@@ -4350,12 +5496,24 @@ impl Error for CliError {
             | Self::InvalidPublicKeyBase64
             | Self::InvalidPublicKeyLength { .. }
             | Self::ActorHasNoActiveKey { .. }
-            | Self::WouldBrickActor { .. } => None,
+            | Self::WouldBrickActor { .. }
+            | Self::NoAttestationKeyProvided
+            | Self::InvalidAttestationKeyHex { .. }
+            | Self::AttestationKeyNotInSet { .. }
+            | Self::InvalidAttestationSeedBase64 { .. }
+            | Self::InvalidAttestationSeedLength { .. }
+            | Self::InvalidSignatureBase64Path { .. }
+            | Self::InvalidSignatureLength { .. }
+            | Self::SignatureNoAttestationMatch { .. }
+            | Self::AddAttestationKeyMissingKeySource
+            | Self::AttestationKeyAlreadyInSet { .. }
+            | Self::AttestationKeySharesSigningKey { .. } => None,
         }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
@@ -4699,6 +5857,8 @@ mod tests {
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -4930,6 +6090,8 @@ mod tests {
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -5192,6 +6354,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -5355,6 +6519,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -5518,6 +6684,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -5686,6 +6854,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -5930,6 +7100,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -6069,6 +7241,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -6171,6 +7345,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -6280,6 +7456,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -6291,6 +7469,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -6352,6 +7532,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6364,6 +7546,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6446,6 +7630,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6458,6 +7644,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6489,6 +7677,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6501,6 +7691,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6574,6 +7766,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -6658,6 +7852,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -6768,6 +7964,8 @@ kind = "tree"
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
+                        attestation_keys: vec![],
+                        generate_attestation_keys: 1,
                     },
                 }),
             })?,
@@ -7126,6 +8324,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -7191,6 +8391,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -7250,6 +8452,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -7291,6 +8495,8 @@ kind = "tree"
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
                 },
             }),
         })?;
@@ -7324,6 +8530,310 @@ kind = "tree"
             }),
         })?;
         assert!(result.contains("revoked key"));
+        Ok(())
+    }
+
+    // ---- Phase 2 §14: cold-storage attestation CLI tests ----
+
+    #[test]
+    fn actor_create_rejects_no_attestation_source() {
+        let store_dir = tempfile::TempDir::new().expect("tempdir");
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 0,
+                },
+            }),
+        });
+        assert!(matches!(result, Err(CliError::NoAttestationKeyProvided)));
+    }
+
+    #[test]
+    fn actor_create_with_operator_presented_attestation_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        // Pre-generate an attestation keypair externally; pass only the
+        // public key to the CLI.
+        let attestation_seed = [123_u8; 32];
+        let attestation_pub = SigningKey::from_bytes(&attestation_seed)
+            .verifying_key()
+            .to_bytes();
+        let attestation_hex: String =
+            attestation_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![attestation_hex.clone()],
+                    generate_attestation_keys: 0,
+                },
+            }),
+        })?;
+        assert!(output.contains("created actor"));
+        assert!(output.contains("attestation_keys = 1"));
+        // Operator-presented path does NOT print a seed — Kairo never
+        // sees the private half.
+        assert!(!output.contains("seed = "));
+        Ok(())
+    }
+
+    #[test]
+    fn actor_create_generate_attestation_key_prints_seed_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                },
+            }),
+        })?;
+        assert!(output.contains("created actor"));
+        assert!(output.contains("attestation_keys = 1"));
+        assert!(output.contains("generated_attestation_keys = 1"));
+        assert!(output.contains("seed = "));
+        assert!(output.contains("pubkey = "));
+        Ok(())
+    }
+
+    /// End-to-end: create an actor with `--generate-attestation-key`,
+    /// pull the seed out of the output, write it to a file, then run
+    /// `recover-key sign` to produce an emergency rotation. Confirms
+    /// the convenience flow round-trips and the new active key lands
+    /// in the keystore.
+    #[test]
+    fn actor_recover_key_sign_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+        let initial_key_id = parse_field(&create_output, "key_id = ")?;
+        let seed_b64 = parse_field(&create_output, "    seed = ")?;
+        let attestation_key_id = parse_field(&create_output, "    attestation_key_id = ")?;
+
+        let seed_path = store_dir.path().join("attestation.seed");
+        std::fs::write(&seed_path, seed_b64.as_bytes())?;
+
+        let recover_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Sign {
+                        actor: actor_id.clone(),
+                        attestation_key_seed: seed_path,
+                    },
+                },
+            }),
+        })?;
+        assert!(recover_output.contains("recovered active key"));
+        let new_key_id = parse_field(&recover_output, "next_key_id = ")?;
+        assert_ne!(new_key_id, initial_key_id);
+        let logged_attestation_key_id =
+            parse_field(&recover_output, "attestation_key_id = ")?;
+        assert_eq!(logged_attestation_key_id, attestation_key_id);
+
+        // After recovery, key-history surfaces the new emergency
+        // rotation in the rotation chain with surface = attestation,
+        // and a routine rotate-key call should now sign with the
+        // freshly-rotated active key.
+        let history_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(history_output.contains("rotations = 1"));
+        assert!(history_output.contains("surface = attestation"));
+        assert!(history_output.contains(&format!("next_key_id = {new_key_id}")));
+
+        // Confirm the keystore replaced the active signing key by
+        // running a routine rotate-key; if the keystore-vs-active-key
+        // check fails the call would error.
+        let rotate_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RotateKey {
+                    actor: actor_id,
+                },
+            }),
+        })?;
+        assert!(rotate_output.contains("rotated key"));
+        Ok(())
+    }
+
+    /// Pure prepare/import round-trip. The "operator's" cold device
+    /// is simulated inline: we know the seed because we generated it
+    /// ourselves, and we sign the prepared payload externally instead
+    /// of going through the convenience `sign` path.
+    #[test]
+    fn actor_recover_key_prepare_import_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+        let seed_b64 = parse_field(&create_output, "    seed = ")?;
+        let attestation_seed_bytes = STANDARD.decode(&seed_b64)?;
+        let attestation_seed: [u8; 32] = attestation_seed_bytes
+            .as_slice()
+            .try_into()
+            .expect("attestation seed is 32 bytes");
+        let attestation_signing = SigningKey::from_bytes(&attestation_seed);
+
+        // Operator-managed new active key (we hold the private half
+        // externally — it will never enter the keystore in this flow).
+        let new_active_seed = [42_u8; 32];
+        let new_active_pub = SigningKey::from_bytes(&new_active_seed)
+            .verifying_key()
+            .to_bytes();
+        let new_active_hex: String =
+            new_active_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let envelope_path = store_dir.path().join("recovery.json");
+        let prepare_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Prepare {
+                        actor: actor_id.clone(),
+                        new_key: new_active_hex,
+                        output: envelope_path.clone(),
+                    },
+                },
+            }),
+        })?;
+        assert!(prepare_output.contains("prepared emergency rotation envelope"));
+        let payload_path = payload_path_for(&envelope_path);
+        let payload_bytes = std::fs::read(&payload_path)?;
+
+        // Operator signs the payload externally on the cold device.
+        let signature_bytes = attestation_signing.sign(&payload_bytes).to_bytes();
+        let signature_b64 = STANDARD.encode(signature_bytes);
+        let sig_path = store_dir.path().join("recovery.sig");
+        std::fs::write(&sig_path, signature_b64.as_bytes())?;
+
+        let import_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Import {
+                        prepared: envelope_path,
+                        signature: sig_path,
+                    },
+                },
+            }),
+        })?;
+        assert!(import_output.contains("imported emergency rotation"));
+
+        // Key-history reflects the imported emergency rotation.
+        let history_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(history_output.contains("rotations = 1"));
+        assert!(history_output.contains("surface = attestation"));
+        Ok(())
+    }
+
+    /// `add-attestation-key sign` with `--generate` ships a new
+    /// attestation key signed by the existing one.
+    #[test]
+    fn actor_add_attestation_key_sign_generate_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+        let seed_b64 = parse_field(&create_output, "    seed = ")?;
+        let initial_attestation_key_id =
+            parse_field(&create_output, "    attestation_key_id = ")?;
+        let seed_path = store_dir.path().join("att1.seed");
+        std::fs::write(&seed_path, seed_b64.as_bytes())?;
+
+        let add_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::AddAttestationKey {
+                    command: AddAttestationKeyCommand::Sign {
+                        actor: actor_id.clone(),
+                        signing_attestation_key_seed: seed_path,
+                        key: None,
+                        generate: true,
+                    },
+                },
+            }),
+        })?;
+        assert!(add_output.contains("added attestation key"));
+        let signing_key_id = parse_field(&add_output, "signing_attestation_key_id = ")?;
+        assert_eq!(signing_key_id, initial_attestation_key_id);
+        assert!(add_output.contains("new_attestation_key_id = "));
+        assert!(add_output.contains("generated_attestation_seed = "));
+
+        let history_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id,
+                    json: true,
+                },
+            }),
+        })?;
+        let history: serde_json::Value = serde_json::from_str(&history_output)?;
+        assert_eq!(history["attestation_adds"].as_array().map(Vec::len), Some(1));
         Ok(())
     }
 }

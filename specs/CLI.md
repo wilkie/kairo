@@ -217,11 +217,17 @@ direct local commands for deterministic validation primitives.
 kairo manifest hash [path]
 kairo manifest inspect [path]
 kairo actor id --genesis <actor-genesis.json>
-kairo actor create --kind <kind>
+kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...
 kairo actor import --genesis <actor-genesis.json>
 kairo actor rotate-key --actor <id>
 kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]
 kairo actor key-history --actor <id> [--json]
+kairo actor recover-key sign --actor <id> --attestation-key-seed <path>
+kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>
+kairo actor recover-key import --prepared <path> --signature <path>
+kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)
+kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>
+kairo actor add-attestation-key import --prepared <path> --signature <path>
 kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]
 kairo object import --statement <object-genesis.json>
 kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]
@@ -279,10 +285,18 @@ its ed25519 signature against raw public key bytes encoded as standard base64.
 `--json` emits a stable JSON `VerificationReport`; the human form prints the
 three independent dimensions (signature, actor resolution, trust).
 
-`actor create` generates a fresh keypair, signs and persists the resulting
-`ActorGenesis`, and stores the secret in the keystore. `object create` and
-`revision create` load the actor's stored key, sign the corresponding body,
-and persist the statement to the local store.
+`actor create` generates a fresh signing keypair, signs and persists the
+resulting `ActorGenesis`, and stores the signing secret in the keystore.
+At least one cold-storage attestation key is required (`ACTORS.md`
+§5.5.2). Pass operator-presented public keys with `--attestation-key
+<hex>` (recommended; the private half stays on the operator's
+YubiKey/HSM/air-gapped device), or use `--generate-attestation-key` to
+have Kairo generate a fresh keypair and print the seed once to stdout.
+Both flags are repeatable and can be mixed. The generate-and-print
+flow emits a one-time `seed = <base64>` line plus a stderr warning;
+Kairo never writes the attestation seed to disk. `object create` and
+`revision create` load the actor's stored signing key, sign the
+corresponding body, and persist the statement to the local store.
 
 `actor import`, `object import`, and `revision import` ingest pre-existing
 JSON records into the local store. Each command re-derives the canonical
@@ -312,9 +326,55 @@ actor (`ACTORS.md` §5.5.1). The error message points at `actor rotate-key`
 as the safe alternative.
 
 `actor key-history --actor <id>` is a diagnostic surface that prints
-the actor's full key history: the genesis-initial key, every rotation
-in `supersedes` order, and every revocation in storage order.
-`--json` emits a stable shape for automation.
+the actor's full key history: the genesis-initial signing key, every
+rotation (routine + emergency, tagged with `surface`) in storage order,
+every revocation, the genesis-declared attestation set, and any
+`ActorAttestationKeyAdd` entries. `--json` emits a stable shape for
+automation.
+
+`actor recover-key` is the cold-storage recovery surface for a lost
+or compromised active signing key (`ACTORS.md` §5.5.2). Three flows
+under one command:
+
+- `recover-key sign --actor <id> --attestation-key-seed <path>` —
+  convenience: reads a base64-encoded attestation seed from a file
+  the operator pulled from cold storage, generates a fresh active
+  signing key, signs and persists an `ActorEmergencyKeyRotation`,
+  and stores the new signing secret in the keystore. The seed file
+  is read once and never persisted by Kairo.
+- `recover-key prepare --actor <id> --new-key <hex> --output <path>`
+  — pure two-step path for operators using a YubiKey/HSM. Emits a
+  partially-filled `ActorEmergencyKeyRotation` JSON envelope at
+  `<path>` plus a sibling `<path>.payload` containing the raw
+  canonical bytes the operator must sign on their cold device.
+  The operator generates the new active signing key externally
+  (`--new-key` is its hex public key); the private half is
+  operator-managed.
+- `recover-key import --prepared <path> --signature <path>` —
+  ingest the prepared envelope plus the operator's externally-
+  produced base64 signature. Auto-detects which attestation key
+  produced the signature by trying each one in the actor's
+  attestation set at `created_at`; persists the rotation. The
+  operator's new active signing key is not added to the keystore;
+  signing future statements requires either a separate keystore
+  import or another externally-signed flow.
+
+`actor add-attestation-key` appends to the actor's append-only
+attestation set (`ACTORS.md` §5.5.2). Mirrors the `recover-key`
+shape with three flows:
+
+- `add-attestation-key sign --actor <id>
+  --signing-attestation-key-seed <path> (--key <hex> | --generate)`
+  — convenience: reads an existing attestation seed (which signs
+  the add) plus the new attestation key, either operator-presented
+  (`--key <hex>`) or generated-and-printed (`--generate`). Persists
+  an `ActorAttestationKeyAdd` statement.
+- `add-attestation-key prepare --actor <id> --new-key <hex>
+  --output <path>` — pure two-step prepare; emits the unsigned
+  envelope and a sibling `.payload` for external signing.
+- `add-attestation-key import --prepared <path> --signature <path>`
+  — ingest the externally-signed envelope; auto-detects the
+  signing attestation key.
 
 `revision inspect --statement <id>` reads a stored revision by `StatementId`
 and prints its body fields. `--json` emits a stable JSON shape suitable for
