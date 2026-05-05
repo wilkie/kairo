@@ -350,10 +350,13 @@ Hardening what Phase 1 shipped.
       adding test surface that benefits from shared fixtures).
 - [ ] Versioning policy: pick semver discipline, document MSRV, write a
       `CHANGELOG.md`.
-- [ ] Threat model document (`specs/THREAT_MODEL.md`?). What does Kairo
-      defend against (forgery, tampering, equivocation, denial-of-truth,
-      key compromise)? What does it not (denial-of-service, traffic
-      analysis, side-channels)?
+- [x] Threat model document — `specs/THREAT_MODEL.md`. Drafted as a
+      consolidation of the security argument scattered across the
+      spec set: assets, adversaries, defended-against attacks (with
+      mechanism cross-references and residual risk), explicit
+      non-goals, social recovery, operator monitoring. Surfaces the
+      v1 gap that an `ActorAttestationKeyRevocation` should close
+      (Phase 2 §14 follow-on).
 - [ ] Security review of the keystore (mode bits, atomic write semantics,
       passphrase encryption deferred-but-documented).
 
@@ -480,6 +483,42 @@ so a lost or compromised active key is no longer the end of an actor's
 identity. Without this, `ACTORS.md` §5.5.1 is the only failsafe — and
 "publish a new genesis and re-establish trust socially" is a poor
 operator story for any real-world deployment.
+
+**Follow-on (design locked, not yet implemented):
+`ActorAttestationKeyRevocation`.** The append-only attestation set is
+the largest gap in the §14 threat model — a compromised attestation
+key remains authoritative forever (`THREAT_MODEL.md` §5.11, §5.12,
+§6.1). The design is locked:
+
+- **Body shape:** `{ revoked_key: KeyId, reason: Option<String> }`.
+  Single-key revocation, no batch.
+- **Signing surface:** attestation. Signed by any current attestation
+  key, including the key being revoked itself (the legitimate
+  "I think this key is compromised, burn it" gesture).
+- **Non-empty-set rule:** revocation is invalid if it would leave the
+  attestation set empty. Operators with only one attestation key must
+  `ActorAttestationKeyAdd` first. Symmetric with the §5.9 bricking
+  guard at the operational surface.
+- **No `retroactive` flag.** Asymmetric with `ActorKeyRevocation` by
+  design: attestation keys never sign consequential statements
+  directly — they only sign emergency events that introduce or modify
+  operational keys. Cleanup of damage done with a compromised
+  attestation key is therefore a routine
+  `ActorKeyRevocation { retroactive: true }` against the malicious
+  operational key the emergency event introduced. The attestation
+  revocation only stops the bleeding (no further emergency events
+  from that attestation key); historical damage gets unwound at the
+  operational layer where it accrued.
+- **Recovery-surface symmetry remains:** any power the attestation
+  surface gives the operator, it gives an attacker who holds the key.
+  A compromised attestation key can also revoke legitimate
+  attestation keys (subject to the non-empty-set rule). The
+  `ActorAttestationKeyRevocation` primitive does not close the
+  "all attestation keys compromised" scenario — that remains social
+  recovery (`THREAT_MODEL.md` §7).
+
+Spec / impl / CLI slices to follow when scheduled; not blocking any
+other Phase 2 item.
 
 ## After Phase 2
 
