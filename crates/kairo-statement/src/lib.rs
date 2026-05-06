@@ -1284,10 +1284,11 @@ impl CanonicalEncode for ActorEmergencyKeyRevocationBody {
 
 /// `ActorAttestationKeyAdd` appends a new public key to the actor's
 /// attestation key set. Signed by an existing attestation key; signing
-/// keys cannot grow the attestation set. The set is append-only in v1
-/// (no removal). `new_key` must be disjoint from any signing key the
-/// actor has held — the resolver-side validator enforces this when
-/// possible (introducing rotation may not yet be observed locally).
+/// keys cannot grow the attestation set. `new_key` must be disjoint
+/// from any signing key the actor has held — the resolver-side
+/// validator enforces this when possible (introducing rotation may
+/// not yet be observed locally). Pair with
+/// `ActorAttestationKeyRevocation` to retire an attestation key.
 ///
 /// See `schemas/canonical/actor-attestation-key-add-v1.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1314,6 +1315,60 @@ impl StatementBody for ActorAttestationKeyAddBody {
 impl CanonicalEncode for ActorAttestationKeyAddBody {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         self.new_key.encode_canonical(out);
+    }
+}
+
+/// `ActorAttestationKeyRevocation` retracts the recovery authority of
+/// a specific attestation key the actor previously held — either
+/// declared in `ActorGenesis.attestation_keys` or appended via
+/// `ActorAttestationKeyAdd`. Unlike `ActorKeyRevocation` /
+/// `ActorEmergencyKeyRevocation`, the body has **no `retroactive`
+/// flag**: emergency events signed before the revocation's
+/// `created_at` remain valid; cleanup of consequential damage flows
+/// through `ActorKeyRevocation { retroactive: true }` against the
+/// operational keys those emergency events introduced.
+///
+/// Self-revocation (the signing attestation key equal to
+/// `revoked_key`) is permitted. The non-empty-set rule (the resulting
+/// attestation set must remain non-empty) is enforced at the
+/// resolver/store layer — the body alone cannot know live set state.
+///
+/// See `schemas/canonical/actor-attestation-key-revocation-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorAttestationKeyRevocationBody {
+    revoked_key: KeyId,
+    reason: Option<String>,
+}
+
+impl ActorAttestationKeyRevocationBody {
+    pub fn new(revoked_key: KeyId, reason: Option<String>) -> Self {
+        Self {
+            revoked_key,
+            reason,
+        }
+    }
+
+    pub fn revoked_key(&self) -> &KeyId {
+        &self.revoked_key
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+}
+
+impl StatementBody for ActorAttestationKeyRevocationBody {
+    const TYPE: &'static str = "ActorAttestationKeyRevocation";
+    const VERSION: u8 = 1;
+    const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+}
+
+impl CanonicalEncode for ActorAttestationKeyRevocationBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.revoked_key.as_str());
+        encode_option(out, self.reason.as_ref(), |out, reason| {
+            encode_str(out, reason);
+        });
     }
 }
 
@@ -2901,6 +2956,10 @@ mod tests {
             ActorAttestationKeyAddBody::SIGNING_SURFACE,
             SigningSurface::Attestation
         );
+        assert_eq!(
+            ActorAttestationKeyRevocationBody::SIGNING_SURFACE,
+            SigningSurface::Attestation
+        );
     }
 
     #[test]
@@ -2955,6 +3014,47 @@ mod tests {
 
         let body_c = ActorAttestationKeyAddBody::new(public_key());
         assert_ne!(body_a.canonical_bytes(), body_c.canonical_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_key_revocation_body_canonical_changes_with_reason(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // The reason field is part of canonical bytes; changing it
+        // changes the StatementId. This guards against accidentally
+        // dropping `reason` from the encoder.
+        let key_id = other_public_key().key_id();
+        let no_reason = ActorAttestationKeyRevocationBody::new(key_id.clone(), None);
+        let with_reason = ActorAttestationKeyRevocationBody::new(
+            key_id.clone(),
+            Some("yubikey lost".to_owned()),
+        );
+        let other_reason = ActorAttestationKeyRevocationBody::new(
+            key_id,
+            Some("rotated".to_owned()),
+        );
+        assert_ne!(no_reason.canonical_bytes(), with_reason.canonical_bytes());
+        assert_ne!(with_reason.canonical_bytes(), other_reason.canonical_bytes());
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_key_revocation_body_omits_retroactive_byte(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // ActorAttestationKeyRevocation has no `retroactive` byte —
+        // distinguishes it from ActorEmergencyKeyRevocation, where the
+        // u8 lands between revoked_key and reason. The encoder for the
+        // attestation variant must produce strictly fewer bytes for an
+        // otherwise-equal payload.
+        let key_id = other_public_key().key_id();
+        let attestation =
+            ActorAttestationKeyRevocationBody::new(key_id.clone(), None);
+        let emergency =
+            ActorEmergencyKeyRevocationBody::new(key_id, false, None);
+        assert_eq!(
+            attestation.canonical_bytes().len() + 1,
+            emergency.canonical_bytes().len()
+        );
         Ok(())
     }
 }

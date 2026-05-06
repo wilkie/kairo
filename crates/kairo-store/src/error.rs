@@ -3,7 +3,7 @@ use std::io;
 
 /// Errors returned by the store layer.
 ///
-/// The three variants encode genuinely distinct failure modes so callers can
+/// The four variants encode genuinely distinct failure modes so callers can
 /// react differently:
 ///
 /// - [`StoreError::Missing`] is **semantic**: the record is not present.
@@ -13,11 +13,16 @@ use std::io;
 ///   the caller must surface it.
 /// - [`StoreError::Unavailable`] is **operational**: an underlying I/O error
 ///   happened. Callers may retry or report differently from `Missing`.
+/// - [`StoreError::Rejected`] is **invariant violation**: the input is
+///   well-formed and signature-valid but persisting it would violate a
+///   spec-level invariant the store enforces (e.g. emptying the actor's
+///   attestation key set, per `ACTORS.md` §5.5.2).
 #[derive(Debug)]
 pub enum StoreError {
     Missing,
     Corrupt { id: String, reason: CorruptReason },
     Unavailable(io::Error),
+    Rejected { reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +38,7 @@ impl fmt::Display for StoreError {
             Self::Missing => f.write_str("record not found in store"),
             Self::Corrupt { id, reason } => write!(f, "corrupt record {id}: {reason}"),
             Self::Unavailable(error) => write!(f, "store unavailable: {error}"),
+            Self::Rejected { reason } => write!(f, "store rejected statement: {reason}"),
         }
     }
 }

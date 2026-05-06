@@ -58,21 +58,23 @@ use std::path::{Path, PathBuf};
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{
-    ActorGenesisBody, ActorResolveError, ActorResolver, AttestationKeyAddEntry, KeyRevocationEntry,
-    KeyRotationEntry, KeySurface,
+    ActorGenesisBody, ActorResolveError, ActorResolver, AttestationKeyAddEntry,
+    AttestationKeyRevocationEntry, KeyRevocationEntry, KeyRotationEntry, KeySurface,
 };
 use kairo_statement::json::{
-    ActorAttestationKeyAddStatementJson, ActorCapabilityGrantStatementJson,
-    ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
-    ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
-    ActorKeyRotationStatementJson, ActorTrustStatementJson, ObjectBranchStatementJson,
-    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    ActorAttestationKeyAddStatementJson, ActorAttestationKeyRevocationStatementJson,
+    ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
+    ActorEmergencyKeyRevocationStatementJson, ActorEmergencyKeyRotationStatementJson,
+    ActorKeyRevocationStatementJson, ActorKeyRotationStatementJson, ActorTrustStatementJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
-    ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
-    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ObjectBranchBody, ObjectGenesisStatement,
-    ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
+    ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody, ActorCapabilityGrantBody,
+    ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody,
+    ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody, CapabilityScope,
+    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
+    SignedStatement,
 };
 
 pub use branches::BranchTip;
@@ -247,6 +249,25 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StoreError>;
+
+    /// Persist an `ActorAttestationKeyRevocation` and update the actor's
+    /// per-actor key-event index.
+    ///
+    /// The store enforces the **non-empty attestation set** rule from
+    /// `ACTORS.md` §5.5.2 here: if applying this revocation would leave
+    /// the actor with zero attestation keys at `created_at`, the call
+    /// returns [`StoreError::Rejected`] and nothing is written. This is
+    /// the protocol-layer enforcement point; the CLI also refuses such
+    /// statements upstream, but direct callers cannot bypass this guard.
+    fn put_actor_attestation_key_revocation(
+        &self,
+        statement: &SignedStatement<ActorAttestationKeyRevocationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_attestation_key_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -1072,6 +1093,98 @@ impl StatementStore for FilesystemStore {
         }
         Ok(signed)
     }
+
+    fn put_actor_attestation_key_revocation(
+        &self,
+        statement: &SignedStatement<ActorAttestationKeyRevocationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+
+        // Non-empty-set guard (§5.5.2). Compute what the attestation
+        // set will look like at `created_at` after this revocation
+        // lands; if it would be empty, refuse to persist. The genesis
+        // is the source of truth for the initial set; existing index
+        // entries (adds, prior revocations) compose the rest.
+        let genesis = match self.get_actor(actor) {
+            Ok(genesis) => genesis,
+            Err(StoreError::Missing) => {
+                return Err(StoreError::Rejected {
+                    reason: format!(
+                        "actor {actor} has no genesis; cannot apply attestation revocation",
+                    ),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let mut projected: std::collections::BTreeSet<kairo_identity::KeyId> =
+            std::collections::BTreeSet::new();
+        for key in genesis.attestation_keys() {
+            projected.insert(key.key_id());
+        }
+        let index = self.read_key_index_or_default(actor)?;
+        for entry in index.decode_attestation_adds(actor.as_str())? {
+            if entry.created_at <= created_at {
+                projected.insert(entry.new_key.key_id());
+            }
+        }
+        for entry in index.decode_attestation_revocations()? {
+            if entry.created_at <= created_at {
+                projected.remove(&entry.revoked_key);
+            }
+        }
+        // If the revoked key isn't in the projected set, the revocation
+        // is a redundant no-op (per the spec). It does not shrink the
+        // set, so it cannot empty it; allow it to persist.
+        if projected.contains(body.revoked_key()) {
+            projected.remove(body.revoked_key());
+            if projected.is_empty() {
+                return Err(StoreError::Rejected {
+                    reason: format!(
+                        "ActorAttestationKeyRevocation for {} would empty {actor}'s attestation key set; \
+                         add a replacement attestation key first (ACTORS.md §5.5.2)",
+                        body.revoked_key()
+                    ),
+                });
+            }
+        }
+
+        let json = ActorAttestationKeyRevocationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        self.upsert_attestation_revocation_index(actor, &id, body.revoked_key(), created_at)?;
+
+        Ok(id)
+    }
+
+    fn get_actor_attestation_key_revocation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorAttestationKeyRevocationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
 }
 
 impl FilesystemStore {
@@ -1278,6 +1391,24 @@ impl FilesystemStore {
     ) -> Result<(), StoreError> {
         let mut index = self.read_key_index_or_default(actor)?;
         let updated = index.upsert_attestation_add(statement_id, new_key, created_at);
+        if updated {
+            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    fn upsert_attestation_revocation_index(
+        &self,
+        actor: &ActorId,
+        statement_id: &StatementId,
+        revoked_key: &kairo_identity::KeyId,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_key_index_or_default(actor)?;
+        let updated =
+            index.upsert_attestation_revocation(statement_id, revoked_key, created_at);
         if updated {
             let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
             let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
@@ -2129,6 +2260,18 @@ impl ActorResolver for FilesystemStore {
             .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
         index
             .decode_attestation_adds(actor.as_str())
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
+    }
+
+    fn attestation_key_revocations(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<AttestationKeyRevocationEntry>, ActorResolveError> {
+        let index = self
+            .read_key_index_or_default(actor)
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
+        index
+            .decode_attestation_revocations()
             .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
     }
 }
@@ -4687,6 +4830,149 @@ mod tests {
         assert!(ActorResolver::is_key_revoked_at(
             &store, &actor, &key_id, timestamp()
         )?);
+        Ok(())
+    }
+
+    // ---- ActorAttestationKeyAdd / ActorAttestationKeyRevocation ----
+
+    fn signed_attestation_key_add(
+        actor: ActorId,
+        new_key: PublicKey,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, Box<dyn std::error::Error>> {
+        let body = ActorAttestationKeyAddBody::new(new_key);
+        let subject: KairoRef = format!("actor:{actor}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        // The store does not verify signatures; sign with the
+        // operational key purely to satisfy the wire shape.
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn signed_attestation_key_revocation(
+        actor: ActorId,
+        revoked_key: kairo_identity::KeyId,
+        reason: Option<String>,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, Box<dyn std::error::Error>>
+    {
+        let body = ActorAttestationKeyRevocationBody::new(revoked_key, reason);
+        let subject: KairoRef = format!("actor:{actor}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn round_trips_actor_attestation_key_revocation() -> TestResult {
+        // Genesis declares one attestation key, an add appends a
+        // second, and we revoke the original. The revocation lands
+        // because the resulting set is non-empty.
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let appended = third_public_key();
+        let add = signed_attestation_key_add(
+            actor.clone(),
+            appended.clone(),
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        store.put_actor_attestation_key_add(&add)?;
+
+        let rev = signed_attestation_key_revocation(
+            actor.clone(),
+            attestation_key().key_id(),
+            Some("yubikey lost".to_owned()),
+            Timestamp::from_seconds(timestamp().seconds() + 200),
+        )?;
+        let id = store.put_actor_attestation_key_revocation(&rev)?;
+
+        let loaded = store.get_actor_attestation_key_revocation(&id)?;
+        assert_eq!(loaded, rev);
+
+        // Resolver composition: at t+300 only the appended key
+        // should remain; the genesis attestation key is gone.
+        let set = ActorResolver::attestation_keys_at(
+            &store,
+            &actor,
+            Timestamp::from_seconds(timestamp().seconds() + 300),
+        )?;
+        assert_eq!(set.len(), 1);
+        assert!(set.contains_key(&appended.key_id()));
+        assert!(!set.contains_key(&attestation_key().key_id()));
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_key_revocation_that_would_empty_set_is_rejected() -> TestResult {
+        // The actor only has the genesis-declared attestation key.
+        // Revoking it with no replacement would empty the set —
+        // store must refuse and write nothing.
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let rev = signed_attestation_key_revocation(
+            actor.clone(),
+            attestation_key().key_id(),
+            None,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        let result = store.put_actor_attestation_key_revocation(&rev);
+        assert!(matches!(result, Err(StoreError::Rejected { .. })));
+
+        // Resolver still sees the genesis attestation key — nothing
+        // was persisted.
+        let set = ActorResolver::attestation_keys_at(
+            &store,
+            &actor,
+            Timestamp::from_seconds(timestamp().seconds() + 200),
+        )?;
+        assert_eq!(set.len(), 1);
+        assert!(set.contains_key(&attestation_key().key_id()));
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_key_revocation_of_unknown_key_is_redundant_no_op() -> TestResult {
+        // A revocation of a key never in the attestation set is a
+        // redundant no-op — it persists but doesn't shrink the set
+        // (and therefore can't empty it).
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        store.put_actor(&fresh_genesis())?;
+
+        let unknown = third_public_key().key_id();
+        let rev = signed_attestation_key_revocation(
+            actor.clone(),
+            unknown,
+            None,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        let id = store.put_actor_attestation_key_revocation(&rev)?;
+        let _ = store.get_actor_attestation_key_revocation(&id)?;
+
+        // Genesis attestation key still in the set.
+        let set = ActorResolver::attestation_keys_at(
+            &store,
+            &actor,
+            Timestamp::from_seconds(timestamp().seconds() + 200),
+        )?;
+        assert_eq!(set.len(), 1);
+        assert!(set.contains_key(&attestation_key().key_id()));
         Ok(())
     }
 }

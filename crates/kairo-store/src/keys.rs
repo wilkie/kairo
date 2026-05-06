@@ -57,7 +57,8 @@
 use kairo_core::{StatementId, Timestamp};
 use kairo_identity::json::PublicKeyJson;
 use kairo_identity::{
-    AttestationKeyAddEntry, KeyId, KeyRevocationEntry, KeyRotationEntry, KeySurface, PublicKey,
+    AttestationKeyAddEntry, AttestationKeyRevocationEntry, KeyId, KeyRevocationEntry,
+    KeyRotationEntry, KeySurface, PublicKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +119,17 @@ pub(crate) struct AttestationAddEntry {
     pub created_at: String,
 }
 
+/// On-disk representation of one attestation-key revocation entry.
+/// No `retroactive` field (the asymmetry-with-ActorKeyRevocation in
+/// `schemas/canonical/actor-attestation-key-revocation-v1.md`) and no
+/// `surface` field (always attestation, enforced at verify time).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AttestationRevocationEntry {
+    pub statement_id: String,
+    pub revoked_key: String,
+    pub created_at: String,
+}
+
 /// On-disk representation of all key events for a single actor.
 ///
 /// Routine and emergency rotations live in the same `rotations` vec
@@ -134,6 +146,8 @@ pub(crate) struct KeyEventIndexFile {
     pub revocations: Vec<RevocationEntry>,
     #[serde(default)]
     pub attestation_adds: Vec<AttestationAddEntry>,
+    #[serde(default)]
+    pub attestation_revocations: Vec<AttestationRevocationEntry>,
 }
 
 impl KeyEventIndexFile {
@@ -200,6 +214,30 @@ impl KeyEventIndexFile {
         self.attestation_adds.push(AttestationAddEntry {
             statement_id: new_id,
             new_key: PublicKeyJson::from_public_key(new_key),
+            created_at: created_at.to_string(),
+        });
+        true
+    }
+
+    /// Append an attestation-key revocation entry. Returns `true` if
+    /// the entry was actually added; a duplicate `put` is a no-op.
+    pub(crate) fn upsert_attestation_revocation(
+        &mut self,
+        statement_id: &StatementId,
+        revoked_key: &KeyId,
+        created_at: Timestamp,
+    ) -> bool {
+        let new_id = statement_id.to_string();
+        if self
+            .attestation_revocations
+            .iter()
+            .any(|e| e.statement_id == new_id)
+        {
+            return false;
+        }
+        self.attestation_revocations.push(AttestationRevocationEntry {
+            statement_id: new_id,
+            revoked_key: revoked_key.to_string(),
             created_at: created_at.to_string(),
         });
         true
@@ -292,6 +330,29 @@ impl KeyEventIndexFile {
             out.push(AttestationKeyAddEntry {
                 statement_id: entry.statement_id.clone(),
                 new_key,
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Decode the attestation-revocation set into the resolver-facing
+    /// summary.
+    pub(crate) fn decode_attestation_revocations(
+        &self,
+    ) -> Result<Vec<AttestationKeyRevocationEntry>, StoreError> {
+        let mut out = Vec::with_capacity(self.attestation_revocations.len());
+        for entry in &self.attestation_revocations {
+            let created_at: Timestamp =
+                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
+                    id: entry.statement_id.clone(),
+                    reason: CorruptReason::Parse(format!(
+                        "invalid created_at in attestation-revocation index: {error}"
+                    )),
+                })?;
+            out.push(AttestationKeyRevocationEntry {
+                statement_id: entry.statement_id.clone(),
+                revoked_key: KeyId::new(entry.revoked_key.clone()),
                 created_at,
             });
         }

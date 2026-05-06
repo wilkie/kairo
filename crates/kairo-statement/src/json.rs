@@ -9,13 +9,14 @@ use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
-    ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
-    ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability, CapabilityConstraint,
-    CapabilityScope, CapabilityShapeError, ObjectBranchBody, ObjectGenesisBody, ObjectKind,
-    ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
-    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
-    StatementKindParseError, TrustDecision, TrustDecisionParseError, UnsignedStatement,
+    ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody, ActorCapabilityGrantBody,
+    ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody,
+    ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability,
+    CapabilityConstraint, CapabilityScope, CapabilityShapeError, ObjectBranchBody,
+    ObjectGenesisBody, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
+    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
+    SignedStatement, StatementKind, StatementKindParseError, TrustDecision,
+    TrustDecisionParseError, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1244,6 +1245,88 @@ impl ActorAttestationKeyAddBodyJson {
     pub fn from_body(body: &ActorAttestationKeyAddBody) -> Self {
         Self {
             new_key: PublicKeyJson::from_public_key(body.new_key()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorAttestationKeyRevocationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorAttestationKeyRevocationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl ActorAttestationKeyRevocationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, StatementJsonError> {
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorAttestationKeyRevocation",
+            1,
+        )?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(
+        statement: &SignedStatement<ActorAttestationKeyRevocationBody>,
+    ) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorAttestationKeyRevocation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorAttestationKeyRevocationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorAttestationKeyRevocationBodyJson {
+    pub revoked_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl ActorAttestationKeyRevocationBodyJson {
+    pub fn to_body(&self) -> Result<ActorAttestationKeyRevocationBody, StatementJsonError> {
+        Ok(ActorAttestationKeyRevocationBody::new(
+            KeyId::new(self.revoked_key.clone()),
+            self.reason.clone(),
+        ))
+    }
+
+    pub fn from_body(body: &ActorAttestationKeyRevocationBody) -> Self {
+        Self {
+            revoked_key: body.revoked_key().to_string(),
+            reason: body.reason().map(|r| r.to_owned()),
         }
     }
 }

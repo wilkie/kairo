@@ -530,25 +530,25 @@ key remains authoritative forever (`THREAT_MODEL.md` §5.11, §5.12,
 
 **Impl slice:**
 
-- [ ] `kairo-statement::ActorAttestationKeyRevocationBody` with
+- [x] `kairo-statement::ActorAttestationKeyRevocationBody` with
       canonical encoding + JSON DTO. `SigningSurface = Attestation`.
       Body validator checks `revoked_key` shape only; the non-empty
       and "in current set" checks live at the resolver/store layer
       (the body alone cannot know the live set state).
-- [ ] Extend `kairo-identity::ActorResolver`: `attestation_keys_at`
+- [x] Extend `kairo-identity::ActorResolver`: `attestation_keys_at`
       now composes `genesis ∪ adds − revocations`. New
       `AttestationKeyRevocationEntry` type; new
       `attestation_key_revocations(actor) -> Vec<…>` resolver method.
       `MemoryActorResolver` tracks revocations alongside adds.
-- [ ] Extend the per-actor key-event index in `kairo-store` with
+- [x] Extend the per-actor key-event index in `kairo-store` with
       `attestation_revocations`. New trait method
       `put_actor_attestation_key_revocation` plus matching `get_*` and
       a `decode_attestation_revocations` that drives
       `FilesystemStore::ActorResolver::attestation_key_revocations`.
       The store's put-time validator refuses to persist a revocation
       that would empty the resulting attestation set (the symmetric
-      bricking guard).
-- [ ] `verify_envelope_statement` requires no new dispatch (the
+      bricking guard) and reports it via `StoreError::Rejected`.
+- [x] `verify_envelope_statement` requires no new dispatch (the
       fourth emergency kind reuses the existing attestation-surface
       branch). Self-revocation (signing key == revoked key) succeeds
       because the signing key is still in the set at `created_at`.

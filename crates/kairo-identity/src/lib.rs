@@ -414,6 +414,19 @@ pub struct AttestationKeyAddEntry {
     pub created_at: Timestamp,
 }
 
+/// One entry in the per-actor attestation-key revocation set. There is
+/// no `retroactive` flag and no `surface` field — these statements are
+/// always signed by an attestation key (`ACTORS.md` §5.5.2 enforces
+/// this at the verifier) and revocation never applies retroactively
+/// to emergency events the key signed before `created_at`. See
+/// `schemas/canonical/actor-attestation-key-revocation-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttestationKeyRevocationEntry {
+    pub statement_id: String,
+    pub revoked_key: KeyId,
+    pub created_at: Timestamp,
+}
+
 pub trait ActorResolver {
     fn actor_genesis(&self, actor: &ActorId)
         -> Result<Option<ActorGenesisBody>, ActorResolveError>;
@@ -456,16 +469,28 @@ pub trait ActorResolver {
         Ok(Vec::new())
     }
 
+    /// Per-actor `ActorAttestationKeyRevocation` entries in storage
+    /// order. The default implementation returns an empty list, in
+    /// which case `attestation_keys_at` reduces to "genesis ∪ adds"
+    /// with no removal.
+    fn attestation_key_revocations(
+        &self,
+        _actor: &ActorId,
+    ) -> Result<Vec<AttestationKeyRevocationEntry>, ActorResolveError> {
+        Ok(Vec::new())
+    }
+
     /// Resolve the actor's attestation key set at causal position `at`.
     ///
-    /// The set is `ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
-    /// attestation_key_adds(actor) where add.created_at <= at }`. Order
-    /// is irrelevant; duplicates collapse via `KeyId` equality. The
-    /// returned map is keyed by `KeyId` to make the verifier's
-    /// "is this signature key id in the set?" lookup O(log n), and
-    /// carries the `PublicKey` material so the verifier can check the
-    /// signature bytes without a second trip through the resolver. See
-    /// `ACTORS.md` §5.5.2.
+    /// The set is `(ActorGenesis.attestation_keys ∪ { add.new_key | add
+    /// ∈ attestation_key_adds(actor) where add.created_at <= at })
+    /// ∖ { rev.revoked_key | rev ∈ attestation_key_revocations(actor)
+    /// where rev.created_at <= at }`. Order is irrelevant; duplicates
+    /// collapse via `KeyId` equality. The returned map is keyed by
+    /// `KeyId` to make the verifier's "is this signature key id in the
+    /// set?" lookup O(log n), and carries the `PublicKey` material so
+    /// the verifier can check the signature bytes without a second
+    /// trip through the resolver. See `ACTORS.md` §5.5.2.
     fn attestation_keys_at(
         &self,
         actor: &ActorId,
@@ -480,6 +505,11 @@ pub trait ActorResolver {
         for entry in self.attestation_key_adds(actor)? {
             if entry.created_at <= at {
                 set.insert(entry.new_key.key_id(), entry.new_key);
+            }
+        }
+        for entry in self.attestation_key_revocations(actor)? {
+            if entry.created_at <= at {
+                set.remove(&entry.revoked_key);
             }
         }
         Ok(set)
@@ -560,6 +590,7 @@ pub struct MemoryActorResolver {
     rotations: BTreeMap<ActorId, Vec<KeyRotationEntry>>,
     revocations: BTreeMap<ActorId, Vec<KeyRevocationEntry>>,
     attestation_adds: BTreeMap<ActorId, Vec<AttestationKeyAddEntry>>,
+    attestation_revocations: BTreeMap<ActorId, Vec<AttestationKeyRevocationEntry>>,
 }
 
 impl MemoryActorResolver {
@@ -583,6 +614,17 @@ impl MemoryActorResolver {
 
     pub fn insert_attestation_add(&mut self, actor: ActorId, entry: AttestationKeyAddEntry) {
         self.attestation_adds.entry(actor).or_default().push(entry);
+    }
+
+    pub fn insert_attestation_revocation(
+        &mut self,
+        actor: ActorId,
+        entry: AttestationKeyRevocationEntry,
+    ) {
+        self.attestation_revocations
+            .entry(actor)
+            .or_default()
+            .push(entry);
     }
 
     pub fn len(&self) -> usize {
@@ -621,6 +663,17 @@ impl ActorResolver for MemoryActorResolver {
         actor: &ActorId,
     ) -> Result<Vec<AttestationKeyAddEntry>, ActorResolveError> {
         Ok(self.attestation_adds.get(actor).cloned().unwrap_or_default())
+    }
+
+    fn attestation_key_revocations(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<AttestationKeyRevocationEntry>, ActorResolveError> {
+        Ok(self
+            .attestation_revocations
+            .get(actor)
+            .cloned()
+            .unwrap_or_default())
     }
 }
 
@@ -1026,5 +1079,74 @@ mod tests {
         assert!(resolver
             .is_key_revoked_at(&actor_id, &key_id, timestamp())
             .unwrap());
+    }
+
+    #[test]
+    fn attestation_revocation_removes_key_from_set_after_created_at() {
+        // Genesis declares one attestation key, an add appends a second,
+        // a revocation later removes the genesis key. Before the
+        // revocation: both keys are in the set. At/after the
+        // revocation: only the appended key remains. This is the
+        // resolver-level expression of the §5.5.2 set difference rule.
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            timestamp(),
+            [42; 32],
+        )
+        .expect("genesis well-formed");
+        let mut resolver = MemoryActorResolver::new();
+        let actor_id = resolver.insert(genesis);
+
+        let appended = third_public_key();
+        let appended_id = appended.key_id();
+        let attestation_id = attestation_key().key_id();
+
+        resolver.insert_attestation_add(
+            actor_id.clone(),
+            AttestationKeyAddEntry {
+                statement_id: "add-1".to_owned(),
+                new_key: appended,
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 100),
+            },
+        );
+        resolver.insert_attestation_revocation(
+            actor_id.clone(),
+            AttestationKeyRevocationEntry {
+                statement_id: "rev-1".to_owned(),
+                revoked_key: attestation_id.clone(),
+                created_at: Timestamp::from_seconds(timestamp().seconds() + 200),
+            },
+        );
+
+        // Before any add or revocation: only the genesis key.
+        let set_before = resolver
+            .attestation_keys_at(&actor_id, timestamp())
+            .unwrap();
+        assert_eq!(set_before.len(), 1);
+        assert!(set_before.contains_key(&attestation_id));
+
+        // After add but before revocation: both keys present.
+        let set_mid = resolver
+            .attestation_keys_at(
+                &actor_id,
+                Timestamp::from_seconds(timestamp().seconds() + 150),
+            )
+            .unwrap();
+        assert_eq!(set_mid.len(), 2);
+        assert!(set_mid.contains_key(&attestation_id));
+        assert!(set_mid.contains_key(&appended_id));
+
+        // At/after revocation: only the appended key remains.
+        let set_after = resolver
+            .attestation_keys_at(
+                &actor_id,
+                Timestamp::from_seconds(timestamp().seconds() + 300),
+            )
+            .unwrap();
+        assert_eq!(set_after.len(), 1);
+        assert!(set_after.contains_key(&appended_id));
+        assert!(!set_after.contains_key(&attestation_id));
     }
 }
