@@ -565,10 +565,44 @@ enum ActorCommand {
     /// Append a new attestation key to the actor's append-only
     /// attestation set (`ACTORS.md` §5.5.2). Signed by an existing
     /// attestation key the operator pulls from cold storage. Same
-    /// `sign` / `prepare` / `import` flows as `recover-key`.
+    /// `sign` / `prepare` / `submit` flows as `recover-key`.
     AddAttestationKey {
         #[command(subcommand)]
         command: AddAttestationKeyCommand,
+    },
+    /// Mutate the M of the M-of-N attestation threshold
+    /// (`ACTORS.md` §5.5.3). The asymmetric authority rule is
+    /// enforced at submit time: raises require
+    /// `max(current, new)` distinct attestation-set signatures;
+    /// lowers/equal require `current`. `sign` is the threshold = 1
+    /// convenience flow; for thresholds above 1 use
+    /// `prepare` + `co-sign` + `submit`.
+    ChangeAttestationThreshold {
+        #[command(subcommand)]
+        command: ChangeAttestationThresholdCommand,
+    },
+    /// Append a single attestation signature to a partially-signed
+    /// envelope produced by any `prepare` flow. Refuses duplicate
+    /// `key_id`s and refuses keys that aren't in the actor's
+    /// attestation set at the envelope's `created_at`. Reports the
+    /// running `(have, need)` count against the actor's threshold.
+    /// See `ACTORS.md` §5.5.3.
+    CoSign {
+        /// Path to the partial envelope JSON written by `prepare`
+        /// (with optional signatures already accumulated). The
+        /// sibling `<prepared>.payload` provides the canonical bytes
+        /// the seed signs over.
+        #[arg(long)]
+        prepared: PathBuf,
+        /// Actor whose attestation set the seed must belong to.
+        /// Must match the envelope's `actor` field.
+        #[arg(long)]
+        actor: String,
+        /// File containing the cosigner's attestation key seed
+        /// (base64; 32 raw bytes when decoded). Pulled from cold
+        /// storage by this cosigner only; not persisted by Kairo.
+        #[arg(long)]
+        attestation_key_seed: PathBuf,
     },
 }
 
@@ -607,19 +641,66 @@ enum RecoverKeyCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Pure two-step import: ingest a prepared envelope plus the
-    /// operator's external signature. Auto-detects which
-    /// attestation key produced the signature by trying each one
-    /// in the actor's attestation set at `created_at`.
-    Import {
-        /// Path to the JSON envelope written by `prepare`.
+    /// Submit a prepared envelope. Verifies the envelope meets the
+    /// actor's attestation threshold at `created_at`, validates each
+    /// signature against the attestation set, and dispatches to the
+    /// store's `put_actor_emergency_key_rotation`. The optional
+    /// `--signature` flag attaches one external signature inline
+    /// before submission (1-of-1 backward-compat path); for
+    /// multi-signature envelopes use `kairo actor co-sign` first.
+    Submit {
+        /// Path to the JSON envelope written by `prepare` (with any
+        /// signatures already appended via `co-sign`).
         #[arg(long)]
         prepared: PathBuf,
-        /// Path to the operator's base64-encoded ed25519 signature
-        /// of the prepared payload (single line; trailing newline
-        /// tolerated).
+        /// Optional path to a base64 ed25519 signature of the
+        /// prepared payload to append before submitting. Convenience
+        /// for the single-signer (threshold = 1) flow.
         #[arg(long)]
-        signature: PathBuf,
+        signature: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ChangeAttestationThresholdCommand {
+    /// Convenience for the threshold = 1 case: read a single
+    /// attestation seed from a file, sign and persist a
+    /// `ActorAttestationThresholdChange` directly. Refuses if the
+    /// actor's current threshold is > 1 (use `prepare`/`co-sign`/
+    /// `submit` instead).
+    Sign {
+        #[arg(long)]
+        actor: String,
+        /// File containing the attestation seed (base64; 32 raw
+        /// bytes when decoded). Not persisted by Kairo.
+        #[arg(long)]
+        attestation_key_seed: PathBuf,
+        /// New threshold value. Must satisfy
+        /// `1 ≤ to ≤ |attestation set at created_at|`.
+        #[arg(long)]
+        to: u8,
+    },
+    /// Emit a zero-signature envelope plus the canonical bytes
+    /// the cosigners must sign over.
+    Prepare {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        to: u8,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Finalize a partial envelope: validate against the
+    /// attestation threshold + asymmetric authority rule, dispatch
+    /// to `put_actor_attestation_threshold_change`.
+    Submit {
+        #[arg(long)]
+        prepared: PathBuf,
+        /// Optional base64 ed25519 signature of the prepared
+        /// payload to append before submitting (single-signer
+        /// convenience).
+        #[arg(long)]
+        signature: Option<PathBuf>,
     },
 }
 
@@ -663,14 +744,19 @@ enum AddAttestationKeyCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Pure two-step import: ingest a prepared envelope plus the
-    /// operator's external signature. Auto-detects which existing
-    /// attestation key produced the signature.
-    Import {
+    /// Submit a prepared envelope. Mirrors `recover-key submit`:
+    /// validates the envelope against the actor's attestation
+    /// threshold and dispatches to
+    /// `put_actor_attestation_key_add`. Use `--signature` for the
+    /// single-signer convenience path; for multi-signature envelopes
+    /// use `kairo actor co-sign` first.
+    Submit {
         #[arg(long)]
         prepared: PathBuf,
+        /// Optional base64 ed25519 signature of the prepared payload
+        /// to append before submitting. Single-signer convenience.
         #[arg(long)]
-        signature: PathBuf,
+        signature: Option<PathBuf>,
     },
 }
 
@@ -921,6 +1007,14 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
         ActorCommand::AddAttestationKey { command } => {
             run_actor_add_attestation_key(paths, command)
         }
+        ActorCommand::ChangeAttestationThreshold { command } => {
+            run_actor_change_attestation_threshold(paths, command)
+        }
+        ActorCommand::CoSign {
+            prepared,
+            actor,
+            attestation_key_seed,
+        } => run_actor_cosign(paths, prepared, actor, attestation_key_seed),
     }
 }
 
@@ -1075,10 +1169,10 @@ fn run_actor_recover_key(
             new_key,
             output,
         } => run_actor_recover_key_prepare(paths, actor, new_key, output),
-        RecoverKeyCommand::Import {
+        RecoverKeyCommand::Submit {
             prepared,
             signature,
-        } => run_actor_recover_key_import(paths, prepared, signature),
+        } => run_actor_recover_key_submit(paths, prepared, signature),
     }
 }
 
@@ -1219,19 +1313,19 @@ fn run_actor_recover_key_prepare(
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let canonical_bytes = unsigned.canonical_bytes();
 
-    // Wrap as a SignedStatement with placeholder signature fields so
-    // import can deserialize it through the existing JSON DTO path.
-    // Operator fills in `signature.bytes` and `signature.key_id` after
-    // signing externally; import auto-detects the key.
-    let placeholder_sig = Signature::new(
-        actor_id.clone(),
-        "(unsigned: filled by import after external signature)",
-        "ed25519",
-        Vec::new(),
-    );
-    let placeholder_signed = MultiSignedStatement::single(unsigned, placeholder_sig);
-    let envelope_json =
-        ActorEmergencyKeyRotationStatementJson::from_statement(&placeholder_signed);
+    // Emit a partial envelope with `signatures: []`. Cosigners append
+    // entries via `kairo actor co-sign`; `submit` validates the
+    // resulting envelope (non-empty + threshold + per-signature)
+    // before persisting.
+    let envelope_json = ActorEmergencyKeyRotationStatementJson {
+        statement_type: "ActorEmergencyKeyRotation".to_owned(),
+        version: 1,
+        actor: actor_id.to_string(),
+        subject: format!("actor:{actor_id}"),
+        created_at: unsigned.created_at().to_string(),
+        body: kairo_statement::json::ActorEmergencyKeyRotationBodyJson::from_body(unsigned.body()),
+        signatures: Vec::new(),
+    };
     let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
         .map_err(CliError::SerializePreparedEnvelope)?;
 
@@ -1260,19 +1354,20 @@ fn run_actor_recover_key_prepare(
     }
 
     Ok(format!(
-        "prepared emergency rotation envelope\nactor = {actor_id}\nnext_key_id = {}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Sign {} with one of the actor's attestation keys (see list below):\n{attestation_lines}  2. Run `kairo actor recover-key import --prepared {} --signature <path-to-base64-sig>`.\n",
+        "prepared emergency rotation envelope\nactor = {actor_id}\nnext_key_id = {}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Each cosigner signs {} with one of the actor's attestation keys (see list below):\n{attestation_lines}  2. For each signature, run `kairo actor co-sign --prepared {} --actor {actor_id} --attestation-key-seed <path>` to append to the envelope (or pass `--signature <path>` to `submit` for the single-signer flow).\n  3. Run `kairo actor recover-key submit --prepared {}` to finalize and persist.\n",
         next_key.key_id(),
         output.display(),
         payload_path.display(),
         payload_path.display(),
         output.display(),
+        output.display(),
     ))
 }
 
-fn run_actor_recover_key_import(
+fn run_actor_recover_key_submit(
     paths: &StorePaths,
     prepared: PathBuf,
-    signature: PathBuf,
+    signature: Option<PathBuf>,
 ) -> Result<String, CliError> {
     let store = open_store(paths)?;
 
@@ -1282,14 +1377,9 @@ fn run_actor_recover_key_import(
             path: prepared.clone(),
             source,
         })?;
-    let envelope_json: ActorEmergencyKeyRotationStatementJson =
+    let mut envelope_json: ActorEmergencyKeyRotationStatementJson =
         serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
 
-    // Read & decode the operator's signature.
-    let sig_bytes = read_signature_bytes(&signature)?;
-
-    // Resolve the actor and rebuild the canonical bytes locally so
-    // we can verify the signature against the attestation set.
     let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
         CliError::ParseActorId {
             actor: envelope_json.actor.clone(),
@@ -1324,33 +1414,49 @@ fn run_actor_recover_key_import(
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
     let canonical = unsigned.canonical_bytes();
 
-    // Try each attestation key in the set at `created_at`. The first
-    // one whose public material verifies the signature is accepted.
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
-        })?;
-    let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
-    let mut signing_key_id = None;
-    for (key_id, public) in &attestation_set {
-        if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
-            signing_key_id = Some(key_id.clone());
-            break;
+    // Backward-compat single-signer path: --signature provided, the
+    // operator signed externally, and submit auto-detects which
+    // attestation key produced it.
+    if let Some(sig_path) = signature {
+        let sig_bytes = read_signature_bytes(&sig_path)?;
+        let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+            .map_err(|error| CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            })?;
+        let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
+        let mut signing_key_id = None;
+        for (key_id, public) in &attestation_set {
+            if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
+                signing_key_id = Some(key_id.clone());
+                break;
+            }
         }
+        let signing_key_id =
+            signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
+                actor: actor_id.clone(),
+            })?;
+        envelope_json
+            .signatures
+            .push(kairo_statement::json::SignatureJson {
+                actor: actor_id.to_string(),
+                key_id: signing_key_id.to_string(),
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD.encode(sig_bytes),
+            });
     }
-    let signing_key_id = signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
-        actor: actor_id.clone(),
-    })?;
 
-    // Build the final SignedStatement and persist it.
-    let final_signature = Signature::new(
-        actor_id.clone(),
-        signing_key_id.to_string(),
-        "ed25519",
-        sig_bytes.to_vec(),
-    );
-    let signed = MultiSignedStatement::single(unsigned, final_signature);
+    // Construct the multi-sig envelope (validates non-empty + distinct
+    // key_ids), then verify threshold + per-signature validity against
+    // the resolver. Refuse sub-threshold envelopes.
+    let signed = envelope_json
+        .to_statement()
+        .map_err(CliError::ParseStatement)?;
+    let report = kairo_statement::verify::verify_envelope_multi_statement(&signed, &store);
+    if !report.is_cryptographically_valid() {
+        return Err(CliError::VerificationFailed(Box::new(report)));
+    }
+
     let statement_id = signed.statement_id();
     store
         .put_actor_emergency_key_rotation(&signed)
@@ -1360,6 +1466,11 @@ fn run_actor_recover_key_import(
         })?;
 
     let next_key_id = signed.unsigned().body().next_key().key_id();
+    let signing_key_id = signed
+        .signatures()
+        .first()
+        .map(|s| s.key_id().to_owned())
+        .unwrap_or_default();
     Ok(format!(
         "imported emergency rotation\nstatement = {statement_id}\nactor = {actor_id}\nattestation_key_id = {signing_key_id}\nnext_key_id = {next_key_id}\nNote: the new active signing key is operator-managed (not in the keystore). Sign future statements externally or import the secret separately.\n"
     ))
@@ -1387,10 +1498,10 @@ fn run_actor_add_attestation_key(
             new_key,
             output,
         } => run_actor_add_attestation_key_prepare(paths, actor, new_key, output),
-        AddAttestationKeyCommand::Import {
+        AddAttestationKeyCommand::Submit {
             prepared,
             signature,
-        } => run_actor_add_attestation_key_import(paths, prepared, signature),
+        } => run_actor_add_attestation_key_submit(paths, prepared, signature),
     }
 }
 
@@ -1554,14 +1665,15 @@ fn run_actor_add_attestation_key_prepare(
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let canonical_bytes = unsigned.canonical_bytes();
 
-    let placeholder_sig = Signature::new(
-        actor_id.clone(),
-        "(unsigned: filled by import after external signature)",
-        "ed25519",
-        Vec::new(),
-    );
-    let placeholder_signed = MultiSignedStatement::single(unsigned, placeholder_sig);
-    let envelope_json = ActorAttestationKeyAddStatementJson::from_statement(&placeholder_signed);
+    let envelope_json = ActorAttestationKeyAddStatementJson {
+        statement_type: "ActorAttestationKeyAdd".to_owned(),
+        version: 1,
+        actor: actor_id.to_string(),
+        subject: format!("actor:{actor_id}"),
+        created_at: unsigned.created_at().to_string(),
+        body: kairo_statement::json::ActorAttestationKeyAddBodyJson::from_body(unsigned.body()),
+        signatures: Vec::new(),
+    };
     let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
         .map_err(CliError::SerializePreparedEnvelope)?;
 
@@ -1590,19 +1702,20 @@ fn run_actor_add_attestation_key_prepare(
     }
 
     Ok(format!(
-        "prepared attestation-key-add envelope\nactor = {actor_id}\nnew_attestation_key_id = {}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Sign {} with one of the actor's existing attestation keys (see list below):\n{attestation_lines}  2. Run `kairo actor add-attestation-key import --prepared {} --signature <path-to-base64-sig>`.\n",
+        "prepared attestation-key-add envelope\nactor = {actor_id}\nnew_attestation_key_id = {}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Each cosigner signs {} with one of the actor's existing attestation keys (see list below):\n{attestation_lines}  2. For each signature, run `kairo actor co-sign --prepared {} --actor {actor_id} --attestation-key-seed <path>` (or pass `--signature <path>` to `submit` for the single-signer flow).\n  3. Run `kairo actor add-attestation-key submit --prepared {}` to finalize.\n",
         new_key.key_id(),
         output.display(),
         payload_path.display(),
         payload_path.display(),
         output.display(),
+        output.display(),
     ))
 }
 
-fn run_actor_add_attestation_key_import(
+fn run_actor_add_attestation_key_submit(
     paths: &StorePaths,
     prepared: PathBuf,
-    signature: PathBuf,
+    signature: Option<PathBuf>,
 ) -> Result<String, CliError> {
     let store = open_store(paths)?;
 
@@ -1611,9 +1724,8 @@ fn run_actor_add_attestation_key_import(
             path: prepared.clone(),
             source,
         })?;
-    let envelope_json: ActorAttestationKeyAddStatementJson =
+    let mut envelope_json: ActorAttestationKeyAddStatementJson =
         serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
-    let sig_bytes = read_signature_bytes(&signature)?;
 
     let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
         CliError::ParseActorId {
@@ -1649,30 +1761,43 @@ fn run_actor_add_attestation_key_import(
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
     let canonical = unsigned.canonical_bytes();
 
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
-        })?;
-    let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
-    let mut signing_key_id = None;
-    for (key_id, public) in &attestation_set {
-        if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
-            signing_key_id = Some(key_id.clone());
-            break;
+    if let Some(sig_path) = signature {
+        let sig_bytes = read_signature_bytes(&sig_path)?;
+        let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+            .map_err(|error| CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            })?;
+        let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
+        let mut signing_key_id = None;
+        for (key_id, public) in &attestation_set {
+            if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
+                signing_key_id = Some(key_id.clone());
+                break;
+            }
         }
+        let signing_key_id =
+            signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
+                actor: actor_id.clone(),
+            })?;
+        envelope_json
+            .signatures
+            .push(kairo_statement::json::SignatureJson {
+                actor: actor_id.to_string(),
+                key_id: signing_key_id.to_string(),
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD.encode(sig_bytes),
+            });
     }
-    let signing_key_id = signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
-        actor: actor_id.clone(),
-    })?;
 
-    let final_signature = Signature::new(
-        actor_id.clone(),
-        signing_key_id.to_string(),
-        "ed25519",
-        sig_bytes.to_vec(),
-    );
-    let signed = MultiSignedStatement::single(unsigned, final_signature);
+    let signed = envelope_json
+        .to_statement()
+        .map_err(CliError::ParseStatement)?;
+    let report = kairo_statement::verify::verify_envelope_multi_statement(&signed, &store);
+    if !report.is_cryptographically_valid() {
+        return Err(CliError::VerificationFailed(Box::new(report)));
+    }
+
     let statement_id = signed.statement_id();
     store
         .put_actor_attestation_key_add(&signed)
@@ -1682,8 +1807,448 @@ fn run_actor_add_attestation_key_import(
         })?;
 
     let new_attestation_key_id = signed.unsigned().body().new_key().key_id();
+    let signing_key_id = signed
+        .signatures()
+        .first()
+        .map(|s| s.key_id().to_owned())
+        .unwrap_or_default();
     Ok(format!(
         "imported attestation-key-add\nstatement = {statement_id}\nactor = {actor_id}\nsigning_attestation_key_id = {signing_key_id}\nnew_attestation_key_id = {new_attestation_key_id}\n"
+    ))
+}
+
+fn run_actor_change_attestation_threshold(
+    paths: &StorePaths,
+    command: ChangeAttestationThresholdCommand,
+) -> Result<String, CliError> {
+    match command {
+        ChangeAttestationThresholdCommand::Sign {
+            actor,
+            attestation_key_seed,
+            to,
+        } => run_actor_change_attestation_threshold_sign(paths, actor, attestation_key_seed, to),
+        ChangeAttestationThresholdCommand::Prepare { actor, to, output } => {
+            run_actor_change_attestation_threshold_prepare(paths, actor, to, output)
+        }
+        ChangeAttestationThresholdCommand::Submit {
+            prepared,
+            signature,
+        } => run_actor_change_attestation_threshold_submit(paths, prepared, signature),
+    }
+}
+
+/// Single-signer convenience: read an attestation seed, sign + persist
+/// a threshold change directly. Only valid when the actor's *current*
+/// threshold is 1 — once the actor is at threshold ≥ 2, every change
+/// (including lowers back to 1) needs `current` distinct signatures
+/// per the asymmetric authority rule, which means cosigning rather
+/// than this convenience flow. See `ACTORS.md` §5.5.3.
+fn run_actor_change_attestation_threshold_sign(
+    paths: &StorePaths,
+    actor: String,
+    attestation_key_seed: PathBuf,
+    to: u8,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let store = open_store(paths)?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let now = Timestamp::now();
+    let current_threshold = ActorResolver::attestation_threshold_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .ok_or_else(|| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: kairo_store::StoreError::Missing,
+        })?;
+    let required = if to > current_threshold {
+        to
+    } else {
+        current_threshold
+    };
+    if required > 1 {
+        return Err(CliError::ChangeThresholdSignNeedsCosign {
+            actor: actor_id,
+            current_threshold,
+            required,
+        });
+    }
+
+    let body = kairo_statement::ActorAttestationThresholdChangeBody::new(to)
+        .map_err(CliError::ChangeThresholdShape)?;
+    let subject: KairoRef = format!("actor:{actor_id}")
+        .parse()
+        .map_err(|source| CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+
+    let secret = read_attestation_seed(&attestation_key_seed)?;
+    let public = secret.public_key();
+    let signing_key_id = public.key_id();
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if !attestation_set.contains_key(&signing_key_id) {
+        return Err(CliError::CosignKeyNotInAttestationSet {
+            actor: actor_id.clone(),
+            key_id: signing_key_id.to_string(),
+        });
+    }
+
+    let sig_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        signing_key_id.to_string(),
+        "ed25519",
+        sig_bytes.bytes().to_vec(),
+    );
+    let signed = MultiSignedStatement::single(unsigned, signature);
+    let report = kairo_statement::verify::verify_envelope_multi_statement(&signed, &store);
+    if !report.is_cryptographically_valid() {
+        return Err(CliError::VerificationFailed(Box::new(report)));
+    }
+    let statement_id = signed.statement_id();
+    store
+        .put_actor_attestation_threshold_change(&signed)
+        .map_err(|error| CliError::WriteThresholdChange {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    Ok(format!(
+        "changed attestation threshold\nstatement = {statement_id}\nactor = {actor_id}\nattestation_key_id = {signing_key_id}\nold_threshold = {current_threshold}\nnew_threshold = {to}\n"
+    ))
+}
+
+fn run_actor_change_attestation_threshold_prepare(
+    paths: &StorePaths,
+    actor: String,
+    to: u8,
+    output: PathBuf,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let store = open_store(paths)?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let body = kairo_statement::ActorAttestationThresholdChangeBody::new(to)
+        .map_err(CliError::ChangeThresholdShape)?;
+    let subject: KairoRef = format!("actor:{actor_id}")
+        .parse()
+        .map_err(|source| CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        })?;
+    let now = Timestamp::now();
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let canonical_bytes = unsigned.canonical_bytes();
+
+    let envelope_json = kairo_statement::json::ActorAttestationThresholdChangeStatementJson {
+        statement_type: "ActorAttestationThresholdChange".to_owned(),
+        version: 1,
+        actor: actor_id.to_string(),
+        subject: format!("actor:{actor_id}"),
+        created_at: unsigned.created_at().to_string(),
+        body: kairo_statement::json::ActorAttestationThresholdChangeBodyJson::from_body(
+            unsigned.body(),
+        ),
+        signatures: Vec::new(),
+    };
+    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
+        .map_err(CliError::SerializePreparedEnvelope)?;
+    std::fs::write(&output, &envelope_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: output.clone(),
+            source,
+        }
+    })?;
+    let payload_path = payload_path_for(&output);
+    std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: payload_path.clone(),
+            source,
+        }
+    })?;
+
+    let current_threshold = ActorResolver::attestation_threshold_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .unwrap_or(1);
+    let need = if to > current_threshold {
+        to
+    } else {
+        current_threshold
+    };
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let mut attestation_lines = String::new();
+    for key in attestation_set.keys() {
+        attestation_lines.push_str(&format!("  - {key}\n"));
+    }
+
+    Ok(format!(
+        "prepared attestation-threshold-change envelope\nactor = {actor_id}\nold_threshold = {current_threshold}\nnew_threshold = {to}\nrequired_signatures = {need}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Each cosigner signs {} with one of the actor's attestation keys (see list below):\n{attestation_lines}  2. For each signature, run `kairo actor co-sign --prepared {} --actor {actor_id} --attestation-key-seed <path>`.\n  3. Run `kairo actor change-attestation-threshold submit --prepared {}` to finalize.\n",
+        output.display(),
+        payload_path.display(),
+        payload_path.display(),
+        output.display(),
+        output.display(),
+    ))
+}
+
+fn run_actor_change_attestation_threshold_submit(
+    paths: &StorePaths,
+    prepared: PathBuf,
+    signature: Option<PathBuf>,
+) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+
+    let envelope_bytes =
+        std::fs::read(&prepared).map_err(|source| CliError::ReadPreparedEnvelope {
+            path: prepared.clone(),
+            source,
+        })?;
+    let mut envelope_json: kairo_statement::json::ActorAttestationThresholdChangeStatementJson =
+        serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
+
+    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
+        CliError::ParseActorId {
+            actor: envelope_json.actor.clone(),
+            source,
+        }
+    })?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let body_unsigned = envelope_json
+        .body
+        .to_body()
+        .map_err(CliError::ParseStatement)?;
+    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let created_at: Timestamp =
+        envelope_json
+            .created_at
+            .parse()
+            .map_err(|source| CliError::ParseTimestamp {
+                source,
+                value: envelope_json.created_at.clone(),
+            })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let canonical = unsigned.canonical_bytes();
+
+    if let Some(sig_path) = signature {
+        let sig_bytes = read_signature_bytes(&sig_path)?;
+        let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+            .map_err(|error| CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            })?;
+        let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
+        let mut signing_key_id = None;
+        for (key_id, public) in &attestation_set {
+            if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
+                signing_key_id = Some(key_id.clone());
+                break;
+            }
+        }
+        let signing_key_id =
+            signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
+                actor: actor_id.clone(),
+            })?;
+        envelope_json
+            .signatures
+            .push(kairo_statement::json::SignatureJson {
+                actor: actor_id.to_string(),
+                key_id: signing_key_id.to_string(),
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD.encode(sig_bytes),
+            });
+    }
+
+    let signed = envelope_json
+        .to_statement()
+        .map_err(CliError::ParseStatement)?;
+    let report = kairo_statement::verify::verify_envelope_multi_statement(&signed, &store);
+    if !report.is_cryptographically_valid() {
+        return Err(CliError::VerificationFailed(Box::new(report)));
+    }
+    let new_threshold = signed.unsigned().body().new_threshold();
+    let statement_id = signed.statement_id();
+    store
+        .put_actor_attestation_threshold_change(&signed)
+        .map_err(|error| CliError::WriteThresholdChange {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    Ok(format!(
+        "changed attestation threshold\nstatement = {statement_id}\nactor = {actor_id}\nnew_threshold = {new_threshold}\nsignatures = {}\n",
+        signed.signatures().len(),
+    ))
+}
+
+/// Append a single attestation signature to a partial envelope.
+///
+/// Operates generically across attestation-surface envelope kinds by
+/// mutating the JSON `signatures` array directly — body shape doesn't
+/// matter to the cosigner since the canonical bytes the seed signs
+/// over are taken from the `<prepared>.payload` sidecar emitted by
+/// the matching `prepare` flow. The cosigner's seed must be in the
+/// actor's attestation set at the envelope's `created_at`.
+fn run_actor_cosign(
+    paths: &StorePaths,
+    prepared: PathBuf,
+    actor: String,
+    attestation_key_seed: PathBuf,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let store = open_store(paths)?;
+
+    let envelope_bytes =
+        std::fs::read(&prepared).map_err(|source| CliError::ReadPreparedEnvelope {
+            path: prepared.clone(),
+            source,
+        })?;
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
+
+    let envelope_obj = envelope
+        .as_object_mut()
+        .ok_or(CliError::CosignEnvelopeShape)?;
+
+    // The envelope must carry the same actor as --actor so the
+    // operator can't accidentally cosign a different actor's
+    // statement using one of their own attestation keys.
+    let envelope_actor = envelope_obj
+        .get("actor")
+        .and_then(|v| v.as_str())
+        .ok_or(CliError::CosignEnvelopeShape)?;
+    if envelope_actor != actor_id.as_str() {
+        return Err(CliError::CosignActorMismatch {
+            expected: actor_id.clone(),
+            actual: envelope_actor.to_owned(),
+        });
+    }
+
+    let created_at_str = envelope_obj
+        .get("created_at")
+        .and_then(|v| v.as_str())
+        .ok_or(CliError::CosignEnvelopeShape)?;
+    let created_at: Timestamp =
+        created_at_str
+            .parse()
+            .map_err(|source| CliError::ParseTimestamp {
+                source,
+                value: created_at_str.to_owned(),
+            })?;
+
+    // Canonical bytes come from the sidecar emitted at prepare time.
+    // Trusting the sidecar avoids dispatching on the body type here;
+    // submit re-derives canonical bytes from the body and refuses
+    // mismatches via `MultiSignedStatement::statement_id()`.
+    let payload_path = payload_path_for(&prepared);
+    let canonical = std::fs::read(&payload_path).map_err(|source| {
+        CliError::ReadPreparedEnvelope {
+            path: payload_path.clone(),
+            source,
+        }
+    })?;
+
+    let secret = read_attestation_seed(&attestation_key_seed)?;
+    let public = secret.public_key();
+    let signing_key_id = public.key_id();
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if !attestation_set.contains_key(&signing_key_id) {
+        return Err(CliError::CosignKeyNotInAttestationSet {
+            actor: actor_id.clone(),
+            key_id: signing_key_id.to_string(),
+        });
+    }
+
+    let signatures = envelope_obj
+        .get_mut("signatures")
+        .ok_or(CliError::CosignEnvelopeShape)?
+        .as_array_mut()
+        .ok_or(CliError::CosignEnvelopeShape)?;
+    for entry in signatures.iter() {
+        let existing_key_id = entry
+            .get("key_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if existing_key_id == signing_key_id.as_str() {
+            return Err(CliError::CosignDuplicateKeyId {
+                actor: actor_id.clone(),
+                key_id: signing_key_id.to_string(),
+            });
+        }
+    }
+
+    let sig_bytes = secret.sign(&canonical);
+    signatures.push(serde_json::json!({
+        "actor": actor_id.to_string(),
+        "key_id": signing_key_id.to_string(),
+        "algorithm": "ed25519",
+        "bytes": STANDARD.encode(sig_bytes.bytes()),
+    }));
+
+    let have = signatures.len();
+    let serialized =
+        serde_json::to_vec_pretty(&envelope).map_err(CliError::SerializePreparedEnvelope)?;
+    std::fs::write(&prepared, &serialized).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: prepared.clone(),
+            source,
+        }
+    })?;
+
+    let need = ActorResolver::attestation_threshold_at(&store, &actor_id, created_at)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .unwrap_or(1);
+
+    Ok(format!(
+        "co-signed envelope\nactor = {actor_id}\nkey_id = {signing_key_id}\nsignatures = {have}/{need}\nenvelope = {}\n",
+        prepared.display(),
     ))
 }
 
@@ -1999,6 +2564,43 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
             source: error,
         },
     )?;
+    let mut threshold_changes = ActorResolver::attestation_threshold_changes(&store, &actor_id)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    threshold_changes.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.statement_id.cmp(&b.statement_id))
+    });
+
+    // Walk threshold_changes in causal order, recomputing the
+    // "quorum at this event" — the count of distinct attestation
+    // signatures that *would* have been required to authorize the
+    // event under the asymmetric rule (max(current, new) for raises;
+    // current for lowers/equal). Emitted alongside each change so
+    // operators can audit the path from the genesis threshold
+    // forward without re-deriving it themselves.
+    let genesis_threshold = actor_body.attestation_threshold();
+    let mut current_threshold = genesis_threshold;
+    let trajectory: Vec<(
+        &kairo_identity::AttestationThresholdChangeEntry,
+        u8,
+        u8,
+    )> = threshold_changes
+        .iter()
+        .map(|entry| {
+            let from = current_threshold;
+            let quorum = if entry.new_threshold > from {
+                entry.new_threshold
+            } else {
+                from
+            };
+            current_threshold = entry.new_threshold;
+            (entry, from, quorum)
+        })
+        .collect();
 
     if json {
         let value = serde_json::json!({
@@ -2009,6 +2611,8 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
                 .iter()
                 .map(|key| key.key_id().to_string())
                 .collect::<Vec<_>>(),
+            "genesis_attestation_threshold": genesis_threshold,
+            "current_attestation_threshold": current_threshold,
             "rotations": rotations
                 .iter()
                 .map(|entry| serde_json::json!({
@@ -2037,6 +2641,16 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
                     "created_at": entry.created_at.to_string(),
                 }))
                 .collect::<Vec<_>>(),
+            "attestation_threshold_changes": trajectory
+                .iter()
+                .map(|(entry, from, quorum)| serde_json::json!({
+                    "statement_id": entry.statement_id,
+                    "from": from,
+                    "to": entry.new_threshold,
+                    "created_at": entry.created_at.to_string(),
+                    "quorum_at_event": quorum,
+                }))
+                .collect::<Vec<_>>(),
         });
         let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
         output.push('\n');
@@ -2056,6 +2670,12 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
     for key in actor_body.attestation_keys() {
         out.push_str(&format!("  - {}\n", key.key_id()));
     }
+    out.push_str(&format!(
+        "genesis_attestation_threshold = {genesis_threshold}\n"
+    ));
+    out.push_str(&format!(
+        "current_attestation_threshold = {current_threshold}\n"
+    ));
     out.push_str(&format!("rotations = {}\n", rotations.len()));
     for entry in &rotations {
         out.push_str(&format!(
@@ -2085,6 +2705,16 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
             entry.statement_id,
             entry.new_key.key_id(),
             entry.created_at,
+        ));
+    }
+    out.push_str(&format!(
+        "attestation_threshold_changes = {}\n",
+        trajectory.len()
+    ));
+    for (entry, from, quorum) in &trajectory {
+        out.push_str(&format!(
+            "  - statement = {}\n    from = {}\n    to = {}\n    created_at = {}\n    quorum_at_event = {}\n",
+            entry.statement_id, from, entry.new_threshold, entry.created_at, quorum,
         ));
     }
     Ok(out)
@@ -4808,7 +5438,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key import --prepared <path> --signature <path>\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key import --prepared <path> --signature <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -4922,6 +5552,34 @@ enum CliError {
     },
     SignatureNoAttestationMatch {
         actor: ActorId,
+    },
+    /// The prepared envelope JSON is missing required top-level
+    /// fields (`actor`, `created_at`, `signatures`) or has the wrong
+    /// shape. Reading a non-attestation-surface envelope here is a
+    /// programmer error; emit a clear top-level message rather than
+    /// surfacing a deserialization error.
+    CosignEnvelopeShape,
+    CosignActorMismatch {
+        expected: ActorId,
+        actual: String,
+    },
+    CosignKeyNotInAttestationSet {
+        actor: ActorId,
+        key_id: String,
+    },
+    CosignDuplicateKeyId {
+        actor: ActorId,
+        key_id: String,
+    },
+    ChangeThresholdSignNeedsCosign {
+        actor: ActorId,
+        current_threshold: u8,
+        required: u8,
+    },
+    ChangeThresholdShape(kairo_statement::ActorAttestationThresholdChangeShapeError),
+    WriteThresholdChange {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
     },
     SerializePreparedEnvelope(serde_json::Error),
     WritePreparedEnvelope {
@@ -5221,6 +5879,31 @@ impl fmt::Display for CliError {
                 f,
                 "signature did not verify against any of actor {actor}'s attestation keys; check the prepared envelope and signature were paired correctly"
             ),
+            Self::CosignEnvelopeShape => write!(
+                f,
+                "prepared envelope is missing required top-level fields (actor, created_at, signatures)"
+            ),
+            Self::CosignActorMismatch { expected, actual } => write!(
+                f,
+                "envelope actor is {actual}, but --actor is {expected}"
+            ),
+            Self::CosignKeyNotInAttestationSet { actor, key_id } => write!(
+                f,
+                "key {key_id} is not in actor {actor}'s attestation set at the envelope's created_at"
+            ),
+            Self::CosignDuplicateKeyId { actor, key_id } => write!(
+                f,
+                "envelope already carries a signature from key {key_id} for actor {actor}; cosigners must use distinct keys"
+            ),
+            Self::ChangeThresholdSignNeedsCosign { actor, current_threshold, required } => write!(
+                f,
+                "this threshold change for actor {actor} requires {required} distinct signature(s) under the asymmetric authority rule (current threshold {current_threshold}). The `sign` convenience flow only works when one signature suffices. Use `prepare` + `co-sign` + `submit` instead. See ACTORS.md §5.5.3."
+            ),
+            Self::ChangeThresholdShape(error) => write!(f, "{error}"),
+            Self::WriteThresholdChange { statement, source } => write!(
+                f,
+                "failed to write attestation-threshold-change {statement}: {source}"
+            ),
             Self::SerializePreparedEnvelope(error) => write!(
                 f,
                 "failed to serialize prepared envelope: {error}"
@@ -5468,6 +6151,7 @@ impl Error for CliError {
             | Self::WriteKeyRevocation { source, .. }
             | Self::WriteEmergencyKeyRotation { source, .. }
             | Self::WriteAttestationKeyAdd { source, .. }
+            | Self::WriteThresholdChange { source, .. }
             | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
@@ -5527,9 +6211,15 @@ impl Error for CliError {
             | Self::InvalidSignatureBase64Path { .. }
             | Self::InvalidSignatureLength { .. }
             | Self::SignatureNoAttestationMatch { .. }
+            | Self::CosignEnvelopeShape
+            | Self::CosignActorMismatch { .. }
+            | Self::CosignKeyNotInAttestationSet { .. }
+            | Self::CosignDuplicateKeyId { .. }
+            | Self::ChangeThresholdSignNeedsCosign { .. }
             | Self::AddAttestationKeyMissingKeySource
             | Self::AttestationKeyAlreadyInSet { .. }
             | Self::AttestationKeySharesSigningKey { .. } => None,
+            Self::ChangeThresholdShape(error) => Some(error),
         }
     }
 }
@@ -8800,19 +9490,19 @@ kind = "tree"
         let sig_path = store_dir.path().join("recovery.sig");
         std::fs::write(&sig_path, signature_b64.as_bytes())?;
 
-        let import_output = run(Cli {
+        let submit_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
-                    command: RecoverKeyCommand::Import {
+                    command: RecoverKeyCommand::Submit {
                         prepared: envelope_path,
-                        signature: sig_path,
+                        signature: Some(sig_path),
                     },
                 },
             }),
         })?;
-        assert!(import_output.contains("imported emergency rotation"));
+        assert!(submit_output.contains("imported emergency rotation"));
 
         // Key-history reflects the imported emergency rotation.
         let history_output = run(Cli {
@@ -8827,6 +9517,369 @@ kind = "tree"
         })?;
         assert!(history_output.contains("rotations = 1"));
         assert!(history_output.contains("surface = attestation"));
+        Ok(())
+    }
+
+    /// Multi-sig recover-key flow with threshold = 2: two cosigners
+    /// each append a signature via `co-sign`, then `submit` finalizes
+    /// without `--signature`. Validates the (have, need) counter and
+    /// the threshold check at submit time.
+    #[test]
+    fn actor_recover_key_cosign_two_of_two_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+
+        // Two operator-presented attestation keys, threshold = 2.
+        let attest_a_seed = [201_u8; 32];
+        let attest_b_seed = [202_u8; 32];
+        let attest_a_pub = SigningKey::from_bytes(&attest_a_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_b_pub = SigningKey::from_bytes(&attest_b_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_a_hex: String = attest_a_pub.iter().map(|b| format!("{b:02x}")).collect();
+        let attest_b_hex: String = attest_b_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![attest_a_hex, attest_b_hex],
+                    generate_attestation_keys: 0,
+                    attestation_threshold: 2,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+
+        // Operator-managed new active key.
+        let new_active_pub = SigningKey::from_bytes(&[42_u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let new_active_hex: String = new_active_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let envelope_path = store_dir.path().join("recovery.json");
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Prepare {
+                        actor: actor_id.clone(),
+                        new_key: new_active_hex,
+                        output: envelope_path.clone(),
+                    },
+                },
+            }),
+        })?;
+
+        // Each cosigner reads their own seed file.
+        let seed_a_path = store_dir.path().join("seed_a.txt");
+        let seed_b_path = store_dir.path().join("seed_b.txt");
+        std::fs::write(&seed_a_path, STANDARD.encode(attest_a_seed))?;
+        std::fs::write(&seed_b_path, STANDARD.encode(attest_b_seed))?;
+
+        // Submit before any signatures fail (below threshold).
+        let early_submit = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Submit {
+                        prepared: envelope_path.clone(),
+                        signature: None,
+                    },
+                },
+            }),
+        });
+        assert!(early_submit.is_err(), "submit before any sigs must error");
+
+        let cosign_a = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::CoSign {
+                    prepared: envelope_path.clone(),
+                    actor: actor_id.clone(),
+                    attestation_key_seed: seed_a_path.clone(),
+                },
+            }),
+        })?;
+        assert!(cosign_a.contains("signatures = 1/2"));
+
+        // Submit at 1/2 must still fail — below threshold.
+        let mid_submit = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Submit {
+                        prepared: envelope_path.clone(),
+                        signature: None,
+                    },
+                },
+            }),
+        });
+        assert!(mid_submit.is_err(), "submit at 1/2 must error");
+
+        // Re-cosigning with the same seed must refuse.
+        let dup = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::CoSign {
+                    prepared: envelope_path.clone(),
+                    actor: actor_id.clone(),
+                    attestation_key_seed: seed_a_path.clone(),
+                },
+            }),
+        });
+        assert!(matches!(dup, Err(CliError::CosignDuplicateKeyId { .. })));
+
+        let cosign_b = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::CoSign {
+                    prepared: envelope_path.clone(),
+                    actor: actor_id.clone(),
+                    attestation_key_seed: seed_b_path,
+                },
+            }),
+        })?;
+        assert!(cosign_b.contains("signatures = 2/2"));
+
+        let submit_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RecoverKey {
+                    command: RecoverKeyCommand::Submit {
+                        prepared: envelope_path,
+                        signature: None,
+                    },
+                },
+            }),
+        })?;
+        assert!(submit_output.contains("imported emergency rotation"));
+        Ok(())
+    }
+
+    /// `change-attestation-threshold sign` is the single-signer
+    /// convenience flow. It only works when the asymmetric authority
+    /// rule needs exactly one signature — i.e., `current = 1` and
+    /// `to ≤ 1`. Raises always require ≥ 2 sigs and lowers never
+    /// happen at current = 1, so practical use is rare; this test
+    /// confirms the guard refuses raises and accepts the no-op case.
+    #[test]
+    fn actor_change_attestation_threshold_sign_refuses_raise_above_one()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let attest_a_seed = [201_u8; 32];
+        let attest_b_seed = [202_u8; 32];
+        let attest_a_pub = SigningKey::from_bytes(&attest_a_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_b_pub = SigningKey::from_bytes(&attest_b_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_a_hex: String = attest_a_pub.iter().map(|b| format!("{b:02x}")).collect();
+        let attest_b_hex: String = attest_b_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![attest_a_hex, attest_b_hex],
+                    generate_attestation_keys: 0,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+        let seed_a_path = store_dir.path().join("seed_a.txt");
+        std::fs::write(&seed_a_path, STANDARD.encode(attest_a_seed))?;
+
+        // Raise from 1 → 2 needs max(1, 2) = 2 sigs; sign refuses.
+        let refuse_raise = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::ChangeAttestationThreshold {
+                    command: ChangeAttestationThresholdCommand::Sign {
+                        actor: actor_id.clone(),
+                        attestation_key_seed: seed_a_path.clone(),
+                        to: 2,
+                    },
+                },
+            }),
+        });
+        assert!(matches!(
+            refuse_raise,
+            Err(CliError::ChangeThresholdSignNeedsCosign {
+                current_threshold: 1,
+                required: 2,
+                ..
+            })
+        ));
+
+        // No-op (current = to = 1) needs current = 1 sig; sign works.
+        let sign_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::ChangeAttestationThreshold {
+                    command: ChangeAttestationThresholdCommand::Sign {
+                        actor: actor_id,
+                        attestation_key_seed: seed_a_path,
+                        to: 1,
+                    },
+                },
+            }),
+        })?;
+        assert!(sign_output.contains("changed attestation threshold"));
+        assert!(sign_output.contains("new_threshold = 1"));
+        Ok(())
+    }
+
+    /// `change-attestation-threshold prepare` + `co-sign` × 2 +
+    /// `submit` lowers threshold from 2 back to 1. Tests the full
+    /// multi-sig flow end-to-end.
+    #[test]
+    fn actor_change_attestation_threshold_lower_via_cosign_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+        let attest_a_seed = [203_u8; 32];
+        let attest_b_seed = [204_u8; 32];
+        let attest_a_pub = SigningKey::from_bytes(&attest_a_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_b_pub = SigningKey::from_bytes(&attest_b_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_a_hex: String = attest_a_pub.iter().map(|b| format!("{b:02x}")).collect();
+        let attest_b_hex: String = attest_b_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![attest_a_hex, attest_b_hex],
+                    generate_attestation_keys: 0,
+                    attestation_threshold: 2,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+
+        let seed_a_path = store_dir.path().join("seed_a.txt");
+        let seed_b_path = store_dir.path().join("seed_b.txt");
+        std::fs::write(&seed_a_path, STANDARD.encode(attest_a_seed))?;
+        std::fs::write(&seed_b_path, STANDARD.encode(attest_b_seed))?;
+
+        let envelope_path = store_dir.path().join("threshold.json");
+        let prepare_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::ChangeAttestationThreshold {
+                    command: ChangeAttestationThresholdCommand::Prepare {
+                        actor: actor_id.clone(),
+                        to: 1,
+                        output: envelope_path.clone(),
+                    },
+                },
+            }),
+        })?;
+        assert!(prepare_output.contains("required_signatures = 2"));
+
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::CoSign {
+                    prepared: envelope_path.clone(),
+                    actor: actor_id.clone(),
+                    attestation_key_seed: seed_a_path,
+                },
+            }),
+        })?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::CoSign {
+                    prepared: envelope_path.clone(),
+                    actor: actor_id.clone(),
+                    attestation_key_seed: seed_b_path,
+                },
+            }),
+        })?;
+
+        let submit_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::ChangeAttestationThreshold {
+                    command: ChangeAttestationThresholdCommand::Submit {
+                        prepared: envelope_path,
+                        signature: None,
+                    },
+                },
+            }),
+        })?;
+        assert!(submit_output.contains("changed attestation threshold"));
+        assert!(submit_output.contains("new_threshold = 1"));
+        assert!(submit_output.contains("signatures = 2"));
+
+        // key-history reflects the threshold trajectory (1 change
+        // from genesis 2 → 1 with quorum_at_event = 2).
+        let history = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(history.contains("genesis_attestation_threshold = 2"));
+        assert!(history.contains("current_attestation_threshold = 1"));
+        assert!(history.contains("attestation_threshold_changes = 1"));
+        assert!(history.contains("from = 2"));
+        assert!(history.contains("to = 1"));
+        assert!(history.contains("quorum_at_event = 2"));
+
+        // JSON mode carries the same trajectory under
+        // `attestation_threshold_changes`.
+        let history_json = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id,
+                    json: true,
+                },
+            }),
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&history_json)?;
+        assert_eq!(parsed["genesis_attestation_threshold"], 2);
+        assert_eq!(parsed["current_attestation_threshold"], 1);
+        let changes = parsed["attestation_threshold_changes"]
+            .as_array()
+            .expect("threshold changes array");
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0]["from"], 2);
+        assert_eq!(changes[0]["to"], 1);
+        assert_eq!(changes[0]["quorum_at_event"], 2);
         Ok(())
     }
 

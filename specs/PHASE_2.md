@@ -718,34 +718,42 @@ detection comes too late.
       signature in `signatures` against an attestation-set key,
       (b) distinct `key_id`s (via the constructor invariant),
       and (c) `signatures.len() >= attestation_threshold_at(...)`.
-- [ ] CLI/keystore plumbing for the multi-sig "co-sign" flow at
-      the protocol layer (decoding partial envelopes, appending
-      signatures, distinctness check before submit).
+- [x] CLI plumbing for the multi-sig "co-sign" flow at the
+      protocol layer: `kairo actor co-sign` mutates the JSON
+      `signatures` array in-place, refuses duplicate `key_id`s,
+      and reports the running `(have, need)` count. Submit
+      validates distinctness + threshold + per-signature validity
+      before persisting.
 
 **CLI slice:**
 
-- [ ] `kairo actor co-sign --prepared <path> --keystore <path>`
-      appends a single signature to a partially-signed attestation-
-      surface envelope. Refuses to add a duplicate `key_id`.
-      Reports current `(have, need)` count.
-- [ ] `kairo actor submit --prepared <path>` finalizes a partial
-      envelope: verifies threshold met + distinctness + per-signature
-      validity, then dispatches to the appropriate `put_*` based on
-      the statement type. Refuses sub-threshold envelopes.
-- [ ] `prepare` subcommands of `recover-key`, `add-attestation-key`,
-      `revoke-attestation-key`, and the new `change-attestation-threshold`
-      emit a partial envelope (zero signatures) plus the canonical
-      bytes payload for external signing. `import` accepts a
-      *single* signature for backward compatibility with the existing
-      1-of-1 flow when threshold = 1.
-- [ ] New `kairo actor change-attestation-threshold sign|prepare|co-sign|submit`
-      verb tree mirroring the others. `sign` is the convenience flow
-      for the threshold = 1 case (single-key, single-keystore); above
-      threshold = 1, the operator must use `prepare` + `co-sign` +
-      `submit`.
-- [ ] `kairo actor key-history` extended with the threshold trajectory
-      (genesis threshold + every change event) and a per-event
-      `(quorum_at_event)` annotation. Both text and `--json` modes.
+- [x] `kairo actor co-sign --prepared <path> --actor <id>
+      --attestation-key-seed <path>` appends a single signature to
+      a partially-signed attestation-surface envelope. Refuses to
+      add a duplicate `key_id`. Reports current `(have, need)`
+      count.
+- [x] `kairo actor <verb> submit --prepared <path>` finalizes a
+      partial envelope: verifies threshold met + distinctness +
+      per-signature validity, then dispatches to the appropriate
+      `put_*`. Refuses sub-threshold envelopes. Renamed from
+      `import` for symmetry with `prepare`/`co-sign`.
+- [x] `prepare` subcommands of `recover-key`, `add-attestation-key`,
+      and the new `change-attestation-threshold` emit a partial
+      envelope (zero signatures) plus the canonical bytes payload
+      for external signing. `submit --signature <path>` accepts a
+      single signature for the 1-of-1 backward-compat flow. (A
+      `revoke-attestation-key` CLI is deferred to a follow-on
+      slice; the store layer already supports it.)
+- [x] New `kairo actor change-attestation-threshold sign|prepare|submit`
+      verb tree. `sign` is the single-signer convenience flow,
+      restricted to cases where the asymmetric authority rule
+      needs exactly one signature (effectively no-ops at
+      threshold = 1); raises and lowers must use
+      `prepare` + `co-sign` + `submit`.
+- [x] `kairo actor key-history` extended with the threshold
+      trajectory (genesis threshold + every change event) and a
+      per-event `quorum_at_event` annotation. Both text and
+      `--json` modes.
 
 ## After Phase 2
 
