@@ -63,18 +63,18 @@ use kairo_identity::{
 };
 use kairo_statement::json::{
     ActorAttestationKeyAddStatementJson, ActorAttestationKeyRevocationStatementJson,
-    ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
-    ActorEmergencyKeyRevocationStatementJson, ActorEmergencyKeyRotationStatementJson,
-    ActorKeyRevocationStatementJson, ActorKeyRotationStatementJson, ActorTrustStatementJson,
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    ActorAttestationThresholdChangeStatementJson, ActorCapabilityGrantStatementJson,
+    ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
+    ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
+    ActorKeyRotationStatementJson, ActorTrustStatementJson, ObjectBranchStatementJson,
+    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody, ActorCapabilityGrantBody,
-    ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody,
-    ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody, CapabilityScope,
-    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
-    SignedStatement,
+    ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
+    ActorAttestationThresholdChangeBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
+    ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
+    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, MultiSignedStatement, ObjectBranchBody,
+    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
 };
 
 pub use branches::BranchTip;
@@ -222,33 +222,33 @@ pub trait StatementStore {
 
     fn put_actor_emergency_key_rotation(
         &self,
-        statement: &SignedStatement<ActorEmergencyKeyRotationBody>,
+        statement: &MultiSignedStatement<ActorEmergencyKeyRotationBody>,
     ) -> Result<StatementId, StoreError>;
 
     fn get_actor_emergency_key_rotation(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, StoreError>;
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRotationBody>, StoreError>;
 
     fn put_actor_emergency_key_revocation(
         &self,
-        statement: &SignedStatement<ActorEmergencyKeyRevocationBody>,
+        statement: &MultiSignedStatement<ActorEmergencyKeyRevocationBody>,
     ) -> Result<StatementId, StoreError>;
 
     fn get_actor_emergency_key_revocation(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRevocationBody>, StoreError>;
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRevocationBody>, StoreError>;
 
     fn put_actor_attestation_key_add(
         &self,
-        statement: &SignedStatement<ActorAttestationKeyAddBody>,
+        statement: &MultiSignedStatement<ActorAttestationKeyAddBody>,
     ) -> Result<StatementId, StoreError>;
 
     fn get_actor_attestation_key_add(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StoreError>;
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyAddBody>, StoreError>;
 
     /// Persist an `ActorAttestationKeyRevocation` and update the actor's
     /// per-actor key-event index.
@@ -261,13 +261,35 @@ pub trait StatementStore {
     /// statements upstream, but direct callers cannot bypass this guard.
     fn put_actor_attestation_key_revocation(
         &self,
-        statement: &SignedStatement<ActorAttestationKeyRevocationBody>,
+        statement: &MultiSignedStatement<ActorAttestationKeyRevocationBody>,
     ) -> Result<StatementId, StoreError>;
 
     fn get_actor_attestation_key_revocation(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, StoreError>;
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyRevocationBody>, StoreError>;
+
+    /// Persist an `ActorAttestationThresholdChange` and update the
+    /// per-actor key-event index.
+    ///
+    /// The store enforces the **asymmetric authority rule** from
+    /// `ACTORS.md` §5.5.3 here: a raise (new > current) requires the
+    /// envelope to carry `>= max(current, new)` distinct signatures; a
+    /// lower or equal change requires `>= current`. Both are checked
+    /// against the live attestation set at `created_at`. If the
+    /// envelope falls short the call returns
+    /// [`StoreError::Rejected`] and nothing is written. Signature
+    /// validity itself is left to the verifier — the store only
+    /// counts distinct attestation-set members.
+    fn put_actor_attestation_threshold_change(
+        &self,
+        statement: &MultiSignedStatement<ActorAttestationThresholdChangeBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_actor_attestation_threshold_change(
+        &self,
+        id: &StatementId,
+    ) -> Result<MultiSignedStatement<ActorAttestationThresholdChangeBody>, StoreError>;
 }
 
 /// Resolver for the current `(actor, object, name)` branch tip.
@@ -953,7 +975,7 @@ impl StatementStore for FilesystemStore {
 
     fn put_actor_emergency_key_rotation(
         &self,
-        statement: &SignedStatement<ActorEmergencyKeyRotationBody>,
+        statement: &MultiSignedStatement<ActorEmergencyKeyRotationBody>,
     ) -> Result<StatementId, StoreError> {
         let id = statement.statement_id();
         let json = ActorEmergencyKeyRotationStatementJson::from_statement(statement);
@@ -979,7 +1001,7 @@ impl StatementStore for FilesystemStore {
     fn get_actor_emergency_key_rotation(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, StoreError> {
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRotationBody>, StoreError> {
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         let bytes = read_or_missing(&path)?;
         let json: ActorEmergencyKeyRotationStatementJson =
@@ -1003,7 +1025,7 @@ impl StatementStore for FilesystemStore {
 
     fn put_actor_emergency_key_revocation(
         &self,
-        statement: &SignedStatement<ActorEmergencyKeyRevocationBody>,
+        statement: &MultiSignedStatement<ActorEmergencyKeyRevocationBody>,
     ) -> Result<StatementId, StoreError> {
         let id = statement.statement_id();
         let json = ActorEmergencyKeyRevocationStatementJson::from_statement(statement);
@@ -1029,7 +1051,7 @@ impl StatementStore for FilesystemStore {
     fn get_actor_emergency_key_revocation(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRevocationBody>, StoreError> {
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRevocationBody>, StoreError> {
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         let bytes = read_or_missing(&path)?;
         let json: ActorEmergencyKeyRevocationStatementJson =
@@ -1053,7 +1075,7 @@ impl StatementStore for FilesystemStore {
 
     fn put_actor_attestation_key_add(
         &self,
-        statement: &SignedStatement<ActorAttestationKeyAddBody>,
+        statement: &MultiSignedStatement<ActorAttestationKeyAddBody>,
     ) -> Result<StatementId, StoreError> {
         let id = statement.statement_id();
         let json = ActorAttestationKeyAddStatementJson::from_statement(statement);
@@ -1072,7 +1094,7 @@ impl StatementStore for FilesystemStore {
     fn get_actor_attestation_key_add(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StoreError> {
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyAddBody>, StoreError> {
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         let bytes = read_or_missing(&path)?;
         let json: ActorAttestationKeyAddStatementJson =
@@ -1096,7 +1118,7 @@ impl StatementStore for FilesystemStore {
 
     fn put_actor_attestation_key_revocation(
         &self,
-        statement: &SignedStatement<ActorAttestationKeyRevocationBody>,
+        statement: &MultiSignedStatement<ActorAttestationKeyRevocationBody>,
     ) -> Result<StatementId, StoreError> {
         let id = statement.statement_id();
         let actor = statement.unsigned().actor();
@@ -1164,10 +1186,107 @@ impl StatementStore for FilesystemStore {
     fn get_actor_attestation_key_revocation(
         &self,
         id: &StatementId,
-    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, StoreError> {
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyRevocationBody>, StoreError> {
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         let bytes = read_or_missing(&path)?;
         let json: ActorAttestationKeyRevocationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let derived = signed.statement_id();
+        if &derived != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: derived.to_string(),
+                },
+            });
+        }
+        Ok(signed)
+    }
+
+    fn put_actor_attestation_threshold_change(
+        &self,
+        statement: &MultiSignedStatement<ActorAttestationThresholdChangeBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        let new_threshold = body.new_threshold();
+
+        // Asymmetric authority rule (§5.5.3). Resolve the live
+        // attestation set and threshold at `created_at`; raises require
+        // `max(current, new)` distinct signatures from set members,
+        // lowers/equal require `current`. Attestation-set membership is
+        // checked here; signature *validity* is the verifier's job.
+        let current_threshold = self.attestation_threshold_at(actor, created_at)?;
+        let required = if new_threshold > current_threshold {
+            new_threshold
+        } else {
+            current_threshold
+        };
+        let attestation_set = self.attestation_keys_at_internal(actor, created_at)?;
+        let mut distinct_signers: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for signature in statement.signatures() {
+            let key_id = kairo_identity::KeyId::new(signature.key_id().to_owned());
+            if attestation_set.contains(&key_id) {
+                distinct_signers.insert(signature.key_id().to_owned());
+            }
+        }
+        let provided = distinct_signers.len() as u8;
+        if provided < required {
+            return Err(StoreError::Rejected {
+                reason: format!(
+                    "ActorAttestationThresholdChange for {actor} carries {provided} attestation-set \
+                     signature(s); required {required} (current threshold {current_threshold}, \
+                     new threshold {new_threshold}; ACTORS.md §5.5.3)",
+                ),
+            });
+        }
+        // Sanity guard: do not allow lowering a threshold below 1 or
+        // raising it above the projected attestation-set size at
+        // `created_at`. The latter would brick future emergency events
+        // by definition.
+        if new_threshold < 1 {
+            return Err(StoreError::Rejected {
+                reason: format!(
+                    "ActorAttestationThresholdChange new_threshold must be >= 1 (got {new_threshold})",
+                ),
+            });
+        }
+        let projected_set_size = attestation_set.len() as u8;
+        if new_threshold > projected_set_size {
+            return Err(StoreError::Rejected {
+                reason: format!(
+                    "ActorAttestationThresholdChange new_threshold {new_threshold} exceeds \
+                     attestation set size {projected_set_size} at this causal position; add more \
+                     attestation keys first (ACTORS.md §5.5.3)",
+                ),
+            });
+        }
+
+        let json = ActorAttestationThresholdChangeStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        self.upsert_attestation_threshold_change_index(actor, &id, new_threshold, created_at)?;
+
+        Ok(id)
+    }
+
+    fn get_actor_attestation_threshold_change(
+        &self,
+        id: &StatementId,
+    ) -> Result<MultiSignedStatement<ActorAttestationThresholdChangeBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: ActorAttestationThresholdChangeStatementJson =
             serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
         let signed = json.to_statement().map_err(|error| StoreError::Corrupt {
             id: id.to_string(),
@@ -1415,6 +1534,92 @@ impl FilesystemStore {
             atomic_write(&path, &bytes)?;
         }
         Ok(())
+    }
+
+    fn upsert_attestation_threshold_change_index(
+        &self,
+        actor: &ActorId,
+        statement_id: &StatementId,
+        new_threshold: u8,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let mut index = self.read_key_index_or_default(actor)?;
+        let updated = index.upsert_attestation_threshold_change(
+            statement_id,
+            new_threshold,
+            created_at,
+        );
+        if updated {
+            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+            atomic_write(&path, &bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Resolve the actor's attestation threshold at `at` directly from
+    /// the key-event index. Returns the genesis threshold when no
+    /// change precedes `at`. Used by `put_actor_attestation_threshold_change`
+    /// to enforce the asymmetric authority rule before the new entry
+    /// is written.
+    fn attestation_threshold_at(
+        &self,
+        actor: &ActorId,
+        at: kairo_core::Timestamp,
+    ) -> Result<u8, StoreError> {
+        let genesis = self.get_actor(actor)?;
+        let index = self.read_key_index_or_default(actor)?;
+        let changes = index.decode_attestation_threshold_changes()?;
+        let mut latest: Option<&kairo_identity::AttestationThresholdChangeEntry> = None;
+        for entry in &changes {
+            if entry.created_at > at {
+                continue;
+            }
+            latest = Some(match latest {
+                None => entry,
+                Some(current)
+                    if entry.created_at > current.created_at
+                        || (entry.created_at == current.created_at
+                            && entry.statement_id > current.statement_id) =>
+                {
+                    entry
+                }
+                Some(current) => current,
+            });
+        }
+        Ok(match latest {
+            Some(entry) => entry.new_threshold,
+            None => genesis.attestation_threshold(),
+        })
+    }
+
+    /// Materialize the actor's attestation key-id set at `at` from the
+    /// key-event index plus the genesis. The set is used at put time
+    /// to count distinct attestation-set signers on attestation-surface
+    /// envelopes.
+    fn attestation_keys_at_internal(
+        &self,
+        actor: &ActorId,
+        at: kairo_core::Timestamp,
+    ) -> Result<std::collections::BTreeSet<kairo_identity::KeyId>, StoreError> {
+        let genesis = self.get_actor(actor)?;
+        let mut set: std::collections::BTreeSet<kairo_identity::KeyId> =
+            std::collections::BTreeSet::new();
+        for key in genesis.attestation_keys() {
+            set.insert(key.key_id());
+        }
+        let index = self.read_key_index_or_default(actor)?;
+        for entry in index.decode_attestation_adds(actor.as_str())? {
+            if entry.created_at <= at {
+                set.insert(entry.new_key.key_id());
+            }
+        }
+        for entry in index.decode_attestation_revocations()? {
+            if entry.created_at <= at {
+                set.remove(&entry.revoked_key);
+            }
+        }
+        Ok(set)
     }
 
     fn read_key_index_or_default(
@@ -2274,6 +2479,18 @@ impl ActorResolver for FilesystemStore {
             .decode_attestation_revocations()
             .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
     }
+
+    fn attestation_threshold_changes(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<kairo_identity::AttestationThresholdChangeEntry>, ActorResolveError> {
+        let index = self
+            .read_key_index_or_default(actor)
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
+        index
+            .decode_attestation_threshold_changes()
+            .map_err(|error| ActorResolveError::Unavailable(error.to_string()))
+    }
 }
 
 impl kairo_statement::verify::TrustResolver for FilesystemStore {
@@ -2429,6 +2646,7 @@ mod tests {
             ActorKind::person(),
             public_key(),
             vec![attestation_key()],
+            1,
             timestamp(),
             [9; 32],
         )
@@ -2542,7 +2760,7 @@ mod tests {
         // Replace the file with a different valid actor genesis JSON whose
         // derived ActorId will not match the filename.
         let different =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [10; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [10; 32]).expect("genesis well-formed");
         let json = ActorGenesisJson::from_body(&different);
         fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
 
@@ -2942,6 +3160,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -2991,6 +3210,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3051,6 +3271,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3394,6 +3615,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3446,6 +3668,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3510,6 +3733,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3590,6 +3814,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [33; 32],
         )
@@ -3602,6 +3827,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [44; 32],
         )
@@ -3808,6 +4034,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3898,6 +4125,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -3974,6 +4202,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[6; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [55; 32],
         )
@@ -3986,6 +4215,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[7; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [66; 32],
         )
@@ -4387,6 +4617,7 @@ mod tests {
             ActorKind::person(),
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes()),
             vec![attestation_key()],
+            1,
             timestamp(),
             [11; 32],
         )
@@ -4839,7 +5070,7 @@ mod tests {
         actor: ActorId,
         new_key: PublicKey,
         created_at: Timestamp,
-    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, Box<dyn std::error::Error>> {
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyAddBody>, Box<dyn std::error::Error>> {
         let body = ActorAttestationKeyAddBody::new(new_key);
         let subject: KairoRef = format!("actor:{actor}").parse()?;
         let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
@@ -4852,7 +5083,7 @@ mod tests {
             "ed25519",
             signature_bytes.to_vec(),
         );
-        Ok(SignedStatement::new(unsigned, signature))
+        Ok(MultiSignedStatement::single(unsigned, signature))
     }
 
     fn signed_attestation_key_revocation(
@@ -4860,7 +5091,7 @@ mod tests {
         revoked_key: kairo_identity::KeyId,
         reason: Option<String>,
         created_at: Timestamp,
-    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, Box<dyn std::error::Error>>
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyRevocationBody>, Box<dyn std::error::Error>>
     {
         let body = ActorAttestationKeyRevocationBody::new(revoked_key, reason);
         let subject: KairoRef = format!("actor:{actor}").parse()?;
@@ -4872,7 +5103,7 @@ mod tests {
             "ed25519",
             signature_bytes.to_vec(),
         );
-        Ok(SignedStatement::new(unsigned, signature))
+        Ok(MultiSignedStatement::single(unsigned, signature))
     }
 
     #[test]
@@ -4973,6 +5204,134 @@ mod tests {
         )?;
         assert_eq!(set.len(), 1);
         assert!(set.contains_key(&attestation_key().key_id()));
+        Ok(())
+    }
+
+    fn signed_attestation_threshold_change(
+        actor: ActorId,
+        new_threshold: u8,
+        signers: &[u8],
+        created_at: Timestamp,
+    ) -> Result<MultiSignedStatement<ActorAttestationThresholdChangeBody>, Box<dyn std::error::Error>>
+    {
+        let body = ActorAttestationThresholdChangeBody::new(new_threshold)?;
+        let subject: KairoRef = format!("actor:{actor}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let canonical = unsigned.canonical_bytes();
+        let mut signatures = Vec::with_capacity(signers.len());
+        for seed in signers {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[*seed; 32]);
+            let bytes = key.sign(&canonical).to_bytes().to_vec();
+            let public = PublicKey::ed25519(key.verifying_key().to_bytes());
+            signatures.push(Signature::new(
+                actor.clone(),
+                public.key_id().to_string(),
+                "ed25519",
+                bytes,
+            ));
+        }
+        Ok(MultiSignedStatement::new(unsigned, signatures)?)
+    }
+
+    #[test]
+    fn round_trips_attestation_threshold_change_lower() -> TestResult {
+        // Genesis declares two attestation keys with threshold 2;
+        // lowering to 1 requires `current` (= 2) signatures — one
+        // from each genesis key. The store accepts and indexes it.
+        let (_dir, store) = open_temp_store()?;
+        // Construct a genesis with two attestation keys at threshold 2.
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key(), third_public_key()],
+            2,
+            timestamp(),
+            [9; 32],
+        )?;
+        let actor = genesis.actor_id();
+        store.put_actor(&genesis)?;
+
+        let stmt = signed_attestation_threshold_change(
+            actor.clone(),
+            1,
+            &[200, 10],
+            Timestamp::from_seconds(timestamp().seconds() + 50),
+        )?;
+        let id = store.put_actor_attestation_threshold_change(&stmt)?;
+        let loaded = store.get_actor_attestation_threshold_change(&id)?;
+        assert_eq!(loaded, stmt);
+
+        // Resolver reflects the new threshold at t+100.
+        let threshold = ActorResolver::attestation_threshold_at(
+            &store,
+            &actor,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        assert_eq!(threshold, Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_threshold_raise_below_authority_is_rejected() -> TestResult {
+        // Genesis: two attestation keys at threshold 1. Raising to 2
+        // requires `max(1, 2) = 2` distinct signatures. A single
+        // signature is insufficient — store must refuse.
+        let (_dir, store) = open_temp_store()?;
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key(), third_public_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )?;
+        let actor = genesis.actor_id();
+        store.put_actor(&genesis)?;
+
+        let stmt = signed_attestation_threshold_change(
+            actor.clone(),
+            2,
+            &[200],
+            Timestamp::from_seconds(timestamp().seconds() + 50),
+        )?;
+        let result = store.put_actor_attestation_threshold_change(&stmt);
+        assert!(matches!(result, Err(StoreError::Rejected { .. })));
+
+        // Resolver still sees the genesis threshold.
+        let threshold = ActorResolver::attestation_threshold_at(
+            &store,
+            &actor,
+            Timestamp::from_seconds(timestamp().seconds() + 100),
+        )?;
+        assert_eq!(threshold, Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn attestation_threshold_change_above_set_size_is_rejected() -> TestResult {
+        // Genesis: two attestation keys at threshold 1. A change to 3
+        // would brick all future emergency events because the set has
+        // only 2 keys; refuse.
+        let (_dir, store) = open_temp_store()?;
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key(), third_public_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )?;
+        let actor = genesis.actor_id();
+        store.put_actor(&genesis)?;
+
+        let stmt = signed_attestation_threshold_change(
+            actor.clone(),
+            3,
+            &[200, 10],
+            Timestamp::from_seconds(timestamp().seconds() + 50),
+        )?;
+        let result = store.put_actor_attestation_threshold_change(&stmt);
+        assert!(matches!(result, Err(StoreError::Rejected { .. })));
         Ok(())
     }
 }

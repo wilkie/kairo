@@ -57,8 +57,8 @@
 use kairo_core::{StatementId, Timestamp};
 use kairo_identity::json::PublicKeyJson;
 use kairo_identity::{
-    AttestationKeyAddEntry, AttestationKeyRevocationEntry, KeyId, KeyRevocationEntry,
-    KeyRotationEntry, KeySurface, PublicKey,
+    AttestationKeyAddEntry, AttestationKeyRevocationEntry, AttestationThresholdChangeEntry, KeyId,
+    KeyRevocationEntry, KeyRotationEntry, KeySurface, PublicKey,
 };
 use serde::{Deserialize, Serialize};
 
@@ -130,6 +130,18 @@ pub(crate) struct AttestationRevocationEntry {
     pub created_at: String,
 }
 
+/// On-disk representation of one attestation-threshold change entry.
+/// Always attestation surface; the asymmetric authority rule (raises
+/// require `max(current, new)` distinct sigs, lowers require `current`)
+/// is checked at put time before the entry is written, so on-disk
+/// entries are by definition authority-validated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AttestationThresholdEntry {
+    pub statement_id: String,
+    pub new_threshold: u8,
+    pub created_at: String,
+}
+
 /// On-disk representation of all key events for a single actor.
 ///
 /// Routine and emergency rotations live in the same `rotations` vec
@@ -148,6 +160,8 @@ pub(crate) struct KeyEventIndexFile {
     pub attestation_adds: Vec<AttestationAddEntry>,
     #[serde(default)]
     pub attestation_revocations: Vec<AttestationRevocationEntry>,
+    #[serde(default)]
+    pub attestation_threshold_changes: Vec<AttestationThresholdEntry>,
 }
 
 impl KeyEventIndexFile {
@@ -240,6 +254,31 @@ impl KeyEventIndexFile {
             revoked_key: revoked_key.to_string(),
             created_at: created_at.to_string(),
         });
+        true
+    }
+
+    /// Append an attestation-threshold change entry. Returns `true` if
+    /// the entry was actually added; a duplicate `put` is a no-op.
+    pub(crate) fn upsert_attestation_threshold_change(
+        &mut self,
+        statement_id: &StatementId,
+        new_threshold: u8,
+        created_at: Timestamp,
+    ) -> bool {
+        let new_id = statement_id.to_string();
+        if self
+            .attestation_threshold_changes
+            .iter()
+            .any(|e| e.statement_id == new_id)
+        {
+            return false;
+        }
+        self.attestation_threshold_changes
+            .push(AttestationThresholdEntry {
+                statement_id: new_id,
+                new_threshold,
+                created_at: created_at.to_string(),
+            });
         true
     }
 
@@ -353,6 +392,29 @@ impl KeyEventIndexFile {
             out.push(AttestationKeyRevocationEntry {
                 statement_id: entry.statement_id.clone(),
                 revoked_key: KeyId::new(entry.revoked_key.clone()),
+                created_at,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Decode the attestation-threshold-change set into the
+    /// resolver-facing summary.
+    pub(crate) fn decode_attestation_threshold_changes(
+        &self,
+    ) -> Result<Vec<AttestationThresholdChangeEntry>, StoreError> {
+        let mut out = Vec::with_capacity(self.attestation_threshold_changes.len());
+        for entry in &self.attestation_threshold_changes {
+            let created_at: Timestamp =
+                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
+                    id: entry.statement_id.clone(),
+                    reason: CorruptReason::Parse(format!(
+                        "invalid created_at in attestation-threshold-change index: {error}"
+                    )),
+                })?;
+            out.push(AttestationThresholdChangeEntry {
+                statement_id: entry.statement_id.clone(),
+                new_threshold: entry.new_threshold,
                 created_at,
             });
         }

@@ -661,11 +661,11 @@ detection comes too late.
 
 **Spec slice:**
 
-- [ ] `ActorGenesis` schema gets required `attestation_threshold` field
+- [x] `ActorGenesis` schema gets required `attestation_threshold` field
       (canonical + JSON). Body validator enforces
       `1 ≤ threshold ≤ |attestation_keys|`. `actor-genesis-v1.md` and
       JSON schema updated; canonical pseudocode bumped.
-- [ ] Statement envelope schema gains a shared `signatures` $defs
+- [x] Statement envelope schema gains a shared `signatures` $defs
       (array of `signature`, `minItems: 1`, distinct `key_id`,
       sorted by `key_id` ascending in canonical encoding). The four
       existing attestation-surface schemas
@@ -674,50 +674,50 @@ detection comes too late.
       `actor-attestation-key-add-v1`,
       `actor-attestation-key-revocation-v1`) switch from
       `signature` to `signatures`.
-- [ ] New `actor-attestation-threshold-change-v1` schema (canonical
+- [x] New `actor-attestation-threshold-change-v1` schema (canonical
       + JSON). Body shape, asymmetric authority rule, validation
       bounds, examples for raise / lower / no-op.
-- [ ] `STATEMENTS.md` §4.2h–§4.2k updated for the multi-signature
+- [x] `STATEMENTS.md` §4.2h–§4.2k updated for the multi-signature
       envelope; new §4.2l added for
       `ActorAttestationThresholdChange`. The signing-surface
       summary in §4.2h notes "≥ threshold distinct signatures
       from the attestation set" rather than "one signature."
-- [ ] `ACTORS.md` new §5.5.3 introducing the threshold concept,
+- [x] `ACTORS.md` new §5.5.3 introducing the threshold concept,
       asymmetric authority rule, generalized set-size guard, and
       operator-hygiene callout (M-of-N with N > M). §5.5.2 updated
       so the bricking guard reads "resulting set size ≥ resulting
       threshold." §6.1 surface-dispatch line names the fifth
       emergency kind.
-- [ ] `THREAT_MODEL.md` §5.11 / §5.12 / §6.1 updated to reflect that
+- [x] `THREAT_MODEL.md` §5.11 / §5.12 / §6.1 updated to reflect that
       single-key compromise no longer authorizes emergency events
       when threshold > 1; added Phase-2-follow-on bullets where
       thresholds change the residual risk.
 
 **Impl slice:**
 
-- [ ] `kairo-statement` envelope refactor: each attestation-surface
-      `SignedStatement<B>` carries `signatures: Vec<Signature>`. New
-      `verify_signatures` helper checks distinctness + threshold +
-      per-signature byte verification. JSON DTOs updated to
-      `signatures` arrays.
-- [ ] `kairo-statement::ActorAttestationThresholdChangeBody` with
+- [x] `kairo-statement` envelope refactor: each attestation-surface
+      body now flows through `MultiSignedStatement<B>` with
+      `signatures: Vec<Signature>` (sorted, distinct `key_id`).
+      JSON DTOs updated to `signatures` arrays.
+- [x] `kairo-statement::ActorAttestationThresholdChangeBody` with
       canonical encoding + JSON DTO. `SigningSurface = Attestation`.
-- [ ] `kairo-identity::ActorResolver` gains
+- [x] `kairo-identity::ActorResolver` gains
       `attestation_threshold_at(actor, T)` that composes
       `ActorGenesis.attestation_threshold` with the chain of
       `ActorAttestationThresholdChange` statements ≤ T.
       `MemoryActorResolver` tracks threshold change entries.
-- [ ] `kairo-store` gains an `attestation_threshold_changes` index
+- [x] `kairo-store` gains an `attestation_threshold_changes` index
       slot in the per-actor key-event index file, with
       `put_actor_attestation_threshold_change` /
       `get_actor_attestation_threshold_change` trait methods.
-      Generalized put-time validator refuses any revocation or
-      threshold change that would violate
-      "set size ≥ threshold" at `created_at`.
-- [ ] `verify_envelope_statement` extended: the attestation-surface
-      branch now (a) verifies each signature in `signatures`,
-      (b) requires distinct `key_id`s, and (c) requires
-      `signatures.len() >= attestation_threshold_at(...)`.
+      Put-time validator enforces the asymmetric authority rule
+      (raises require `max(current, new)` distinct attestation-set
+      signatures; lowers require `current`) and refuses changes
+      that would push threshold above the projected set size.
+- [x] New `verify_envelope_multi_statement` checks (a) each
+      signature in `signatures` against an attestation-set key,
+      (b) distinct `key_id`s (via the constructor invariant),
+      and (c) `signatures.len() >= attestation_threshold_at(...)`.
 - [ ] CLI/keystore plumbing for the multi-sig "co-sign" flow at
       the protocol layer (decoding partial envelopes, appending
       signatures, distinctness check before submit).

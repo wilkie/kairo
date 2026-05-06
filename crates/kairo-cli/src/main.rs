@@ -32,10 +32,10 @@ use kairo_statement::{
     ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
     ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
     ActorTrustShapeError, Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError,
-    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-    ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion,
-    Signature, SignedStatement, StatementKind, StatementKindParseError, TrustDecision,
-    UnsignedStatement,
+    MultiSignedStatement, ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
+    ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
+    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
+    StatementKindParseError, TrustDecision, UnsignedStatement,
 };
 use kairo_store::{
     ActorStore, BlobStore, BranchResolver, CapabilityHead, CapabilityResolver, FilesystemStore,
@@ -486,6 +486,13 @@ enum ActorCommand {
     /// air-gapped device / safe), or use `--generate-attestation-key`
     /// to have Kairo generate one and print the seed once. Both flags
     /// are repeatable and can be mixed.
+    ///
+    /// `--attestation-threshold <N>` sets the M-of-N quorum required
+    /// for any attestation-surface emergency event (`ACTORS.md`
+    /// §5.5.3). Defaults to 1 for solo operators; raise it after
+    /// you have multiple distinct attestation keys to protect
+    /// against single-key compromise. Use M-of-N with N > M for
+    /// resilience to lost keys (e.g. 3-of-5, not 3-of-3).
     Create {
         /// Actor kind, e.g. person, project, organization, service.
         #[arg(long)]
@@ -501,6 +508,11 @@ enum ActorCommand {
         /// externally before continuing.
         #[arg(long = "generate-attestation-key", action = ArgAction::Count)]
         generate_attestation_keys: u8,
+        /// M of the M-of-N quorum required for emergency events.
+        /// Defaults to 1. Must satisfy 1 ≤ N ≤ total attestation
+        /// keys. See `ACTORS.md` §5.5.3.
+        #[arg(long = "attestation-threshold", default_value_t = 1)]
+        attestation_threshold: u8,
     },
     /// Import an ActorGenesis JSON document into the local store.
     Import {
@@ -888,11 +900,13 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
             kind,
             attestation_keys,
             generate_attestation_keys,
+            attestation_threshold,
         } => run_actor_create(
             paths,
             kind,
             attestation_keys,
             generate_attestation_keys,
+            attestation_threshold,
         ),
         ActorCommand::RotateKey { actor } => run_actor_rotate_key(paths, actor),
         ActorCommand::RevokeKey {
@@ -915,6 +929,7 @@ fn run_actor_create(
     kind: String,
     attestation_keys_hex: Vec<String>,
     generate_attestation_keys: u8,
+    attestation_threshold: u8,
 ) -> Result<String, CliError> {
     if attestation_keys_hex.is_empty() && generate_attestation_keys == 0 {
         return Err(CliError::NoAttestationKeyProvided);
@@ -971,6 +986,7 @@ fn run_actor_create(
         ActorKind::new(kind),
         secret.public_key(),
         attestation_publics.clone(),
+        attestation_threshold,
         Timestamp::now(),
         nonce,
     )
@@ -1132,7 +1148,7 @@ fn run_actor_recover_key_sign(
         "ed25519",
         signature_bytes.bytes().to_vec(),
     );
-    let signed = SignedStatement::new(unsigned, signature);
+    let signed = MultiSignedStatement::single(unsigned, signature);
     let statement_id = signed.statement_id();
 
     store
@@ -1213,7 +1229,7 @@ fn run_actor_recover_key_prepare(
         "ed25519",
         Vec::new(),
     );
-    let placeholder_signed = SignedStatement::new(unsigned, placeholder_sig);
+    let placeholder_signed = MultiSignedStatement::single(unsigned, placeholder_sig);
     let envelope_json =
         ActorEmergencyKeyRotationStatementJson::from_statement(&placeholder_signed);
     let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
@@ -1334,7 +1350,7 @@ fn run_actor_recover_key_import(
         "ed25519",
         sig_bytes.to_vec(),
     );
-    let signed = SignedStatement::new(unsigned, final_signature);
+    let signed = MultiSignedStatement::single(unsigned, final_signature);
     let statement_id = signed.statement_id();
     store
         .put_actor_emergency_key_rotation(&signed)
@@ -1494,7 +1510,7 @@ fn run_actor_add_attestation_key_sign(
         "ed25519",
         signature_bytes.bytes().to_vec(),
     );
-    let signed = SignedStatement::new(unsigned, signature);
+    let signed = MultiSignedStatement::single(unsigned, signature);
     let statement_id = signed.statement_id();
 
     store
@@ -1544,7 +1560,7 @@ fn run_actor_add_attestation_key_prepare(
         "ed25519",
         Vec::new(),
     );
-    let placeholder_signed = SignedStatement::new(unsigned, placeholder_sig);
+    let placeholder_signed = MultiSignedStatement::single(unsigned, placeholder_sig);
     let envelope_json = ActorAttestationKeyAddStatementJson::from_statement(&placeholder_signed);
     let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
         .map_err(CliError::SerializePreparedEnvelope)?;
@@ -1656,7 +1672,7 @@ fn run_actor_add_attestation_key_import(
         "ed25519",
         sig_bytes.to_vec(),
     );
-    let signed = SignedStatement::new(unsigned, final_signature);
+    let signed = MultiSignedStatement::single(unsigned, final_signature);
     let statement_id = signed.statement_id();
     store
         .put_actor_attestation_key_add(&signed)
@@ -4707,6 +4723,7 @@ fn format_signature_status(status: &SignatureStatus) -> &'static str {
         SignatureStatus::KeyRevoked => "key-revoked",
         SignatureStatus::NoActiveKey => "no-active-key",
         SignatureStatus::NotInAttestationSet { .. } => "not-in-attestation-set",
+        SignatureStatus::BelowThreshold { .. } => "below-threshold",
         SignatureStatus::NotEvaluated => "not-evaluated",
     }
 }
@@ -4775,6 +4792,11 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
         SignatureStatus::NotInAttestationSet { signature_key_id } => {
             parts.push(format!(
                 "signature key {signature_key_id} is not in the actor's attestation set at this causal position"
+            ));
+        }
+        SignatureStatus::BelowThreshold { provided, required } => {
+            parts.push(format!(
+                "multi-sig envelope has {provided} signature(s); required {required} (M-of-N attestation threshold)"
             ));
         }
     }
@@ -5824,6 +5846,7 @@ mod tests {
                 bytes: STANDARD
                     .encode(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes()),
             }],
+            attestation_threshold: 1,
             created_at: "2026-05-01T14:32:07Z".to_owned(),
             nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
         }
@@ -5859,6 +5882,7 @@ mod tests {
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -6092,6 +6116,7 @@ mod tests {
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -6356,6 +6381,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -6521,6 +6547,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -6686,6 +6713,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -6856,6 +6884,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7102,6 +7131,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7243,6 +7273,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7347,6 +7378,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7458,6 +7490,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7471,6 +7504,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7534,6 +7568,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7548,6 +7583,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7632,6 +7668,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7646,6 +7683,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7679,6 +7717,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7693,6 +7732,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7768,6 +7808,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -7854,6 +7895,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -7966,6 +8008,7 @@ kind = "tree"
                         kind: "person".to_owned(),
                         attestation_keys: vec![],
                         generate_attestation_keys: 1,
+                        attestation_threshold: 1,
                     },
                 }),
             })?,
@@ -8326,6 +8369,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8393,6 +8437,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8454,6 +8499,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8497,6 +8543,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8546,6 +8593,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 0,
+                    attestation_threshold: 1,
                 },
             }),
         });
@@ -8573,6 +8621,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![attestation_hex.clone()],
                     generate_attestation_keys: 0,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8596,6 +8645,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8623,6 +8673,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8703,6 +8754,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;
@@ -8792,6 +8844,7 @@ kind = "tree"
                     kind: "person".to_owned(),
                     attestation_keys: vec![],
                     generate_attestation_keys: 1,
+                    attestation_threshold: 1,
                 },
             }),
         })?;

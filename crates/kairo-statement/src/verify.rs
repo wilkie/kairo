@@ -28,8 +28,8 @@ use kairo_identity::{ActorResolveError, ActorResolver, SignatureVerificationErro
 
 use crate::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, CapabilityConstraint,
-    CapabilityScope, SignedStatement, SigningSurface, StatementBody, StatementKind,
-    StatementSignatureError, TrustDecision,
+    CapabilityScope, MultiSignedStatement, SignedStatement, SigningSurface, StatementBody,
+    StatementKind, StatementSignatureError, TrustDecision,
 };
 
 /// Outcome of verifying a signed statement against a resolver.
@@ -94,6 +94,10 @@ pub enum SignatureStatus {
     /// the signature's `key_id` for diagnostics. See `ACTORS.md`
     /// §5.5.2 / §6.1.
     NotInAttestationSet { signature_key_id: String },
+    /// The multi-sig envelope carries fewer signatures than the actor's
+    /// attestation threshold at `created_at`. Carries both numbers for
+    /// diagnostics. See `ACTORS.md` §5.5.3.
+    BelowThreshold { provided: u8, required: u8 },
     /// Signature was not evaluated (e.g. actor could not be resolved).
     NotEvaluated,
 }
@@ -691,6 +695,209 @@ impl VerificationReport {
     }
 }
 
+/// Verify a [`MultiSignedStatement`] envelope against the actor
+/// resolver. Mirrors [`verify_envelope_statement`] for the attestation
+/// surface: each signature in the envelope must come from a key in the
+/// actor's attestation set at `created_at`, signatures must be all
+/// valid, and the count must be `>=` the actor's attestation threshold
+/// at `created_at`. See `ACTORS.md` §5.5.3.
+pub fn verify_envelope_multi_statement<B, R>(
+    statement: &MultiSignedStatement<B>,
+    resolver: &R,
+) -> VerificationReport
+where
+    B: StatementBody,
+    R: ActorResolver,
+{
+    let statement_id = statement.statement_id();
+    let envelope_actor = statement.unsigned().actor().clone();
+    let signature_actor = statement
+        .signatures()
+        .first()
+        .map(|s| s.actor().clone())
+        .unwrap_or_else(|| envelope_actor.clone());
+    let created_at = statement.unsigned().created_at();
+
+    // Multi-sig surface is attestation only — operational kinds keep
+    // the single-sig path. Refuse to evaluate if the body declares
+    // otherwise; this is a programmer error rather than a wire-shape
+    // failure, but report it as a non-evaluated outcome.
+    if !matches!(B::SIGNING_SURFACE, SigningSurface::Attestation) {
+        return VerificationReport {
+            statement_id,
+            envelope_actor,
+            signature_actor,
+            actor: ActorResolution::ResolverUnavailable(
+                "multi-sig envelope is only valid on attestation-surface bodies".to_owned(),
+            ),
+            signature: SignatureStatus::NotEvaluated,
+            trust: TrustEvaluation::Unevaluated,
+        };
+    }
+
+    // Every signature must claim the same actor as the envelope.
+    for signature in statement.signatures() {
+        if signature.actor() != &envelope_actor {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor: signature.actor().clone(),
+                actor: ActorResolution::SignatureActorMismatch,
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+    }
+
+    match resolver.actor_genesis(&envelope_actor) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::NotFound,
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+        Err(ActorResolveError::Unavailable(reason)) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::ResolverUnavailable(reason),
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+    }
+
+    let attestation_set = match resolver.attestation_keys_at(&envelope_actor, created_at) {
+        Ok(set) => set,
+        Err(ActorResolveError::Unavailable(reason)) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::ResolverUnavailable(reason),
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+    };
+
+    let threshold = match resolver.attestation_threshold_at(&envelope_actor, created_at) {
+        Ok(Some(threshold)) => threshold,
+        Ok(None) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::NotFound,
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+        Err(ActorResolveError::Unavailable(reason)) => {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::ResolverUnavailable(reason),
+                signature: SignatureStatus::NotEvaluated,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+    };
+
+    let provided = u8::try_from(statement.signatures().len()).unwrap_or(u8::MAX);
+    if provided < threshold {
+        return VerificationReport {
+            statement_id,
+            envelope_actor,
+            signature_actor,
+            actor: ActorResolution::Resolved,
+            signature: SignatureStatus::BelowThreshold {
+                provided,
+                required: threshold,
+            },
+            trust: TrustEvaluation::Unevaluated,
+        };
+    }
+
+    for (index, signature) in statement.signatures().iter().enumerate() {
+        let lookup = kairo_identity::KeyId::new(signature.key_id().to_owned());
+        let resolved_key = match attestation_set.get(&lookup) {
+            Some(key) => key.clone(),
+            None => {
+                return VerificationReport {
+                    statement_id,
+                    envelope_actor,
+                    signature_actor,
+                    actor: ActorResolution::Resolved,
+                    signature: SignatureStatus::NotInAttestationSet {
+                        signature_key_id: signature.key_id().to_owned(),
+                    },
+                    trust: TrustEvaluation::Unevaluated,
+                };
+            }
+        };
+
+        let outcome = match statement.verify_one(index, &resolved_key) {
+            Ok(_) => None,
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature,
+            )) => Some(SignatureStatus::Invalid),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidPublicKey,
+            )) => {
+                return VerificationReport {
+                    statement_id,
+                    envelope_actor,
+                    signature_actor,
+                    actor: ActorResolution::ResolverUnavailable(
+                        "resolved attestation key is malformed".to_owned(),
+                    ),
+                    signature: SignatureStatus::NotEvaluated,
+                    trust: TrustEvaluation::Unevaluated,
+                };
+            }
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::AlgorithmMismatch { .. },
+            )) => Some(SignatureStatus::AlgorithmMismatch),
+            Err(StatementSignatureError::UnsupportedAlgorithm(algorithm)) => {
+                Some(SignatureStatus::UnsupportedAlgorithm(algorithm))
+            }
+            Err(StatementSignatureError::InvalidSignatureLength { expected, actual }) => {
+                Some(SignatureStatus::Malformed {
+                    expected_len: expected,
+                    actual_len: actual,
+                })
+            }
+        };
+        if let Some(status) = outcome {
+            return VerificationReport {
+                statement_id,
+                envelope_actor,
+                signature_actor,
+                actor: ActorResolution::Resolved,
+                signature: status,
+                trust: TrustEvaluation::Unevaluated,
+            };
+        }
+    }
+
+    VerificationReport {
+        statement_id,
+        envelope_actor,
+        signature_actor,
+        actor: ActorResolution::Resolved,
+        signature: SignatureStatus::Valid,
+        trust: TrustEvaluation::Unevaluated,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic, clippy::too_many_arguments)]
 mod tests {
@@ -733,6 +940,7 @@ mod tests {
             ActorKind::person(),
             public_key_for(key),
             vec![attestation_key()],
+            1,
             timestamp(),
             [9; 32],
         )
@@ -1068,6 +1276,7 @@ mod tests {
             ActorKind::person(),
             public_key_for(&SigningKey::from_bytes(&[seed; 32])),
             vec![attestation_key()],
+            1,
             timestamp(),
             [seed; 32],
         )
@@ -2064,7 +2273,7 @@ mod tests {
 
     // ---- Surface dispatch (Phase 2 §14) ----
 
-    use crate::ActorEmergencyKeyRotationBody;
+    use crate::{ActorEmergencyKeyRotationBody, MultiSignedStatement};
 
     /// Sign an `ActorEmergencyKeyRotation` with the given key (caller's
     /// choice — used to stage both the valid and the invalid signing
@@ -2074,7 +2283,7 @@ mod tests {
         sig_key: &SigningKey,
         next_key: PublicKey,
         at: Timestamp,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, Box<dyn std::error::Error>> {
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRotationBody>, Box<dyn std::error::Error>> {
         let body = ActorEmergencyKeyRotationBody::new(next_key, None);
         let subject: KairoRef = format!("actor:{actor}").parse()?;
         let unsigned = UnsignedStatement::new(actor.clone(), subject, at, body);
@@ -2085,7 +2294,7 @@ mod tests {
             "ed25519",
             bytes,
         );
-        Ok(SignedStatement::new(unsigned, signature))
+        Ok(MultiSignedStatement::single(unsigned, signature))
     }
 
     /// Build a `MemoryActorResolver` whose actor genesis declares the
@@ -2101,6 +2310,7 @@ mod tests {
             ActorKind::person(),
             initial,
             vec![attestation],
+            1,
             timestamp(),
             [9; 32],
         )?;
@@ -2128,7 +2338,7 @@ mod tests {
             Timestamp::from_seconds(timestamp().seconds() + 100),
         )?;
 
-        let report = verify_envelope_statement(&signed, &resolver);
+        let report = verify_envelope_multi_statement(&signed, &resolver);
         assert_eq!(report.signature, SignatureStatus::Valid);
         Ok(())
     }
@@ -2151,7 +2361,7 @@ mod tests {
             Timestamp::from_seconds(timestamp().seconds() + 100),
         )?;
 
-        let report = verify_envelope_statement(&signed, &resolver);
+        let report = verify_envelope_multi_statement(&signed, &resolver);
         assert!(matches!(
             report.signature,
             SignatureStatus::NotInAttestationSet { .. }

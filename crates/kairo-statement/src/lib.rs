@@ -170,6 +170,138 @@ impl<B: StatementBody> SignedStatement<B> {
     }
 }
 
+/// Multi-signature envelope used by attestation-surface emergency
+/// statements (the five emergency kinds; see `ACTORS.md` §5.5.3).
+/// Carries `signatures: Vec<Signature>` instead of a single
+/// `signature`. The signatures are excluded from the statement's
+/// canonical bytes, so the `StatementId` is identical to the one a
+/// `SignedStatement<B>` over the same unsigned body would derive.
+///
+/// Constructor invariants:
+///
+/// - `signatures` must be non-empty.
+/// - `key_id` values across `signatures` must be distinct.
+/// - The `Vec` is stored sorted ascending by `key_id`, which matches
+///   the canonical-ordering rule the JSON schema documents.
+///
+/// Threshold checking (`signatures.len() >= attestation_threshold_at`)
+/// happens at the verifier, not in this type — the body alone cannot
+/// know the live attestation threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiSignedStatement<B> {
+    unsigned: UnsignedStatement<B>,
+    signatures: Vec<Signature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultiSignedStatementError {
+    Empty,
+    DuplicateKeyId(String),
+}
+
+impl fmt::Display for MultiSignedStatementError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("multi-sig envelope must contain at least one signature"),
+            Self::DuplicateKeyId(key_id) => {
+                write!(f, "multi-sig envelope contains duplicate key_id {key_id:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MultiSignedStatementError {}
+
+impl<B> MultiSignedStatement<B> {
+    pub fn new(
+        unsigned: UnsignedStatement<B>,
+        signatures: Vec<Signature>,
+    ) -> Result<Self, MultiSignedStatementError> {
+        if signatures.is_empty() {
+            return Err(MultiSignedStatementError::Empty);
+        }
+        let mut sorted = signatures;
+        sorted.sort_by(|a, b| a.key_id().cmp(b.key_id()));
+        for window in sorted.windows(2) {
+            if window[0].key_id() == window[1].key_id() {
+                return Err(MultiSignedStatementError::DuplicateKeyId(
+                    window[0].key_id().to_owned(),
+                ));
+            }
+        }
+        Ok(Self {
+            unsigned,
+            signatures: sorted,
+        })
+    }
+
+    /// Construct a single-signature envelope. Convenience for the
+    /// threshold = 1 case (today's only configuration); equivalent to
+    /// `MultiSignedStatement::new(unsigned, vec![signature])`.
+    pub fn single(unsigned: UnsignedStatement<B>, signature: Signature) -> Self {
+        // Construction with one signature can never fail (non-empty
+        // and trivially distinct).
+        Self::new(unsigned, vec![signature]).expect("single-signature envelope is well-formed")
+    }
+
+    pub fn unsigned(&self) -> &UnsignedStatement<B> {
+        &self.unsigned
+    }
+
+    pub fn signatures(&self) -> &[Signature] {
+        &self.signatures
+    }
+
+    /// Append a signature from another cosigner. Used by the co-sign
+    /// CLI flow where signatures accumulate across operators.
+    /// Refuses duplicate `key_id`s. The signature is inserted in
+    /// sorted position so the canonical ordering invariant holds
+    /// without resorting.
+    pub fn add_signature(
+        &mut self,
+        signature: Signature,
+    ) -> Result<(), MultiSignedStatementError> {
+        if self
+            .signatures
+            .iter()
+            .any(|s| s.key_id() == signature.key_id())
+        {
+            return Err(MultiSignedStatementError::DuplicateKeyId(
+                signature.key_id().to_owned(),
+            ));
+        }
+        let pos = self
+            .signatures
+            .partition_point(|s| s.key_id() < signature.key_id());
+        self.signatures.insert(pos, signature);
+        Ok(())
+    }
+}
+
+impl<B: StatementBody> MultiSignedStatement<B> {
+    pub fn statement_id(&self) -> StatementId {
+        self.unsigned.statement_id()
+    }
+
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        self.unsigned.canonical_bytes()
+    }
+
+    /// Verify a single signature in the envelope against the supplied
+    /// public key. Returns the same result as `SignedStatement::verify_signature`.
+    /// The verifier orchestrates per-signature lookups + threshold
+    /// checking; this is the per-signature primitive.
+    pub fn verify_one(
+        &self,
+        index: usize,
+        public_key: &PublicKey,
+    ) -> Result<VerifiedSignature, StatementSignatureError> {
+        let signature = self.signatures[index].to_signature_bytes()?;
+        verify_identity_signature(public_key, &self.signed_bytes(), &signature)
+            .map_err(StatementSignatureError::Verification)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectGenesisBody {
     object_kind: ObjectKind,
@@ -1315,6 +1447,63 @@ impl StatementBody for ActorAttestationKeyAddBody {
 impl CanonicalEncode for ActorAttestationKeyAddBody {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         self.new_key.encode_canonical(out);
+    }
+}
+
+/// `ActorAttestationThresholdChange` mutates the M of the M-of-N
+/// quorum required to sign attestation-surface emergency statements.
+/// The threshold is initialized at
+/// `ActorGenesis.attestation_threshold` and changed only by these
+/// statements thereafter. Body is just `{ new_threshold }`; the
+/// authority rule (raises require `max(current, new)` distinct
+/// signatures, lowers require `current`) is enforced at the verifier
+/// and at store put time.
+///
+/// See `schemas/canonical/actor-attestation-threshold-change-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActorAttestationThresholdChangeBody {
+    new_threshold: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActorAttestationThresholdChangeShapeError {
+    ThresholdTooSmall,
+}
+
+impl fmt::Display for ActorAttestationThresholdChangeShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ThresholdTooSmall => f.write_str(
+                "ActorAttestationThresholdChange.new_threshold must be >= 1",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ActorAttestationThresholdChangeShapeError {}
+
+impl ActorAttestationThresholdChangeBody {
+    pub fn new(new_threshold: u8) -> Result<Self, ActorAttestationThresholdChangeShapeError> {
+        if new_threshold < 1 {
+            return Err(ActorAttestationThresholdChangeShapeError::ThresholdTooSmall);
+        }
+        Ok(Self { new_threshold })
+    }
+
+    pub fn new_threshold(&self) -> u8 {
+        self.new_threshold
+    }
+}
+
+impl StatementBody for ActorAttestationThresholdChangeBody {
+    const TYPE: &'static str = "ActorAttestationThresholdChange";
+    const VERSION: u8 = 1;
+    const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+}
+
+impl CanonicalEncode for ActorAttestationThresholdChangeBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_u8(out, self.new_threshold);
     }
 }
 

@@ -26,6 +26,11 @@ pub struct ActorGenesisBody {
     /// disjoint from `initial_key`. Part of canonical bytes / `ActorId`.
     /// See `schemas/canonical/actor-genesis-v1.md` and `ACTORS.md` §5.5.2.
     attestation_keys: Vec<PublicKey>,
+    /// M of the M-of-N quorum required to sign attestation-surface
+    /// emergency statements. `1 ≤ attestation_threshold ≤
+    /// attestation_keys.len()`. Always explicit; no default.
+    /// Part of canonical bytes / `ActorId`. See `ACTORS.md` §5.5.3.
+    attestation_threshold: u8,
     created_at: Timestamp,
     nonce: [u8; 32],
 }
@@ -34,13 +39,16 @@ impl ActorGenesisBody {
     /// Construct an `ActorGenesisBody`.
     ///
     /// `attestation_keys` must be non-empty and disjoint from
-    /// `initial_key`. The constructor sorts and deduplicates the
-    /// attestation set so identical inputs (modulo order) produce the
-    /// same canonical bytes and therefore the same `ActorId`.
+    /// `initial_key`. `attestation_threshold` must satisfy
+    /// `1 ≤ threshold ≤ attestation_keys.len()`. The constructor sorts
+    /// and deduplicates the attestation set so identical inputs (modulo
+    /// order) produce the same canonical bytes and therefore the same
+    /// `ActorId`.
     pub fn new(
         actor_kind: ActorKind,
         initial_key: PublicKey,
         attestation_keys: Vec<PublicKey>,
+        attestation_threshold: u8,
         created_at: Timestamp,
         nonce: [u8; 32],
     ) -> Result<Self, ActorGenesisShapeError> {
@@ -53,10 +61,20 @@ impl ActorGenesisBody {
         if sorted.iter().any(|key| key.bytes() == initial_key.bytes()) {
             return Err(ActorGenesisShapeError::AttestationKeySharesSigningKey);
         }
+        if attestation_threshold < 1 {
+            return Err(ActorGenesisShapeError::ThresholdTooSmall);
+        }
+        if (attestation_threshold as usize) > sorted.len() {
+            return Err(ActorGenesisShapeError::ThresholdExceedsKeyCount {
+                threshold: attestation_threshold,
+                key_count: sorted.len(),
+            });
+        }
         Ok(Self {
             actor_kind,
             initial_key,
             attestation_keys: sorted,
+            attestation_threshold,
             created_at,
             nonce,
         })
@@ -72,6 +90,10 @@ impl ActorGenesisBody {
 
     pub fn attestation_keys(&self) -> &[PublicKey] {
         &self.attestation_keys
+    }
+
+    pub fn attestation_threshold(&self) -> u8 {
+        self.attestation_threshold
     }
 
     pub fn created_at(&self) -> Timestamp {
@@ -96,6 +118,7 @@ impl CanonicalEncode for ActorGenesisBody {
         encode_list(out, &self.attestation_keys, |out, key| {
             key.encode_canonical(out);
         });
+        encode_u8(out, self.attestation_threshold);
         self.created_at.encode_canonical(out);
         encode_bytes(out, &self.nonce);
     }
@@ -105,6 +128,8 @@ impl CanonicalEncode for ActorGenesisBody {
 pub enum ActorGenesisShapeError {
     EmptyAttestationKeys,
     AttestationKeySharesSigningKey,
+    ThresholdTooSmall,
+    ThresholdExceedsKeyCount { threshold: u8, key_count: usize },
 }
 
 impl fmt::Display for ActorGenesisShapeError {
@@ -115,6 +140,16 @@ impl fmt::Display for ActorGenesisShapeError {
             ),
             Self::AttestationKeySharesSigningKey => f.write_str(
                 "ActorGenesis attestation_keys must be disjoint from initial_key",
+            ),
+            Self::ThresholdTooSmall => f.write_str(
+                "ActorGenesis.attestation_threshold must be >= 1 (see ACTORS.md §5.5.3)",
+            ),
+            Self::ThresholdExceedsKeyCount {
+                threshold,
+                key_count,
+            } => write!(
+                f,
+                "ActorGenesis.attestation_threshold {threshold} exceeds attestation_keys count {key_count}",
             ),
         }
     }
@@ -427,6 +462,19 @@ pub struct AttestationKeyRevocationEntry {
     pub created_at: Timestamp,
 }
 
+/// One entry in the per-actor attestation-threshold change set. The
+/// resolver walks these to materialize the live threshold at a given
+/// `created_at`. The asymmetric authority rule (raises require
+/// `max(current, new)` distinct sigs, lowers require `current`) is
+/// enforced upstream at put-time and at the verifier. See
+/// `schemas/canonical/actor-attestation-threshold-change-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttestationThresholdChangeEntry {
+    pub statement_id: String,
+    pub new_threshold: u8,
+    pub created_at: Timestamp,
+}
+
 pub trait ActorResolver {
     fn actor_genesis(&self, actor: &ActorId)
         -> Result<Option<ActorGenesisBody>, ActorResolveError>;
@@ -478,6 +526,57 @@ pub trait ActorResolver {
         _actor: &ActorId,
     ) -> Result<Vec<AttestationKeyRevocationEntry>, ActorResolveError> {
         Ok(Vec::new())
+    }
+
+    /// Per-actor `ActorAttestationThresholdChange` entries in storage
+    /// order. The default implementation returns an empty list, in
+    /// which case `attestation_threshold_at` collapses to
+    /// `ActorGenesis.attestation_threshold`.
+    fn attestation_threshold_changes(
+        &self,
+        _actor: &ActorId,
+    ) -> Result<Vec<AttestationThresholdChangeEntry>, ActorResolveError> {
+        Ok(Vec::new())
+    }
+
+    /// Resolve the actor's attestation threshold (M of the M-of-N
+    /// quorum) at causal position `at`. Returns the most-recent
+    /// threshold change with `created_at <= at`, or
+    /// `ActorGenesis.attestation_threshold` when none precedes `at`.
+    /// Tiebreak on equal `created_at` is `statement_id` ascending
+    /// (lexicographic). Returns `None` if the actor genesis is
+    /// unknown. See `ACTORS.md` §5.5.3.
+    fn attestation_threshold_at(
+        &self,
+        actor: &ActorId,
+        at: Timestamp,
+    ) -> Result<Option<u8>, ActorResolveError> {
+        let genesis = match self.actor_genesis(actor)? {
+            Some(genesis) => genesis,
+            None => return Ok(None),
+        };
+        let mut latest: Option<&AttestationThresholdChangeEntry> = None;
+        let entries = self.attestation_threshold_changes(actor)?;
+        for entry in &entries {
+            if entry.created_at > at {
+                continue;
+            }
+            latest = Some(match latest {
+                None => entry,
+                Some(current)
+                    if entry.created_at > current.created_at
+                        || (entry.created_at == current.created_at
+                            && entry.statement_id > current.statement_id) =>
+                {
+                    entry
+                }
+                Some(current) => current,
+            });
+        }
+        Ok(Some(match latest {
+            Some(entry) => entry.new_threshold,
+            None => genesis.attestation_threshold(),
+        }))
     }
 
     /// Resolve the actor's attestation key set at causal position `at`.
@@ -591,6 +690,7 @@ pub struct MemoryActorResolver {
     revocations: BTreeMap<ActorId, Vec<KeyRevocationEntry>>,
     attestation_adds: BTreeMap<ActorId, Vec<AttestationKeyAddEntry>>,
     attestation_revocations: BTreeMap<ActorId, Vec<AttestationKeyRevocationEntry>>,
+    threshold_changes: BTreeMap<ActorId, Vec<AttestationThresholdChangeEntry>>,
 }
 
 impl MemoryActorResolver {
@@ -625,6 +725,14 @@ impl MemoryActorResolver {
             .entry(actor)
             .or_default()
             .push(entry);
+    }
+
+    pub fn insert_threshold_change(
+        &mut self,
+        actor: ActorId,
+        entry: AttestationThresholdChangeEntry,
+    ) {
+        self.threshold_changes.entry(actor).or_default().push(entry);
     }
 
     pub fn len(&self) -> usize {
@@ -671,6 +779,17 @@ impl ActorResolver for MemoryActorResolver {
     ) -> Result<Vec<AttestationKeyRevocationEntry>, ActorResolveError> {
         Ok(self
             .attestation_revocations
+            .get(actor)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    fn attestation_threshold_changes(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<AttestationThresholdChangeEntry>, ActorResolveError> {
+        Ok(self
+            .threshold_changes
             .get(actor)
             .cloned()
             .unwrap_or_default())
@@ -766,38 +885,39 @@ mod tests {
 
     #[test]
     fn same_actor_genesis_produces_same_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
-        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
 
         assert_eq!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_nonce_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let second =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [10; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [10; 32]).expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_key_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let second_key =
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
-        let second = ActorGenesisBody::new(ActorKind::person(), second_key, vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+        let second = ActorGenesisBody::new(ActorKind::person(), second_key, vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_created_at_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let second = ActorGenesisBody::new(
             ActorKind::person(),
             public_key(),
             vec![attestation_key()],
+            1,
             Timestamp::from_seconds(timestamp().seconds() + 1),
             [9; 32],
         )
@@ -885,7 +1005,7 @@ mod tests {
     #[test]
     fn memory_resolver_finds_actor_genesis_by_derived_actor_id() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -896,7 +1016,7 @@ mod tests {
     fn memory_resolver_returns_none_for_missing_actor() {
         let resolver = MemoryActorResolver::new();
         let missing_actor =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed")
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed")
                 .actor_id();
 
         assert_eq!(resolver.actor_genesis(&missing_actor), Ok(None));
@@ -905,7 +1025,7 @@ mod tests {
     #[test]
     fn memory_resolver_resolves_initial_key() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -923,7 +1043,7 @@ mod tests {
     #[test]
     fn active_key_falls_back_to_genesis_initial_when_no_rotations() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
 
@@ -936,7 +1056,7 @@ mod tests {
     #[test]
     fn active_key_at_walks_rotation_chain() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
 
@@ -989,7 +1109,7 @@ mod tests {
     #[test]
     fn revocation_default_only_invalidates_after_created_at() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -1022,7 +1142,7 @@ mod tests {
     #[test]
     fn retroactive_revocation_invalidates_at_every_timestamp() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -1048,7 +1168,7 @@ mod tests {
     #[test]
     fn most_restrictive_revocation_wins() {
         let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], timestamp(), [9; 32]).expect("genesis well-formed");
+            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -1092,6 +1212,7 @@ mod tests {
             ActorKind::person(),
             public_key(),
             vec![attestation_key()],
+            1,
             timestamp(),
             [42; 32],
         )

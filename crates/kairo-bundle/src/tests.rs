@@ -53,6 +53,7 @@ fn actor_genesis() -> ActorGenesisBody {
         ActorKind::person(),
         public_key(),
         vec![attestation_key()],
+        1,
         timestamp(),
         [9; 32],
     )
@@ -415,6 +416,7 @@ fn export_excludes_actor_trust_statements() -> TestResult {
         ActorKind::person(),
         PublicKey::ed25519(SigningKey::from_bytes(&[12; 32]).verifying_key().to_bytes()),
         vec![attestation_key()],
+        1,
         timestamp(),
         [99; 32],
     )
@@ -466,6 +468,7 @@ fn export_excludes_actor_capability_statements() -> TestResult {
         ActorKind::person(),
         PublicKey::ed25519(SigningKey::from_bytes(&[13; 32]).verifying_key().to_bytes()),
         vec![attestation_key()],
+        1,
         timestamp(),
         [88; 32],
     )

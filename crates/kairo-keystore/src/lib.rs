@@ -267,6 +267,7 @@ mod tests {
             ActorKind::person(),
             secret.public_key(),
             vec![attestation],
+            1,
             Timestamp::from_seconds(1_700_000_000),
             [9; 32],
         )

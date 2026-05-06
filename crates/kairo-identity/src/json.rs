@@ -76,6 +76,7 @@ pub struct ActorGenesisJson {
     pub actor_kind: String,
     pub initial_key: PublicKeyJson,
     pub attestation_keys: Vec<PublicKeyJson>,
+    pub attestation_threshold: u8,
     pub created_at: String,
     pub nonce: String,
 }
@@ -98,6 +99,7 @@ impl ActorGenesisJson {
             ActorKind::new(self.actor_kind.clone()),
             self.initial_key.to_public_key()?,
             attestation_keys,
+            self.attestation_threshold,
             created_at,
             decode_nonce_hex(&self.nonce)?,
         )
@@ -115,6 +117,7 @@ impl ActorGenesisJson {
                 .iter()
                 .map(PublicKeyJson::from_public_key)
                 .collect(),
+            attestation_threshold: body.attestation_threshold(),
             created_at: body.created_at().to_string(),
             nonce: encode_nonce_hex(body.nonce()),
         }
@@ -271,6 +274,7 @@ mod tests {
                 bytes: STANDARD
                     .encode(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes()),
             }],
+            attestation_threshold: 1,
             created_at: "2026-05-01T14:32:07Z".to_owned(),
             nonce: "0909090909090909090909090909090909090909090909090909090909090909".to_owned(),
         }

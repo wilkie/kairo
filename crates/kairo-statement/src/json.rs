@@ -9,14 +9,15 @@ use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody, ActorCapabilityGrantBody,
-    ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody,
-    ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody, ActorTrustShapeError, Capability,
-    CapabilityConstraint, CapabilityScope, CapabilityShapeError, ObjectBranchBody,
-    ObjectGenesisBody, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
-    ObjectVersionTagShapeError, RevisionId, SemverParseError, SemverVersion, Signature,
-    SignedStatement, StatementKind, StatementKindParseError, TrustDecision,
-    TrustDecisionParseError, UnsignedStatement,
+    ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
+    ActorAttestationThresholdChangeBody, ActorAttestationThresholdChangeShapeError,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody,
+    ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
+    ActorTrustShapeError, Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError,
+    MultiSignedStatement, MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody,
+    ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
+    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
+    StatementKindParseError, TrustDecision, TrustDecisionParseError, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +45,8 @@ pub enum StatementJsonError {
     InvalidStatementKind(StatementKindParseError),
     InvalidCapabilityShape(CapabilityShapeError),
     InvalidPublicKey(ActorGenesisJsonError),
+    InvalidMultiSignature(MultiSignedStatementError),
+    InvalidThresholdShape(ActorAttestationThresholdChangeShapeError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -73,6 +76,8 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidStatementKind(error) => write!(f, "{error}"),
             Self::InvalidCapabilityShape(error) => write!(f, "{error}"),
             Self::InvalidPublicKey(error) => write!(f, "invalid public key: {error}"),
+            Self::InvalidMultiSignature(error) => write!(f, "{error}"),
+            Self::InvalidThresholdShape(error) => write!(f, "{error}"),
         }
     }
 }
@@ -93,6 +98,8 @@ impl Error for StatementJsonError {
             Self::InvalidStatementKind(error) => Some(error),
             Self::InvalidCapabilityShape(error) => Some(error),
             Self::InvalidPublicKey(error) => Some(error),
+            Self::InvalidMultiSignature(error) => Some(error),
+            Self::InvalidThresholdShape(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -110,7 +117,7 @@ pub struct SignatureJson {
 }
 
 impl SignatureJson {
-    fn to_signature(&self) -> Result<Signature, StatementJsonError> {
+    pub fn to_signature(&self) -> Result<Signature, StatementJsonError> {
         Ok(Signature::new(
             ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
             self.key_id.clone(),
@@ -129,6 +136,15 @@ impl SignatureJson {
             bytes: STANDARD.encode(signature.bytes()),
         }
     }
+}
+
+fn signatures_to_envelope(
+    signatures: &[SignatureJson],
+) -> Result<Vec<Signature>, StatementJsonError> {
+    signatures
+        .iter()
+        .map(SignatureJson::to_signature)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1009,13 +1025,13 @@ pub struct ActorEmergencyKeyRotationStatementJson {
     pub subject: String,
     pub created_at: String,
     pub body: ActorEmergencyKeyRotationBodyJson,
-    pub signature: SignatureJson,
+    pub signatures: Vec<SignatureJson>,
 }
 
 impl ActorEmergencyKeyRotationStatementJson {
     pub fn to_statement(
         &self,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRotationBody>, StatementJsonError> {
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRotationBody>, StatementJsonError> {
         ensure_statement_shape(
             &self.statement_type,
             self.version,
@@ -1037,13 +1053,14 @@ impl ActorEmergencyKeyRotationStatementJson {
             self.body.to_body()?,
         );
 
-        Ok(SignedStatement::new(
-            unsigned,
-            self.signature.to_signature()?,
-        ))
+        let signatures = signatures_to_envelope(&self.signatures)?;
+        MultiSignedStatement::new(unsigned, signatures)
+            .map_err(StatementJsonError::InvalidMultiSignature)
     }
 
-    pub fn from_statement(statement: &SignedStatement<ActorEmergencyKeyRotationBody>) -> Self {
+    pub fn from_statement(
+        statement: &MultiSignedStatement<ActorEmergencyKeyRotationBody>,
+    ) -> Self {
         let unsigned = statement.unsigned();
         Self {
             statement_type: "ActorEmergencyKeyRotation".to_owned(),
@@ -1052,7 +1069,11 @@ impl ActorEmergencyKeyRotationStatementJson {
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
             body: ActorEmergencyKeyRotationBodyJson::from_body(unsigned.body()),
-            signature: SignatureJson::from_signature(statement.signature()),
+            signatures: statement
+                .signatures()
+                .iter()
+                .map(SignatureJson::from_signature)
+                .collect(),
         }
     }
 }
@@ -1097,13 +1118,13 @@ pub struct ActorEmergencyKeyRevocationStatementJson {
     pub subject: String,
     pub created_at: String,
     pub body: ActorEmergencyKeyRevocationBodyJson,
-    pub signature: SignatureJson,
+    pub signatures: Vec<SignatureJson>,
 }
 
 impl ActorEmergencyKeyRevocationStatementJson {
     pub fn to_statement(
         &self,
-    ) -> Result<SignedStatement<ActorEmergencyKeyRevocationBody>, StatementJsonError> {
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRevocationBody>, StatementJsonError> {
         ensure_statement_shape(
             &self.statement_type,
             self.version,
@@ -1125,13 +1146,14 @@ impl ActorEmergencyKeyRevocationStatementJson {
             self.body.to_body()?,
         );
 
-        Ok(SignedStatement::new(
-            unsigned,
-            self.signature.to_signature()?,
-        ))
+        let signatures = signatures_to_envelope(&self.signatures)?;
+        MultiSignedStatement::new(unsigned, signatures)
+            .map_err(StatementJsonError::InvalidMultiSignature)
     }
 
-    pub fn from_statement(statement: &SignedStatement<ActorEmergencyKeyRevocationBody>) -> Self {
+    pub fn from_statement(
+        statement: &MultiSignedStatement<ActorEmergencyKeyRevocationBody>,
+    ) -> Self {
         let unsigned = statement.unsigned();
         Self {
             statement_type: "ActorEmergencyKeyRevocation".to_owned(),
@@ -1140,7 +1162,11 @@ impl ActorEmergencyKeyRevocationStatementJson {
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
             body: ActorEmergencyKeyRevocationBodyJson::from_body(unsigned.body()),
-            signature: SignatureJson::from_signature(statement.signature()),
+            signatures: statement
+                .signatures()
+                .iter()
+                .map(SignatureJson::from_signature)
+                .collect(),
         }
     }
 }
@@ -1180,13 +1206,13 @@ pub struct ActorAttestationKeyAddStatementJson {
     pub subject: String,
     pub created_at: String,
     pub body: ActorAttestationKeyAddBodyJson,
-    pub signature: SignatureJson,
+    pub signatures: Vec<SignatureJson>,
 }
 
 impl ActorAttestationKeyAddStatementJson {
     pub fn to_statement(
         &self,
-    ) -> Result<SignedStatement<ActorAttestationKeyAddBody>, StatementJsonError> {
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyAddBody>, StatementJsonError> {
         ensure_statement_shape(
             &self.statement_type,
             self.version,
@@ -1208,13 +1234,12 @@ impl ActorAttestationKeyAddStatementJson {
             self.body.to_body()?,
         );
 
-        Ok(SignedStatement::new(
-            unsigned,
-            self.signature.to_signature()?,
-        ))
+        let signatures = signatures_to_envelope(&self.signatures)?;
+        MultiSignedStatement::new(unsigned, signatures)
+            .map_err(StatementJsonError::InvalidMultiSignature)
     }
 
-    pub fn from_statement(statement: &SignedStatement<ActorAttestationKeyAddBody>) -> Self {
+    pub fn from_statement(statement: &MultiSignedStatement<ActorAttestationKeyAddBody>) -> Self {
         let unsigned = statement.unsigned();
         Self {
             statement_type: "ActorAttestationKeyAdd".to_owned(),
@@ -1223,7 +1248,11 @@ impl ActorAttestationKeyAddStatementJson {
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
             body: ActorAttestationKeyAddBodyJson::from_body(unsigned.body()),
-            signature: SignatureJson::from_signature(statement.signature()),
+            signatures: statement
+                .signatures()
+                .iter()
+                .map(SignatureJson::from_signature)
+                .collect(),
         }
     }
 }
@@ -1258,13 +1287,13 @@ pub struct ActorAttestationKeyRevocationStatementJson {
     pub subject: String,
     pub created_at: String,
     pub body: ActorAttestationKeyRevocationBodyJson,
-    pub signature: SignatureJson,
+    pub signatures: Vec<SignatureJson>,
 }
 
 impl ActorAttestationKeyRevocationStatementJson {
     pub fn to_statement(
         &self,
-    ) -> Result<SignedStatement<ActorAttestationKeyRevocationBody>, StatementJsonError> {
+    ) -> Result<MultiSignedStatement<ActorAttestationKeyRevocationBody>, StatementJsonError> {
         ensure_statement_shape(
             &self.statement_type,
             self.version,
@@ -1286,14 +1315,13 @@ impl ActorAttestationKeyRevocationStatementJson {
             self.body.to_body()?,
         );
 
-        Ok(SignedStatement::new(
-            unsigned,
-            self.signature.to_signature()?,
-        ))
+        let signatures = signatures_to_envelope(&self.signatures)?;
+        MultiSignedStatement::new(unsigned, signatures)
+            .map_err(StatementJsonError::InvalidMultiSignature)
     }
 
     pub fn from_statement(
-        statement: &SignedStatement<ActorAttestationKeyRevocationBody>,
+        statement: &MultiSignedStatement<ActorAttestationKeyRevocationBody>,
     ) -> Self {
         let unsigned = statement.unsigned();
         Self {
@@ -1303,7 +1331,11 @@ impl ActorAttestationKeyRevocationStatementJson {
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
             body: ActorAttestationKeyRevocationBodyJson::from_body(unsigned.body()),
-            signature: SignatureJson::from_signature(statement.signature()),
+            signatures: statement
+                .signatures()
+                .iter()
+                .map(SignatureJson::from_signature)
+                .collect(),
         }
     }
 }
@@ -1327,6 +1359,86 @@ impl ActorAttestationKeyRevocationBodyJson {
         Self {
             revoked_key: body.revoked_key().to_string(),
             reason: body.reason().map(|r| r.to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorAttestationThresholdChangeStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    pub body: ActorAttestationThresholdChangeBodyJson,
+    pub signatures: Vec<SignatureJson>,
+}
+
+impl ActorAttestationThresholdChangeStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<MultiSignedStatement<ActorAttestationThresholdChangeBody>, StatementJsonError> {
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorAttestationThresholdChange",
+            1,
+        )?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        );
+
+        let signatures = signatures_to_envelope(&self.signatures)?;
+        MultiSignedStatement::new(unsigned, signatures)
+            .map_err(StatementJsonError::InvalidMultiSignature)
+    }
+
+    pub fn from_statement(
+        statement: &MultiSignedStatement<ActorAttestationThresholdChangeBody>,
+    ) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "ActorAttestationThresholdChange".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            body: ActorAttestationThresholdChangeBodyJson::from_body(unsigned.body()),
+            signatures: statement
+                .signatures()
+                .iter()
+                .map(SignatureJson::from_signature)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorAttestationThresholdChangeBodyJson {
+    pub new_threshold: u8,
+}
+
+impl ActorAttestationThresholdChangeBodyJson {
+    pub fn to_body(&self) -> Result<ActorAttestationThresholdChangeBody, StatementJsonError> {
+        ActorAttestationThresholdChangeBody::new(self.new_threshold)
+            .map_err(StatementJsonError::InvalidThresholdShape)
+    }
+
+    pub fn from_body(body: &ActorAttestationThresholdChangeBody) -> Self {
+        Self {
+            new_threshold: body.new_threshold(),
         }
     }
 }
