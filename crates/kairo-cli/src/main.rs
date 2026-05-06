@@ -570,6 +570,16 @@ enum ActorCommand {
         #[command(subcommand)]
         command: AddAttestationKeyCommand,
     },
+    /// Retract the recovery authority of an attestation key the
+    /// actor previously held — either declared in
+    /// `ActorGenesis.attestation_keys` or appended via
+    /// `ActorAttestationKeyAdd`. Self-revocation is permitted; the
+    /// store refuses revocations that would leave fewer attestation
+    /// keys than the live threshold (`ACTORS.md` §5.5.2 / §5.5.3).
+    RevokeAttestationKey {
+        #[command(subcommand)]
+        command: RevokeAttestationKeyCommand,
+    },
     /// Mutate the M of the M-of-N attestation threshold
     /// (`ACTORS.md` §5.5.3). The asymmetric authority rule is
     /// enforced at submit time: raises require
@@ -755,6 +765,54 @@ enum AddAttestationKeyCommand {
         prepared: PathBuf,
         /// Optional base64 ed25519 signature of the prepared payload
         /// to append before submitting. Single-signer convenience.
+        #[arg(long)]
+        signature: Option<PathBuf>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RevokeAttestationKeyCommand {
+    /// Convenience: read an attestation seed, sign and persist an
+    /// `ActorAttestationKeyRevocation`. The signing key may be the
+    /// same as the revoked key (self-revocation is permitted) or a
+    /// different attestation key. Refuses upstream if the resulting
+    /// set would fall below the live threshold.
+    Sign {
+        #[arg(long)]
+        actor: String,
+        /// File containing the signing attestation seed (base64;
+        /// 32 raw bytes when decoded). Not persisted.
+        #[arg(long)]
+        signing_attestation_key_seed: PathBuf,
+        /// `KeyId` of the attestation key being revoked.
+        #[arg(long = "revoke-key")]
+        revoke_key: String,
+        /// Optional human-readable reason recorded on the
+        /// statement (e.g., "yubikey lost").
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Pure two-step prepare: emit an unsigned
+    /// `ActorAttestationKeyRevocation` JSON envelope plus the
+    /// canonical bytes the cosigners must sign externally.
+    Prepare {
+        #[arg(long)]
+        actor: String,
+        #[arg(long = "revoke-key")]
+        revoke_key: String,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Submit a prepared envelope. Validates the envelope against
+    /// the actor's attestation threshold and dispatches to
+    /// `put_actor_attestation_key_revocation`. Use `--signature`
+    /// for the single-signer convenience path; for multi-signature
+    /// envelopes use `kairo actor co-sign` first.
+    Submit {
+        #[arg(long)]
+        prepared: PathBuf,
         #[arg(long)]
         signature: Option<PathBuf>,
     },
@@ -1006,6 +1064,9 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
         ActorCommand::RecoverKey { command } => run_actor_recover_key(paths, command),
         ActorCommand::AddAttestationKey { command } => {
             run_actor_add_attestation_key(paths, command)
+        }
+        ActorCommand::RevokeAttestationKey { command } => {
+            run_actor_revoke_attestation_key(paths, command)
         }
         ActorCommand::ChangeAttestationThreshold { command } => {
             run_actor_change_attestation_threshold(paths, command)
@@ -1817,6 +1878,301 @@ fn run_actor_add_attestation_key_submit(
     ))
 }
 
+fn run_actor_revoke_attestation_key(
+    paths: &StorePaths,
+    command: RevokeAttestationKeyCommand,
+) -> Result<String, CliError> {
+    match command {
+        RevokeAttestationKeyCommand::Sign {
+            actor,
+            signing_attestation_key_seed,
+            revoke_key,
+            reason,
+        } => run_actor_revoke_attestation_key_sign(
+            paths,
+            actor,
+            signing_attestation_key_seed,
+            revoke_key,
+            reason,
+        ),
+        RevokeAttestationKeyCommand::Prepare {
+            actor,
+            revoke_key,
+            reason,
+            output,
+        } => run_actor_revoke_attestation_key_prepare(paths, actor, revoke_key, reason, output),
+        RevokeAttestationKeyCommand::Submit {
+            prepared,
+            signature,
+        } => run_actor_revoke_attestation_key_submit(paths, prepared, signature),
+    }
+}
+
+/// Single-signer convenience: sign and persist directly. The
+/// non-empty-set-versus-threshold guard fires at the store layer if
+/// the resulting attestation set would fall below the live threshold;
+/// the message tells the operator to add a replacement first. The
+/// asymmetric authority rule for the threshold itself is *not*
+/// applied to revocations — only to threshold changes — but the live
+/// threshold still gates how many distinct sigs the envelope must
+/// carry, so this convenience flow is only useful at threshold = 1.
+fn run_actor_revoke_attestation_key_sign(
+    paths: &StorePaths,
+    actor: String,
+    signing_attestation_key_seed: PathBuf,
+    revoke_key: String,
+    reason: Option<String>,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let store = open_store(paths)?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let revoked_key_id = kairo_identity::KeyId::new(revoke_key);
+    let body = kairo_statement::ActorAttestationKeyRevocationBody::new(
+        revoked_key_id.clone(),
+        reason,
+    );
+    let subject: KairoRef = format!("actor:{actor_id}")
+        .parse()
+        .map_err(|source| CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        })?;
+    let now = Timestamp::now();
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+
+    let secret = read_attestation_seed(&signing_attestation_key_seed)?;
+    let public = secret.public_key();
+    let signing_key_id = public.key_id();
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    if !attestation_set.contains_key(&signing_key_id) {
+        return Err(CliError::CosignKeyNotInAttestationSet {
+            actor: actor_id.clone(),
+            key_id: signing_key_id.to_string(),
+        });
+    }
+
+    let sig_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        signing_key_id.to_string(),
+        "ed25519",
+        sig_bytes.bytes().to_vec(),
+    );
+    let signed = MultiSignedStatement::single(unsigned, signature);
+    let report = kairo_statement::verify::verify_envelope_multi_statement(&signed, &store);
+    if !report.is_cryptographically_valid() {
+        return Err(CliError::VerificationFailed(Box::new(report)));
+    }
+    let statement_id = signed.statement_id();
+    store
+        .put_actor_attestation_key_revocation(&signed)
+        .map_err(|error| CliError::WriteAttestationKeyRevocation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    Ok(format!(
+        "revoked attestation key\nstatement = {statement_id}\nactor = {actor_id}\nsigning_attestation_key_id = {signing_key_id}\nrevoked_key = {revoked_key_id}\n"
+    ))
+}
+
+fn run_actor_revoke_attestation_key_prepare(
+    paths: &StorePaths,
+    actor: String,
+    revoke_key: String,
+    reason: Option<String>,
+    output: PathBuf,
+) -> Result<String, CliError> {
+    let actor_id = ActorId::new(actor.clone())
+        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let store = open_store(paths)?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let revoked_key_id = kairo_identity::KeyId::new(revoke_key);
+    let body = kairo_statement::ActorAttestationKeyRevocationBody::new(
+        revoked_key_id.clone(),
+        reason,
+    );
+    let subject: KairoRef = format!("actor:{actor_id}")
+        .parse()
+        .map_err(|source| CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        })?;
+    let now = Timestamp::now();
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let canonical_bytes = unsigned.canonical_bytes();
+
+    let envelope_json = kairo_statement::json::ActorAttestationKeyRevocationStatementJson {
+        statement_type: "ActorAttestationKeyRevocation".to_owned(),
+        version: 1,
+        actor: actor_id.to_string(),
+        subject: format!("actor:{actor_id}"),
+        created_at: unsigned.created_at().to_string(),
+        body: kairo_statement::json::ActorAttestationKeyRevocationBodyJson::from_body(
+            unsigned.body(),
+        ),
+        signatures: Vec::new(),
+    };
+    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
+        .map_err(CliError::SerializePreparedEnvelope)?;
+    std::fs::write(&output, &envelope_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: output.clone(),
+            source,
+        }
+    })?;
+    let payload_path = payload_path_for(&output);
+    std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
+        CliError::WritePreparedEnvelope {
+            path: payload_path.clone(),
+            source,
+        }
+    })?;
+
+    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+    let mut attestation_lines = String::new();
+    for key in attestation_set.keys() {
+        attestation_lines.push_str(&format!("  - {key}\n"));
+    }
+    let need = ActorResolver::attestation_threshold_at(&store, &actor_id, now)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
+        })?
+        .unwrap_or(1);
+
+    Ok(format!(
+        "prepared attestation-key-revocation envelope\nactor = {actor_id}\nrevoked_key = {revoked_key_id}\nrequired_signatures = {need}\nenvelope = {}\npayload = {}\n\nNext steps:\n  1. Each cosigner signs {} with one of the actor's attestation keys (see list below):\n{attestation_lines}  2. For each signature, run `kairo actor co-sign --prepared {} --actor {actor_id} --attestation-key-seed <path>` (or pass `--signature <path>` to `submit` for the single-signer flow).\n  3. Run `kairo actor revoke-attestation-key submit --prepared {}` to finalize.\n",
+        output.display(),
+        payload_path.display(),
+        payload_path.display(),
+        output.display(),
+        output.display(),
+    ))
+}
+
+fn run_actor_revoke_attestation_key_submit(
+    paths: &StorePaths,
+    prepared: PathBuf,
+    signature: Option<PathBuf>,
+) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+
+    let envelope_bytes =
+        std::fs::read(&prepared).map_err(|source| CliError::ReadPreparedEnvelope {
+            path: prepared.clone(),
+            source,
+        })?;
+    let mut envelope_json: kairo_statement::json::ActorAttestationKeyRevocationStatementJson =
+        serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
+
+    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
+        CliError::ParseActorId {
+            actor: envelope_json.actor.clone(),
+            source,
+        }
+    })?;
+    let _ = store
+        .get_actor(&actor_id)
+        .map_err(|error| CliError::ReadActor {
+            actor: actor_id.clone(),
+            source: error,
+        })?;
+
+    let body_unsigned = envelope_json
+        .body
+        .to_body()
+        .map_err(CliError::ParseStatement)?;
+    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
+        CliError::BuildActorSubjectRef {
+            actor: actor_id.clone(),
+            source,
+        }
+    })?;
+    let created_at: Timestamp =
+        envelope_json
+            .created_at
+            .parse()
+            .map_err(|source| CliError::ParseTimestamp {
+                source,
+                value: envelope_json.created_at.clone(),
+            })?;
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let canonical = unsigned.canonical_bytes();
+
+    if let Some(sig_path) = signature {
+        let sig_bytes = read_signature_bytes(&sig_path)?;
+        let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, created_at)
+            .map_err(|error| CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            })?;
+        let signature_struct = kairo_identity::SignatureBytes::ed25519(sig_bytes);
+        let mut signing_key_id = None;
+        for (key_id, public) in &attestation_set {
+            if kairo_identity::verify_signature(public, &canonical, &signature_struct).is_ok() {
+                signing_key_id = Some(key_id.clone());
+                break;
+            }
+        }
+        let signing_key_id =
+            signing_key_id.ok_or_else(|| CliError::SignatureNoAttestationMatch {
+                actor: actor_id.clone(),
+            })?;
+        envelope_json
+            .signatures
+            .push(kairo_statement::json::SignatureJson {
+                actor: actor_id.to_string(),
+                key_id: signing_key_id.to_string(),
+                algorithm: "ed25519".to_owned(),
+                bytes: STANDARD.encode(sig_bytes),
+            });
+    }
+
+    let signed = envelope_json
+        .to_statement()
+        .map_err(CliError::ParseStatement)?;
+    let report = kairo_statement::verify::verify_envelope_multi_statement(&signed, &store);
+    if !report.is_cryptographically_valid() {
+        return Err(CliError::VerificationFailed(Box::new(report)));
+    }
+    let revoked_key = signed.unsigned().body().revoked_key().clone();
+    let statement_id = signed.statement_id();
+    store
+        .put_actor_attestation_key_revocation(&signed)
+        .map_err(|error| CliError::WriteAttestationKeyRevocation {
+            statement: statement_id.clone(),
+            source: error,
+        })?;
+
+    Ok(format!(
+        "revoked attestation key\nstatement = {statement_id}\nactor = {actor_id}\nrevoked_key = {revoked_key}\nsignatures = {}\n",
+        signed.signatures().len(),
+    ))
+}
+
 fn run_actor_change_attestation_threshold(
     paths: &StorePaths,
     command: ChangeAttestationThresholdCommand,
@@ -2564,6 +2920,13 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
             source: error,
         },
     )?;
+    let attestation_revocations =
+        ActorResolver::attestation_key_revocations(&store, &actor_id).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
+        })?;
     let mut threshold_changes = ActorResolver::attestation_threshold_changes(&store, &actor_id)
         .map_err(|error| CliError::ReadActiveKey {
             actor: actor_id.clone(),
@@ -2641,6 +3004,14 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
                     "created_at": entry.created_at.to_string(),
                 }))
                 .collect::<Vec<_>>(),
+            "attestation_revocations": attestation_revocations
+                .iter()
+                .map(|entry| serde_json::json!({
+                    "statement_id": entry.statement_id,
+                    "revoked_key": entry.revoked_key.to_string(),
+                    "created_at": entry.created_at.to_string(),
+                }))
+                .collect::<Vec<_>>(),
             "attestation_threshold_changes": trajectory
                 .iter()
                 .map(|(entry, from, quorum)| serde_json::json!({
@@ -2705,6 +3076,16 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
             entry.statement_id,
             entry.new_key.key_id(),
             entry.created_at,
+        ));
+    }
+    out.push_str(&format!(
+        "attestation_revocations = {}\n",
+        attestation_revocations.len()
+    ));
+    for entry in &attestation_revocations {
+        out.push_str(&format!(
+            "  - statement = {}\n    revoked_key = {}\n    created_at = {}\n",
+            entry.statement_id, entry.revoked_key, entry.created_at,
         ));
     }
     out.push_str(&format!(
@@ -5438,7 +5819,7 @@ fn describe_verification_failure(report: &VerificationReport) -> String {
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor revoke-attestation-key sign --actor <id> --signing-attestation-key-seed <path> --revoke-key <key-id> [--reason <text>]\n  kairo actor revoke-attestation-key prepare --actor <id> --revoke-key <key-id> [--reason <text>] --output <path>\n  kairo actor revoke-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 #[derive(Debug)]
@@ -5578,6 +5959,10 @@ enum CliError {
     },
     ChangeThresholdShape(kairo_statement::ActorAttestationThresholdChangeShapeError),
     WriteThresholdChange {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    WriteAttestationKeyRevocation {
         statement: kairo_core::StatementId,
         source: kairo_store::StoreError,
     },
@@ -5904,6 +6289,10 @@ impl fmt::Display for CliError {
                 f,
                 "failed to write attestation-threshold-change {statement}: {source}"
             ),
+            Self::WriteAttestationKeyRevocation { statement, source } => write!(
+                f,
+                "failed to write attestation-key-revocation {statement}: {source}"
+            ),
             Self::SerializePreparedEnvelope(error) => write!(
                 f,
                 "failed to serialize prepared envelope: {error}"
@@ -6152,6 +6541,7 @@ impl Error for CliError {
             | Self::WriteEmergencyKeyRotation { source, .. }
             | Self::WriteAttestationKeyAdd { source, .. }
             | Self::WriteThresholdChange { source, .. }
+            | Self::WriteAttestationKeyRevocation { source, .. }
             | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
@@ -9940,6 +10330,129 @@ kind = "tree"
         })?;
         let history: serde_json::Value = serde_json::from_str(&history_output)?;
         assert_eq!(history["attestation_adds"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    /// `revoke-attestation-key sign` round-trips: actor starts with
+    /// two attestation keys at threshold 1; revoke the genesis-
+    /// declared key signed by the same key (self-revocation), then
+    /// `add-attestation-key sign` first to keep the set non-empty.
+    /// Validates the resulting attestation set + key-history surface.
+    #[test]
+    fn actor_revoke_attestation_key_sign_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store_dir = tempfile::TempDir::new()?;
+
+        // Create actor with attestation key A only, threshold 1.
+        let attest_a_seed = [201_u8; 32];
+        let attest_a_pub = SigningKey::from_bytes(&attest_a_seed)
+            .verifying_key()
+            .to_bytes();
+        let attest_a_hex: String = attest_a_pub.iter().map(|b| format!("{b:02x}")).collect();
+
+        let create_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![attest_a_hex],
+                    generate_attestation_keys: 0,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&create_output, "actor = ")?;
+        let attest_a_id = kairo_identity::PublicKey::ed25519(attest_a_pub)
+            .key_id()
+            .to_string();
+
+        let seed_a_path = store_dir.path().join("seed_a.txt");
+        std::fs::write(&seed_a_path, STANDARD.encode(attest_a_seed))?;
+
+        // First: revoke A while it's the only key — store must
+        // refuse (non-empty-set guard).
+        let early = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RevokeAttestationKey {
+                    command: RevokeAttestationKeyCommand::Sign {
+                        actor: actor_id.clone(),
+                        signing_attestation_key_seed: seed_a_path.clone(),
+                        revoke_key: attest_a_id.clone(),
+                        reason: None,
+                    },
+                },
+            }),
+        });
+        assert!(early.is_err(), "revoking only key must fail");
+
+        // Add a replacement key B via add-attestation-key sign
+        // (--generate so the seed is printed once and we can use it).
+        let add_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::AddAttestationKey {
+                    command: AddAttestationKeyCommand::Sign {
+                        actor: actor_id.clone(),
+                        signing_attestation_key_seed: seed_a_path.clone(),
+                        key: None,
+                        generate: true,
+                    },
+                },
+            }),
+        })?;
+        let new_b_seed_b64 = parse_field(&add_output, "generated_attestation_seed = ")?;
+        let new_b_id = parse_field(&add_output, "new_attestation_key_id = ")?;
+
+        // Now revoke A with self-signature (signing key A revokes
+        // itself). The set after = {B}, threshold = 1 → still
+        // satisfies the non-empty guard.
+        let revoke_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::RevokeAttestationKey {
+                    command: RevokeAttestationKeyCommand::Sign {
+                        actor: actor_id.clone(),
+                        signing_attestation_key_seed: seed_a_path,
+                        revoke_key: attest_a_id.clone(),
+                        reason: Some("yubikey lost".to_owned()),
+                    },
+                },
+            }),
+        })?;
+        assert!(revoke_output.contains("revoked attestation key"));
+        assert!(revoke_output.contains(&format!("revoked_key = {attest_a_id}")));
+
+        // key-history JSON shows the revocation entry.
+        let history = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::KeyHistory {
+                    actor: actor_id,
+                    json: true,
+                },
+            }),
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(&history)?;
+        let revs = parsed["attestation_revocations"]
+            .as_array()
+            .expect("attestation_revocations array");
+        assert_eq!(revs.len(), 1);
+        assert_eq!(revs[0]["revoked_key"], attest_a_id);
+        // Confirm B is still in the set via the add entry.
+        let adds = parsed["attestation_adds"]
+            .as_array()
+            .expect("attestation_adds array");
+        assert_eq!(adds.len(), 1);
+        assert_eq!(adds[0]["new_attestation_key_id"], new_b_id);
+        // Suppress unused-variable warning while documenting that B
+        // was generated and printed.
+        assert!(!new_b_seed_b64.is_empty());
         Ok(())
     }
 }

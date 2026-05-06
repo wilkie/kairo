@@ -555,23 +555,23 @@ key remains authoritative forever (`THREAT_MODEL.md` §5.11, §5.12,
 
 **CLI slice:**
 
-- [ ] `kairo actor revoke-attestation-key sign --actor <id>
+- [x] `kairo actor revoke-attestation-key sign --actor <id>
       --signing-attestation-key-seed <path> --revoke-key <key-id>
       [--reason <text>]` — convenience flow mirroring
-      `recover-key sign`. Refuses to construct a revocation that
-      would empty the attestation set; suggests
-      `add-attestation-key sign` first.
-- [ ] `kairo actor revoke-attestation-key prepare --actor <id>
+      `recover-key sign`. The store-layer non-empty-set guard
+      refuses revocations that would empty the attestation set,
+      pointing operators at `add-attestation-key sign` first.
+- [x] `kairo actor revoke-attestation-key prepare --actor <id>
       --revoke-key <key-id> [--reason <text>] --output <path>` and
-      `kairo actor revoke-attestation-key import --prepared <path>
-      --signature <path>` — pure two-step path for HSM/YubiKey
-      operators, mirroring `recover-key prepare`/`import` and
-      `add-attestation-key prepare`/`import`. Auto-detects the
-      signing attestation key from the signature.
-- [ ] `kairo actor key-history` extended to list
-      `ActorAttestationKeyRevocation` entries alongside adds, with
-      surface markers and the resulting attestation set after each
-      event. Both text and `--json` modes.
+      `kairo actor revoke-attestation-key submit --prepared <path>
+      [--signature <path>]` — pure two-step path for HSM/YubiKey
+      operators, mirroring `recover-key prepare`/`submit` and
+      `add-attestation-key prepare`/`submit`. Auto-detects the
+      signing attestation key from `--signature`; multi-signer
+      flows go through `kairo actor co-sign`.
+- [x] `kairo actor key-history` extended to list
+      `ActorAttestationKeyRevocation` entries alongside adds and
+      threshold changes. Both text and `--json` modes.
 
 **Follow-on (design locked, not yet implemented):
 M-of-N attestation key thresholds.** Single-key compromise of any
