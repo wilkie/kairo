@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/actor-attestation-key-add-v1.schema.json",
   "title": "Kairo ActorAttestationKeyAdd Statement v1",
   "type": "object",
-  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signatures"],
   "properties": {
     "type": {
       "const": "ActorAttestationKeyAdd"
@@ -48,9 +48,9 @@
       },
       "additionalProperties": false
     },
-    "signature": {
-      "$ref": "statement-envelope-v1.schema.json#/$defs/signature",
-      "description": "Must be produced by a key in the actor's attestation set at created_at. Operational signing keys cannot grow the attestation set. See ACTORS.md §5.5.2."
+    "signatures": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signatures",
+      "description": "Each signature must be produced by a distinct key in the actor's attestation set at created_at. The verifier requires >= attestation_threshold_at(actor, created_at) entries with distinct key_id values. Operational signing keys cannot grow the attestation set. See ACTORS.md §5.5.2 / §5.5.3."
     }
   },
   "additionalProperties": false

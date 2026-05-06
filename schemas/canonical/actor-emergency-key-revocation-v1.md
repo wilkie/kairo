@@ -53,11 +53,13 @@ fact, mirroring `CAPABILITIES.md` §6.3.
 
 ## Authority to Revoke
 
-The verifier accepts the signature on an `ActorEmergencyKeyRevocation`
-iff `signature.key_id` is in the actor's attestation key set at
-`created_at` (the same set described in
+The envelope carries `signatures: Vec<Signature>`. The verifier accepts
+the statement iff `signatures` contains
+≥ `attestation_threshold_at(actor, created_at)` valid signatures from
+*distinct* `key_id`s in the attestation set at `created_at` (the same
+set and the same multi-signature rule described in
 `schemas/canonical/actor-emergency-key-rotation-v1.md` "Signing-Surface
-Rule").
+Rule"). See `ACTORS.md` §5.5.3.
 
 Cross-actor emergency revocation is **invalid** — only the actor whose
 key it is may revoke their own keys. A capability cannot delegate this
@@ -88,8 +90,10 @@ Every `ActorEmergencyKeyRevocation` must satisfy:
   causal position. A revocation referencing a `KeyId` the actor never
   held is `Indeterminate` until the introducing statement is observed;
   it is not invalid.
-- The revocation itself must verify against an attestation key in the
-  actor's attestation set at `created_at`.
+- `signatures` contains ≥ `attestation_threshold_at(actor,
+  created_at)` valid signatures, each from a distinct `key_id` in
+  the attestation set at `created_at`. Sub-threshold counts and
+  duplicate `key_id`s make the entire statement invalid.
 - `reason` is optional human-readable text; its presence does not
   affect resolution but it IS included in canonical bytes (changing
   the reason changes the `StatementId`).
@@ -112,12 +116,14 @@ wants to invalidate it from cold storage immediately, before staging an
     "retroactive": true,
     "reason": "key suspected exfiltrated; emergency revoke from cold storage"
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<attestation-key-id>",
-    "algorithm": "ed25519",
-    "bytes": "base64-signature-by-attestation-key"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<attestation-key-id>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-attestation-key"
+    }
+  ]
 }
 ```
 
@@ -155,13 +161,14 @@ Fields are encoded in this exact order:
 
 The following must not be included in Statement ID canonical bytes:
 
-- signature
+- signatures (any of them; the entire `signatures` array)
 - received-at timestamps
 - source peer or federation route
 - whether this statement currently wins resolution (revocation is
   standalone, not chained)
-- whether the signing attestation key was declared at genesis or
+- whether the signing attestation keys were declared at genesis or
   appended later via `ActorAttestationKeyAdd`
+- the resolved attestation threshold at `created_at`
 
 ## Rust-Equivalent Pseudocode
 

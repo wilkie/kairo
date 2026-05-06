@@ -423,8 +423,8 @@ schemas/canonical/actor-key-revocation-v1.md
 
 An `ActorEmergencyKeyRotation` is the cold-storage counterpart to
 `ActorKeyRotation` (§4.2f). The body shape is identical — `next_key`
-plus `supersedes` — but the statement is signed by a **cold-storage
-attestation key** declared in `ActorGenesis.attestation_keys` (or
+plus `supersedes` — but the statement is signed by **cold-storage
+attestation keys** declared in `ActorGenesis.attestation_keys` (or
 appended via `ActorAttestationKeyAdd`, §4.2j) instead of by the actor's
 currently active signing key.
 
@@ -434,9 +434,13 @@ either condition would brick the actor (`ACTORS.md` §5.5.1).
 
 Differences from `ActorKeyRotation`:
 
-1. The verifier accepts the signature iff `signature.key_id` is in the
-   actor's **attestation key set** at `created_at` — never the
-   rotation-chain active key. The two signing surfaces never overlap.
+1. The envelope carries `signatures: Vec<Signature>` instead of a
+   single `signature` (`ACTORS.md` §5.5.3). The verifier accepts the
+   statement iff `signatures` contains
+   ≥ `attestation_threshold_at(actor, created_at)` valid signatures
+   from *distinct* `key_id`s in the actor's **attestation key set**
+   at `created_at` — never the rotation-chain active key. The two
+   signing surfaces never overlap.
 2. The chain semantics are otherwise identical — emergency rotations
    contribute leaves to the same per-actor key-event chain, and the
    active-key-at-causal-position rule walks them transparently.
@@ -458,9 +462,10 @@ schemas/canonical/actor-emergency-key-rotation-v1.md
 
 An `ActorEmergencyKeyRevocation` is the cold-storage counterpart to
 `ActorKeyRevocation` (§4.2g). The body shape — `revoked_key`,
-`retroactive`, `reason` — is identical, but the signature must be
-produced by an attestation key in the actor's attestation set at
-`created_at`.
+`retroactive`, `reason` — is identical, but the envelope carries
+`signatures: Vec<Signature>`, and the verifier requires
+≥ `attestation_threshold_at(actor, created_at)` valid signatures from
+*distinct* `key_id`s in the actor's attestation set at `created_at`.
 
 This exists so an operator can retract a compromised signing key from
 cold storage without first having to emergency-rotate to a fresh active
@@ -469,9 +474,11 @@ semantics are identical to the routine variant; the revocation set for
 `(actor, key_id)` spans both kinds, and the most-restrictive
 interpretation wins.
 
-Attestation keys themselves are **not** revocable in v1 — they are
-append-only via `ActorAttestationKeyAdd`. Compromise of an attestation
-key has no in-protocol remediation in v1; see `ACTORS.md` §5.5.2.
+Attestation keys themselves are revocable via
+`ActorAttestationKeyRevocation` (§4.2k). Operators wanting to retire
+an attestation key (compromised or otherwise) use that statement, not
+this one — `revoked_key` here targets *signing* keys, not attestation
+keys.
 
 The canonical ActorEmergencyKeyRevocation v1 form is documented in:
 
@@ -490,22 +497,35 @@ publishing one of these statements per added key.
 Differences from the rotation/revocation kinds:
 
 1. Attestation keys form a **set**, not a chain. There is no
-   `supersedes` field; ordering is irrelevant. The set is **append-only**
-   in v1 — there is no `ActorAttestationKeyRevocation` and no removal
-   mechanism.
-2. The signature must be produced by an existing attestation key in the
-   set at `created_at`. The operational signing key surface (active key
-   per the rotation chain) **cannot** grow the attestation set, even
-   if it is the only key the operator currently holds. This separation
-   keeps a compromised active key from quietly registering
-   attacker-controlled recovery keys.
+   `supersedes` field; ordering is irrelevant. The set may grow via
+   `ActorAttestationKeyAdd` and shrink via
+   `ActorAttestationKeyRevocation` (§4.2k), subject to the rule that
+   the resulting set size is ≥ the resulting attestation threshold
+   (`ACTORS.md` §5.5.3).
+2. The envelope carries `signatures: Vec<Signature>`. The verifier
+   requires ≥ `attestation_threshold_at(actor, created_at)` valid
+   signatures from *distinct* `key_id`s in the existing attestation
+   set at `created_at`. The operational signing key surface (active
+   key per the rotation chain) **cannot** grow the attestation set,
+   even if it is the only key the operator currently holds. This
+   separation keeps a compromised active key from quietly
+   registering attacker-controlled recovery keys; with
+   `attestation_threshold > 1`, a single compromised attestation
+   key also cannot register attacker-controlled keys.
 3. `new_key` must be disjoint from any signing key the actor has held.
    Promoting a signing key into the attestation surface would collapse
    the cold-storage separation; the body validator rejects it.
 
 Resolution: the attestation set for `(actor, T)` is
-`ActorGenesis.attestation_keys ∪ { add.new_key | add ∈
-ActorAttestationKeyAdd statements signed by actor with created_at ≤ T }`.
+
+```text
+(ActorGenesis.attestation_keys
+ ∪ { add.new_key | add ∈ valid_adds(actor), add.created_at ≤ T })
+∖ { rev.revoked_key | rev ∈ valid_revs(actor), rev.created_at ≤ T }
+```
+
+where `valid_revs(actor)` is the set of valid
+`ActorAttestationKeyRevocation` statements signed by `actor` (§4.2k).
 
 The canonical ActorAttestationKeyAdd v1 form is documented in:
 
@@ -531,16 +551,21 @@ Differences from the routine and emergency revocation kinds:
    true }` against the operational keys those emergency events
    introduced. Events signed by a revoked attestation key before its
    revocation's `created_at` remain valid.
-2. The signature must be produced by an attestation key in the set
-   at `created_at`. The signing key MAY be `revoked_key` itself
-   (self-revocation). The operational signing surface (active key
-   per the rotation chain) **cannot** revoke attestation keys, even
-   if it is the only key the operator currently holds.
-3. The **resulting attestation set must be non-empty**. A revocation
-   that would leave the actor with zero attestation keys is invalid.
-   Operators with only one attestation key must
-   `ActorAttestationKeyAdd` first, then revoke. Symmetric with
-   `ACTORS.md` §5.5.1's bricking guard at the operational surface.
+2. The envelope carries `signatures: Vec<Signature>`. The verifier
+   requires ≥ `attestation_threshold_at(actor, created_at)` valid
+   signatures from *distinct* `key_id`s in the attestation set at
+   `created_at`. The signing keys MAY include `revoked_key` itself
+   (self-revocation contributes one signature toward threshold).
+   The operational signing surface (active key per the rotation
+   chain) **cannot** revoke attestation keys, even if it is the only
+   key the operator currently holds.
+3. The **resulting attestation set size must be ≥ the resulting
+   attestation threshold** (`ACTORS.md` §5.5.3, generalized form of
+   the §5.5.1 bricking guard). A revocation that would drop the set
+   below the threshold is invalid. Operators must either stage an
+   `ActorAttestationKeyAdd` first (to grow N) or stage an
+   `ActorAttestationThresholdChange` lowering the threshold first
+   (subject to the asymmetric authority rule in §5.5.3 / §4.2l).
 
 Resolution: the attestation set for `(actor, T)` is
 
@@ -559,6 +584,57 @@ The canonical ActorAttestationKeyRevocation v1 form is documented in:
 
 ```text
 schemas/canonical/actor-attestation-key-revocation-v1.md
+```
+
+### 4.2l ActorAttestationThresholdChange Statement
+
+An `ActorAttestationThresholdChange` statement mutates the M of the
+M-of-N quorum required to sign attestation-surface emergency
+statements. The threshold is initialized at
+`ActorGenesis.attestation_threshold` and changed only by these
+statements thereafter (`ACTORS.md` §5.5.3).
+
+Differences from the other emergency kinds:
+
+1. Body shape is `{ new_threshold: u8 }` — just the new threshold.
+   No chain (`supersedes`), no key payload. Resolution picks the most
+   recent valid change at or before `T`, ordered by
+   `(created_at, statement_id)` ascending.
+2. The envelope carries `signatures: Vec<Signature>`. The required
+   signature count is **asymmetric** in the direction of the change,
+   to prevent an attacker who has just-barely reached the threshold
+   from quietly consolidating control:
+   - **Raises** (`new > current`) require
+     `max(current, new)` distinct attestation signatures.
+   - **Lowers** (`new < current`) require `current` distinct
+     attestation signatures.
+   - No-ops (`new == current`) require `current`.
+3. Validation: `1 ≤ new_threshold ≤ |attestation_set at created_at|`.
+   A change exceeding the available key count is invalid (would
+   immediately brick the recovery surface). The store rejects this
+   with `StoreError::Rejected`.
+
+Resolution: the attestation threshold for `(actor, T)` is
+`ActorGenesis.attestation_threshold` overlaid by every valid
+`ActorAttestationThresholdChange` statement signed by `actor` with
+`created_at ≤ T`. The most recent valid change at or before `T` wins.
+
+A threshold change does not by itself add or remove attestation keys;
+it only changes the quorum size. Operators wanting to go from 1-of-1
+to 3-of-3 stage two `ActorAttestationKeyAdd`s first (each signed at
+threshold = 1), then issue this statement with `new_threshold = 3`
+(signed by all three keys per the raise rule).
+
+**Resilience hygiene.** With the asymmetric rule, an `M-of-M`
+configuration plus a single lost key cannot be lowered (the lower
+rule needs `current` signatures, but only `current − 1` keys remain).
+Operators MUST use M-of-N with `N > M` for resilience —
+e.g., 3-of-5, not 3-of-3.
+
+The canonical ActorAttestationThresholdChange v1 form is documented in:
+
+```text
+schemas/canonical/actor-attestation-threshold-change-v1.md
 ```
 
 ### 4.2 ObjectRevision Statement

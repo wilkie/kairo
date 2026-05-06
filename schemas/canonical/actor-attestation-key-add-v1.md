@@ -61,25 +61,30 @@ remediation in v1; see `ACTORS.md` §5.5.2 for the rationale.
 
 ## Authority to Add
 
-The verifier accepts the signature on an `ActorAttestationKeyAdd` iff
-`signature.key_id` is in the actor's **attestation key set at
-`created_at`**:
+The envelope carries `signatures: Vec<Signature>`. The verifier accepts
+the statement iff `signatures` contains
+≥ `attestation_threshold_at(actor, created_at)` valid signatures from
+*distinct* `key_id`s in the **attestation key set at `created_at`**:
 
 > The attestation key set for `actor` at causal position `T` is the
-> union of:
->
-> - every `PublicKey` declared in `ActorGenesis.attestation_keys`, and
-> - every `new_key` from an `ActorAttestationKeyAdd` statement signed
->   by `actor` with `created_at ≤ T`.
+> union of every `PublicKey` declared in `ActorGenesis.attestation_keys`
+> and every `new_key` from an `ActorAttestationKeyAdd` statement signed
+> by `actor` with `created_at ≤ T`, minus every `revoked_key` from an
+> `ActorAttestationKeyRevocation` statement signed by `actor` with
+> `created_at ≤ T`.
 
-This means a freshly-added attestation key is itself eligible to sign
-subsequent `ActorAttestationKeyAdd` statements — the attestation
-authority is a closed system that grows on its own terms. The
-operational signing key surface (active key per the rotation chain)
-**cannot** add attestation keys, even if it is the only key the
-operator currently holds. This separation is intentional: it keeps a
-compromised active key from quietly registering attacker-controlled
-recovery keys.
+This means a freshly-added attestation key is itself eligible to
+contribute to the threshold for subsequent `ActorAttestationKeyAdd`
+statements — the attestation authority is a closed system that grows
+on its own terms. The operational signing key surface (active key per
+the rotation chain) **cannot** add attestation keys, even if it is
+the only key the operator currently holds. This separation is
+intentional: it keeps a compromised active key from quietly
+registering attacker-controlled recovery keys. With
+`attestation_threshold > 1`, a single compromised attestation key
+also cannot register attacker-controlled keys (the attacker would
+need ≥ threshold distinct compromised attestation keys). See
+`ACTORS.md` §5.5.3.
 
 ## Resolution Rule
 
@@ -107,8 +112,10 @@ Every `ActorAttestationKeyAdd` must satisfy:
   validator rejects it at construction time. The introducing key event
   may not have been observed locally — in that case validation is
   `Indeterminate`.
-- The signature verifies against an attestation key in the set at
-  `created_at`.
+- `signatures` contains ≥ `attestation_threshold_at(actor,
+  created_at)` valid signatures, each from a distinct `key_id` in
+  the attestation set at `created_at`. Sub-threshold counts and
+  duplicate `key_id`s make the entire statement invalid.
 
 ## Example — Adding a second attestation key
 
@@ -125,12 +132,14 @@ Every `ActorAttestationKeyAdd` must satisfy:
       "bytes": "base64-of-fresh-32-byte-attestation-public-key"
     }
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<existing-attestation-key-id>",
-    "algorithm": "ed25519",
-    "bytes": "base64-signature-by-existing-attestation-key"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<existing-attestation-key-id>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-existing-attestation-key"
+    }
+  ]
 }
 ```
 
@@ -162,14 +171,15 @@ Fields are encoded in this exact order:
 
 The following must not be included in Statement ID canonical bytes:
 
-- signature
+- signatures (any of them; the entire `signatures` array)
 - the derived `KeyId` of `new_key`
 - received-at timestamps
 - source peer or federation route
-- whether the signing attestation key was declared at genesis or
+- whether the signing attestation keys were declared at genesis or
   appended earlier via another `ActorAttestationKeyAdd`
 - whether `new_key` is already in the attestation set (idempotence is
   resolution-time concern, not identity-defining)
+- the resolved attestation threshold at `created_at`
 
 ## Rust-Equivalent Pseudocode
 

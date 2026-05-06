@@ -410,14 +410,130 @@ Operational implications:
   unexpected emergency rotations.
 - An operator who detects attestation-key compromise can revoke the
   compromised key from another attestation key they still hold via
-  `ActorAttestationKeyRevocation`. Recovery-surface symmetry remains:
-  any power the attestation surface gives the operator, it gives the
-  attacker — a compromised attestation key can also revoke legitimate
-  attestation keys (subject to the non-empty-set rule) before being
-  revoked itself. The primitive reduces the attack window from
-  "permanent" to "race against the operator's monitoring" but does
-  not close the "all attestation keys compromised" scenario, which
-  remains social recovery (`THREAT_MODEL.md` §7).
+  `ActorAttestationKeyRevocation`. Recovery-surface symmetry remains
+  *under threshold = 1*: any power the attestation surface gives the
+  operator, it gives the attacker — a compromised attestation key can
+  also revoke legitimate attestation keys (subject to the
+  set-size guard) before being revoked itself. The primitive reduces
+  the attack window from "permanent" to "race against the operator's
+  monitoring." Raising the threshold above 1 (§5.5.3) closes the
+  symmetry by requiring the attacker to compromise multiple
+  distinct keys before they can do anything on the recovery surface;
+  see `THREAT_MODEL.md` §6.1 and §7.
+
+### 5.5.3 Attestation thresholds (M-of-N quorum)
+
+A single-key attestation surface is one compromise away from full
+recovery-surface takeover (§5.5.2 *recovery-surface symmetry*). The
+threshold field on `ActorGenesis` raises that cost from "compromise one
+attestation key" to "compromise k of n distinct attestation keys" —
+the same construction used by TUF root signing, DNSSEC KSK ceremonies,
+and modern multisig cold-storage practice.
+
+Shape (v1):
+
+- `ActorGenesis.attestation_threshold` is a required `u8` with
+  `1 ≤ attestation_threshold ≤ |attestation_keys|`. There is no
+  default and no JSON sugar — the threshold is always written
+  explicitly. It participates in canonical bytes and therefore in
+  `ActorId` derivation.
+- All five attestation-surface emergency kinds
+  (`ActorEmergencyKeyRotation`, `ActorEmergencyKeyRevocation`,
+  `ActorAttestationKeyAdd`, `ActorAttestationKeyRevocation`,
+  `ActorAttestationThresholdChange`) carry
+  `signatures: Vec<Signature>` instead of a single `signature`.
+  The verifier accepts the statement iff `signatures` contains
+  ≥ `attestation_threshold_at(actor, created_at)` valid
+  signatures, each from a *distinct* `key_id` in the attestation
+  set at `created_at`. Sub-threshold signature counts make the
+  entire statement invalid; duplicate `key_id`s do not double-count.
+- Operational kinds keep the singular `signature` envelope. The
+  asymmetry mirrors the existing surface dispatch and avoids
+  changing canonical bytes for any operational statement.
+
+Threshold is itself mutable via a new emergency type,
+`ActorAttestationThresholdChange` (`STATEMENTS.md` §4.2l). The
+authority rule is asymmetric to prevent an attacker who has just-barely
+reached threshold from quietly consolidating control:
+
+- **Raises** (`new_threshold > current_threshold`) require
+  `max(current_threshold, new_threshold)` distinct attestation
+  signatures.
+- **Lowers** (`new_threshold < current_threshold`) require
+  `current_threshold` distinct attestation signatures.
+- No-op changes (`new_threshold == current_threshold`) are valid
+  but redundant.
+
+Validation: `1 ≤ new_threshold ≤ |attestation_set at created_at|`.
+A change that would make the threshold exceed the available key
+count is invalid.
+
+Generalized non-empty rule. The §5.5.2 set-size guard becomes:
+
+> The resulting attestation set size must be ≥ the resulting
+> attestation threshold at the statement's `created_at`.
+
+The current "non-empty" rule is the threshold = 1 special case.
+`ActorAttestationKeyRevocation` and `ActorAttestationThresholdChange`
+both check this guard at the resolver/store layer; revocations that
+would drop the set below the threshold and threshold changes that
+would raise the threshold above the set size are both invalid and
+the store rejects them.
+
+Resolution rule:
+
+> The attestation threshold for `(actor, T)` is
+> `ActorGenesis.attestation_threshold` overlaid by every
+> `ActorAttestationThresholdChange` statement signed by `actor` with
+> `created_at ≤ T` ordered by `(created_at, statement_id)`. The most
+> recent valid change at or before `T` wins.
+
+Co-signing flow. Multi-sig coordination uses a derived-ID exchange so
+cosigners cannot drift on the unsigned bytes (e.g., on `created_at`):
+
+1. The initiating operator runs `prepare`, which writes the complete
+   unsigned statement (with `created_at` locked) plus a partial
+   envelope containing zero signatures and the canonical bytes payload.
+2. Each cosigner signs those exact canonical bytes with their
+   attestation key (cold storage / HSM / YubiKey) and runs
+   `co-sign --prepared <path>`, which appends the signature to the
+   partial envelope. Duplicate `key_id`s are refused before append.
+3. Once `signatures.len() ≥ threshold`, any operator runs
+   `submit --prepared <path>`, which verifies threshold +
+   distinctness + per-signature byte validity and dispatches to the
+   appropriate `put_*`.
+
+Each signature implicitly attests to the same `StatementId`; if any
+cosigner has a different unsigned envelope, their signature won't
+verify.
+
+Resilience hygiene. With the asymmetric authority rule, **M-of-M
+plus a single lost key bricks recovery** (the lower rule needs
+`current_threshold` distinct signatures, but only
+`current_threshold − 1` keys remain). Operators MUST use M-of-N with
+`N > M` for resilience — e.g., 3-of-5, not 3-of-3. The CLI surfaces
+this in `add-attestation-key` and `change-attestation-threshold`
+flows.
+
+Operational implications:
+
+- Single-key compromise of any one attestation key no longer
+  authorizes any emergency event when threshold > 1. The next
+  legitimate emergency operation will fail with sub-threshold count,
+  surfacing the gap as a detection event rather than an immediate
+  takeover.
+- Recovery-surface symmetry survives only when the attacker holds
+  ≥ threshold distinct attestation keys — the same escalation pattern
+  as "all attestation keys compromised" at proportional cost.
+- `M-of-M` configurations have no resilience to lost keys; an M-of-N
+  configuration with `N > M` lets the operator recover by lowering
+  the threshold (signed at `current_threshold` by the surviving keys)
+  or by adding a replacement attestation key.
+- Solo operators who do not want multi-device coordination set
+  `attestation_threshold = 1` and accept the recovery-surface symmetry
+  caveat. The threshold = 1 case behaves identically to today's
+  single-signature envelope semantics and is the explicit default
+  in CLI prompts.
 
 ---
 
@@ -443,13 +559,17 @@ The exact canonical signing payload is defined by `STATEMENTS.md` and `SCHEMA.md
 
 Each statement kind binds to one of two signing surfaces:
 
-- **Operational kinds** (everything except the three emergency kinds
+- **Operational kinds** (everything except the five emergency kinds
   below) — signed by the actor's **active signing key** per the
-  rotation chain (§5.5).
+  rotation chain (§5.5). Single-signature envelope.
 - **Emergency kinds** — `ActorEmergencyKeyRotation`,
-  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`, and
-  `ActorAttestationKeyRevocation` — signed by an **attestation key**
-  in the actor's attestation set at `created_at` (§5.5.2).
+  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`,
+  `ActorAttestationKeyRevocation`, and
+  `ActorAttestationThresholdChange` — signed by **attestation keys**
+  in the actor's attestation set at `created_at` (§5.5.2, §5.5.3).
+  Multi-signature envelope (`signatures: Vec<Signature>`); the
+  verifier requires ≥ `attestation_threshold_at(actor, created_at)`
+  valid signatures from distinct `key_id`s in the set.
 
 The two surfaces never overlap: an operational statement signed by an
 attestation `key_id` is invalid even if the bytes verify; an emergency
@@ -465,18 +585,24 @@ Core verification must check, in order:
      at `created_at` per the rotation chain in §5.5, **and** that
      `key_id` is not revoked for the actor at `created_at` per the
      revocation set in §5.5.
-   - Emergency: `signature.key_id` is in the actor's attestation set
-     at `created_at` per §5.5.2.
+   - Emergency: every entry in `signatures` has a `key_id` in the
+     actor's attestation set at `created_at` per §5.5.2; entries are
+     distinct on `key_id`; `signatures.len()` is at least
+     `attestation_threshold_at(actor, created_at)` per §5.5.3.
 3. The signature bytes verify against the resolved key's public
-   material under the declared algorithm.
+   material under the declared algorithm. For emergency statements,
+   *every* signature in `signatures` must verify; one invalid byte
+   sequence invalidates the entire statement (not "the rest still
+   count toward threshold").
 4. Statement payload matches signed canonical bytes.
 
 Invalid signatures make statements invalid.
 
-Missing key data (rotation, revocation, attestation-add, or
-attestation-revocation statements not yet observed locally) may make
-validation indeterminate rather than invalid — same handling as
-missing predecessors elsewhere in the protocol.
+Missing key data (rotation, revocation, attestation-add,
+attestation-revocation, or threshold-change statements not yet
+observed locally) may make validation indeterminate rather than
+invalid — same handling as missing predecessors elsewhere in the
+protocol.
 
 ### 6.1.1 Genesis statements are not symmetric
 

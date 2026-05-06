@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/actor-attestation-key-revocation-v1.schema.json",
   "title": "Kairo ActorAttestationKeyRevocation Statement v1",
   "type": "object",
-  "required": ["type", "version", "actor", "subject", "created_at", "body", "signature"],
+  "required": ["type", "version", "actor", "subject", "created_at", "body", "signatures"],
   "properties": {
     "type": {
       "const": "ActorAttestationKeyRevocation"
@@ -33,7 +33,7 @@
         "revoked_key": {
           "type": "string",
           "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
-          "description": "KeyId of the attestation key being revoked. Must be in the actor's attestation set at created_at (genesis-declared or appended via ActorAttestationKeyAdd). The resulting attestation set must be non-empty."
+          "description": "KeyId of the attestation key being revoked. Must be in the actor's attestation set at created_at (genesis-declared or appended via ActorAttestationKeyAdd). The resulting attestation set size must be >= the resulting attestation threshold."
         },
         "reason": {
           "type": "string",
@@ -42,9 +42,9 @@
       },
       "additionalProperties": false
     },
-    "signature": {
-      "$ref": "statement-envelope-v1.schema.json#/$defs/signature",
-      "description": "Must be produced by a key in the actor's attestation set at created_at. Self-revocation (signing key == revoked_key) is permitted. Operational signing keys cannot revoke attestation keys. See ACTORS.md §5.5.2."
+    "signatures": {
+      "$ref": "statement-envelope-v1.schema.json#/$defs/signatures",
+      "description": "Each signature must be produced by a distinct key in the actor's attestation set at created_at. The verifier requires >= attestation_threshold_at(actor, created_at) entries with distinct key_id values. revoked_key MAY be among the signing keys (self-revocation contributes one signature toward threshold). Operational signing keys cannot revoke attestation keys. See ACTORS.md §5.5.2 / §5.5.3."
     }
   },
   "additionalProperties": false

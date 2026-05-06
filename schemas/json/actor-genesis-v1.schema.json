@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/actor-genesis-v1.schema.json",
   "title": "Kairo ActorGenesis v1",
   "type": "object",
-  "required": ["type", "version", "actor_kind", "initial_key", "attestation_keys", "created_at", "nonce"],
+  "required": ["type", "version", "actor_kind", "initial_key", "attestation_keys", "attestation_threshold", "created_at", "nonce"],
   "properties": {
     "type": {
       "const": "ActorGenesis"
@@ -25,6 +25,12 @@
         "$ref": "#/$defs/publicKey"
       },
       "description": "Cold-storage authority surface for emergency key events. Sorted by raw public-key bytes ascending in canonical bytes; deduplicated. Disjoint from initial_key. See ACTORS.md §5.5.2."
+    },
+    "attestation_threshold": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 255,
+      "description": "M of the M-of-N quorum required to sign any attestation-surface emergency event. MUST satisfy 1 <= attestation_threshold <= attestation_keys.length. Always explicit; no default. See ACTORS.md §5.5.3."
     },
     "created_at": {
       "type": "string",

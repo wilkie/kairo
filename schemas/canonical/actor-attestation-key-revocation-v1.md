@@ -85,9 +85,11 @@ retroactively invalidated by a routine cold-storage retirement today.
 
 ## Authority to Revoke
 
-The verifier accepts the signature on an `ActorAttestationKeyRevocation`
-iff `signature.key_id` is in the actor's **attestation key set at
-`created_at`** — the same set described in
+The envelope carries `signatures: Vec<Signature>`. The verifier accepts
+the statement iff `signatures` contains
+≥ `attestation_threshold_at(actor, created_at)` valid signatures from
+*distinct* `key_id`s in the **attestation key set at `created_at`** —
+the same set described in
 `schemas/canonical/actor-emergency-key-rotation-v1.md` "Signing-Surface
 Rule":
 
@@ -101,10 +103,11 @@ Rule":
 > minus every `revoked_key` of an `ActorAttestationKeyRevocation`
 > statement signed by `actor` with `created_at ≤ T`.
 
-The signing attestation key MAY be `revoked_key` itself (the operator
-revoking the only key they currently trust as a "burn this key"
-gesture). Self-revocation is legitimate; it requires no separate
-intermediate key.
+`revoked_key` MAY be among the signing `key_id`s (self-revocation
+contributes one signature toward threshold). Under threshold = 1 this
+is the legitimate "burn this key" gesture from a single operator;
+under threshold > 1 it is one of multiple cosigners. Self-revocation
+alone is sufficient only when threshold = 1.
 
 The operational signing surface (active key per the rotation chain)
 **cannot** revoke attestation keys, even if it is the only key the
@@ -137,21 +140,23 @@ Every `ActorAttestationKeyRevocation` must satisfy:
   is observed; once observed, a revocation of an unknown attestation
   key is treated as a redundant no-op (the key was never authoritative
   to begin with).
-- The **resulting attestation set is non-empty.** A revocation that
-  would empty the attestation set (the operator's last attestation
-  key, with no later add restoring one) is **invalid**. This is the
-  symmetric guard to `ACTORS.md` §5.5.1's bricking rule: the
-  attestation surface must always have at least one member, or
-  recovery from operational-key compromise becomes impossible. If
-  the operator wishes to retire their only attestation key, they
-  must `ActorAttestationKeyAdd` first, then revoke. The CLI
-  (`kairo actor revoke-attestation-key`) refuses to construct a
-  revocation that would empty the set; the protocol layer enforces
-  the same rule at verification time, so direct callers of the body
-  cannot bypass it.
-- The signature verifies against an attestation key in the set at
-  `created_at`. Self-revocation (the signing key equal to
-  `revoked_key`) is permitted.
+- The **resulting attestation set size is ≥ the resulting attestation
+  threshold** (`ACTORS.md` §5.5.3, generalized form of the §5.5.1
+  bricking guard). A revocation that would drop the set below the
+  threshold (e.g., revoking the operator's last attestation key when
+  threshold = 1, or revoking the third of three keys when threshold =
+  3) is **invalid**. The operator must either stage an
+  `ActorAttestationKeyAdd` first, or stage an
+  `ActorAttestationThresholdChange` lowering the threshold first
+  (subject to the asymmetric authority rule in §5.5.3). The CLI
+  refuses to construct a violating revocation; the store rejects it
+  at put time so direct callers cannot bypass the guard.
+- `signatures` contains ≥ `attestation_threshold_at(actor,
+  created_at)` valid signatures, each from a distinct `key_id` in
+  the attestation set at `created_at`. The signing keys MAY include
+  `revoked_key` itself (self-revocation contributes one signature
+  toward threshold). Sub-threshold counts and duplicate `key_id`s
+  make the entire statement invalid.
 - `reason` is optional human-readable text; its presence does not
   affect resolution but it IS included in canonical bytes (changing
   the reason changes the `StatementId`).
@@ -173,12 +178,14 @@ hold:
     "revoked_key": "zQm<compromised-attestation-key-id>",
     "reason": "yubikey reported lost"
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<other-attestation-key-id>",
-    "algorithm": "ed25519",
-    "bytes": "base64-signature-by-other-attestation-key"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<other-attestation-key-id>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-other-attestation-key"
+    }
+  ]
 }
 ```
 
@@ -200,12 +207,14 @@ trust, but only after staging a replacement:
       "bytes": "base64-of-fresh-replacement-attestation-key"
     }
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<key-to-be-retired>",
-    "algorithm": "ed25519",
-    "bytes": "base64-signature-by-key-to-be-retired"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<key-to-be-retired>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-key-to-be-retired"
+    }
+  ]
 }
 ```
 
@@ -222,18 +231,20 @@ trust, but only after staging a replacement:
     "revoked_key": "zQm<key-to-be-retired>",
     "reason": "self-revoke after staging replacement"
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<key-to-be-retired>",
-    "algorithm": "ed25519",
-    "bytes": "base64-self-signature"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<key-to-be-retired>",
+      "algorithm": "ed25519",
+      "bytes": "base64-self-signature"
+    }
+  ]
 }
 ```
 
 After both statements, only the freshly-added key remains in the
-attestation set. The non-empty-set rule passes because the add
-landed first.
+attestation set. The set-size guard passes because the add landed
+first; under threshold = 1 the surviving single key is sufficient.
 
 ## Canonical Envelope Fields
 
@@ -265,15 +276,16 @@ elsewhere (see `actor-genesis-v1.md` §"Key IDs").
 
 The following must not be included in Statement ID canonical bytes:
 
-- signature
+- signatures (any of them; the entire `signatures` array)
 - received-at timestamps
 - source peer or federation route
 - whether this statement currently wins resolution (revocation is
   standalone, not chained)
-- whether the signing attestation key was declared at genesis or
+- whether the signing attestation keys were declared at genesis or
   appended later via `ActorAttestationKeyAdd`
-- whether the resulting attestation set is non-empty (the non-empty
-  check is a resolution-time validation, not identity-defining)
+- whether the resulting attestation set size meets the threshold (the
+  size guard is a resolution-time validation, not identity-defining)
+- the resolved attestation threshold at `created_at`
 
 ## Rust-Equivalent Pseudocode
 

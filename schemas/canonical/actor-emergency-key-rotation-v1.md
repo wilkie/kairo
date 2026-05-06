@@ -80,25 +80,35 @@ actor's active signing key for any subsequent statement at `T' > T`.
 
 ## Signing-Surface Rule
 
-The verifier accepts the signature on an `ActorEmergencyKeyRotation` iff
-`signature.key_id` is in the actor's **attestation key set at `T`**:
+The envelope carries `signatures: Vec<Signature>` instead of a single
+`signature` (`ACTORS.md` §5.5.3). The verifier accepts the statement
+iff:
 
-> The attestation key set for `actor` at causal position `T` is the
-> union of:
->
-> - every `PublicKey` declared in `ActorGenesis.attestation_keys`, and
-> - every `new_key` from an `ActorAttestationKeyAdd` statement signed
->   by `actor` with `created_at ≤ T`.
+1. Every entry in `signatures` has a `key_id` in the actor's
+   **attestation key set at `T`** (resolved per
+   `actor-attestation-key-revocation-v1.md` "Resolution Rule" — the
+   set composes `ActorGenesis.attestation_keys`, every
+   `ActorAttestationKeyAdd.new_key` ≤ `T`, minus every
+   `ActorAttestationKeyRevocation.revoked_key` ≤ `T`).
+2. All `signatures[i].key_id` values are distinct (duplicate
+   signatures by the same key do not double-count).
+3. `signatures.len() >= attestation_threshold_at(actor, T)`
+   (`ACTORS.md` §5.5.3 — the threshold composes
+   `ActorGenesis.attestation_threshold` overlaid by
+   `ActorAttestationThresholdChange` statements ≤ `T`).
+4. Every signature byte sequence verifies against its respective
+   public key under the declared algorithm.
 
-This is a strict departure from `ActorKeyRotation`, whose signature must
-match the active key per the rotation chain. Attestation keys never
-qualify as "active" for routine statements; signing keys never qualify
-as "attestation" for emergency statements. The two surfaces never
-overlap.
+Sub-threshold counts, duplicate `key_id`s, signatures from keys
+outside the attestation set, or any single byte-verification failure
+make the entire statement invalid (not "verify what we have and
+ignore the rest").
 
-If `signature.key_id` is not in the attestation set at `T`, verification
-returns `SignatureStatus::Invalid` even if the bytes verify against
-some other historical key for the actor.
+This is a strict departure from `ActorKeyRotation`, whose single
+signature must match the active key per the rotation chain.
+Attestation keys never qualify as "active" for routine statements;
+signing keys never qualify as "attestation" for emergency
+statements. The two surfaces never overlap.
 
 ## Chain Validation
 
@@ -128,7 +138,7 @@ by a **different actor** is **invalid** — no cross-actor recovery.
 Forks are not blocked. They are preserved as audit signal and almost
 always indicate compromise or a split-brain operator.
 
-## Example — First emergency rotation (lost active key)
+## Example — First emergency rotation, threshold = 1
 
 ```json
 {
@@ -144,16 +154,22 @@ always indicate compromise or a split-brain operator.
     },
     "supersedes": null
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<attestation-key-id>",
-    "algorithm": "ed25519",
-    "bytes": "base64-signature-by-attestation-key"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<attestation-key-id>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-attestation-key"
+    }
+  ]
 }
 ```
 
-## Example — Emergency rotation chained over a prior compromise
+## Example — Emergency rotation, threshold = 2
+
+The actor's `attestation_threshold` is 2; two distinct attestation
+keys cosigned the same canonical bytes. `signatures` is sorted
+ascending by `key_id`.
 
 ```json
 {
@@ -169,12 +185,20 @@ always indicate compromise or a split-brain operator.
     },
     "supersedes": "zQm<prior-key-event-statement-id>"
   },
-  "signature": {
-    "actor": "zQm<actor>",
-    "key_id": "zQm<attestation-key-id>",
-    "algorithm": "ed25519",
-    "bytes": "base64-signature-by-attestation-key"
-  }
+  "signatures": [
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<attestation-key-id-A>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-attestation-key-A"
+    },
+    {
+      "actor": "zQm<actor>",
+      "key_id": "zQm<attestation-key-id-B>",
+      "algorithm": "ed25519",
+      "bytes": "base64-signature-by-attestation-key-B"
+    }
+  ]
 }
 ```
 
@@ -207,14 +231,16 @@ Fields are encoded in this exact order:
 
 The following must not be included in Statement ID canonical bytes:
 
-- signature
+- signatures (any of them; the entire `signatures` array)
 - the derived `KeyId` of `next_key`
 - received-at timestamps
 - source peer or federation route
 - whether this statement currently wins resolution
 - whether the referenced `supersedes` statement is locally available
-- whether the signing attestation key was declared at genesis or
+- whether the signing attestation keys were declared at genesis or
   appended later via `ActorAttestationKeyAdd`
+- the resolved attestation threshold at `created_at` (the threshold
+  is a verification-time check, not identity-defining)
 
 ## Rust-Equivalent Pseudocode
 

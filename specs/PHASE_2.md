@@ -573,6 +573,180 @@ key remains authoritative forever (`THREAT_MODEL.md` §5.11, §5.12,
       surface markers and the resulting attestation set after each
       event. Both text and `--json` modes.
 
+**Follow-on (design locked, not yet implemented):
+M-of-N attestation key thresholds.** Single-key compromise of any
+attestation key currently lets an attacker do everything the legitimate
+operator can on the recovery surface. This is the largest residual gap
+in the §14 threat model; `ActorAttestationKeyRevocation` stops the
+bleeding once an operator notices, but does not raise the cost of the
+initial compromise. Thresholds raise that cost by requiring multiple
+distinct attestation keys to authorize any emergency event — TUF roots,
+DNSSEC KSK ceremonies, Bitcoin multisig, and Casa custody all use the
+same construction.
+
+The design is locked:
+
+- **Threshold field on `ActorGenesis`:** new required `attestation_threshold: u8`,
+  with `1 ≤ attestation_threshold ≤ |attestation_keys|`. No default,
+  no JSON sugar — always explicit. Pre-federation we update `v1`
+  schemas in place rather than minting a `v2`. Existing local genesis
+  events get rebuilt with explicit `threshold = 1` (preserves today's
+  behavior). The threshold participates in canonical bytes and
+  therefore in `ActorId` derivation, so a rebuild produces a new
+  `ActorId` for any locally-stored actor — fine pre-federation,
+  unacceptable after.
+- **Multi-signature envelope on attestation-surface statements.** The
+  five emergency kinds (`ActorEmergencyKeyRotation`,
+  `ActorEmergencyKeyRevocation`, `ActorAttestationKeyAdd`,
+  `ActorAttestationKeyRevocation`, and the new
+  `ActorAttestationThresholdChange`) carry
+  `signatures: Vec<Signature>` instead of a single `signature`.
+  Operational kinds (`ObjectRevision`, `ActorKeyRotation`, etc.) keep
+  the singular `signature` envelope — the asymmetry mirrors the
+  existing surface dispatch. Signatures are excluded from
+  `StatementId` canonical bytes (today's rule), so the unsigned
+  body bytes are unchanged.
+- **Verifier rule:** at the statement's `created_at`, resolve the
+  attestation set and threshold; require ≥ threshold valid
+  signatures, each from a distinct `key_id` in the set. Duplicate
+  `key_id`s do not count as multiple signatures — only distinct
+  attestation keys contribute. Sub-threshold count fails the entire
+  statement (not "verify what we have and ignore the rest").
+- **Generalized non-empty rule.** The §5.5.2 set-size guard becomes
+  "resulting attestation set size ≥ resulting attestation threshold."
+  The current non-empty rule is the threshold = 1 special case.
+  Revocations and threshold lowers that would violate this guard are
+  invalid; the store rejects them with `StoreError::Rejected`.
+- **New emergency type: `ActorAttestationThresholdChange`.** Body
+  `{ new_threshold: u8 }`. Authority rule is asymmetric to prevent
+  an attacker who has just-barely reached threshold from quietly
+  consolidating control:
+  - **Raises** (`new_threshold > current_threshold`) require
+    `max(current_threshold, new_threshold)` distinct attestation
+    signatures.
+  - **Lowers** (`new_threshold < current_threshold`) require
+    `current_threshold` distinct attestation signatures.
+  - No-op changes (`new_threshold == current_threshold`) are valid
+    but redundant.
+  Validation: `1 ≤ new_threshold ≤ |attestation_set at created_at|`.
+- **Co-signing flow.** Multi-sig coordination uses a derived-ID
+  exchange so cosigners cannot drift on the unsigned bytes (e.g., on
+  `created_at`): `prepare` writes the complete unsigned statement
+  (with `created_at` locked); each cosigner signs those exact
+  canonical bytes; `co-sign` appends the new signature to the
+  partial envelope; `submit` verifies the envelope meets threshold
+  and persists. Each signature implicitly attests to the same
+  `StatementId`.
+- **Staging is independent, not atomic.** Adds, revocations, and
+  threshold changes are independent statements ordered by
+  `created_at`. Operators wanting to go from 1-of-1 to 3-of-3 stage
+  two `ActorAttestationKeyAdd` statements first, then issue an
+  `ActorAttestationThresholdChange` (signed by all three new keys
+  per the raise rule). There is no atomic "add and bump" envelope.
+- **Resilience hygiene:** with the asymmetric authority rule, an M-of-M
+  configuration plus a single lost key bricks recovery (the lower-rule
+  needs `current_threshold` sigs, but only `current_threshold − 1`
+  remain). Operators MUST use M-of-N with `N > M` for resilience —
+  e.g., 3-of-5, not 3-of-3. The CLI surfaces this in `add-attestation-key`
+  and threshold-change flows.
+
+**Why it matters:** moves the recovery surface from "one key, full
+control" (PGP single-primary, today's Kairo) to "k of n, distributed
+trust" (TUF root, DNSSEC KSK with multi-party ceremonies, modern
+multisig). Single-key compromise of any one attestation key no longer
+lets an attacker rotate, revoke, or add anything. The
+`ActorAttestationKeyRevocation` follow-on still does the cleanup work
+once compromise is detected; thresholds lower the probability that
+detection comes too late.
+
+**Spec slice:**
+
+- [ ] `ActorGenesis` schema gets required `attestation_threshold` field
+      (canonical + JSON). Body validator enforces
+      `1 ≤ threshold ≤ |attestation_keys|`. `actor-genesis-v1.md` and
+      JSON schema updated; canonical pseudocode bumped.
+- [ ] Statement envelope schema gains a shared `signatures` $defs
+      (array of `signature`, `minItems: 1`, distinct `key_id`,
+      sorted by `key_id` ascending in canonical encoding). The four
+      existing attestation-surface schemas
+      (`actor-emergency-key-rotation-v1`,
+      `actor-emergency-key-revocation-v1`,
+      `actor-attestation-key-add-v1`,
+      `actor-attestation-key-revocation-v1`) switch from
+      `signature` to `signatures`.
+- [ ] New `actor-attestation-threshold-change-v1` schema (canonical
+      + JSON). Body shape, asymmetric authority rule, validation
+      bounds, examples for raise / lower / no-op.
+- [ ] `STATEMENTS.md` §4.2h–§4.2k updated for the multi-signature
+      envelope; new §4.2l added for
+      `ActorAttestationThresholdChange`. The signing-surface
+      summary in §4.2h notes "≥ threshold distinct signatures
+      from the attestation set" rather than "one signature."
+- [ ] `ACTORS.md` new §5.5.3 introducing the threshold concept,
+      asymmetric authority rule, generalized set-size guard, and
+      operator-hygiene callout (M-of-N with N > M). §5.5.2 updated
+      so the bricking guard reads "resulting set size ≥ resulting
+      threshold." §6.1 surface-dispatch line names the fifth
+      emergency kind.
+- [ ] `THREAT_MODEL.md` §5.11 / §5.12 / §6.1 updated to reflect that
+      single-key compromise no longer authorizes emergency events
+      when threshold > 1; added Phase-2-follow-on bullets where
+      thresholds change the residual risk.
+
+**Impl slice:**
+
+- [ ] `kairo-statement` envelope refactor: each attestation-surface
+      `SignedStatement<B>` carries `signatures: Vec<Signature>`. New
+      `verify_signatures` helper checks distinctness + threshold +
+      per-signature byte verification. JSON DTOs updated to
+      `signatures` arrays.
+- [ ] `kairo-statement::ActorAttestationThresholdChangeBody` with
+      canonical encoding + JSON DTO. `SigningSurface = Attestation`.
+- [ ] `kairo-identity::ActorResolver` gains
+      `attestation_threshold_at(actor, T)` that composes
+      `ActorGenesis.attestation_threshold` with the chain of
+      `ActorAttestationThresholdChange` statements ≤ T.
+      `MemoryActorResolver` tracks threshold change entries.
+- [ ] `kairo-store` gains an `attestation_threshold_changes` index
+      slot in the per-actor key-event index file, with
+      `put_actor_attestation_threshold_change` /
+      `get_actor_attestation_threshold_change` trait methods.
+      Generalized put-time validator refuses any revocation or
+      threshold change that would violate
+      "set size ≥ threshold" at `created_at`.
+- [ ] `verify_envelope_statement` extended: the attestation-surface
+      branch now (a) verifies each signature in `signatures`,
+      (b) requires distinct `key_id`s, and (c) requires
+      `signatures.len() >= attestation_threshold_at(...)`.
+- [ ] CLI/keystore plumbing for the multi-sig "co-sign" flow at
+      the protocol layer (decoding partial envelopes, appending
+      signatures, distinctness check before submit).
+
+**CLI slice:**
+
+- [ ] `kairo actor co-sign --prepared <path> --keystore <path>`
+      appends a single signature to a partially-signed attestation-
+      surface envelope. Refuses to add a duplicate `key_id`.
+      Reports current `(have, need)` count.
+- [ ] `kairo actor submit --prepared <path>` finalizes a partial
+      envelope: verifies threshold met + distinctness + per-signature
+      validity, then dispatches to the appropriate `put_*` based on
+      the statement type. Refuses sub-threshold envelopes.
+- [ ] `prepare` subcommands of `recover-key`, `add-attestation-key`,
+      `revoke-attestation-key`, and the new `change-attestation-threshold`
+      emit a partial envelope (zero signatures) plus the canonical
+      bytes payload for external signing. `import` accepts a
+      *single* signature for backward compatibility with the existing
+      1-of-1 flow when threshold = 1.
+- [ ] New `kairo actor change-attestation-threshold sign|prepare|co-sign|submit`
+      verb tree mirroring the others. `sign` is the convenience flow
+      for the threshold = 1 case (single-key, single-keystore); above
+      threshold = 1, the operator must use `prepare` + `co-sign` +
+      `submit`.
+- [ ] `kairo actor key-history` extended with the threshold trajectory
+      (genesis threshold + every change event) and a per-event
+      `(quorum_at_event)` annotation. Both text and `--json` modes.
+
 ## After Phase 2
 
 Once Phase 2 picks and lands a focused slice from the catalog, the natural

@@ -266,6 +266,7 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Attack** | Sign an `ActorEmergencyKeyRotation` to an active key the adversary controls. The operator is now locked out of operational signing. The adversary can also `ActorAttestationKeyAdd` their own attestation key, which becomes a permanent fixture of the attestation set in v1. |
 | **Mechanism** | **There is no in-protocol recovery in shipped v1.** The legitimate operator's remaining attestation keys (if any) cannot revoke the compromised one — `ActorAttestationKeyRevocation` is designed (single-key, attestation-signed, must leave a non-empty set, no `retroactive` flag) but not yet implemented; see Phase 2 §14 follow-on. Until it ships, the only recourse is publishing a fresh `ActorGenesis` (different `ActorId`) and re-establishing identity socially (§7). |
 | **Residual risk** | The compromised attestation key remains valid for emergency operations forever in shipped v1. Even after `ActorAttestationKeyRevocation` ships, recovery-surface symmetry means a compromised attestation key can revoke the operator's legitimate attestation keys before being revoked itself — so closing this gap reduces the attack window from "permanent" to "race against the operator's monitoring". **This is the single largest gap in the v1 threat model** and is tracked as a Phase 2 §14 follow-on. |
+| **Reduces further with M-of-N attestation thresholds (Phase 2 §14 follow-on, design locked).** When `attestation_threshold > 1`, single-key compromise no longer authorizes any emergency event — the attacker needs ≥ threshold *distinct* attestation keys to sign anything on the recovery surface. Compromise of a single key drops to a detection event (the next legitimate emergency operation will fail with sub-threshold count, surfacing the gap), not an immediate takeover. The attack only succeeds against actors configured at threshold = 1. |
 
 ### 5.12 Adversary adds a malicious attestation key
 
@@ -277,6 +278,7 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism for detection** | An unexpected `ActorAttestationKeyAdd` appears in `kairo actor key-history` (both surfaces of which the operator should monitor). The signing `key_id` on the add reveals which attestation key was used. |
 | **Mechanism for response** | None in shipped v1. The newly-added attestation key joins the append-only set permanently. Same recourse as §5.11: fresh `ActorGenesis` + social recovery. The Phase 2 §14 follow-on `ActorAttestationKeyRevocation` (design locked) will let the operator revoke the malicious add by signing with any other attestation key, subject to the non-empty-set rule. |
 | **Residual risk** | In shipped v1 this attack turns a one-time attestation-key compromise into a permanent authority for the adversary. The operator's monitoring is purely informational; there is no removal mechanism. **This is the same gap as §5.11 and is the strongest motivation for `ActorAttestationKeyRevocation` as Phase 2 §14 follow-on work.** |
+| **Closed by M-of-N attestation thresholds (Phase 2 §14 follow-on, design locked).** `ActorAttestationKeyAdd` requires ≥ threshold distinct attestation signatures, same as every other emergency event. With `attestation_threshold > 1`, a single compromised attestation key cannot inject an adversary-controlled key. The attack reduces to "compromise threshold attestation keys," which is the §5.11 escalation pattern at higher cost. |
 
 ### 5.13 Equivocation (forked chain)
 
@@ -337,13 +339,41 @@ The shape is:
   the bleeding; historical damage gets unwound at the operational
   layer where it accrued.
 
-**Recovery-surface symmetry remains.** Any power the attestation
-surface gives the operator, it gives an attacker who holds the key.
-A compromised attestation key can revoke legitimate attestation keys
-before being revoked itself (subject to the non-empty-set rule). The
-primitive reduces the attack window from "permanent" to "race against
-the operator's monitoring"; it does not close the "all attestation
-keys compromised" scenario, which remains social recovery (§7).
+**Recovery-surface symmetry remains under threshold = 1.** Any power
+the attestation surface gives the operator, it gives an attacker who
+holds the key. A compromised attestation key can revoke legitimate
+attestation keys before being revoked itself (subject to the
+non-empty-set rule). The primitive reduces the attack window from
+"permanent" to "race against the operator's monitoring"; it does not
+close the "all attestation keys compromised" scenario, which remains
+social recovery (§7).
+
+**M-of-N attestation thresholds (Phase 2 §14 follow-on, design locked).**
+Symmetry above is the reason a single attestation key is a single point
+of failure. The threshold follow-on raises the cost of recovery-surface
+compromise from "one key" to "k of n keys," matching TUF root, DNSSEC
+KSK ceremonies, and modern multisig cold-storage practice. The locked
+design adds:
+
+- `ActorGenesis.attestation_threshold: u8` (required, no default).
+- All five attestation-surface emergency types carry
+  `signatures: Vec<Signature>`; the verifier requires ≥ threshold
+  distinct signatures from the attestation set at `created_at`.
+- New `ActorAttestationThresholdChange` emergency type with
+  asymmetric authority: raises require `max(current, new)` distinct
+  signatures (so an attacker just-barely at threshold cannot
+  consolidate by lowering); lowers require `current` signatures.
+- The §5.5.2 set-size guard generalizes to "resulting set size
+  ≥ resulting threshold."
+- M-of-M plus a single lost key bricks recovery (`current` sigs are
+  no longer reachable). Operator hygiene: use M-of-N with N > M.
+
+After thresholds ship, single-key compromise of any attestation key
+becomes a *detection event* (next legitimate emergency operation
+fails sub-threshold and surfaces the gap), not an immediate takeover.
+Recovery-surface symmetry survives only when the attacker holds
+≥ threshold keys — which is the same escalation pattern as
+"all attestation keys compromised" at proportional cost.
 
 ### 6.2 No quantum / post-quantum signature support
 
