@@ -3836,3 +3836,419 @@ kind = "tree"
         assert!(!new_b_seed_b64.is_empty());
         Ok(())
     }
+
+    /// Programmatic walkthrough of `examples/README.md`. Mirrors the
+    /// shell-script flow step-for-step so the README doesn't bit-rot
+    /// when CLI verbs change. Each `kairo` invocation in the README
+    /// corresponds to a `run(Cli {...})` call here; outputs are
+    /// parsed and threaded through the same way the operator would.
+    ///
+    /// Skips on hosts without `git` on PATH (the example tree depends
+    /// on a real Git commit being addressable as `git:sha256:<oid>`).
+    #[test]
+    fn examples_readme_walkthrough_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+        // Aliased so we don't shadow the cli `Command` enum in scope.
+        use std::process::Command as ProcCommand;
+
+        // The walkthrough binds the example tree as a real Git commit;
+        // skip when git is missing rather than failing.
+        if ProcCommand::new("git").arg("--version").output().is_err() {
+            eprintln!("skipping: git not available on PATH");
+            return Ok(());
+        }
+
+        // ---- Setup: temp store + git working tree with kairo.toml. ----
+        let store_dir = tempfile::TempDir::new()?;
+        let work_dir = tempfile::TempDir::new()?;
+        let manifest_path = work_dir.path().join("kairo.toml");
+        std::fs::write(
+            &manifest_path,
+            r#"[kairo]
+schema = 1
+kind = "software"
+name = "hello-kairo"
+summary = "Minimal example object used in the end-to-end MVP walkthrough."
+
+[content]
+kind = "tree"
+"#,
+        )?;
+        let git = |args: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
+            let output = ProcCommand::new("git")
+                .current_dir(work_dir.path())
+                .args(args)
+                .output()?;
+            if !output.status.success() {
+                return Err(format!(
+                    "git {args:?} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .into());
+            }
+            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+        };
+        git(&["init", "--initial-branch=main", "--quiet"])?;
+        git(&["config", "user.name", "Kairo Test"])?;
+        git(&["config", "user.email", "test@kairo.test"])?;
+        git(&["config", "commit.gpgsign", "false"])?;
+        git(&["add", "kairo.toml"])?;
+        git(&["commit", "-m", "init", "--quiet"])?;
+        let commit = git(&["rev-parse", "HEAD"])?;
+        let revision_ref = format!("git:sha256:{commit}");
+
+        // ---- README step 1: actor create. ----
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+
+        // ---- README step 2: object create. ----
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: Some(revision_ref.clone()),
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+
+        // ---- README step 3: revision create. ----
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: revision_ref.clone(),
+                    manifest: manifest_path.clone(),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let statement_id = parse_field(&revision_output, "statement = ")?;
+
+        // ---- README step 4: manifest inspect. ----
+        let inspect_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Manifest {
+                command: ManifestCommand::Inspect {
+                    path: manifest_path.clone(),
+                },
+            }),
+        })?;
+        assert!(inspect_output.contains("kind = software"));
+        assert!(inspect_output.contains("name = hello-kairo"));
+
+        // ---- README step 5: revision inspect + list. ----
+        let revision_inspect = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Inspect {
+                    statement: statement_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(revision_inspect.contains(&statement_id));
+        let revision_list = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::List {
+                    object: object_id.clone(),
+                },
+            }),
+        })?;
+        assert!(revision_list.contains(&statement_id));
+
+        // ---- README step 6a: branch set/show/list. ----
+        let branch_set = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: statement_id.clone(),
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+        assert!(branch_set.contains("name = head"));
+        let branch_show = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Show {
+                    object: object_id.clone(),
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(branch_show.contains(&statement_id));
+        let branch_list = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::List {
+                    object: object_id.clone(),
+                },
+            }),
+        })?;
+        assert!(branch_list.contains(&actor_id));
+
+        // ---- README step 6b: tag bind/show/list. ----
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Tag {
+                command: TagCommand::Bind {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    version: "1.0.0".to_owned(),
+                    revision: statement_id.clone(),
+                },
+            }),
+        })?;
+        let tag_show = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Tag {
+                command: TagCommand::Show {
+                    object: object_id.clone(),
+                    actor: None,
+                    version: "1.0.0".to_owned(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(tag_show.contains(&statement_id));
+        let tag_list = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Tag {
+                command: TagCommand::List {
+                    object: object_id.clone(),
+                },
+            }),
+        })?;
+        assert!(tag_list.contains("1.0.0"));
+
+        // ---- README step 6c: snapshot compute (text + json). ----
+        let snapshot_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Snapshot {
+                command: SnapshotCommand::Compute {
+                    object: object_id.clone(),
+                    actor: None,
+                    name: "head".to_owned(),
+                    statement: None,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(snapshot_output.contains("snapshot = "));
+        let snapshot_json = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Snapshot {
+                command: SnapshotCommand::Compute {
+                    object: object_id.clone(),
+                    actor: None,
+                    name: "head".to_owned(),
+                    statement: None,
+                    json: true,
+                },
+            }),
+        })?;
+        let snapshot_parsed: serde_json::Value = serde_json::from_str(&snapshot_json)?;
+        assert!(snapshot_parsed["snapshot_id"].as_str().is_some());
+
+        // ---- README step 7: verify object end-to-end. ----
+        // Pass --repo explicitly since the test process cwd is not the
+        // example tree. With one actor in the keystore, --as is
+        // auto-picked, so trust starts at `unknown` (no opinion yet).
+        let verify_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    r#as: None,
+                    no_as: false,
+                    repo: Some(work_dir.path().to_path_buf()),
+                    no_repo: false,
+                    manifest: Some(manifest_path.clone()),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(verify_output.contains("verify object: VALID"));
+        assert!(verify_output.contains("signature = valid"));
+        assert!(verify_output.contains("trust = unknown"));
+
+        // ---- README step 8: trust grant + show + list. ----
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Grant {
+                    by: actor_id.clone(),
+                    of: actor_id.clone(),
+                    reason: Some("self-trust".to_owned()),
+                },
+            }),
+        })?;
+        let trust_show = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::Show {
+                    by: actor_id.clone(),
+                    of: actor_id.clone(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(trust_show.contains("trusted"));
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Trust {
+                command: TrustCommand::List {
+                    by: actor_id.clone(),
+                },
+            }),
+        })?;
+
+        // ---- README: re-verify (trust now `trusted`). ----
+        let reverify_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    r#as: None,
+                    no_as: false,
+                    repo: Some(work_dir.path().to_path_buf()),
+                    no_repo: false,
+                    manifest: Some(manifest_path.clone()),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(reverify_output.contains("verify object: VALID"));
+        assert!(reverify_output.contains("trust = trusted"));
+
+        // ---- README step 9: round-trip via per-record import. ----
+        let actor_file = shard_path(store_dir.path(), "actors", &actor_id);
+        let object_file = shard_path(store_dir.path(), "objects", &object_id);
+        let statement_file = shard_path(store_dir.path(), "statements", &statement_id);
+        assert!(actor_file.exists());
+        assert!(object_file.exists());
+        assert!(statement_file.exists());
+
+        let fresh_store = tempfile::TempDir::new()?;
+        run(Cli {
+            store: Some(fresh_store.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Import {
+                    genesis: actor_file,
+                },
+            }),
+        })?;
+        run(Cli {
+            store: Some(fresh_store.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Import {
+                    statement: object_file,
+                },
+            }),
+        })?;
+        run(Cli {
+            store: Some(fresh_store.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Import {
+                    statement: statement_file,
+                },
+            }),
+        })?;
+
+        // ---- README step 10: bundle export + import + branch show. ----
+        let bundle_dir = tempfile::TempDir::new()?;
+        let bundle_root = bundle_dir.path().join("object-bundle");
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Export {
+                    object: object_id.clone(),
+                    output: bundle_root.clone(),
+                },
+            }),
+        })?;
+        let bundled_store = tempfile::TempDir::new()?;
+        run(Cli {
+            store: Some(bundled_store.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Import {
+                    input: bundle_root.clone(),
+                },
+            }),
+        })?;
+        let bundled_branch_show = run(Cli {
+            store: Some(bundled_store.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Show {
+                    object: object_id.clone(),
+                    actor: None,
+                    name: "head".to_owned(),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(bundled_branch_show.contains(&statement_id));
+
+        Ok(())
+    }
+
+    /// Compute the on-disk shard path for an ID under
+    /// `<root>/<type_dir>/<XX>/<YY>/<id>.json`. Mirrors the layout
+    /// `kairo-store::shard::shard_path` writes.
+    fn shard_path(root: &std::path::Path, type_dir: &str, id: &str) -> std::path::PathBuf {
+        root.join(type_dir)
+            .join(&id[3..5])
+            .join(&id[5..7])
+            .join(format!("{id}.json"))
+    }

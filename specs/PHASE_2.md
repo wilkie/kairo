@@ -338,8 +338,15 @@ tooling tracked above.
 
 Hardening what Phase 1 shipped.
 
-- [ ] Programmatic integration test that runs `examples/README.md`
+- [x] Programmatic integration test that runs `examples/README.md`
       end-to-end (so the walkthrough doesn't bit-rot when commands change).
+      `examples_readme_walkthrough_round_trip` in `kairo-cli/src/tests.rs`
+      mirrors each step: actor create → object create → revision create →
+      manifest inspect → branch set/show/list → tag bind/show/list →
+      snapshot compute → verify object (asserts VALID) → trust grant →
+      re-verify (asserts trust=trusted) → per-record import to fresh store
+      → bundle export/import to another fresh store. Skips on hosts
+      missing `git`.
 - [ ] Property tests for canonical-encoding determinism (`proptest` over
       every body type's `CanonicalEncode` impl: parse → re-encode →
       byte-equal).
