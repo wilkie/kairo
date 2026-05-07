@@ -3788,6 +3788,29 @@ struct ObjectVerificationReport {
     frontier: FrontierResolution,
     revision: RevisionChecks,
     overall: OverallStatus,
+    /// Where the storage commit was looked up. Diagnostic only —
+    /// does not contribute to `overall`. Surfaced as a single line
+    /// in text output; `--json` shape unchanged for v1.
+    repo_source: RepoSource,
+}
+
+/// Source of the Git repository consulted for the content-layer
+/// check. Reported back to the user so they can tell whether
+/// verify-object hit the managed cache, fell back to cwd, used an
+/// explicit `--repo`, or skipped Git lookup entirely.
+#[derive(Debug, Clone)]
+enum RepoSource {
+    /// Per-object bare repo in the managed Git cache contained the
+    /// commit OID; verify ran against `<cache>/<XX>/<YY>/<id>/`.
+    Cache { object: ObjectId },
+    /// Either a cwd-discovered repo or an explicit `--repo <path>`.
+    /// Both produce a `Repository` from a filesystem path, so the
+    /// diagnostic only needs the path; the user's flags imply how
+    /// it was found.
+    Filesystem { path: PathBuf },
+    /// No Git lookup performed: `--no-repo`, or cache miss with
+    /// `--no-cwd-repo` set.
+    Skipped,
 }
 
 #[derive(Debug)]
@@ -3853,6 +3876,8 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
             no_as,
             repo,
             no_repo,
+            no_cache,
+            no_cwd_repo,
             manifest,
             json,
         } => {
@@ -3923,15 +3948,22 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
 
             let revision_body = revision_statement.unsigned().body();
 
-            // Open the Git repo (explicit --repo, discovery, or skipped
-            // via --no-repo). Discovery walks upward from the current
-            // working directory; an absent repo is non-fatal — it just
-            // leaves the content layer Indeterminate.
-            let git_repo = if no_repo {
-                None
-            } else {
-                open_repo_for_verify(repo.as_deref())?
-            };
+            // Resolve the Git source. Precedence (per
+            // `specs/DECISIONS.md` §9 and PHASE_2 §1):
+            //   1. `--repo <path>`: that path, no fallbacks.
+            //   2. `--no-repo`: skip everything.
+            //   3. Default: cache first (if the per-object cache
+            //      repo exists and contains the commit), then cwd
+            //      discovery.
+            let (git_repo, repo_source) = resolve_repo_for_verify(
+                paths,
+                &object_id,
+                revision_body.revision(),
+                repo.as_deref(),
+                no_repo,
+                no_cache,
+                no_cwd_repo,
+            )?;
 
             // Look up the storage commit. None = no repo or non-git
             // revision scheme. Some(NotFound) = repo present, commit
@@ -4000,6 +4032,7 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 frontier,
                 revision: revision_checks,
                 overall,
+                repo_source,
             };
 
             if matches!(overall, OverallStatus::Invalid) {
@@ -4046,29 +4079,98 @@ fn resolve_verify_truster(
     }
 }
 
-/// Open the Git repo for `verify object`. Explicit `--repo <path>` is
-/// authoritative; otherwise walk upward from cwd. Returns `Ok(None)`
-/// only when the caller passed `--no-repo`; this function never
-/// silently swallows discovery failures — it is up to the caller
-/// (`run_verify_command`) to gate the call.
-fn open_repo_for_verify(
+/// Resolve the Git source for `verify object` per the precedence
+/// in `specs/DECISIONS.md` §9 / `specs/PHASE_2.md` §1:
+///
+/// 1. `--repo <path>` is authoritative — that path, no fallbacks.
+/// 2. `--no-repo` skips everything; content layer goes Indeterminate.
+/// 3. Default: try the managed cache first (per-object cache repo
+///    exists *and* contains the commit OID), then fall back to
+///    cwd-upward discovery.
+///
+/// Cache probe is cheap: `kairo_git::object_repo_path` is just
+/// sharding (no I/O beyond an existence check), and the per-object
+/// repo's gix open is local-only. We deliberately do not call
+/// `GitCache::open` here — that would `git init --bare` the pool
+/// for first-time users who only have a cwd repo, requiring git
+/// on PATH for a code path that doesn't otherwise need it.
+///
+/// Cache miss + `--no-cwd-repo` returns `(None, Skipped)` instead
+/// of erroring — the user explicitly opted out of cwd discovery,
+/// so absence of a result is expected (content layer Indeterminate).
+/// Cache miss + cwd-discovery failure preserves today's behavior:
+/// errors with `GitRepoNotDiscovered`.
+fn resolve_repo_for_verify(
+    paths: &StorePaths,
+    object_id: &ObjectId,
+    revision: &RevisionId,
     explicit_repo: Option<&Path>,
+    no_repo: bool,
+    no_cache: bool,
+    no_cwd_repo: bool,
+) -> Result<(Option<kairo_git::Repository>, RepoSource), CliError> {
+    if no_repo {
+        return Ok((None, RepoSource::Skipped));
+    }
+
+    if let Some(path) = explicit_repo {
+        let repo = kairo_git::discover(path).map_err(|source| CliError::OpenGitRepo {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        return Ok((Some(repo), RepoSource::Filesystem { path: path.to_path_buf() }));
+    }
+
+    if !no_cache {
+        if let Some(repo) = try_cache_repo_for_revision(paths, object_id.as_str(), revision)? {
+            return Ok((Some(repo), RepoSource::Cache { object: object_id.clone() }));
+        }
+    }
+
+    if no_cwd_repo {
+        return Ok((None, RepoSource::Skipped));
+    }
+
+    let cwd = std::env::current_dir().map_err(|source| CliError::CwdUnavailable { source })?;
+    match kairo_git::discover(&cwd) {
+        Ok(repo) => {
+            let path = repo.git_dir().to_path_buf();
+            Ok((Some(repo), RepoSource::Filesystem { path }))
+        }
+        Err(_) => Err(CliError::GitRepoNotDiscovered { searched_from: cwd }),
+    }
+}
+
+/// Probe the managed Git cache for `object_id`'s per-object bare
+/// repo. Returns `Some(repo)` only if the per-object dir exists
+/// *and* its object DB (transparently including the shared pool
+/// via alternates) reaches the commit named in `revision`. A
+/// non-git revision scheme returns `None` immediately — there's
+/// nothing for the cache to resolve.
+fn try_cache_repo_for_revision(
+    paths: &StorePaths,
+    object_id: &str,
+    revision: &RevisionId,
 ) -> Result<Option<kairo_git::Repository>, CliError> {
-    let path = match explicit_repo {
-        Some(path) => path.to_path_buf(),
-        None => std::env::current_dir().map_err(|source| CliError::CwdUnavailable { source })?,
+    let Some(oid) = revision.as_str().strip_prefix("git:sha256:") else {
+        return Ok(None);
     };
-    match (explicit_repo, kairo_git::discover(&path)) {
-        (_, Ok(repo)) => Ok(Some(repo)),
-        // Explicit --repo: failure is fatal so the user knows their
-        // path was wrong.
-        (Some(explicit), Err(error)) => Err(CliError::OpenGitRepo {
-            path: explicit.to_path_buf(),
-            source: error,
-        }),
-        // No --repo, no --no-repo, no discovered repo: error with a
-        // clear hint pointing at the available options.
-        (None, Err(_)) => Err(CliError::GitRepoNotDiscovered { searched_from: path }),
+    let git_root = paths.git_root();
+    let repo_path = match kairo_git::object_repo_path(&git_root, object_id) {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    if !repo_path.exists() {
+        return Ok(None);
+    }
+    let repo = match kairo_git::open(&repo_path) {
+        Ok(repo) => repo,
+        Err(_) => return Ok(None),
+    };
+    match repo.find_commit(oid) {
+        Ok(Some(_)) => Ok(Some(repo)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(CliError::GitOperation { source: error }),
     }
 }
 
@@ -4196,6 +4298,7 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
     let mut out = String::new();
     out.push_str(&format!("verify object: {}\n", report.overall.label()));
     out.push_str(&format!("object = {}\n", report.object));
+    out.push_str(&format!("commit lookup: {}\n", format_repo_source(&report.repo_source)));
     out.push_str(&format!(
         "genesis: derived_object = {}\n",
         report.genesis.derived_object
@@ -4262,6 +4365,14 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
         format_content_layer(&report.revision.validation.content)
     ));
     out
+}
+
+fn format_repo_source(source: &RepoSource) -> String {
+    match source {
+        RepoSource::Cache { object } => format!("cache (object {object})"),
+        RepoSource::Filesystem { path } => format!("repo at {}", path.display()),
+        RepoSource::Skipped => "skipped".to_owned(),
+    }
 }
 
 fn format_content_layer(check: &ContentLayerCheck) -> String {
@@ -4632,7 +4743,7 @@ fn format_revision_list(
 
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor revoke-attestation-key sign --actor <id> --signing-attestation-key-seed <path> --revoke-key <key-id> [--reason <text>]\n  kairo actor revoke-attestation-key prepare --actor <id> --revoke-key <key-id> [--reason <text>] --output <path>\n  kairo actor revoke-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor revoke-attestation-key sign --actor <id> --signing-attestation-key-seed <path> --revoke-key <key-id> [--reason <text>]\n  kairo actor revoke-attestation-key prepare --actor <id> --revoke-key <key-id> [--reason <text>] --output <path>\n  kairo actor revoke-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir>\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--no-cache] [--no-cwd-repo] [--manifest <path>] [--json]\n".to_owned()
 }
 
 

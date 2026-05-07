@@ -1422,6 +1422,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: Some(manifest_path),
@@ -1454,6 +1456,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: None,
@@ -1483,6 +1487,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: Some(manifest_path),
@@ -1526,6 +1532,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: Some(wrong_manifest),
@@ -1557,6 +1565,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: Some(manifest_path),
@@ -1621,6 +1631,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: None,
@@ -1794,6 +1806,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: Some(git_dir.path().to_path_buf()),
                     no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: None,
@@ -1808,6 +1822,313 @@ kind = "tree"
         assert!(output.contains("content = VALID"));
         assert!(output.contains("manifest_binding = VALID (bound)"));
         assert!(output.contains(&format!("manifest_source = git:sha256:{commit_oid}/kairo.toml")));
+        // Default precedence: cwd-discovered repo (no cache populated).
+        assert!(
+            output.contains("commit lookup: repo at "),
+            "expected cwd repo lookup, got:\n{output}"
+        );
+        Ok(())
+    }
+
+    /// Build a Git pack containing every commit reachable in `src`,
+    /// returning the raw bytes. Mirrors `kairo_git::test_support::
+    /// build_pack_from`, duplicated here because that helper is
+    /// crate-private.
+    fn build_pack_from(src: &std::path::Path) -> Vec<u8> {
+        use std::io::Read;
+        use std::process::Command as Process;
+        use std::process::Stdio;
+        let mut child = Process::new("git")
+            .arg("-C")
+            .arg(src)
+            .args(["pack-objects", "--all", "--stdout"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn pack-objects");
+        let mut buf = Vec::new();
+        child
+            .stdout
+            .as_mut()
+            .expect("stdout")
+            .read_to_end(&mut buf)
+            .expect("read stdout");
+        let status = child.wait().expect("wait");
+        assert!(status.success(), "pack-objects failed");
+        buf
+    }
+
+    /// Populate the managed Git cache under `<store>/git/` with the
+    /// commits from `src_repo` and pin `commit_oid` at
+    /// `refs/heads/main` for `object_id`. Used by the cache-
+    /// integration verify tests below.
+    fn populate_cache(
+        store_root: &std::path::Path,
+        src_repo: &std::path::Path,
+        object_id: &str,
+        commit_oid: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pack = build_pack_from(src_repo);
+        let cache = kairo_git::GitCache::open(store_root.join("git"))?;
+        cache.ingest_pack(&pack)?;
+        cache.set_ref(object_id, "refs/heads/main", commit_oid)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_uses_cache_with_no_cwd_repo() -> Result<(), Box<dyn std::error::Error>> {
+        // Cache populated, --no-cwd-repo set so cwd discovery is
+        // suppressed even though the source repo's tempdir would
+        // otherwise be discoverable. Verify reaches VALID against
+        // the cache alone, and the report says so.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "cache-fixture"
+
+            [content]
+            kind = "tree"
+        "#;
+        let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_path = git_dir.path().join("kairo.toml");
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: format!("git:sha256:{commit_oid}"),
+                    manifest: manifest_path,
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_id.clone(),
+                    revision: revision_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        // Populate cache and pin the commit.
+        populate_cache(store_dir.path(), git_dir.path(), &object_id, &commit_oid)?;
+
+        // Verify with --no-cwd-repo: cache is the only source.
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: None,
+                    no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: true,
+                    r#as: None,
+                    no_as: true,
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(
+            output.contains("verify object: VALID"),
+            "expected VALID, got:\n{output}"
+        );
+        assert!(output.contains("content = VALID"));
+        assert!(output.contains("manifest_binding = VALID (bound)"));
+        assert!(
+            output.contains(&format!("commit lookup: cache (object {object_id})")),
+            "expected cache lookup, got:\n{output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_explicit_repo_skips_cache() -> Result<(), Box<dyn std::error::Error>> {
+        // Both cache and explicit repo populated. --repo <path>
+        // takes precedence over the cache; the report shows the
+        // explicit path, not "cache".
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "cache-vs-repo"
+        "#;
+        let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_path = git_dir.path().join("kairo.toml");
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: format!("git:sha256:{commit_oid}"),
+                    manifest: manifest_path,
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_id.clone(),
+                    revision: revision_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        populate_cache(store_dir.path(), git_dir.path(), &object_id, &commit_oid)?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: Some(git_dir.path().to_path_buf()),
+                    no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: false,
+                    r#as: None,
+                    no_as: true,
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(
+            output.contains("verify object: VALID"),
+            "expected VALID, got:\n{output}"
+        );
+        assert!(
+            output.contains("commit lookup: repo at "),
+            "expected explicit repo lookup, got:\n{output}"
+        );
+        // Crucially, NOT the cache form.
+        assert!(
+            !output.contains("commit lookup: cache"),
+            "explicit --repo must skip cache, got:\n{output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verify_object_no_cwd_repo_with_cache_miss_is_indeterminate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // No cache populated, --no-cwd-repo set. Content layer
+        // must report INDETERMINATE rather than erroring out on
+        // "no Git repo discovered".
+        let (store_dir, _manifest_dir, _actor_id, object_id, _revision_statement, manifest_path) =
+            fixture_with_branch()?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id,
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: None,
+                    no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: true,
+                    r#as: None,
+                    no_as: true,
+                    manifest: Some(manifest_path),
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(
+            output.contains("verify object: INDETERMINATE"),
+            "expected INDETERMINATE, got:\n{output}"
+        );
+        assert!(output.contains("content = INDETERMINATE"));
+        assert!(
+            output.contains("commit lookup: skipped"),
+            "expected lookup skipped, got:\n{output}"
+        );
         Ok(())
     }
 
@@ -1896,6 +2217,8 @@ kind = "tree"
                     name: "head".to_owned(),
                     repo: Some(git_dir.path().to_path_buf()),
                     no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     r#as: None,
                     no_as: true,
                     manifest: Some(manifest_path),
@@ -2240,6 +2563,8 @@ kind = "tree"
                     no_as: false,
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -2301,6 +2626,8 @@ kind = "tree"
                     no_as: false,
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -2330,6 +2657,8 @@ kind = "tree"
                     no_as: true,
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -2374,6 +2703,8 @@ kind = "tree"
                     no_as: false,
                     repo: None,
                     no_repo: true,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     manifest: Some(manifest_path),
                     json: false,
                 },
@@ -4101,6 +4432,8 @@ kind = "tree"
                     no_as: false,
                     repo: Some(work_dir.path().to_path_buf()),
                     no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     manifest: Some(manifest_path.clone()),
                     json: false,
                 },
@@ -4158,6 +4491,8 @@ kind = "tree"
                     no_as: false,
                     repo: Some(work_dir.path().to_path_buf()),
                     no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: false,
                     manifest: Some(manifest_path.clone()),
                     json: false,
                 },

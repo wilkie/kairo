@@ -28,6 +28,15 @@ impl StorePaths {
         let keys = keys.unwrap_or_else(|| store.join("keys"));
         Ok(Self { store, keys })
     }
+
+    /// Root directory of the managed Git cache (`<store>/git`).
+    /// The directory may not exist yet — first cache use creates it
+    /// via `GitCache::open`. Verify-object probes existence before
+    /// opening so it doesn't trigger pool init for users who only
+    /// use a cwd repo.
+    pub(crate) fn git_root(&self) -> PathBuf {
+        self.store.join("git")
+    }
 }
 
 fn default_store_root() -> Result<PathBuf, CliError> {

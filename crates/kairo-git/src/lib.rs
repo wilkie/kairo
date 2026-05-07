@@ -23,6 +23,19 @@ use std::path::{Path, PathBuf};
 pub use cache::GitCache;
 pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 
+/// Compute the per-object bare repo path under a Git cache rooted
+/// at `git_root`, without opening the cache. Useful for callers
+/// that want to probe cache state cheaply (for example,
+/// `verify object`'s precedence check) before deciding whether
+/// to invoke `GitCache::open` (which initializes the pool repo if
+/// absent and therefore requires the host's `git` binary).
+pub fn object_repo_path(
+    git_root: &Path,
+    object_id: &str,
+) -> Result<PathBuf, GitError> {
+    shard::shard_path(git_root, object_id)
+}
+
 /// A handle to an opened Git repository.
 pub struct Repository {
     inner: gix::Repository,

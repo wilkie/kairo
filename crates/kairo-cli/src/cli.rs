@@ -122,8 +122,9 @@ pub(crate) enum VerifyCommand {
         #[arg(long)]
         no_as: bool,
         /// Path to a Git repository (working tree or .git directory).
-        /// Defaults to the repo discovered walking upward from the
-        /// current directory. Conflicts with --no-repo.
+        /// When set, this path is the only Git source consulted —
+        /// neither the managed Git cache nor cwd discovery is tried.
+        /// Conflicts with --no-repo.
         #[arg(long, conflicts_with = "no_repo")]
         repo: Option<PathBuf>,
         /// Skip Git lookup entirely. Content-layer check stays
@@ -131,6 +132,21 @@ pub(crate) enum VerifyCommand {
         /// too. Conflicts with --repo.
         #[arg(long)]
         no_repo: bool,
+        /// Skip the managed Git cache (`<store>/git/`) when
+        /// resolving the storage commit. By default verify-object
+        /// consults the cache first (for `git:sha256:` revisions
+        /// where the per-object cache repo exists and contains the
+        /// commit), then falls back to the cwd-discovered repo.
+        /// Pass this to force a cwd-only lookup.
+        #[arg(long)]
+        no_cache: bool,
+        /// Skip cwd-upward Git discovery. Useful for hermetic
+        /// verification against the managed cache only (no
+        /// dependence on whatever working tree happens to be
+        /// checked out). When set together with a cache miss, the
+        /// content layer reports INDETERMINATE rather than erroring.
+        #[arg(long)]
+        no_cwd_repo: bool,
         /// Override the kairo.toml manifest (otherwise read from the
         /// commit's tree at `kairo.toml`). Useful when verifying a
         /// revision that named a non-default manifest path.
