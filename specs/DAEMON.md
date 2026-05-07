@@ -4,11 +4,20 @@
 
 Draft specification.
 
-This document defines the Kairo daemon: the long-running local node process that
-coordinates the core library, local store, federation layer, runtime executors,
-policy engine, and local APIs.
+This document defines the long-term shape of the Kairo daemon: the
+long-running local node process that coordinates the core library,
+local store, federation layer, runtime executors, policy engine, and
+local APIs.
 
-This specification is intentionally prescriptive enough to guide implementation.
+The Phase 2 §2 implementation ships a deliberate sliver of this shape
+— see `DECISIONS.md` §10 (MVP scope) and §11 (two-process
+architecture). Where this document describes components or behaviors
+deferred from v1, sections are tagged **[v1]** for in-scope and
+**[post-v1]** for deferred. Aspirational text without a tag means
+the long-term design is unchanged but no v1 implementation exists.
+
+This specification is intentionally prescriptive enough to guide
+implementation once each component lands.
 
 ---
 
@@ -136,29 +145,45 @@ A conforming daemon should contain these components:
 
 ```text
 Daemon
-  StoreManager
-  CoreService
-  FederationService
-  PolicyService
-  RuntimeService
-  TaskManager
-  ApiService
-  ConfigService
-  LogService
+  StoreManager       [v1: minimal]
+  CoreService        [v1: read-only adapters]
+  FederationService  [post-v1; Phase 2 §4]
+  PolicyService      [post-v1]
+  RuntimeService     [post-v1; Phase 2 §7]
+  TaskManager        [post-v1]
+  ApiService         [v1: Unix socket only, axum]
+  ConfigService      [v1: minimal]
+  LogService         [v1: structured-text via tracing]
 ```
+
+The Phase 2 §2 daemon implements the **[v1]** components only.
+**[post-v1]** components are documented for design continuity but
+do not ship in v1; subsequent phases (§4 federation, §7 build/run)
+add them.
 
 ### 5.1 StoreManager
 
 Owns access to the local store.
 
-Responsibilities:
+Responsibilities (v1):
 
-1. Open, initialize, migrate, and lock the local store.
-2. Provide store-backed provider traits to core.
+1. Open the local store at startup.
+2. Provide store-backed provider traits to core / API handlers.
+
+Responsibilities (post-v1):
+
 3. Ingest objects, statements, blobs, and snapshot closures.
-4. Maintain pins and local retention metadata.
-5. Coordinate garbage collection.
-6. Maintain indexes or request index maintenance from the store.
+4. Coordinate garbage collection.
+5. Maintain indexes or request index maintenance from the store.
+
+**[v1] note:** the daemon does not own a store-wide lock. Per-record
+advisory locks live in `kairo-store` and `kairo-keystore` (see
+`PHASE_2.md` §6) and serialize concurrent writers (daemon + CLI in
+direct mode + future web-server) without daemon coordination.
+
+**[v1] note:** schema migrations and pin/retention management are
+post-v1; the daemon opens an already-initialized store or fails
+fast if the version doesn't match.
 
 ### 5.2 CoreService
 
@@ -247,16 +272,20 @@ Responsibilities:
 
 Exposes local APIs for CLI, web client, and integrations.
 
-Possible transports:
+**[v1] transport: HTTP+JSON over a Unix domain socket** at
+`<store>/daemon.sock` (mode 0600). Implemented with `axum` on top
+of `tokio` (see `DECISIONS.md` §11). The web-server is **not** part
+of the daemon process — it is a separate `kairo-web` binary
+(deferred to Phase 2 §5) that adds the TCP / browser-facing
+surface and translates approved requests into Unix-socket calls
+through the `kairo-daemon-client` crate.
 
-- Local HTTP
-- Unix domain socket
-- Named pipe
-- gRPC
-- JSON-RPC
-- Embedded library mode
-
-The transport may vary, but exposed semantics must remain aligned with this spec.
+Other transports (HTTP over TCP/TLS, named pipe, gRPC, JSON-RPC,
+embedded library mode) are post-v1; they would be added by
+introducing additional listeners on the daemon (HTTP+TLS for direct
+network access without a fronting web-server) or by adopting
+gRPC/JSON-RPC alongside the existing axum app. The semantic
+contract under each transport must remain aligned with this spec.
 
 ### 5.8 ConfigService
 
@@ -279,39 +308,60 @@ Configuration includes:
 
 ### 6.1 Startup
 
-On startup, the daemon must:
+**[v1] startup sequence:**
 
-1. Load configuration.
-2. Open and lock the local store.
-3. Check store schema version.
-4. Run required migrations or fail safely.
-5. Initialize provider adapters.
-6. Initialize core service.
-7. Initialize policy service.
-8. Initialize runtime executor registry.
-9. Initialize federation service if enabled.
-10. Start local API service.
-11. Start background task scheduler.
+1. Load configuration (store path; minimal in v1).
+2. Open the local store; fail fast if the schema version doesn't
+   match (no in-process migrations in v1).
+3. Bind the Unix socket at `<store>/daemon.sock` (mode 0600).
+4. Write the PID to `<store>/daemon.pid`.
+5. Start the axum app and run in the foreground.
 
-Startup must fail safely if the store cannot be opened or if required migrations fail.
+Startup must fail safely if the store cannot be opened.
+
+**[post-v1]** Additional startup steps land with their respective
+phases:
+
+6. Initialize provider adapters for federation (post-v1).
+7. Initialize core service for build/run planning (post-v1).
+8. Initialize policy service (post-v1).
+9. Initialize runtime executor registry (post-v1).
+10. Initialize federation service if enabled (post-v1).
+11. Start background task scheduler (post-v1).
 
 ### 6.2 Shutdown
 
-On shutdown, the daemon must:
+**[v1] shutdown sequence on `SIGTERM`/`SIGINT`:**
 
 1. Stop accepting new API requests.
-2. Cancel or drain background tasks according to policy.
-3. Stop active runtime processes where appropriate.
-4. Flush store writes.
-5. Close federation sessions.
-6. Release store locks.
-7. Exit with a clear status.
+2. Drain in-flight requests (axum graceful shutdown).
+3. Close the Unix socket.
+4. Remove the PID file.
+5. Exit with status 0.
+
+The §6 advisory locks held by `FilesystemStore` are released
+automatically when the daemon's process exits — no daemon-side
+"release store locks" step is required.
+
+**[post-v1] additional shutdown steps:**
+
+- Cancel or drain background tasks according to policy.
+- Stop active runtime processes where appropriate.
+- Flush store writes (today: every write is fsync'd via
+  atomic_write before returning, so this is a no-op in v1; may
+  matter when batched writes land).
+- Close federation sessions.
 
 ### 6.3 Restart
 
 Daemon restart must not corrupt store state.
 
-In-progress tasks must be either:
+**[v1]** Restart is "open store again, listen on socket again."
+Per-record advisory locks (`PHASE_2.md` §6) make this safe — any
+held locks released by the previous process are reclaimable by the
+new one.
+
+**[post-v1]** In-progress tasks must be either:
 
 - Resumable
 - Marked failed/interrupted
@@ -336,10 +386,19 @@ recoverable from durable store data or fetched again from federation.
 
 ### 7.1 Store locking
 
-A store opened in write mode must be protected by a process lock or equivalent
-mechanism to prevent unsafe concurrent writers.
+**[v1]** Concurrent writer safety is enforced by `kairo-store`'s
+per-record advisory locks (`PHASE_2.md` §6) — sidecar `.lock` files
+under `<store>/...` that `flock(2)`-serialize writers across
+processes. The daemon does not own a store-wide lock; multiple
+processes (daemon + CLI direct mode + future web-server) can run
+concurrently because every read-modify-write path inside
+`FilesystemStore` already takes the right per-record lock. Reads
+are unlocked by design — `atomic_write` + `fs::rename` gives
+readers a consistent snapshot of one prior write.
 
-Multiple readers may be allowed if the store implementation supports them.
+If a future store backend lacks per-record locking semantics, the
+daemon may need to add a store-wide guard at that layer, but the
+v1 filesystem store does not.
 
 ### 7.2 Ingestion
 
@@ -595,26 +654,44 @@ trust those roots for local operation.
 
 ## 13. Local API
 
-The daemon should expose a structured API.
+The daemon exposes a structured HTTP+JSON API. **[v1] transport:
+Unix socket only**, at `<store>/daemon.sock` (mode 0600). See
+`API.md` for the full API contract.
 
-Recommended resource groups:
+**[v1] resource groups** — read-only:
 
 ```text
-/objects
-/snapshots
-/statements
-/blobs
-/builds
-/runs
-/tasks
-/store
-/federation
-/policy
-/config
+/api/v1/version
+/api/v1/status
+/api/v1/actors/{id}
+/api/v1/objects/{id}
+/api/v1/statements/{id}
+/api/v1/branches/{object}
+/api/v1/branches/{object}/{name}/latest
+/api/v1/version-tags/{object}/{version}
+/api/v1/trust/{by}/{of}
+/api/v1/capabilities/{grantor}
+/api/v1/blobs/{id}                       # streaming
 ```
 
-The exact transport is implementation-defined, but API responses must preserve
-core validation status and policy status distinctly.
+Write paths, snapshot/build/run resources, task tracking,
+federation, policy, and config endpoints are post-v1; they land
+with their respective phase work (§4 federation, §7 build/run,
+later phases for the rest).
+
+Long-term resource groups remain as planned:
+
+```text
+/objects /snapshots /statements /blobs   # v1 has actors/objects/
+                                         # statements/branches/
+                                         # version-tags/trust/
+                                         # capabilities/blobs
+/builds /runs /tasks                     # post-v1 (Phase 2 §7)
+/store /federation /policy /config       # post-v1
+```
+
+API responses must preserve core validation status and (when
+present) policy status distinctly.
 
 ### 13.1 Required API concepts
 

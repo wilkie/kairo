@@ -4,11 +4,21 @@
 
 Draft specification.
 
-This document defines the Kairo daemon local API. The API is the contract used by
-the CLI, web client, generated TypeScript API client, integrations, and developer
-tools to communicate with a running Kairo daemon.
+This document defines the long-term Kairo daemon API contract used
+by the CLI, web client, generated TypeScript API client,
+integrations, and developer tools.
 
-This specification is intentionally prescriptive enough to guide implementation.
+The Phase 2 §2 implementation ships a subset — see `DECISIONS.md`
+§10 (read-only `/api/v1/...` endpoints, Unix socket only) and §11
+(two-process architecture: the `kairo-daemon` process is the
+trusted Unix-socket-only API; the `kairo-web` process — Phase 2 §5,
+deferred — is the TCP / browser-facing surface that translates
+authenticated requests into daemon calls). Endpoint groups in
+sections §10–§22 are tagged **[v1]** for in-scope and **[post-v1]**
+for deferred.
+
+This specification is intentionally prescriptive enough to guide
+implementation once each piece lands.
 
 ---
 
@@ -73,83 +83,102 @@ The API must preserve distinctions between:
 
 ## 3. API Contract Strategy
 
-The daemon API must be described by OpenAPI.
-
-OpenAPI is the canonical cross-language contract between:
+The long-term daemon API contract is described by OpenAPI. OpenAPI
+is the canonical cross-language contract between:
 
 ```text
-Rust daemon
-  -> CLI client
-  -> TypeScript/React web client
-  -> generated API clients
-  -> integrations
+kairo-daemon (Rust, Unix socket)
+  -> kairo-cli (Rust, daemon-mode dispatch via kairo-daemon-client)
+  -> kairo-web  (Phase 2 §5; TCP, browser-facing; translates to daemon-client)
+       -> TypeScript/React web client
+       -> generated API clients
+       -> integrations
 ```
 
-The daemon should either:
+**[v1] OpenAPI is deferred.** See `DECISIONS.md` §10.3 and §11.
+The v1 daemon's only client is `kairo-cli`, both sides are Rust,
+the contract is internal, and hand-coded handlers ship the same
+working API as a generator would. OpenAPI lands when Phase 2 §5
+web-client work crystallizes the external shape; the Rust generator
+choice (utoipa / aide / okapi / schemars + custom) is locked then.
 
-1. Serve its OpenAPI document at runtime, or
-2. Emit the OpenAPI document as a build artifact, or
-3. Do both.
-
-Recommended endpoints:
+Recommended endpoints (long-term):
 
 ```text
-GET /api/openapi.json
-GET /api/version
-GET /api/status
+GET /api/openapi.json    # post-v1
+GET /api/v1/version      # v1
+GET /api/v1/status       # v1
 ```
 
 ### 3.1 Rust OpenAPI generation
 
-The Rust daemon should generate or maintain OpenAPI using a Rust-compatible system
-such as:
+**[post-v1].** The Rust daemon will generate or maintain OpenAPI
+using a Rust-compatible system such as:
 
 - utoipa
 - aide
 - okapi
 - schemars plus custom OpenAPI generation
 
-The exact library is not mandated, but the generated schema must be suitable for
-TypeScript client generation.
+The exact library is not mandated, but the generated schema must
+be suitable for TypeScript client generation. Library choice is
+deferred to Phase 2 §5 when the web-client toolchain is concrete.
 
 ### 3.2 TypeScript consumption
 
-The TypeScript web client should consume the OpenAPI schema using:
+**[post-v1].** The TypeScript web client should consume the
+OpenAPI schema using:
 
 - `openapi-typescript`
 - `openapi-fetch` or a thin custom fetch wrapper
 - Zod validation for important response envelopes and errors
 
-Hand-written TypeScript DTOs must not replace generated API types when generated
-types are available.
+Hand-written TypeScript DTOs must not replace generated API types
+when generated types are available.
 
 ---
 
 ## 4. API Style
 
-The daemon API should use HTTP with JSON.
+The daemon API uses HTTP with JSON.
 
-Recommended base path:
+Base path:
 
 ```text
 /api/v1
 ```
 
-Recommended content type:
+Content type:
 
 ```text
 application/json
 ```
 
-Streaming endpoints may use:
+**[v1] transport: Unix domain socket only**, at
+`<store>/daemon.sock` (mode 0600). HTTP framed over the socket;
+no TCP, no TLS, no named pipes. The `kairo-daemon-client` Rust
+crate (consumed by `kairo-cli`'s daemon-mode dispatch) speaks
+HTTP-over-Unix-socket; future Rust web-server impls may use the
+same crate.
+
+**[post-v1]** Streaming-progress endpoints (long-running tasks,
+build/run logs, federation sync events) will use one of:
 
 - Server-Sent Events
 - WebSocket
 - newline-delimited JSON
 - chunked HTTP streams
 
-The API may also be exposed through alternate local transports, such as Unix
-domain sockets or named pipes, but the semantic contract should remain identical.
+V1 has one streaming endpoint — `GET /api/v1/blobs/{id}` — which
+streams response bodies as raw bytes (chunked transfer encoding).
+No SSE / WebSocket / NDJSON in v1.
+
+**[post-v1] additional transports.** TCP/TLS, named pipes, gRPC,
+JSON-RPC, and embedded-library mode are all possible additions.
+The TCP listener specifically lands with `kairo-web` (Phase 2 §5):
+the web-server terminates TCP/TLS in its own process and forwards
+to the daemon via Unix socket, preserving the daemon's
+trusted-only inbound surface (see `DECISIONS.md` §11).
 
 ---
 
@@ -395,60 +424,98 @@ Recommended mapping:
 
 ## 9. Authentication and Local Security
 
-The daemon API may be exposed only locally by default.
+The two-process architecture from `DECISIONS.md` §11 splits authn/
+authz across distinct trust boundaries:
 
-Recommended default bind:
+### 9.1 `kairo-daemon` (the trusted process)
 
-```text
-127.0.0.1
-```
+**[v1]** The daemon listens **only** on a Unix domain socket at
+`<store>/daemon.sock` (mode 0600). Authentication is **filesystem
+permissions**: anyone who can `connect(2)` to the socket is fully
+trusted, identical to a `kairo-cli` direct-mode caller. No bearer
+tokens, no per-request auth, no rate limiting, no CORS — the
+daemon never sees untrusted input by design.
 
-The daemon must not expose an unauthenticated control API on public interfaces by
-default.
+This relies on the host OS enforcing socket file permissions
+correctly. The daemon's parent directory (`<store>/`) is created
+with the user's default umask; an operator who weakens permissions
+on `<store>/` weakens the trust boundary.
 
-Supported authentication modes may include:
+The daemon does not expose a TCP listener in v1. There is no
+`bind 127.0.0.1` shape — TCP exposure requires the `kairo-web`
+process below.
 
-1. Local trusted loopback only.
-2. Bearer token.
-3. Session cookie.
-4. Unix socket permissions.
-5. OS-integrated authentication.
+### 9.2 `kairo-web` (the public-facing process, post-v1)
 
-The API must protect mutation and execution endpoints.
+**[Phase 2 §5, deferred].** The web-server terminates TCP (and
+TLS, eventually), serves the SPA bundle, and translates approved
+requests into Unix-socket calls to the daemon via the
+`kairo-daemon-client` crate. All untrusted-input handling
+(authentication, CORS, rate limiting, request validation,
+CSRF) lives here, not in the daemon.
 
-At minimum, dangerous operations must require daemon policy approval even if the
-API request is authenticated.
+Authentication modes for the web-server (subject to §5 design):
+
+1. Bearer token.
+2. Session cookie.
+3. OS-integrated authentication.
+4. (Default for local-first) Loopback-only origin check + cookie.
+
+The web-server runs as the same user as the daemon by default;
+privilege separation (different user, sandbox, container) is
+possible but optional.
+
+### 9.3 Mutation, execution, policy
+
+**[post-v1]** The API protects mutation and execution endpoints
+behind daemon policy approval (DAEMON.md §12). At minimum,
+dangerous operations require daemon policy approval even if the
+API request is authenticated. v1 has no mutation/execution
+endpoints, so this section is informational until those land.
 
 ---
 
 ## 10. Endpoint Groups
 
-Recommended endpoint groups:
+Long-term endpoint groups, tagged by phase:
 
 ```text
-/system
-/objects
-/snapshots
-/statements
-/blobs
-/tasks
-/fetch
-/sync
-/builds
-/runs
-/reproduce
-/import
-/export
-/store
-/federation
-/policy
-/executors
-/config
+/system          [v1] /version, /status only; /openapi.json post-v1
+/actors          [v1] read-only
+/objects         [v1] genesis read; /list and /summary post-v1
+/statements      [v1] read-only
+/branches        [v1] list + latest
+/version-tags    [v1] read-only
+/trust           [v1] read-only
+/capabilities    [v1] read-only
+/blobs           [v1] streaming read
+/snapshots       [post-v1] depends on snapshot-resolution surface
+/tasks           [post-v1] depends on TaskManager
+/fetch /sync     [post-v1] depends on Phase 2 §4 federation
+/builds /runs /reproduce
+                 [post-v1] depends on Phase 2 §7 build/run
+/import /export  [post-v1] depends on bundle work + TaskManager
+/store           [post-v1] store maintenance / GC
+/federation      [post-v1] depends on Phase 2 §4
+/policy          [post-v1] depends on PolicyService
+/executors       [post-v1] depends on Phase 2 §7
+/config          [post-v1]
 ```
+
+The `[v1]` groups together comprise the ~11 read-only endpoints
+locked in `DECISIONS.md` §10.4. Sections §11–§22 below describe the
+long-term endpoint shape; `[v1]` shipping behavior is summarized
+inline where the v1 surface differs.
 
 ---
 
 ## 11. System Endpoints
+
+**[v1] surface:** v1 ships flat `GET /api/v1/version` and
+`GET /api/v1/status` (no `/system/` prefix). Status excludes
+federation, runtime/executor, and task fields — those subsystems
+do not exist in v1. The `/api/openapi.json` discovery endpoint is
+post-v1.
 
 ### 11.1 Get API version
 
@@ -484,9 +551,20 @@ Returns:
 - Active task counts
 - API bind info, where safe
 
+In v1 this returns only daemon running status, store path/schema-
+version, and PID. No federation/runtime/task fields.
+
 ---
 
 ## 12. Object Endpoints
+
+**[v1] surface:** v1 ships only `GET /api/v1/objects/{object_id}`,
+returning the object's genesis record (the same shape `kairo
+object show` prints in direct mode). `/list`, `/summary`, and
+`/inspect` are post-v1; they depend on indexing and snapshot-
+resolution surface that v1 doesn't have. The `/objects/{id}/
+statements` listing in §14.1 is also post-v1 — v1 surfaces
+individual statements via `/statements/{id}` only.
 
 ### 12.1 List local objects
 
@@ -546,6 +624,13 @@ If `fetch_missing` is true, the daemon may create a fetch task.
 ---
 
 ## 13. Snapshot Endpoints
+
+**[post-v1].** All snapshot endpoints depend on the snapshot-
+resolution surface (frontier resolution, closure status,
+validation runner) that lands with `CORE_LIBRARY.md` snapshot
+work. v1 has no `/snapshots/...` route. Branch and version-tag
+reads in v1 are accessed directly via `/branches/...` and
+`/version-tags/...`, not via snapshot resolution.
 
 ### 13.1 Resolve snapshot
 
@@ -633,6 +718,28 @@ This endpoint does not replace core validation.
 
 ## 14. Statement Endpoints
 
+**[v1] surface:** v1 ships only `GET /api/v1/statements/{statement_id}`,
+returning the statement record by ID. The per-object listing
+(§14.1) and snapshot statement-graph (§14.3) are both post-v1
+— they depend on indexing and snapshot resolution.
+
+V1 also exposes statement-shaped reads through three dedicated
+routes (each backed by FilesystemStore lookups, not the
+statements index):
+
+- `GET /api/v1/branches/{object_id}` — list ObjectBranch
+  statements for the object
+- `GET /api/v1/branches/{object_id}/{name}/latest` — latest
+  branch head by `(created_at, statement_id)`
+- `GET /api/v1/version-tags/{object_id}/{version}` —
+  ObjectVersionTag statement for that version
+- `GET /api/v1/trust/{by}/{of}` — ActorTrust statement
+- `GET /api/v1/capabilities/{grantor}` — capability statements
+  signed by the grantor
+
+Each returns the underlying statement envelope; clients that
+want the body decode it themselves.
+
 ### 14.1 List statements for object
 
 ```http
@@ -674,6 +781,18 @@ The graph must indicate whether it is complete for the requested purpose.
 
 ## 15. Blob and Artifact Endpoints
 
+**[v1] surface:** v1 ships a single streaming-bytes endpoint:
+
+```http
+GET /api/v1/blobs/{blob_id}
+```
+
+It streams the raw blob bytes with `Content-Type:
+application/octet-stream` and chunked transfer encoding
+(see §4). No metadata sub-route, no snapshot artifacts route,
+no access-policy enforcement beyond the Unix-socket
+filesystem-perms boundary.
+
 ### 15.1 Get blob metadata
 
 ```http
@@ -710,6 +829,11 @@ Returns artifact records relevant to the snapshot/purpose.
 
 ## 16. Fetch Endpoints
 
+**[post-v1].** Depends on Phase 2 §4 federation. v1 has no
+`/fetch` routes. Object/blob fetch in v1 happens out-of-band
+via `kairo git ...` (Phase 2 §1) or bundle import (CLI direct
+mode); the daemon serves only what is already on disk.
+
 ### 16.1 Fetch object or snapshot
 
 ```http
@@ -744,6 +868,8 @@ Returns what would be fetched, if known.
 
 ## 17. Sync Endpoints
 
+**[post-v1].** Depends on Phase 2 §4 federation.
+
 ### 17.1 Sync object
 
 ```http
@@ -776,6 +902,9 @@ Sync must obey federation and publication policy.
 ---
 
 ## 18. Build Endpoints
+
+**[post-v1].** Depends on Phase 2 §7 build/run + RuntimeService
++ TaskManager + PolicyService.
 
 ### 18.1 Plan build
 
@@ -827,6 +956,9 @@ Returns task reference or policy approval requirement.
 ---
 
 ## 19. Run Endpoints
+
+**[post-v1].** Depends on Phase 2 §7 build/run + RuntimeService
++ TaskManager + PolicyService.
 
 ### 19.1 Plan run
 
@@ -892,6 +1024,8 @@ kill
 
 ## 20. Reproduce Endpoints
 
+**[post-v1].** Depends on Phase 2 §7 build/run.
+
 ### 20.1 Plan reproduction
 
 ```http
@@ -930,6 +1064,11 @@ Returns task reference or policy approval requirement.
 ---
 
 ## 21. Task Endpoints
+
+**[post-v1].** Depends on TaskManager (DAEMON.md §5.6),
+deferred. v1 has no long-running operations and therefore no
+task surface. Streaming endpoints (§21.5) also depend on the
+SSE/WebSocket transport that v1 doesn't ship.
 
 ### 21.1 List tasks
 
@@ -1006,6 +1145,11 @@ Task status is operational and must not be confused with validation status.
 
 ## 22. Import and Export Endpoints
 
+**[post-v1].** Depends on bundle work + TaskManager. v1 import/
+export happens via `kairo bundle ...` and `kairo git ...` in
+direct CLI mode; the daemon does not expose import/export over
+HTTP in v1.
+
 ### 22.1 Import
 
 ```http
@@ -1054,6 +1198,10 @@ Returns task or downloadable artifact reference.
 
 ## 23. Store Endpoints
 
+**[post-v1].** Store maintenance (verify, GC, rebuild-index)
+depends on long-running task surface and GC design (DAEMON.md
+§20). v1 surfaces store identity via `GET /api/v1/status` only.
+
 ### 23.1 Store status
 
 ```http
@@ -1097,6 +1245,9 @@ Creates index rebuild task.
 ---
 
 ## 24. Federation Endpoints
+
+**[post-v1].** Depends on Phase 2 §4 federation +
+FederationService (DAEMON.md §5.3).
 
 ### 24.1 Federation status
 
@@ -1149,6 +1300,10 @@ POST /api/v1/federation/unpublish
 
 ## 25. Policy Endpoints
 
+**[post-v1].** Depends on PolicyService (DAEMON.md §5.4). v1
+has no mutation/execution endpoints, so no policy surface is
+needed.
+
 ### 25.1 Get policy status
 
 ```http
@@ -1199,6 +1354,8 @@ Policy decisions must remain distinct from core validation.
 
 ## 26. Executor Endpoints
 
+**[post-v1].** Depends on Phase 2 §7 build/run + RuntimeService.
+
 ### 26.1 List executors
 
 ```http
@@ -1238,6 +1395,10 @@ Runtime session data must not expose unsafe host details by default.
 ---
 
 ## 27. Config Endpoints
+
+**[post-v1].** Daemon config in v1 is read at startup from a
+fixed path (DAEMON.md §6.1) and not exposed over HTTP. Live
+config introspection/mutation lands with ConfigService.
 
 ### 27.1 Get config summary
 
@@ -1365,6 +1526,10 @@ Build/run/reproduce plan responses must include:
 
 ## 32. Streaming Events
 
+**[post-v1].** No SSE/WebSocket/NDJSON event streams in v1. The
+only v1 streaming is raw blob bytes via chunked transfer on
+`GET /api/v1/blobs/{id}` (§4, §15).
+
 Streaming event envelope:
 
 ```json
@@ -1439,7 +1604,7 @@ Requirements:
 
 ## 36. Security Requirements
 
-The API must:
+The long-term API must:
 
 1. Bind locally by default.
 2. Protect mutation endpoints.
@@ -1452,11 +1617,17 @@ The API must:
 9. Treat remote/federated data as untrusted.
 10. Preserve validation/policy/task distinctions.
 
+**[v1] surface:** items 1, 4, 6, 7, 9, and 10 apply directly
+(read-only daemon, Unix socket only, no execution paths). Items
+2, 3, 5, and 8 are non-applicable in v1: there are no mutation,
+execution, or path-input endpoints. The mutation/execution
+shape lands with the relevant post-v1 services.
+
 ---
 
 ## 37. Implementation Checklist
 
-A conforming initial API implementation should provide:
+The long-term checklist for a conforming API is:
 
 1. OpenAPI generation or maintained schema.
 2. `/system/version`.
@@ -1478,6 +1649,30 @@ A conforming initial API implementation should provide:
 18. Authentication/local API protection.
 19. TypeScript client generation test.
 20. API integration tests.
+
+### 37.1 v1 implementation checklist
+
+The Phase 2 §2 daemon ships a narrower subset:
+
+1. `GET /api/v1/version`.
+2. `GET /api/v1/status`.
+3. `GET /api/v1/actors/{id}`.
+4. `GET /api/v1/objects/{id}`.
+5. `GET /api/v1/statements/{id}`.
+6. `GET /api/v1/branches/{object}`.
+7. `GET /api/v1/branches/{object}/{name}/latest`.
+8. `GET /api/v1/version-tags/{object}/{version}`.
+9. `GET /api/v1/trust/{by}/{of}`.
+10. `GET /api/v1/capabilities/{grantor}`.
+11. `GET /api/v1/blobs/{id}` (chunked streaming).
+12. Stable success/error envelopes (§7).
+13. Unix socket transport at `<store>/daemon.sock` (mode 0600).
+14. Filesystem-perms authn (§9.1) — no per-request auth.
+15. API integration tests (handler-level + over-socket).
+
+OpenAPI generation, TypeScript client, pagination, task/event
+streaming, and any mutation/execution items from §37 are
+post-v1.
 
 ---
 

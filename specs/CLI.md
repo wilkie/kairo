@@ -114,11 +114,29 @@ The CLI should support:
 --store <path>
 ```
 
-If no mode is specified:
+**[v1]** behavior — locked in `DECISIONS.md` §10.6 (probe-and-
+fall-back):
 
-1. Prefer daemon mode if a daemon is available.
-2. Fall back to direct mode only for commands that are safe and supported without the daemon.
-3. Report a clear error for commands that require the daemon.
+1. **Default (no mode flag).** The CLI probes the Unix socket at
+   `<store>/daemon.sock`, sends `GET /api/v1/status`, and uses
+   the daemon if it answers. Otherwise it falls back to direct
+   mode silently.
+2. **`--daemon`** requires the daemon: probe failure or
+   `connect(2)` error returns exit 9 (`daemon unavailable`).
+3. **`--direct` / `--offline`** force direct mode and never touch
+   the socket.
+4. **Writes always stay direct.** Signing/persisting commands
+   (`actor create`, `object create`, `revision create`, `branch
+   set`, `tag bind`, `trust grant`, `capability grant`, etc.)
+   ignore the daemon entirely in v1 — there are no write
+   endpoints. The daemon is read-only (DECISIONS.md §10.4).
+5. **Federation, build, run, reproduce, task, sync, fetch.** Not
+   shipped in v1 in either mode; they exit 13 (`unsupported
+   feature`) until the relevant phases land.
+
+The "fall back silently" behavior applies only to commands that
+have a direct-mode implementation. Commands whose only home is
+post-v1 surface return exit 13 regardless of daemon availability.
 
 ---
 
@@ -648,30 +666,50 @@ For commands that complete operationally but discover an invalid snapshot, the C
 
 ## 8. Commands Overview
 
-Recommended top-level commands:
+Recommended top-level commands (long-term), tagged by phase:
 
 ```text
-kairo init
-kairo daemon
-kairo import
-kairo export
-kairo inspect
-kairo verify
-kairo fetch
-kairo sync
-kairo build
-kairo run
-kairo reproduce
-kairo pin
-kairo unpin
-kairo list
-kairo status
-kairo task
-kairo store
-kairo federation
-kairo policy
-kairo config
+kairo init           [v1]
+kairo daemon         [v1] start/status/stop only
+kairo web            [post-v1; Phase 2 §5]
+kairo actor          [v1] §5.1 direct-mode subtree
+kairo object         [v1] §5.1 direct-mode subtree
+kairo revision       [v1] §5.1 direct-mode subtree
+kairo branch         [v1] §5.1 direct-mode subtree
+kairo tag            [v1] §5.1 direct-mode subtree
+kairo trust          [v1] §5.1 direct-mode subtree
+kairo capability     [v1] §5.1 direct-mode subtree
+kairo manifest       [v1] §5.1 direct-mode subtree
+kairo snapshot       [v1] §5.1 direct-mode subtree
+kairo verify         [v1] direct-mode object verification
+kairo bundle         [v1] direct-mode bundle export/import
+kairo git            [v1] managed Git cache (Phase 2 §1)
+kairo status         [v1] daemon-aware status
+kairo import         [post-v1] subsumed by `bundle import`/`git fetch` in v1
+kairo export         [post-v1] subsumed by `bundle export` in v1
+kairo inspect        [post-v1] depends on snapshot resolution
+kairo fetch          [post-v1] depends on Phase 2 §4
+kairo sync           [post-v1] depends on Phase 2 §4
+kairo build          [post-v1] depends on Phase 2 §7
+kairo run            [post-v1] depends on Phase 2 §7
+kairo reproduce      [post-v1] depends on Phase 2 §7
+kairo pin            [post-v1] depends on GC design
+kairo unpin          [post-v1] depends on GC design
+kairo list           [post-v1] depends on indexing
+kairo task           [post-v1] depends on TaskManager
+kairo store          [post-v1] depends on long-running task surface
+kairo federation     [post-v1] depends on Phase 2 §4
+kairo policy         [post-v1] depends on PolicyService
+kairo config         [post-v1] depends on ConfigService
 ```
+
+The `[v1]` direct-mode subtrees (`kairo actor`, `object`,
+`revision`, `branch`, `tag`, `trust`, `capability`, `manifest`,
+`snapshot`, `verify`, `bundle`, `git`) are documented in §5.1
+and ship today; they ignore the daemon by design (writes always
+go direct — see §3.3). Sections §11–§27 below describe the
+long-term shape; v1 shipping behavior is summarized inline where
+the v1 surface differs.
 
 ---
 
@@ -700,7 +738,7 @@ Must not fetch or execute remote data.
 
 Manages the daemon process.
 
-Subcommands:
+Subcommands (long-term):
 
 ```text
 kairo daemon start
@@ -710,11 +748,16 @@ kairo daemon status
 kairo daemon logs
 ```
 
+**[v1] surface:** v1 ships `start`, `status`, and `stop` only.
+`restart` and `logs` are post-v1 — `restart` is just `stop` + a
+fresh `start` for now, and `logs` depends on the rolling-log
+work deferred per `DECISIONS.md` §10.7.
+
 ### 10.1 `daemon start`
 
 Starts the daemon.
 
-Options:
+Options (long-term):
 
 ```text
 --foreground
@@ -723,21 +766,55 @@ Options:
 --store <path>
 ```
 
+**[v1]** start is **foreground only** (`DECISIONS.md` §10.1).
+The process blocks until interrupted; users supervise via
+systemd / launchd / tmux / `nohup` / `&`. `--background` is
+post-v1; passing it in v1 returns exit 13. `--foreground` is
+the implicit default and accepted as a no-op for forward
+compatibility. The process logs to stderr in structured-text
+form (DECISIONS.md §10.7).
+
+Startup sequence is `DAEMON.md` §6.1: load config, open store,
+bind socket at `<store>/daemon.sock` (mode 0600), write PID,
+start axum.
+
 ### 10.2 `daemon status`
 
-Must report:
+Long-term reports daemon running state, API endpoint, store
+path, federation status, runtime status, active task count,
+and version.
 
-- Running/not running
-- API endpoint
-- Store path
-- Federation status
-- Runtime status
-- Active task count
-- Version
+**[v1]** prints daemon-running, store path, store-schema-version,
+PID, and version. Federation/runtime/task fields are omitted
+because those subsystems are post-v1. `daemon status` works in
+both daemon and direct mode: it probes the socket itself, so
+the user does not need a daemon to ask "is there a daemon?".
+
+### 10.3 `daemon stop`
+
+**[v1]** sends a graceful shutdown signal to the running
+daemon (DAEMON.md §6.2): drain in-flight requests, close the
+socket, remove the PID file, exit 0. Because v1 has no long-
+running tasks, drain is effectively immediate.
+
+### 10.4 `kairo web` (deferred)
+
+**[Phase 2 §5, deferred].** The companion `kairo web start |
+status | stop` verb tree manages the separate `kairo-web`
+process (TCP / browser-facing — see `DECISIONS.md` §11). It is
+not part of the v1 CLI surface and is documented here only so
+the daemon and web verb trees stay parallel.
 
 ---
 
 ## 11. `kairo import`
+
+**[post-v1].** v1 has no top-level `kairo import`. Object data
+enters the local store via `kairo bundle import` (directory
+bundles, Phase 2 §1) or `kairo git fetch` (managed Git cache,
+Phase 2 §1). The unified `kairo import` surface lands when the
+daemon-side import endpoint (API §22) does, with task tracking
+and policy.
 
 Imports object data into the local store.
 
@@ -769,6 +846,11 @@ Import success does not imply snapshot validity.
 
 ## 12. `kairo export`
 
+**[post-v1].** v1 has `kairo bundle export` (directory bundles)
+in direct mode. The unified `kairo export` surface — snapshot
+closure shapes, task-based export, daemon-mediated — lands
+post-v1.
+
 Exports object or snapshot data.
 
 Usage:
@@ -792,6 +874,11 @@ Export must not alter object semantics.
 ---
 
 ## 13. `kairo inspect`
+
+**[post-v1].** Depends on snapshot resolution and the daemon's
+inspect endpoint (API §12.3). v1 surfaces equivalent reads
+through `kairo object show`, `kairo revision inspect`, `kairo
+branch show`, and `kairo verify object`.
 
 Displays object or snapshot information.
 
@@ -830,6 +917,11 @@ Inspect may show unverified previews, but must label them as unverified or indet
 
 Validates a snapshot.
 
+**[v1] surface:** `kairo verify object` is documented in §5.1
+and is the v1 verification entrypoint. The snapshot-purpose
+form below is the long-term shape and is post-v1 — it depends
+on snapshot resolution + closure validation.
+
 Usage:
 
 ```text
@@ -848,6 +940,10 @@ The CLI must return validation-specific exit codes.
 ---
 
 ## 15. `kairo fetch`
+
+**[post-v1].** Depends on Phase 2 §4 federation. The Git-side
+of fetch (per-object Git mirror) ships in v1 as `kairo git
+fetch` (Phase 2 §1).
 
 Fetches object data from federation or a remote source.
 
@@ -880,6 +976,8 @@ Fetch does not imply validity.
 
 ## 16. `kairo sync`
 
+**[post-v1].** Depends on Phase 2 §4 federation.
+
 Synchronizes local object data with federation.
 
 Usage:
@@ -907,6 +1005,8 @@ Sync must not execute object content.
 ---
 
 ## 17. `kairo build`
+
+**[post-v1].** Depends on Phase 2 §7 build/run + RuntimeService.
 
 Builds a snapshot.
 
@@ -948,6 +1048,9 @@ If validation is not `valid`, build must not execute.
 
 ## 18. `kairo run`
 
+**[post-v1].** Depends on Phase 2 §7 build/run + RuntimeService
++ PolicyService.
+
 Runs a snapshot.
 
 Usage:
@@ -987,6 +1090,8 @@ If validation is not `valid`, run must not execute.
 
 ## 19. `kairo reproduce`
 
+**[post-v1].** Depends on Phase 2 §7 build/run.
+
 Reproduces a snapshot.
 
 Usage:
@@ -1024,6 +1129,9 @@ Reproduce should report:
 
 ## 20. `kairo pin` and `kairo unpin`
 
+**[post-v1].** Depends on GC design (DAEMON.md §20). v1 has no
+GC and no pins.
+
 Manages local retention pins.
 
 Usage:
@@ -1050,6 +1158,11 @@ Pinning does not imply validation.
 
 ## 21. `kairo list`
 
+**[post-v1].** Depends on indexing. v1 surfaces equivalent
+listings through subtree-specific commands: `kairo revision
+list`, `kairo branch list`, `kairo tag list`, `kairo trust
+list`, `kairo capability list`.
+
 Lists local objects, snapshots, tasks, or other records.
 
 Usage:
@@ -1075,18 +1188,20 @@ Usage:
 kairo status
 ```
 
-Must include:
+Long-term must include daemon status, store path/status,
+federation status, runtime executor status, active task summary,
+and version information.
 
-- Daemon status
-- Store path/status
-- Federation status
-- Runtime executor status
-- Active task summary
-- Version information
+**[v1]** prints daemon status (probe `<store>/daemon.sock`),
+store path + schema version, and version information.
+Federation/runtime/task fields are omitted in v1 (those
+subsystems are post-v1).
 
 ---
 
 ## 23. `kairo task`
+
+**[post-v1].** Depends on TaskManager (DAEMON.md §5.6).
 
 Inspects or controls daemon tasks.
 
@@ -1108,6 +1223,10 @@ Task status must be distinct from validation status.
 
 ## 24. `kairo store`
 
+**[post-v1].** Store maintenance (verify, GC, rebuild-index)
+depends on long-running task surface and GC design. v1 surfaces
+store identity through `kairo status` only.
+
 Store diagnostics and maintenance.
 
 Subcommands:
@@ -1127,6 +1246,8 @@ Garbage collection must respect pins and active tasks.
 ---
 
 ## 25. `kairo federation`
+
+**[post-v1].** Depends on Phase 2 §4 federation.
 
 Federation diagnostics and controls.
 
@@ -1148,6 +1269,8 @@ Search results must be labeled as unverified until core validation occurs.
 
 ## 26. `kairo policy`
 
+**[post-v1].** Depends on PolicyService (DAEMON.md §5.4).
+
 Policy inspection and management.
 
 Subcommands:
@@ -1164,6 +1287,8 @@ Policy status must be distinct from core validation status.
 ---
 
 ## 27. `kairo config`
+
+**[post-v1].** Depends on ConfigService.
 
 Configuration inspection and editing.
 
@@ -1310,7 +1435,7 @@ The CLI must:
 
 ## 35. Implementation Checklist
 
-A conforming initial CLI implementation should provide:
+The long-term CLI checklist is:
 
 1. Global option parser.
 2. Daemon connection logic.
@@ -1330,6 +1455,29 @@ A conforming initial CLI implementation should provide:
 16. `status`.
 17. Clear validation/policy/task rendering.
 18. Non-interactive scripting behavior.
+
+### 35.1 v1 implementation checklist
+
+Phase 2 §2 ships:
+
+1. Global option parser (`--store`, `--daemon`, `--direct`,
+   `--offline`, `--format`, `--quiet`, `--verbose`, etc.).
+2. Probe-and-fall-back daemon dispatch (§3.3) for read-only
+   commands; writes always direct.
+3. JSON output envelope and stable exit codes.
+4. `kairo init` (already shipped).
+5. `kairo daemon start | status | stop` (foreground only).
+6. `kairo status` (daemon-aware probe + direct-mode fallback).
+7. `kairo verify object` (already shipped).
+8. The §5.1 actor / object / revision / branch / tag / trust /
+   capability / manifest / snapshot / bundle / git subtrees
+   (already shipped — direct mode only).
+9. CLI integration tests for daemon dispatch + lifecycle.
+
+`inspect`, `import` (top-level), `export` (top-level), `fetch`,
+`build`, `run`, `reproduce`, `pin`/`unpin`, `list`, `task`,
+`store`, `federation`, `policy`, `config`, and `kairo web` are
+post-v1 per their respective sections.
 
 ---
 
