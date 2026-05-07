@@ -1,14 +1,23 @@
-//! Read-only Git operations Kairo needs to verify and inspect
-//! `ObjectRevision` statements against a Git repository.
+//! Git operations Kairo needs to verify, inspect, and cache
+//! `ObjectRevision` statements.
 //!
 //! This crate isolates the `gix` dependency from the rest of the
-//! workspace. No write operations live here in MVP §11; later work
-//! that hydrates a managed mirror under `~/.kairo/git/` will add a
-//! separate writer module.
+//! workspace. Read-only operations (`discover`, `open`, `find_commit`,
+//! `read_blob_at_path`) use `gix` and need no external `git` binary.
+//! The managed Git cache ([`GitCache`]) is mutating; per
+//! `specs/DECISIONS.md` §8 it shells out to the host's `git` binary
+//! for init and (eventually) fetch, so callers that touch the cache
+//! require `git ≥ 2.x` on PATH.
+
+mod cache;
+mod lock;
+mod shard;
 
 use std::error::Error;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+pub use cache::GitCache;
 
 /// A handle to an opened Git repository.
 pub struct Repository {
@@ -44,6 +53,36 @@ pub enum GitError {
     },
     /// Generic operation error from gix while traversing the repository.
     Operation(Box<dyn Error + Send + Sync>),
+    /// I/O failure under the cache root (creating dirs, writing
+    /// alternates, etc.). Kept separate from [`GitError::Open`]
+    /// because the failing path is a cache structural step, not a
+    /// repository open.
+    CacheIo {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// `git init --bare` (or another shelled-out `git` invocation
+    /// performed by the cache) failed. The captured stderr is
+    /// surfaced verbatim per `DECISIONS.md` §8.
+    CacheGitInvocation {
+        command: String,
+        stderr: String,
+        exit_code: Option<i32>,
+    },
+    /// `git` binary not found on PATH or unable to be spawned.
+    /// Surfaces lazily on the first cache-mutating operation per
+    /// `DECISIONS.md` §8.
+    CacheGitMissing { source: std::io::Error },
+    /// Per-record advisory lock on a cache resource (pool or a
+    /// per-object repo) was contended for longer than the bounded
+    /// retry window. Mirrors `StoreError::LockTimeout` and
+    /// `KeystoreError::LockTimeout`.
+    CacheLockTimeout { path: PathBuf },
+    /// Object id passed to a `GitCache` API was not shape-valid for
+    /// sharding (too short, or split across a non-ASCII boundary).
+    /// Kairo IDs are always pure base58 ASCII so this is an
+    /// invariant violation, not a transient failure.
+    CacheInvalidObjectId { id: String, reason: &'static str },
 }
 
 impl fmt::Display for GitError {
@@ -55,6 +94,35 @@ impl fmt::Display for GitError {
                 write!(f, "invalid Git object id {input:?}: {source}")
             }
             Self::Operation(error) => write!(f, "Git operation failed: {error}"),
+            Self::CacheIo { path, source } => {
+                write!(f, "Git cache I/O failed at {}: {source}", path.display())
+            }
+            Self::CacheGitInvocation {
+                command,
+                stderr,
+                exit_code,
+            } => match exit_code {
+                Some(code) => write!(
+                    f,
+                    "git command failed (exit {code}): {command}\n--- stderr ---\n{stderr}"
+                ),
+                None => write!(
+                    f,
+                    "git command terminated by signal: {command}\n--- stderr ---\n{stderr}"
+                ),
+            },
+            Self::CacheGitMissing { source } => write!(
+                f,
+                "git binary not available on PATH ({source}); install git ≥ 2.x to use the Git cache"
+            ),
+            Self::CacheLockTimeout { path } => write!(
+                f,
+                "timed out acquiring advisory lock on {}",
+                path.display()
+            ),
+            Self::CacheInvalidObjectId { id, reason } => {
+                write!(f, "invalid object id {id:?} for cache: {reason}")
+            }
         }
     }
 }
@@ -66,6 +134,10 @@ impl Error for GitError {
                 Some(error.as_ref())
             }
             Self::InvalidOid { source, .. } => Some(source.as_ref()),
+            Self::CacheIo { source, .. } | Self::CacheGitMissing { source } => Some(source),
+            Self::CacheGitInvocation { .. }
+            | Self::CacheLockTimeout { .. }
+            | Self::CacheInvalidObjectId { .. } => None,
         }
     }
 }

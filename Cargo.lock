@@ -1149,6 +1149,7 @@ dependencies = [
 name = "kairo-git"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "gix",
  "tempfile",
 ]

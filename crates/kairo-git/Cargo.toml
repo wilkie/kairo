@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+fs2 = "0.4"
 gix = { version = "0.66", default-features = false, features = ["max-performance-safe"] }
 
 [dev-dependencies]
