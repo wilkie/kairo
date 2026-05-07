@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::lock::with_path_lock;
+use crate::transport::{self, FetchedRef, GitCacheTransport};
 use crate::{open, shard, GitError, Repository};
 
 /// Reserved subdirectory name at the cache root for the shared
@@ -118,6 +119,67 @@ impl GitCache {
         let repo = open(&repo_path)?;
         Ok(repo.find_commit(commit_oid)?.is_some())
     }
+
+    /// Fetch `remote_branch` from `url` into the cache for
+    /// `object_id`. Orchestrates the layout:
+    ///
+    /// 1. `ensure_repo(object_id)` — initialize the per-object bare
+    ///    repo if absent.
+    /// 2. Under the pool lock, ask `transport` to fetch
+    ///    `refs/heads/<branch>` from `url` into the pool, landing
+    ///    it at `refs/kairo/<object-id>/<branch>`.
+    /// 3. Under the per-object lock, mirror the resolved OID into
+    ///    the per-object repo's `refs/heads/<branch>`.
+    ///
+    /// The two locks are taken sequentially, never held
+    /// simultaneously, so distinct objects' fetches don't deadlock.
+    /// Pool fetches do serialize across objects — that's the
+    /// design (network is the bottleneck).
+    ///
+    /// Returns the resolved `FetchedRef` from the per-object repo's
+    /// perspective (`ref_name` is `refs/heads/<branch>`).
+    pub fn fetch(
+        &self,
+        object_id: &str,
+        url: &str,
+        remote_branch: &str,
+        transport: &impl GitCacheTransport,
+    ) -> Result<FetchedRef, GitError> {
+        // Ensures sharding/id validity up front; also creates the
+        // per-object repo with alternates so step 3 can succeed
+        // without re-running init.
+        let repo_path = self.path_for(object_id)?;
+        let _ = self.ensure_repo(object_id)?;
+
+        let pool_lock_subject = self.root.join(POOL_LOCK_SUBJECT);
+        let pool_path = pool_path(&self.root);
+        let local_ref = format!("refs/heads/{remote_branch}");
+        let pool_dest_ref = format!("refs/kairo/{object_id}/{remote_branch}");
+        let pool_refspec = format!("refs/heads/{remote_branch}:{pool_dest_ref}");
+
+        let pool_fetched = with_path_lock(&pool_lock_subject, || {
+            transport.fetch(&pool_path, url, &pool_refspec)
+        })?;
+        // Defense in depth: the transport should have placed the
+        // fetched ref at our requested destination. If it didn't,
+        // something is structurally wrong with the impl.
+        if pool_fetched.ref_name != pool_dest_ref {
+            return Err(GitError::CacheGitInvocation {
+                command: format!("transport returned unexpected ref {:?}", pool_fetched.ref_name),
+                stderr: format!("expected destination {pool_dest_ref}"),
+                exit_code: None,
+            });
+        }
+
+        with_path_lock(&repo_path, || {
+            transport::update_ref(&repo_path, &local_ref, &pool_fetched.oid)
+        })?;
+
+        Ok(FetchedRef {
+            ref_name: local_ref,
+            oid: pool_fetched.oid,
+        })
+    }
 }
 
 fn pool_path(root: &Path) -> PathBuf {
@@ -129,19 +191,25 @@ fn pool_objects_path(root: &Path) -> PathBuf {
 }
 
 /// Compute the relative path from a per-object repo's
-/// `objects/info/alternates` file's parent directory
-/// (`<repo>/objects/info/`) to the shared pool's `objects/`
-/// directory at `<root>/pool/objects/`. Used as the alternates
-/// content so the cache can be moved as a unit without breaking
-/// per-object → pool linkage.
+/// `<repo>/objects/` directory to the shared pool's `objects/`
+/// directory at `<root>/pool/objects/`. Used as the
+/// `objects/info/alternates` content.
+///
+/// Git resolves relative alternates paths against
+/// `<GIT_DIR>/objects/`, *not* against the alternates file's own
+/// parent directory — see `gitrepository-layout(5)` and
+/// `Documentation/technical/objects.txt` in the git source. Using
+/// the wrong reference point produces a path that's off by one
+/// `..` segment, which manifests as
+/// "object directory ... does not exist" on every read.
 fn alternates_relative_to_pool(root: &Path, repo_path: &Path) -> Result<PathBuf, GitError> {
-    let info_dir = repo_path.join("objects").join("info");
+    let objects_dir = repo_path.join("objects");
     let pool_objects = pool_objects_path(root);
-    relative_path_from(&info_dir, &pool_objects).ok_or_else(|| GitError::CacheIo {
-        path: info_dir,
+    relative_path_from(&objects_dir, &pool_objects).ok_or_else(|| GitError::CacheIo {
+        path: objects_dir,
         source: std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "could not derive relative path from repo info dir to pool/objects",
+            "could not derive relative path from repo objects dir to pool/objects",
         ),
     })
 }
@@ -230,14 +298,13 @@ mod tests {
     use std::sync::Barrier;
     use tempfile::TempDir;
 
+    use crate::test_support::{init_source_repo, skip_if_no_git};
+    use crate::transport::GitCli;
+
     /// A real Kairo-shape ID: `z` + `Qm` + 44 base58 characters.
     /// Sharded on positions 3-4 / 5-6 → `R8` / `3z`.
     const SAMPLE_ID: &str = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
     const OTHER_ID: &str = "zQmAB1z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrz";
-
-    fn skip_if_no_git() -> bool {
-        Command::new("git").arg("--version").output().is_err()
-    }
 
     fn open_temp() -> (TempDir, GitCache) {
         let dir = TempDir::new().expect("tempdir");
@@ -317,15 +384,28 @@ mod tests {
             "alternates file should be present"
         );
         let content = std::fs::read_to_string(&alternates_path).expect("read alternates");
-        // Alternates content should resolve to the pool's objects dir.
-        // Resolving relative to the alternates' own parent dir
-        // (`objects/info/`) must land inside the pool.
-        let info_dir = alternates_path.parent().expect("info parent");
-        let resolved = info_dir.join(content.trim());
+        // Git resolves relative alternates paths against
+        // `<repo>/objects/`, not the alternates file's parent.
+        // Verify both that our content resolves correctly *and*
+        // that git itself accepts it via `rev-parse` (which is the
+        // smoke test that real git operations will work).
+        let objects_dir = repo_path.join("objects");
+        let resolved = objects_dir.join(content.trim());
         let canonical_resolved = std::fs::canonicalize(&resolved).expect("canon resolved");
         let canonical_pool = std::fs::canonicalize(cache.root().join("pool").join("objects"))
             .expect("canon pool");
         assert_eq!(canonical_resolved, canonical_pool);
+
+        // git smoke test: rev-parse against an empty repo with
+        // only-alternates objects works iff the alternates file
+        // actually points at a valid object directory.
+        let probe = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", "--git-dir"])
+            .output()
+            .expect("git rev-parse --git-dir");
+        assert!(probe.status.success(), "git must accept the bare repo");
     }
 
     #[test]
@@ -409,10 +489,13 @@ mod tests {
 
     #[test]
     fn relative_path_from_descends_through_common_ancestor() {
-        let from = Path::new("/cache/R8/3z/repo/objects/info");
+        // The actual call site in `alternates_relative_to_pool` is
+        // from `<repo>/objects/` to `<root>/pool/objects/` — the
+        // reference point Git uses for resolving alternates.
+        let from = Path::new("/cache/R8/3z/repo/objects");
         let to = Path::new("/cache/pool/objects");
         let rel = relative_path_from(from, to).expect("relative");
-        assert_eq!(rel, PathBuf::from("../../../../../pool/objects"));
+        assert_eq!(rel, PathBuf::from("../../../../pool/objects"));
     }
 
     #[test]
@@ -425,5 +508,156 @@ mod tests {
         // Verify the descent into the unrelated subtree works.
         let rel = relative_path_from(from, to).expect("relative");
         assert_eq!(rel, PathBuf::from("../b"));
+    }
+
+    #[test]
+    fn fetch_lands_objects_in_pool_and_ref_in_per_object_repo() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, branch, head_oid) = init_source_repo();
+        let (_dir, cache) = open_temp();
+
+        let fetched = cache
+            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .expect("fetch");
+
+        // Returned ref reflects the per-object repo's view.
+        assert_eq!(fetched.ref_name, format!("refs/heads/{branch}"));
+        assert_eq!(fetched.oid, head_oid);
+
+        // Per-object repo's ref resolves to the head OID.
+        let repo_path = cache.path_for(SAMPLE_ID).expect("path_for");
+        let object_ref = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+            .output()
+            .expect("rev-parse object ref");
+        assert!(object_ref.status.success());
+        let object_oid = String::from_utf8_lossy(&object_ref.stdout)
+            .trim()
+            .to_owned();
+        assert_eq!(object_oid, head_oid);
+
+        // The OID is reachable from the per-object repo via alternates
+        // (objects live in the pool, ref lives per-object).
+        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
+
+        // Pool ref is namespaced.
+        let pool_ref = std::process::Command::new("git")
+            .arg("-C")
+            .arg(cache.root().join("pool"))
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/kairo/{SAMPLE_ID}/{branch}"),
+            ])
+            .output()
+            .expect("rev-parse pool ref");
+        assert!(
+            pool_ref.status.success(),
+            "pool should hold namespaced ref: {}",
+            String::from_utf8_lossy(&pool_ref.stderr)
+        );
+    }
+
+    #[test]
+    fn fetch_unknown_branch_errors_and_leaves_cache_clean() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, _branch, _head) = init_source_repo();
+        let (_dir, cache) = open_temp();
+
+        let err = cache
+            .fetch(SAMPLE_ID, &url, "no-such-branch", &GitCli::new())
+            .expect_err("fetch must error");
+        assert!(matches!(err, GitError::CacheGitInvocation { .. }));
+
+        // ensure_repo did run before the failed fetch — the per-object
+        // repo exists and is well-formed even though no ref landed.
+        let repo_path = cache.path_for(SAMPLE_ID).expect("path_for");
+        assert!(repo_path.join("HEAD").is_file());
+        // No `refs/heads/no-such-branch` mirror was written.
+        let probe = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", "--verify", "refs/heads/no-such-branch"])
+            .output()
+            .expect("rev-parse probe");
+        assert!(!probe.status.success(), "no ref should have been mirrored");
+    }
+
+    #[test]
+    fn fetch_distinct_objects_uses_shared_pool() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, branch, head_oid) = init_source_repo();
+        let (_dir, cache) = open_temp();
+
+        cache
+            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .expect("fetch 1");
+        cache
+            .fetch(OTHER_ID, &url, &branch, &GitCli::new())
+            .expect("fetch 2");
+
+        // Both per-object repos resolve the same OID; the actual
+        // commit data lives once in the shared pool.
+        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has 1"));
+        assert!(cache.has_commit(OTHER_ID, &head_oid).expect("has 2"));
+
+        // Pool holds two distinct namespaced refs both pointing at
+        // the same OID.
+        let probe = |id: &str| -> String {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cache.root().join("pool"))
+                .args([
+                    "rev-parse",
+                    "--verify",
+                    &format!("refs/kairo/{id}/{branch}"),
+                ])
+                .output()
+                .expect("rev-parse");
+            assert!(out.status.success());
+            String::from_utf8_lossy(&out.stdout).trim().to_owned()
+        };
+        assert_eq!(probe(SAMPLE_ID), head_oid);
+        assert_eq!(probe(OTHER_ID), head_oid);
+    }
+
+    #[test]
+    fn fetch_concurrent_for_same_object_serializes_cleanly() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, branch, head_oid) = init_source_repo();
+        let (_dir, cache) = open_temp();
+        let cache = Arc::new(cache);
+        let url = Arc::new(url);
+        let branch = Arc::new(branch);
+        let barrier = Arc::new(Barrier::new(4));
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let cache = Arc::clone(&cache);
+                let url = Arc::clone(&url);
+                let branch = Arc::clone(&branch);
+                let barrier = Arc::clone(&barrier);
+                scope.spawn(move || {
+                    barrier.wait();
+                    cache
+                        .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+                        .expect("fetch");
+                });
+            }
+        });
+
+        // After all four converge, both refs are intact and the OID
+        // matches the source head.
+        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
     }
 }

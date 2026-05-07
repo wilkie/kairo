@@ -12,12 +12,16 @@
 mod cache;
 mod lock;
 mod shard;
+#[cfg(test)]
+mod test_support;
+mod transport;
 
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use cache::GitCache;
+pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 
 /// A handle to an opened Git repository.
 pub struct Repository {
