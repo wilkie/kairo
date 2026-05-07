@@ -81,6 +81,48 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: VerifyCommand,
     },
+    /// Manage the local Git cache (`<store>/git/`). Fetch commits an
+    /// object's `ObjectRevision` statements name into the cache, or
+    /// inspect cache state. See `specs/DECISIONS.md` §7–§9.
+    Git {
+        #[command(subcommand)]
+        command: GitCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GitCommand {
+    /// Fetch a branch from a remote Git URL into the cache.
+    ///
+    /// Lands the commits in the shared object pool and writes
+    /// `refs/heads/<branch>` in the per-object cache repo. Subsequent
+    /// `kairo verify object --object <id>` calls (with the default
+    /// cache-first precedence) can resolve the storage commit
+    /// without a cwd repo.
+    Fetch {
+        /// Object id whose cache repo the fetched ref will land in.
+        #[arg(long)]
+        object: String,
+        /// Remote Git URL (`https://`, `ssh://`, `file://`, `git://`).
+        #[arg(long)]
+        remote: String,
+        /// Branch name to fetch (e.g. `main`). Stripped of any
+        /// leading `refs/heads/` prefix. Defaults to `main`.
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
+    /// Inspect cache state.
+    Cache {
+        #[command(subcommand)]
+        command: GitCacheCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GitCacheCommand {
+    /// Print the cache layout: pool initialization state and every
+    /// per-object cache repo with its head refs.
+    Status,
 }
 
 #[derive(Debug, Subcommand)]

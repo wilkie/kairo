@@ -4587,3 +4587,232 @@ kind = "tree"
             .join(&id[5..7])
             .join(format!("{id}.json"))
     }
+
+    #[test]
+    fn kairo_git_fetch_lands_ref_in_cache() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "git-fetch-fixture"
+        "#;
+        let (src_dir, head_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let url = format!("file://{}", src_dir.path().display());
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Fetch {
+                    object: OBJECT_ID.to_owned(),
+                    remote: url.clone(),
+                    branch: "main".to_owned(),
+                },
+            }),
+        })?;
+        assert!(output.contains("fetched"));
+        assert!(output.contains(&format!("object = {OBJECT_ID}")));
+        assert!(output.contains(&format!("remote = {url}")));
+        assert!(output.contains("ref = refs/heads/main"));
+        assert!(output.contains(&format!("oid = {head_oid}")));
+
+        // The fetched ref is reachable in the per-object cache repo.
+        let object_repo = kairo_git::object_repo_path(&store_dir.path().join("git"), OBJECT_ID)?;
+        let probe = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&object_repo)
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .output()?;
+        assert!(probe.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&probe.stdout).trim(),
+            head_oid
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn kairo_git_fetch_strips_refs_heads_prefix() -> Result<(), Box<dyn std::error::Error>> {
+        // Users who copy a fully-qualified ref out of `git branch -a`
+        // get the same outcome as the bare `--branch main` form.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "branch-prefix-fixture"
+        "#;
+        let (src_dir, head_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let url = format!("file://{}", src_dir.path().display());
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Fetch {
+                    object: OBJECT_ID.to_owned(),
+                    remote: url,
+                    branch: "refs/heads/main".to_owned(),
+                },
+            }),
+        })?;
+        assert!(output.contains("ref = refs/heads/main"));
+        assert!(output.contains(&format!("oid = {head_oid}")));
+        Ok(())
+    }
+
+    #[test]
+    fn kairo_git_fetch_unknown_branch_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "missing-branch-fixture"
+        "#;
+        let (src_dir, _head_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let url = format!("file://{}", src_dir.path().display());
+
+        let result = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Fetch {
+                    object: OBJECT_ID.to_owned(),
+                    remote: url,
+                    branch: "no-such-branch".to_owned(),
+                },
+            }),
+        });
+        assert!(result.is_err(), "fetch must fail for missing branch");
+        Ok(())
+    }
+
+    #[test]
+    fn kairo_git_cache_status_empty_cache() -> Result<(), Box<dyn std::error::Error>> {
+        // Status against a never-used cache root: prints the path,
+        // pool not initialized, zero objects. Does not error and
+        // does not require git on PATH for this code path (we
+        // never invoke git when the cache root is absent).
+        let store_dir = tempfile::TempDir::new()?;
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Cache {
+                    command: GitCacheCommand::Status,
+                },
+            }),
+        })?;
+        assert!(output.contains("git cache:"));
+        assert!(output.contains("pool: not initialized"));
+        assert!(output.contains("objects: 0"));
+        Ok(())
+    }
+
+    #[test]
+    fn kairo_git_cache_status_after_fetch() -> Result<(), Box<dyn std::error::Error>> {
+        // After a fetch, status reports the per-object repo and its
+        // pinned ref.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "cache-status-fixture"
+        "#;
+        let (src_dir, head_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let url = format!("file://{}", src_dir.path().display());
+
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Fetch {
+                    object: OBJECT_ID.to_owned(),
+                    remote: url,
+                    branch: "main".to_owned(),
+                },
+            }),
+        })?;
+
+        let output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Cache {
+                    command: GitCacheCommand::Status,
+                },
+            }),
+        })?;
+        assert!(output.contains("pool: initialized"), "expected initialized pool, got:\n{output}");
+        assert!(output.contains("objects: 1"));
+        assert!(output.contains(OBJECT_ID));
+        assert!(output.contains(&format!("refs/heads/main = {head_oid}")));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_kairo_git_fetch_command() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "git",
+            "fetch",
+            "--object",
+            "zQmObject",
+            "--remote",
+            "https://example.test/repo.git",
+            "--branch",
+            "main",
+        ]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Git {
+                    command: GitCommand::Fetch { object, remote, branch },
+                }),
+                ..
+            }) if object == "zQmObject"
+                && remote == "https://example.test/repo.git"
+                && branch == "main"
+        ));
+    }
+
+    #[test]
+    fn parses_kairo_git_cache_status_command() {
+        let cli = Cli::try_parse_from(["kairo", "git", "cache", "status"]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Git {
+                    command: GitCommand::Cache {
+                        command: GitCacheCommand::Status,
+                    },
+                }),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn kairo_git_fetch_default_branch_is_main() {
+        let cli = Cli::try_parse_from([
+            "kairo",
+            "git",
+            "fetch",
+            "--object",
+            "zQmObject",
+            "--remote",
+            "https://example.test/repo.git",
+        ]);
+        assert!(matches!(
+            cli,
+            Ok(Cli {
+                command: Some(Command::Git {
+                    command: GitCommand::Fetch { branch, .. },
+                }),
+                ..
+            }) if branch == "main"
+        ));
+    }
