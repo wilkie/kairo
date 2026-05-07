@@ -217,6 +217,7 @@ fn round_trips_through_export_and_import() -> TestResult {
         bundle_dir.path(),
         "2026-05-03T12:00:00Z",
         "0.1.0",
+        &[],
     )?;
 
     assert_eq!(manifest.schema, BUNDLE_SCHEMA);
@@ -291,7 +292,7 @@ fn round_trips_through_export_and_import() -> TestResult {
 fn import_is_idempotent() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
 
     let dest_dir = TempDir::new()?;
     let dest_store = FilesystemStore::open(dest_dir.path())?;
@@ -306,7 +307,7 @@ fn write_refuses_non_empty_destination() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
     fs::write(bundle_dir.path().join("squatter"), b"hi")?;
-    let result = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0");
+    let result = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[]);
     assert!(matches!(result, Err(BundleError::DestinationNotEmpty { .. })));
     Ok(())
 }
@@ -317,7 +318,7 @@ fn write_errors_when_root_object_missing() -> TestResult {
     let store = FilesystemStore::open(dir.path())?;
     let bundle_dir = TempDir::new()?;
     let unknown = signed_object_genesis(&actor_genesis().actor_id()).object_id();
-    let result = write_bundle(&store, &unknown, bundle_dir.path(), "ts", "0.1.0");
+    let result = write_bundle(&store, &unknown, bundle_dir.path(), "ts", "0.1.0", &[]);
     assert!(matches!(result, Err(BundleError::RootObjectNotFound { .. })));
     Ok(())
 }
@@ -326,7 +327,7 @@ fn write_errors_when_root_object_missing() -> TestResult {
 fn import_rejects_tampered_blob() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
 
     // Overwrite the blob's bytes — its derived BlobId no longer
     // matches the filename.
@@ -345,7 +346,7 @@ fn import_rejects_tampered_blob() -> TestResult {
 fn import_rejects_missing_blob_file() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
 
     let blob_id = manifest.contents.blobs.first().expect("one blob");
     fs::remove_file(bundle_dir.path().join("blobs").join(blob_id))?;
@@ -361,7 +362,7 @@ fn import_rejects_missing_blob_file() -> TestResult {
 fn import_rejects_unsupported_schema() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
 
     let manifest_path = bundle_dir.path().join(MANIFEST_FILENAME);
     let bytes = fs::read(&manifest_path)?;
@@ -380,7 +381,7 @@ fn import_rejects_unsupported_schema() -> TestResult {
 fn import_rejects_dangling_actor_reference() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
 
     // Strip the actor list; the statements still reference an actor
     // the manifest no longer advertises.
@@ -441,7 +442,7 @@ fn export_excludes_actor_trust_statements() -> TestResult {
     let trust_statement_id = src.store.put_actor_trust(&trust_statement)?;
 
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
     assert!(
         !manifest
             .contents
@@ -525,7 +526,7 @@ fn export_excludes_actor_capability_statements() -> TestResult {
         .put_actor_capability_revocation(&revoke_statement)?;
 
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0")?;
+    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
     assert!(
         !manifest
             .contents

@@ -2,6 +2,7 @@
 
 use kairo_bundle::{import_bundle, write_bundle, ImportSummary};
 use kairo_core::{ObjectId, Timestamp};
+use kairo_git::GitCache;
 
 use crate::cli::BundleCommand;
 use crate::error::CliError;
@@ -12,16 +13,35 @@ pub(crate) fn run_bundle_command(
     paths: &StorePaths,
 ) -> Result<String, CliError> {
     match command {
-        BundleCommand::Export { object, output } => {
+        BundleCommand::Export {
+            object,
+            output,
+            include_git,
+        } => {
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
             let store = open_store(paths)?;
+            // Build the pack from the managed cache only when the
+            // user opts in. Skipping this entirely when --include-git
+            // is off means bundle export stays git-binary-free for
+            // the common case.
+            let git_packs: Vec<(ObjectId, Vec<u8>)> = if include_git {
+                let cache = GitCache::open(paths.git_root())
+                    .map_err(|source| CliError::GitOperation { source })?;
+                let pack = cache
+                    .pack_for_object(object_id.as_str())
+                    .map_err(|source| CliError::GitOperation { source })?;
+                vec![(object_id.clone(), pack)]
+            } else {
+                Vec::new()
+            };
             let manifest = write_bundle(
                 &store,
                 &object_id,
                 &output,
                 &Timestamp::now().to_string(),
                 env!("CARGO_PKG_VERSION"),
+                &git_packs,
             )
             .map_err(CliError::Bundle)?;
             let mut out = String::new();
@@ -37,6 +57,10 @@ pub(crate) fn run_bundle_command(
             out.push_str(&format!(
                 "expected_git_commits = {}\n",
                 manifest.git_history.expected_commits.len()
+            ));
+            out.push_str(&format!(
+                "git_history_included = {}\n",
+                manifest.git_history.included
             ));
             Ok(out)
         }

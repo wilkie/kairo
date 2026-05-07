@@ -416,6 +416,16 @@ pub(crate) enum BundleCommand {
         /// Destination directory for the bundle. Created if missing.
         #[arg(long)]
         output: PathBuf,
+        /// Pack the object's commits from the managed Git cache
+        /// into `<output>/git/<object-id>.pack` and set
+        /// `git_history.included = true` in the manifest. The
+        /// per-object cache repo must already contain the commits
+        /// (typically via `kairo git fetch` or a prior bundle
+        /// import). Default off keeps bundle exports cheap and
+        /// predictable; opt in when shipping self-contained
+        /// federation/archival packages. See `DECISIONS.md` §9.
+        #[arg(long)]
+        include_git: bool,
     },
     /// Read a directory bundle and ingest its contents into the local
     /// store. Every record is fixity-checked: ids are re-derived from

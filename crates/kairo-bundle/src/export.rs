@@ -42,6 +42,17 @@ struct EnvelopePeek {
 /// Write a directory bundle for `object` under `dest`. `dest` must
 /// either not exist or be empty.
 ///
+/// `git_packs` is a list of `(object_id, pack_bytes)` pairs the
+/// caller has produced (typically via `kairo_git::GitCache::
+/// pack_for_object`). When non-empty:
+///
+/// - each pack is written to `<dest>/git/<object-id>.pack`,
+/// - `manifest.git_history.included` is set to `true`.
+///
+/// Pass an empty slice for the no-git-data flow (today's default;
+/// `included = false`). The manifest's `expected_commits` field is
+/// auto-derived from revision OIDs in either case.
+///
 /// Returns the manifest that was written, so callers can show or
 /// re-emit it without re-reading from disk.
 pub fn write_bundle(
@@ -50,6 +61,7 @@ pub fn write_bundle(
     dest: &Path,
     created_at: &str,
     tool_version: &str,
+    git_packs: &[(ObjectId, Vec<u8>)],
 ) -> Result<BundleManifest, BundleError> {
     ensure_dest_empty(dest)?;
 
@@ -179,6 +191,19 @@ pub fn write_bundle(
         blob_id_strings.push(blob_id.to_string());
     }
 
+    // Optionally write Git packs into `git/<object-id>.pack`. If
+    // any packs were supplied, flip `included = true` so consumers
+    // know the bundle is self-contained for Git data.
+    let git_included = !git_packs.is_empty();
+    if git_included {
+        let git_dir = dest.join("git");
+        create_dir(&git_dir)?;
+        for (pack_object, pack_bytes) in git_packs {
+            let pack_path = git_dir.join(format!("{pack_object}.pack"));
+            write_file(&pack_path, pack_bytes)?;
+        }
+    }
+
     let manifest = BundleManifest {
         schema: BUNDLE_SCHEMA.to_owned(),
         created_at: created_at.to_owned(),
@@ -196,7 +221,7 @@ pub fn write_bundle(
             blobs: blob_id_strings,
         },
         git_history: BundleGitHistory {
-            included: false,
+            included: git_included,
             expected_commits: expected_commits.into_iter().collect(),
         },
     };

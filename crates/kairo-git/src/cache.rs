@@ -120,6 +120,34 @@ impl GitCache {
         Ok(repo.find_commit(commit_oid)?.is_some())
     }
 
+    /// Build a Git pack containing every object reachable from the
+    /// per-object cache repo's refs. Returns the raw pack bytes,
+    /// suitable for writing into a bundle's `git/<object-id>.pack`
+    /// or for piping to a remote `git index-pack --stdin`. Returns
+    /// an empty pack if the per-object repo exists but has no refs;
+    /// errors if the per-object repo doesn't exist (caller hasn't
+    /// fetched or ingested for this object).
+    ///
+    /// Per-object scoped: takes the per-object lock for the
+    /// duration. Reads transparently include the shared pool via
+    /// alternates, so the pack contains every commit/tree/blob the
+    /// per-object refs reach, even though the bytes physically live
+    /// in the pool.
+    pub fn pack_for_object(&self, object_id: &str) -> Result<Vec<u8>, GitError> {
+        let repo_path = self.path_for(object_id)?;
+        if !repo_path.exists() {
+            return Err(GitError::CacheGitInvocation {
+                command: format!("pack-objects for object {object_id}"),
+                stderr: format!(
+                    "no per-object cache repo at {} — fetch or ingest first",
+                    repo_path.display()
+                ),
+                exit_code: None,
+            });
+        }
+        with_path_lock(&repo_path, || git_pack_objects_all(&repo_path))
+    }
+
     /// Stream `pack_bytes` into the shared pool via `git index-pack
     /// --stdin`, which writes the canonical
     /// `pool/objects/pack/pack-<sha>.{pack,idx}` pair. The pack is
@@ -355,6 +383,65 @@ fn git_index_pack_stdin(pool: &Path, pack_bytes: &[u8]) -> Result<(), GitError> 
         });
     }
     Ok(())
+}
+
+/// Run `git -C <repo> pack-objects --all --stdout` and return the
+/// pack bytes. `--all` means "pack everything reachable from refs";
+/// `--stdout` skips the `pack-<sha>.{pack,idx}` filesystem write
+/// since callers consume the bytes directly (e.g., write into a
+/// bundle, or pipe into a remote's index-pack).
+fn git_pack_objects_all(repo_path: &Path) -> Result<Vec<u8>, GitError> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo_path)
+        .args(["pack-objects", "--all", "--stdout"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|source| match source.kind() {
+            std::io::ErrorKind::NotFound => GitError::CacheGitMissing { source },
+            _ => GitError::CacheIo {
+                path: repo_path.to_path_buf(),
+                source,
+            },
+        })?;
+
+    let mut buf = Vec::new();
+    child
+        .stdout
+        .as_mut()
+        .ok_or_else(|| GitError::CacheIo {
+            path: repo_path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "git pack-objects stdout not captured",
+            ),
+        })?
+        .read_to_end(&mut buf)
+        .map_err(|source| GitError::CacheIo {
+            path: repo_path.to_path_buf(),
+            source,
+        })?;
+
+    let output = child.wait_with_output().map_err(|source| GitError::CacheIo {
+        path: repo_path.to_path_buf(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(GitError::CacheGitInvocation {
+            command: format!(
+                "git -C {} pack-objects --all --stdout",
+                repo_path.display()
+            ),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            exit_code: output.status.code(),
+        });
+    }
+    Ok(buf)
 }
 
 /// Run `git init --bare <path>` and surface failures as structured
@@ -913,6 +1000,49 @@ mod tests {
                 "1234567890abcdef1234567890abcdef12345678",
             )
             .expect_err("set_ref must error for unreachable OID");
+        assert!(matches!(err, GitError::CacheGitInvocation { .. }));
+    }
+
+    #[test]
+    fn pack_for_object_round_trips_through_ingest() {
+        // Build a pack from object A's per-object repo, then ingest
+        // it into a fresh cache under object B. Object B must then
+        // reach the same OIDs through alternates — confirms the pack
+        // is well-formed and contains every commit reachable from
+        // A's refs.
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, branch, head_oid) = init_source_repo();
+
+        let (_dir1, cache1) = open_temp();
+        cache1
+            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .expect("fetch");
+        let pack = cache1.pack_for_object(SAMPLE_ID).expect("pack_for_object");
+        assert!(!pack.is_empty(), "pack must contain at least the head commit");
+
+        let (_dir2, cache2) = open_temp();
+        cache2.ingest_pack(&pack).expect("ingest_pack");
+        cache2
+            .set_ref(OTHER_ID, "refs/heads/main", &head_oid)
+            .expect("set_ref");
+
+        assert!(
+            cache2.has_commit(OTHER_ID, &head_oid).expect("has_commit"),
+            "round-tripped OID must be reachable in cache 2"
+        );
+    }
+
+    #[test]
+    fn pack_for_object_errors_when_repo_absent() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_dir, cache) = open_temp();
+        let err = cache
+            .pack_for_object(SAMPLE_ID)
+            .expect_err("pack_for_object must error for absent repo");
         assert!(matches!(err, GitError::CacheGitInvocation { .. }));
     }
 }

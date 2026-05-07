@@ -2735,6 +2735,7 @@ kind = "tree"
                 command: BundleCommand::Export {
                     object: object_id.clone(),
                     output: bundle_path.clone(),
+                    include_git: false,
                 },
             }),
         })?;
@@ -4548,6 +4549,7 @@ kind = "tree"
                 command: BundleCommand::Export {
                     object: object_id.clone(),
                     output: bundle_root.clone(),
+                    include_git: false,
                 },
             }),
         })?;
@@ -4793,6 +4795,161 @@ kind = "tree"
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn kairo_bundle_export_include_git_writes_pack_and_flips_flag(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Populate the cache, then export with --include-git. The
+        // bundle directory must contain `git/<object-id>.pack`, and
+        // the manifest must say `git_history.included = true`.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "include-git-fixture"
+
+            [content]
+            kind = "tree"
+        "#;
+        let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+        let store_dir = tempfile::TempDir::new()?;
+        let manifest_path = git_dir.path().join("kairo.toml");
+
+        let actor_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+        let revision_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: format!("git:sha256:{commit_oid}"),
+                    manifest: manifest_path,
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_id.clone(),
+                    revision: revision_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        // Populate the cache by fetching from the source repo.
+        let url = format!("file://{}", git_dir.path().display());
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Fetch {
+                    object: object_id.clone(),
+                    remote: url,
+                    branch: "main".to_owned(),
+                },
+            }),
+        })?;
+
+        // Export with --include-git.
+        let bundle_dir = tempfile::TempDir::new()?;
+        let bundle_path = bundle_dir.path().join("bundle");
+        let export_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Export {
+                    object: object_id.clone(),
+                    output: bundle_path.clone(),
+                    include_git: true,
+                },
+            }),
+        })?;
+        assert!(export_output.contains("git_history_included = true"));
+
+        // The pack file must exist in the bundle directory.
+        let pack_path = bundle_path
+            .join("git")
+            .join(format!("{object_id}.pack"));
+        assert!(pack_path.is_file(), "expected pack at {}", pack_path.display());
+        let pack_bytes = std::fs::read(&pack_path)?;
+        assert!(!pack_bytes.is_empty(), "pack must not be empty");
+
+        // The manifest must record included = true.
+        let manifest_str =
+            std::fs::read_to_string(bundle_path.join("manifest.json"))?;
+        assert!(
+            manifest_str.contains("\"included\": true"),
+            "manifest must have included = true: {manifest_str}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn kairo_bundle_export_default_leaves_git_history_excluded(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Sanity: without --include-git, no `git/` subdir is
+        // written and the manifest still says included = false.
+        let (store_dir, _manifest_dir, _actor_id, object_id, _revision_statement, _manifest_path) =
+            fixture_with_branch()?;
+        let bundle_dir = tempfile::TempDir::new()?;
+        let bundle_path = bundle_dir.path().join("bundle");
+
+        let export_output = run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Export {
+                    object: object_id.clone(),
+                    output: bundle_path.clone(),
+                    include_git: false,
+                },
+            }),
+        })?;
+        assert!(export_output.contains("git_history_included = false"));
+        assert!(
+            !bundle_path.join("git").exists(),
+            "no git/ subdir without --include-git"
+        );
+        let manifest_str =
+            std::fs::read_to_string(bundle_path.join("manifest.json"))?;
+        assert!(
+            manifest_str.contains("\"included\": false"),
+            "manifest must have included = false: {manifest_str}"
+        );
+        Ok(())
     }
 
     #[test]
