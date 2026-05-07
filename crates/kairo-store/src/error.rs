@@ -17,12 +17,18 @@ use std::io;
 ///   well-formed and signature-valid but persisting it would violate a
 ///   spec-level invariant the store enforces (e.g. emptying the actor's
 ///   attestation key set, per `ACTORS.md` §5.5.2).
+/// - [`StoreError::LockTimeout`] is **contention**: another writer holds
+///   the per-record advisory lock and didn't release it within the
+///   bounded retry window (~2s). Callers may retry or surface it as
+///   a transient failure; persistent timeouts indicate a stuck
+///   writer and warrant operator inspection.
 #[derive(Debug)]
 pub enum StoreError {
     Missing,
     Corrupt { id: String, reason: CorruptReason },
     Unavailable(io::Error),
     Rejected { reason: String },
+    LockTimeout { path: std::path::PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +45,11 @@ impl fmt::Display for StoreError {
             Self::Corrupt { id, reason } => write!(f, "corrupt record {id}: {reason}"),
             Self::Unavailable(error) => write!(f, "store unavailable: {error}"),
             Self::Rejected { reason } => write!(f, "store rejected statement: {reason}"),
+            Self::LockTimeout { path } => write!(
+                f,
+                "timed out acquiring advisory lock on {}",
+                path.display()
+            ),
         }
     }
 }

@@ -162,11 +162,34 @@ read-modify-write of materialized indices (branches, version tags, trust).
 Note added throughout the store doc: "Multi-process safety is not yet
 enforced; concurrent writers can race on read-modify-write."
 
-- [ ] Decide locking strategy: per-record advisory locks, per-shard locks,
-      or one store-wide lock. Document the choice.
-- [ ] Use `fs2` or similar for cross-platform `flock`.
-- [ ] Add tests that exercise concurrent put_*/get_* across processes.
-- [ ] Decide failure mode for lock-acquisition timeout (error vs. retry).
+- [x] **Locking strategy: per-record advisory locks via sidecar
+      `.lock` files.** One `.lock` file per materialized-index file
+      (branches, version tags, trust, capability head, capability
+      reverse index, actor key-event index, plus per-actor keystore
+      entries). The `.lock` file is a zero-byte sentinel; its only
+      job is to be the `flock(2)` / `LockFileEx` subject. Reads don't
+      take the lock — `atomic_write` + `fs::rename` already gives
+      readers a consistent snapshot. Two unrelated writes (different
+      actors, different objects) don't block each other. Per-shard
+      and store-wide alternatives were rejected: per-shard adds
+      complexity for no real gain, store-wide would serialize the
+      whole daemon.
+- [x] **`fs2` for cross-platform flock.** Adds `fs2 = "0.4"` to
+      `kairo-store` and `kairo-keystore`. POSIX `flock(2)` and
+      Windows `LockFileEx` both release on fd close, so a crashed
+      writer doesn't leave a stuck lock.
+- [x] Concurrent put/get tests in `kairo-store/tests/concurrency.rs`
+      and `kairo-keystore/tests/concurrency.rs`. Each spawns N
+      threads doing concurrent writes against the same store / key
+      set; asserts no corruption (every successful put is readable),
+      no lost updates (final state contains all distinct entries),
+      and that the refuse-overwrite contracts hold under contention.
+- [x] **Failure mode: bounded retry, then `LockTimeout` error.**
+      `try_lock_exclusive` in a loop with 50ms sleep and a 2s
+      deadline; expired contention surfaces as `StoreError::LockTimeout`
+      / `KeystoreError::LockTimeout` rather than blocking forever.
+      Hard error surfaces deadlocks fast and lets tests assert the
+      contention path.
 
 **Why it matters:** required the moment §2 ships — daemon + CLI will run
 concurrently against the same store.

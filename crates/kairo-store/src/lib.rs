@@ -47,6 +47,7 @@ mod capabilities;
 mod capabilities_by_object;
 pub mod error;
 mod keys;
+mod lock;
 mod shard;
 mod tags;
 mod trust;
@@ -1317,8 +1318,8 @@ impl FilesystemStore {
         supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
         let path = self.shard_path(BRANCHES_DIR, object.as_str(), JSON_SUFFIX)?;
-        let mut index =
-            match fs::read(&path) {
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
                 Ok(bytes) => serde_json::from_slice::<branches::BranchIndexFile>(&bytes).map_err(
                     |error| StoreError::Corrupt {
                         id: object.to_string(),
@@ -1331,12 +1332,13 @@ impl FilesystemStore {
                 Err(error) => return Err(StoreError::Unavailable(error)),
             };
 
-        let updated = index.upsert(actor, name, statement_id, created_at, supersedes);
-        if updated {
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+            let updated = index.upsert(actor, name, statement_id, created_at, supersedes);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn read_branch_index(
@@ -1368,25 +1370,27 @@ impl FilesystemStore {
         supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
         let path = self.shard_path(VERSION_TAGS_DIR, object.as_str(), JSON_SUFFIX)?;
-        let mut index = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<tags::VersionTagIndexFile>(&bytes).map_err(
-                |error| StoreError::Corrupt {
-                    id: object.to_string(),
-                    reason: CorruptReason::Parse(format!("invalid version tag index: {error}")),
-                },
-            )?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                tags::VersionTagIndexFile::default()
-            }
-            Err(error) => return Err(StoreError::Unavailable(error)),
-        };
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<tags::VersionTagIndexFile>(&bytes).map_err(
+                    |error| StoreError::Corrupt {
+                        id: object.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid version tag index: {error}")),
+                    },
+                )?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    tags::VersionTagIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
 
-        let updated = index.upsert(actor, version, statement_id, created_at, supersedes);
-        if updated {
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+            let updated = index.upsert(actor, version, statement_id, created_at, supersedes);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn read_version_tag_index(
@@ -1418,23 +1422,28 @@ impl FilesystemStore {
         supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
         let path = self.shard_path(TRUST_DIR, trusted_actor.as_str(), JSON_SUFFIX)?;
-        let mut index = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<trust::TrustIndexFile>(&bytes).map_err(
-                |error| StoreError::Corrupt {
-                    id: trusted_actor.to_string(),
-                    reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
-                },
-            )?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => trust::TrustIndexFile::default(),
-            Err(error) => return Err(StoreError::Unavailable(error)),
-        };
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<trust::TrustIndexFile>(&bytes).map_err(
+                    |error| StoreError::Corrupt {
+                        id: trusted_actor.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
+                    },
+                )?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    trust::TrustIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
 
-        let updated = index.upsert(by_actor, statement_id, created_at, decision, supersedes);
-        if updated {
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(trusted_actor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+            let updated = index.upsert(by_actor, statement_id, created_at, decision, supersedes);
+            if updated {
+                let bytes =
+                    serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(trusted_actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn read_trust_index(
@@ -1465,15 +1474,17 @@ impl FilesystemStore {
         supersedes: Option<&StatementId>,
         surface: kairo_identity::KeySurface,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_key_index_or_default(actor)?;
-        let updated =
-            index.upsert_rotation(statement_id, next_key, created_at, supersedes, surface);
-        if updated {
-            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_key_index_or_default(actor)?;
+            let updated =
+                index.upsert_rotation(statement_id, next_key, created_at, supersedes, surface);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn upsert_key_revocation_index(
@@ -1485,20 +1496,22 @@ impl FilesystemStore {
         created_at: kairo_core::Timestamp,
         surface: kairo_identity::KeySurface,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_key_index_or_default(actor)?;
-        let updated = index.upsert_revocation(
-            statement_id,
-            revoked_key,
-            retroactive,
-            created_at,
-            surface,
-        );
-        if updated {
-            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_key_index_or_default(actor)?;
+            let updated = index.upsert_revocation(
+                statement_id,
+                revoked_key,
+                retroactive,
+                created_at,
+                surface,
+            );
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn upsert_attestation_add_index(
@@ -1508,14 +1521,16 @@ impl FilesystemStore {
         new_key: &kairo_identity::PublicKey,
         created_at: kairo_core::Timestamp,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_key_index_or_default(actor)?;
-        let updated = index.upsert_attestation_add(statement_id, new_key, created_at);
-        if updated {
-            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_key_index_or_default(actor)?;
+            let updated = index.upsert_attestation_add(statement_id, new_key, created_at);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn upsert_attestation_revocation_index(
@@ -1525,15 +1540,17 @@ impl FilesystemStore {
         revoked_key: &kairo_identity::KeyId,
         created_at: kairo_core::Timestamp,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_key_index_or_default(actor)?;
-        let updated =
-            index.upsert_attestation_revocation(statement_id, revoked_key, created_at);
-        if updated {
-            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_key_index_or_default(actor)?;
+            let updated =
+                index.upsert_attestation_revocation(statement_id, revoked_key, created_at);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn upsert_attestation_threshold_change_index(
@@ -1543,18 +1560,20 @@ impl FilesystemStore {
         new_threshold: u8,
         created_at: kairo_core::Timestamp,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_key_index_or_default(actor)?;
-        let updated = index.upsert_attestation_threshold_change(
-            statement_id,
-            new_threshold,
-            created_at,
-        );
-        if updated {
-            let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_key_index_or_default(actor)?;
+            let updated = index.upsert_attestation_threshold_change(
+                statement_id,
+                new_threshold,
+                created_at,
+            );
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     /// Resolve the actor's attestation threshold at `at` directly from
@@ -1650,14 +1669,17 @@ impl FilesystemStore {
         created_at: kairo_core::Timestamp,
         supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_capability_index_or_default(grantor)?;
-        let updated = index.upsert_grant(grantee, scope, statement_id, created_at, supersedes);
-        if updated {
-            let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_capability_index_or_default(grantor)?;
+            let updated =
+                index.upsert_grant(grantee, scope, statement_id, created_at, supersedes);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn upsert_capability_revocation_index(
@@ -1668,15 +1690,17 @@ impl FilesystemStore {
         created_at: kairo_core::Timestamp,
         retroactive: bool,
     ) -> Result<(), StoreError> {
-        let mut index = self.read_capability_index_or_default(grantor)?;
-        let updated =
-            index.upsert_revocation(revoked_grant, statement_id, created_at, retroactive);
-        if updated {
-            let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+        let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = self.read_capability_index_or_default(grantor)?;
+            let updated =
+                index.upsert_revocation(revoked_grant, statement_id, created_at, retroactive);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn read_capability_index_or_default(

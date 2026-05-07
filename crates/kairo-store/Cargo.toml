@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+fs2 = "0.4"
 kairo-core = { path = "../kairo-core" }
 kairo-identity = { path = "../kairo-identity" }
 kairo-statement = { path = "../kairo-statement" }
