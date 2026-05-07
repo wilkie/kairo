@@ -42,16 +42,22 @@ struct EnvelopePeek {
 /// Write a directory bundle for `object` under `dest`. `dest` must
 /// either not exist or be empty.
 ///
-/// `git_packs` is a list of `(object_id, pack_bytes)` pairs the
-/// caller has produced (typically via `kairo_git::GitCache::
-/// pack_for_object`). When non-empty:
+/// `git_object_ids` declares which objects' Git packs the bundle
+/// will ship. When non-empty:
 ///
-/// - each pack is written to `<dest>/git/<object-id>.pack`,
+/// - `<dest>/git/` is created (empty) so the caller can stream
+///   pack files into it after `write_bundle` returns,
 /// - `manifest.git_history.included` is set to `true`.
 ///
-/// Pass an empty slice for the no-git-data flow (today's default;
-/// `included = false`). The manifest's `expected_commits` field is
-/// auto-derived from revision OIDs in either case.
+/// Pack bytes are NOT written by `write_bundle` itself. The caller
+/// is expected to stream `<dest>/git/<object-id>.pack` for each
+/// declared id (typically via `kairo_git::GitCache::
+/// pack_for_object_to(id, file)`) so that arbitrarily large packs
+/// flow through without buffering. Pass an empty slice for the
+/// no-git-data flow; `git/` is not created and `included = false`.
+///
+/// The manifest's `expected_commits` field is auto-derived from
+/// revision OIDs in either case.
 ///
 /// Returns the manifest that was written, so callers can show or
 /// re-emit it without re-reading from disk.
@@ -61,7 +67,7 @@ pub fn write_bundle(
     dest: &Path,
     created_at: &str,
     tool_version: &str,
-    git_packs: &[(ObjectId, Vec<u8>)],
+    git_object_ids: &[ObjectId],
 ) -> Result<BundleManifest, BundleError> {
     ensure_dest_empty(dest)?;
 
@@ -191,17 +197,15 @@ pub fn write_bundle(
         blob_id_strings.push(blob_id.to_string());
     }
 
-    // Optionally write Git packs into `git/<object-id>.pack`. If
-    // any packs were supplied, flip `included = true` so consumers
-    // know the bundle is self-contained for Git data.
-    let git_included = !git_packs.is_empty();
+    // Reserve `<dest>/git/` for the caller to populate with pack
+    // files. We create the directory (so the caller has a target
+    // path) and flip `included = true`, but we don't write any
+    // pack bytes ourselves — the caller streams them in afterward
+    // via `kairo_git::GitCache::pack_for_object_to`.
+    let git_included = !git_object_ids.is_empty();
     if git_included {
         let git_dir = dest.join("git");
         create_dir(&git_dir)?;
-        for (pack_object, pack_bytes) in git_packs {
-            let pack_path = git_dir.join(format!("{pack_object}.pack"));
-            write_file(&pack_path, pack_bytes)?;
-        }
     }
 
     let manifest = BundleManifest {

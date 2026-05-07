@@ -21,17 +21,8 @@ pub(crate) fn run_bundle_command(
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
             let store = open_store(paths)?;
-            // Build the pack from the managed cache only when the
-            // user opts in. Skipping this entirely when --include-git
-            // is off means bundle export stays git-binary-free for
-            // the common case.
-            let git_packs: Vec<(ObjectId, Vec<u8>)> = if include_git {
-                let cache = GitCache::open(paths.git_root())
-                    .map_err(|source| CliError::GitOperation { source })?;
-                let pack = cache
-                    .pack_for_object(object_id.as_str())
-                    .map_err(|source| CliError::GitOperation { source })?;
-                vec![(object_id.clone(), pack)]
+            let git_object_ids: Vec<ObjectId> = if include_git {
+                vec![object_id.clone()]
             } else {
                 Vec::new()
             };
@@ -41,9 +32,29 @@ pub(crate) fn run_bundle_command(
                 &output,
                 &Timestamp::now().to_string(),
                 env!("CARGO_PKG_VERSION"),
-                &git_packs,
+                &git_object_ids,
             )
             .map_err(CliError::Bundle)?;
+            // After `write_bundle` reserved `<output>/git/`, stream
+            // each declared pack into it without holding the bytes
+            // in memory. Open the cache lazily so the export path
+            // stays git-binary-free when `--include-git` is off.
+            if include_git {
+                let cache = GitCache::open(paths.git_root())
+                    .map_err(|source| CliError::GitOperation { source })?;
+                let pack_path = output.join("git").join(format!("{object_id}.pack"));
+                let mut file = std::fs::File::create(&pack_path).map_err(|source| {
+                    CliError::GitOperation {
+                        source: kairo_git::GitError::CacheIo {
+                            path: pack_path.clone(),
+                            source,
+                        },
+                    }
+                })?;
+                cache
+                    .pack_for_object_to(object_id.as_str(), &mut file)
+                    .map_err(|source| CliError::GitOperation { source })?;
+            }
             let mut out = String::new();
             out.push_str("export bundle\n");
             out.push_str(&format!("object = {}\n", object_id));

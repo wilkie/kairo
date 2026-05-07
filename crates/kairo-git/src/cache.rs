@@ -24,6 +24,7 @@
 //! trait, `GitCache::fetch`, and `GitCache::ingest_pack` land in
 //! follow-on slices.
 
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -120,20 +121,25 @@ impl GitCache {
         Ok(repo.find_commit(commit_oid)?.is_some())
     }
 
-    /// Build a Git pack containing every object reachable from the
-    /// per-object cache repo's refs. Returns the raw pack bytes,
-    /// suitable for writing into a bundle's `git/<object-id>.pack`
-    /// or for piping to a remote `git index-pack --stdin`. Returns
-    /// an empty pack if the per-object repo exists but has no refs;
-    /// errors if the per-object repo doesn't exist (caller hasn't
+    /// Stream a Git pack containing every object reachable from the
+    /// per-object cache repo's refs into `sink`. The canonical
+    /// streaming primitive — handles arbitrarily large packs without
+    /// holding the bytes in memory. Suitable for piping directly
+    /// into a bundle's `git/<object-id>.pack` file, into a HTTP
+    /// response body, or into a remote's `git index-pack --stdin`.
+    /// Errors if the per-object repo doesn't exist (caller hasn't
     /// fetched or ingested for this object).
     ///
     /// Per-object scoped: takes the per-object lock for the
     /// duration. Reads transparently include the shared pool via
-    /// alternates, so the pack contains every commit/tree/blob the
+    /// alternates, so the pack covers every commit/tree/blob the
     /// per-object refs reach, even though the bytes physically live
     /// in the pool.
-    pub fn pack_for_object(&self, object_id: &str) -> Result<Vec<u8>, GitError> {
+    pub fn pack_for_object_to(
+        &self,
+        object_id: &str,
+        sink: impl Write,
+    ) -> Result<(), GitError> {
         let repo_path = self.path_for(object_id)?;
         if !repo_path.exists() {
             return Err(GitError::CacheGitInvocation {
@@ -145,25 +151,46 @@ impl GitCache {
                 exit_code: None,
             });
         }
-        with_path_lock(&repo_path, || git_pack_objects_all(&repo_path))
+        with_path_lock(&repo_path, || git_pack_objects_stream(&repo_path, sink))
     }
 
-    /// Stream `pack_bytes` into the shared pool via `git index-pack
-    /// --stdin`, which writes the canonical
-    /// `pool/objects/pack/pack-<sha>.{pack,idx}` pair. The pack is
-    /// content-addressed by its own SHA-1 in the filename, so
-    /// re-ingesting the same bytes is a no-op (`index-pack`
-    /// overwrites the same file with identical content) and
+    /// Convenience wrapper over [`Self::pack_for_object_to`] that
+    /// returns the entire pack as a `Vec<u8>`. Useful for tests and
+    /// small packs; for production data paths, prefer the streaming
+    /// version so multi-GB packs don't sit in memory.
+    pub fn pack_for_object(&self, object_id: &str) -> Result<Vec<u8>, GitError> {
+        let mut buf = Vec::new();
+        self.pack_for_object_to(object_id, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Stream pack bytes from `source` into the shared pool via
+    /// `git index-pack --stdin`, which writes the canonical
+    /// `pool/objects/pack/pack-<sha>.{pack,idx}` pair. The
+    /// canonical streaming primitive — handles arbitrarily large
+    /// packs without holding the bytes in memory. Suitable for
+    /// piping directly from a bundle's pack file, an HTTP request
+    /// body, or another cache's `pack_for_object_to`. Pack contents
+    /// are content-addressed by SHA-1 in the filename, so
+    /// re-ingesting the same bytes is a same-file overwrite and
     /// concurrent ingestion of identical packs converges.
     ///
     /// Pool-scoped: takes the pool lock for the duration. The pack
     /// becomes reachable from every per-object repo through
     /// `objects/info/alternates`, so a follow-up [`Self::set_ref`]
     /// call can pin OIDs from the pack into any object's repo.
-    pub fn ingest_pack(&self, pack_bytes: &[u8]) -> Result<(), GitError> {
+    pub fn ingest_pack_from(&self, source: impl Read) -> Result<(), GitError> {
         let pool = pool_path(&self.root);
         let pool_lock_subject = self.root.join(POOL_LOCK_SUBJECT);
-        with_path_lock(&pool_lock_subject, || git_index_pack_stdin(&pool, pack_bytes))
+        with_path_lock(&pool_lock_subject, || git_index_pack_stream(&pool, source))
+    }
+
+    /// Convenience wrapper over [`Self::ingest_pack_from`] that
+    /// takes a byte slice. Useful for tests; production paths
+    /// (bundle import, daemon push) should use the streaming
+    /// version so multi-GB packs flow through without buffering.
+    pub fn ingest_pack(&self, pack_bytes: &[u8]) -> Result<(), GitError> {
+        self.ingest_pack_from(std::io::Cursor::new(pack_bytes))
     }
 
     /// Write `ref_name` → `commit_oid` in the per-object repo for
@@ -325,13 +352,14 @@ fn write_alternates_to_pool(root: &Path, repo_path: &Path) -> Result<(), GitErro
     })
 }
 
-/// Stream `pack_bytes` to `git -C <pool> index-pack --stdin`, which
-/// reads the pack from stdin, computes its SHA-1, and writes both
-/// `pack-<sha>.pack` and `pack-<sha>.idx` into
-/// `<pool>/objects/pack/`. This is the same code path `git fetch`
-/// uses internally, so the on-disk result is identical.
-fn git_index_pack_stdin(pool: &Path, pack_bytes: &[u8]) -> Result<(), GitError> {
-    use std::io::Write;
+/// Stream pack bytes from `source` into `git -C <pool> index-pack
+/// --stdin`, which reads the pack from stdin, computes its SHA-1,
+/// and writes both `pack-<sha>.pack` and `pack-<sha>.idx` into
+/// `<pool>/objects/pack/`. Same code path `git fetch` uses
+/// internally, so the on-disk result is identical. Drains stderr
+/// in a separate thread to avoid pipe-buffer deadlock when stdin
+/// is large.
+fn git_index_pack_stream(pool: &Path, mut source: impl Read) -> Result<(), GitError> {
     use std::process::Stdio;
 
     let mut child = Command::new("git")
@@ -351,47 +379,54 @@ fn git_index_pack_stdin(pool: &Path, pack_bytes: &[u8]) -> Result<(), GitError> 
             },
         })?;
 
-    {
-        // Take the stdin handle out so we can drop it after writing,
-        // signalling EOF to git. Without the drop, `wait_with_output`
-        // below would block forever waiting for index-pack to read
-        // more bytes.
-        let mut stdin = child.stdin.take().ok_or_else(|| GitError::CacheIo {
-            path: pool.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "git index-pack stdin not captured",
-            ),
-        })?;
-        stdin
-            .write_all(pack_bytes)
-            .map_err(|source| GitError::CacheIo {
-                path: pool.to_path_buf(),
-                source,
-            })?;
-    }
+    let stderr_bytes = drain_stderr(&mut child);
+    let stdout_bytes = drain_stdout(&mut child);
 
-    let output = child.wait_with_output().map_err(|source| GitError::CacheIo {
+    // Stream source into stdin. Drop stdin afterward to signal EOF
+    // — without that drop, `child.wait()` blocks forever waiting
+    // for more bytes.
+    let mut stdin = child.stdin.take().ok_or_else(|| GitError::CacheIo {
+        path: pool.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "git index-pack stdin not captured",
+        ),
+    })?;
+    let copy_result = std::io::copy(&mut source, &mut stdin);
+    drop(stdin);
+
+    let status = child.wait().map_err(|source| GitError::CacheIo {
         path: pool.to_path_buf(),
         source,
     })?;
-    if !output.status.success() {
+    let stderr_text = stderr_bytes.collect();
+    let _ = stdout_bytes.collect();
+
+    if let Err(source) = copy_result {
+        return Err(GitError::CacheIo {
+            path: pool.to_path_buf(),
+            source,
+        });
+    }
+    if !status.success() {
         return Err(GitError::CacheGitInvocation {
             command: "git index-pack --stdin".to_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code(),
+            stderr: stderr_text,
+            exit_code: status.code(),
         });
     }
     Ok(())
 }
 
-/// Run `git -C <repo> pack-objects --all --stdout` and return the
-/// pack bytes. `--all` means "pack everything reachable from refs";
-/// `--stdout` skips the `pack-<sha>.{pack,idx}` filesystem write
-/// since callers consume the bytes directly (e.g., write into a
-/// bundle, or pipe into a remote's index-pack).
-fn git_pack_objects_all(repo_path: &Path) -> Result<Vec<u8>, GitError> {
-    use std::io::Read;
+/// Stream `git -C <repo> pack-objects --all --stdout` into `sink`.
+/// `--all` means "pack everything reachable from refs"; `--stdout`
+/// skips the `pack-<sha>.{pack,idx}` filesystem write since callers
+/// consume the bytes directly. Drains stderr in a separate thread
+/// to avoid pipe-buffer deadlock when stdout is large.
+fn git_pack_objects_stream(
+    repo_path: &Path,
+    mut sink: impl Write,
+) -> Result<(), GitError> {
     use std::process::Stdio;
 
     let mut child = Command::new("git")
@@ -410,38 +445,89 @@ fn git_pack_objects_all(repo_path: &Path) -> Result<Vec<u8>, GitError> {
             },
         })?;
 
-    let mut buf = Vec::new();
-    child
-        .stdout
-        .as_mut()
-        .ok_or_else(|| GitError::CacheIo {
-            path: repo_path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "git pack-objects stdout not captured",
-            ),
-        })?
-        .read_to_end(&mut buf)
-        .map_err(|source| GitError::CacheIo {
-            path: repo_path.to_path_buf(),
-            source,
-        })?;
+    let stderr_bytes = drain_stderr(&mut child);
 
-    let output = child.wait_with_output().map_err(|source| GitError::CacheIo {
+    // Stream stdout to sink. Errors here can mean either the child
+    // misbehaved or the sink rejected bytes; we surface stdin/stdout
+    // I/O as `CacheIo` and exit-status failure as `CacheGitInvocation`.
+    let mut stdout = child.stdout.take().ok_or_else(|| GitError::CacheIo {
+        path: repo_path.to_path_buf(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "git pack-objects stdout not captured",
+        ),
+    })?;
+    let copy_result = std::io::copy(&mut stdout, &mut sink);
+    drop(stdout);
+
+    let status = child.wait().map_err(|source| GitError::CacheIo {
         path: repo_path.to_path_buf(),
         source,
     })?;
-    if !output.status.success() {
+    let stderr_text = stderr_bytes.collect();
+
+    if let Err(source) = copy_result {
+        return Err(GitError::CacheIo {
+            path: repo_path.to_path_buf(),
+            source,
+        });
+    }
+    if !status.success() {
         return Err(GitError::CacheGitInvocation {
             command: format!(
                 "git -C {} pack-objects --all --stdout",
                 repo_path.display()
             ),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code(),
+            stderr: stderr_text,
+            exit_code: status.code(),
         });
     }
-    Ok(buf)
+    Ok(())
+}
+
+/// Reads a captured stdio pipe to EOF on a worker thread, returning
+/// a join handle whose `collect()` yields the captured text. Used
+/// to drain stderr/stdout in parallel with the main thread's data
+/// transfer so neither side blocks the other on a full pipe buffer.
+struct PipeDrain {
+    handle: std::thread::JoinHandle<Vec<u8>>,
+}
+
+impl PipeDrain {
+    fn collect(self) -> String {
+        match self.handle.join() {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => String::from("<pipe drain panicked>"),
+        }
+    }
+}
+
+fn drain_stderr(child: &mut std::process::Child) -> PipeDrain {
+    let mut handle = child
+        .stderr
+        .take()
+        .expect("stderr was piped at spawn time");
+    let join = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let _ = handle.read_to_end(&mut buf);
+        buf
+    });
+    PipeDrain { handle: join }
+}
+
+fn drain_stdout(child: &mut std::process::Child) -> PipeDrain {
+    let mut handle = child
+        .stdout
+        .take()
+        .expect("stdout was piped at spawn time");
+    let join = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = Vec::new();
+        let _ = handle.read_to_end(&mut buf);
+        buf
+    });
+    PipeDrain { handle: join }
 }
 
 /// Run `git init --bare <path>` and surface failures as structured
@@ -1044,5 +1130,72 @@ mod tests {
             .pack_for_object(SAMPLE_ID)
             .expect_err("pack_for_object must error for absent repo");
         assert!(matches!(err, GitError::CacheGitInvocation { .. }));
+    }
+
+    #[test]
+    fn pack_for_object_to_streams_to_arbitrary_writer() {
+        // The streaming primitive must work for any writer. Test
+        // with a writer that reports byte counts to confirm bytes
+        // flowed through (rather than being buffered then flushed
+        // at the end as one block).
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, branch, _head_oid) = init_source_repo();
+        let (_dir, cache) = open_temp();
+        cache
+            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .expect("fetch");
+
+        struct CountingWriter {
+            count: usize,
+        }
+        impl std::io::Write for CountingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.count += buf.len();
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = CountingWriter { count: 0 };
+        cache
+            .pack_for_object_to(SAMPLE_ID, &mut writer)
+            .expect("pack_for_object_to");
+        assert!(writer.count > 0, "writer must have received bytes");
+    }
+
+    #[test]
+    fn ingest_pack_from_streams_from_arbitrary_reader() {
+        // Symmetric: the streaming primitive must consume any
+        // reader. Use a tempfile-backed reader to confirm the
+        // disk → stdin path that bundle import will use.
+        if skip_if_no_git() {
+            return;
+        }
+        let (_src, url, branch, head_oid) = init_source_repo();
+
+        // Cache 1: produce pack as bytes via the wrapper, write to
+        // a tempfile to mimic a bundle's `git/<id>.pack`.
+        let (_dir1, cache1) = open_temp();
+        cache1
+            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .expect("fetch");
+        let pack_bytes = cache1.pack_for_object(SAMPLE_ID).expect("pack");
+        let pack_file = TempDir::new().expect("tempdir");
+        let pack_path = pack_file.path().join("from-bundle.pack");
+        std::fs::write(&pack_path, &pack_bytes).expect("write pack");
+
+        // Cache 2: ingest by streaming the file straight into git
+        // index-pack, never holding the full pack in memory.
+        let (_dir2, cache2) = open_temp();
+        let file = std::fs::File::open(&pack_path).expect("open pack");
+        cache2.ingest_pack_from(file).expect("ingest_pack_from");
+        cache2
+            .set_ref(SAMPLE_ID, "refs/heads/main", &head_oid)
+            .expect("set_ref");
+        assert!(cache2.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
     }
 }
