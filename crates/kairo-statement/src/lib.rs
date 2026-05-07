@@ -1712,6 +1712,8 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use kairo_core::canonical::encode_str;
     use kairo_identity::PublicKey;
+    // proptest is used by tests/property_tests.rs only.
+    use proptest as _;
 
     const ACTOR_ID: &str = "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t";
     const OBJECT_ID: &str = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";

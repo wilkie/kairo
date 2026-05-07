@@ -860,6 +860,8 @@ impl Error for SignatureVerificationError {}
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
+    // proptest is used by tests/property_tests.rs only.
+    use proptest as _;
 
     use super::*;
 

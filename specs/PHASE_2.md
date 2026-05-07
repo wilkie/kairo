@@ -347,11 +347,19 @@ Hardening what Phase 1 shipped.
       re-verify (asserts trust=trusted) → per-record import to fresh store
       → bundle export/import to another fresh store. Skips on hosts
       missing `git`.
-- [ ] Property tests for canonical-encoding determinism (`proptest` over
+- [x] Property tests for canonical-encoding determinism (`proptest` over
       every body type's `CanonicalEncode` impl: parse → re-encode →
-      byte-equal).
-- [ ] Property tests for JSON DTO round-tripping (random body → JSON →
-      back → equal).
+      byte-equal). `kairo-statement/tests/property_tests.rs` covers all
+      14 statement body types plus `Capability`; `kairo-identity/tests/
+      property_tests.rs` covers `ActorGenesisBody`. Each round-trip
+      test asserts `canonical_bytes(body) == canonical_bytes(body')`,
+      and explicit determinism tests assert encoding the same body
+      twice yields identical output.
+- [x] Property tests for JSON DTO round-tripping (random body → JSON →
+      back → equal). Same files as above; the round-trip macro asserts
+      `body == body'` after `BodyJson::from_body → serde_json → BodyJson
+      → to_body`. Catches drift between `CanonicalEncode` and the
+      JSON serialization pair on every supported body type.
 - [ ] Statement-type indexing (carry-over from Phase 1 §2).
 - [ ] Store fixtures crate (carry-over from Phase 1 §2; Phase 2 starts
       adding test surface that benefits from shared fixtures).
