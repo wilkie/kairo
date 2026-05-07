@@ -33,18 +33,60 @@ Pairs with Phase 1 §9 and §11 deferred work. The MVP's `kairo verify object`
 walks upward to find the user's working Git repo; bundles do not carry Git
 history. A managed mirror at `~/.kairo/git/` would:
 
-- [ ] Decide layout: single bare repo per node, per-object bare repo, or a
-      packed-object store. Document the choice in `specs/STORE.md`.
+- [x] **Layout: per-Kairo-object bare repos sharded two levels deep,
+      with a shared object pool referenced via
+      `objects/info/alternates`.** See `DECISIONS.md` §7. Forks
+      across Kairo objects dedupe at the Git-object layer (pool
+      stores each blob/tree/commit once); per-object bare repos keep
+      refs, locks, and CLI scoping per-Kairo-object. Fetches land
+      objects in `pool/objects/` under namespaced refs
+      (`refs/kairo/<object-id>/<branch>`) and mirror the resolved
+      refs into the per-object repo. Pool is treated as a
+      load-bearing cache — its loss is a cache miss, not authority
+      loss. Single-bare and plain per-object-bare were rejected:
+      single-bare conflates lock granularity and complicates
+      per-object GC; plain per-object-bare duplicates Git objects
+      across forks, which matters for federation/archival.
+- [x] **Fetch transport: shell out to host `git` binary, structured
+      behind a `MirrorTransport` trait.** See `DECISIONS.md` §8.
+      V1 invocation: `git -c protocol.version=2 fetch --no-tags
+      --no-write-fetch-head <url> <refspec>:refs/kairo/<object-id>/<branch>`.
+      `git ≥ 2.x` becomes a documented runtime dep for mirror
+      operations (not for `verify object` against a cwd repo, which
+      keeps using `gix` reads). `gix-protocol` rejected for v1 on
+      hosting-compatibility, dep-weight, and API-stability grounds;
+      a future swap is a localized second `MirrorTransport` impl.
 - [ ] Add `kairo-git` write paths (or a sibling crate) for fetching commits
-      from a remote URL or from a Git pack file.
-- [ ] Teach `verify object` to consult the managed mirror as a fallback (or
-      primary, depending on layout) before the cwd-discovered repo.
-- [ ] Flip `BundleGitHistory.included` to `true` in a future bundle version,
-      ship a `git/` subdirectory with a Git pack, and ingest into the
-      managed mirror on import — making bundles self-contained for the
-      VALID verdict.
-- [ ] Add CLI: `kairo git fetch --object <id> --remote <url>` (or similar)
-      and `kairo git mirror status`.
+      from a remote URL or from a Git pack file. Per-object bare init,
+      alternates wiring, namespaced fetch into pool (via the §8
+      `MirrorTransport` shell-out), ref mirror into per-object repo,
+      per-object advisory locking via the §6 `with_*_lock` pattern.
+      Pack-file ingest path bypasses transport: copy/index pack
+      bytes directly into pool.
+- [ ] Teach `verify object` to consult the managed mirror as the
+      first-tried source for `git:sha256:` revisions, with the
+      cwd-discovered repo as fallback so existing "I cloned the
+      source, just verify it" workflows keep working. Optional
+      `--no-cwd-repo` for mirror-only verification (will matter when
+      §2 daemon is the verifier).
+- [ ] Bundle integration: import-side always ingests a shipped
+      `git/` subdirectory into the §7 mirror pool; export-side adds
+      `kairo bundle export --include-git` opt-in flag that packs
+      relevant commits from the mirror and flips
+      `BundleGitHistory.included = true`. Default-off; default-on
+      flip is deferred future work (see `DECISIONS.md` §9). Import
+      and export sides can land independently.
+- [x] **CLI shape: `kairo git ...` verb tree.** See `DECISIONS.md` §9.
+      First slice: `kairo git fetch --object <id> --remote <url>
+      [--refspec <ref>]` and `kairo git mirror status`. Later:
+      `kairo git mirror verify` (pool integrity probe) and
+      `kairo git mirror gc [--object <id>]` (paired with `STORE.md`
+      §12 GC work). `kairo mirror ...` and folding into
+      `kairo verify object --fetch` were both rejected to preserve
+      naming clarity and the read-only contract of `verify`.
+- [ ] Update `STORE.md` §4 with the `git/` slot and pool ownership
+      semantics; update `PACKAGE.md` with the bundle git-history
+      flow; add the threat-model paragraph noted in `DECISIONS.md` §7.
 
 **Why it matters:** unblocks self-contained bundles; required by federation
 to serve Git data without depending on the user's working tree.
