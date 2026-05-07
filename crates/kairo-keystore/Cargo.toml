@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 base64 = "=0.21.7"
+fs2 = "0.4"
 kairo-core = { path = "../kairo-core" }
 kairo-identity = { path = "../kairo-identity" }
 serde = { version = "1", features = ["derive"] }

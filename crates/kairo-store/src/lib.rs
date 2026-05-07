@@ -1744,28 +1744,30 @@ impl FilesystemStore {
     ) -> Result<(), StoreError> {
         let path =
             self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
-        let mut index = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<
-                capabilities_by_object::CapabilityByObjectIndexFile,
-            >(&bytes)
-            .map_err(|error| StoreError::Corrupt {
-                id: object.to_string(),
-                reason: CorruptReason::Parse(format!(
-                    "invalid capabilities-by-object index: {error}"
-                )),
-            })?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                capabilities_by_object::CapabilityByObjectIndexFile::default()
-            }
-            Err(error) => return Err(StoreError::Unavailable(error)),
-        };
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<
+                    capabilities_by_object::CapabilityByObjectIndexFile,
+                >(&bytes)
+                .map_err(|error| StoreError::Corrupt {
+                    id: object.to_string(),
+                    reason: CorruptReason::Parse(format!(
+                        "invalid capabilities-by-object index: {error}"
+                    )),
+                })?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    capabilities_by_object::CapabilityByObjectIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
 
-        let updated = index.upsert(grantee, grantor, statement_id, created_at, supersedes);
-        if updated {
-            let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
-            atomic_write(&path, &bytes)?;
-        }
-        Ok(())
+            let updated = index.upsert(grantee, grantor, statement_id, created_at, supersedes);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(object))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
     }
 
     fn read_capability_by_object_index(
@@ -5356,6 +5358,48 @@ mod tests {
         )?;
         let result = store.put_actor_attestation_threshold_change(&stmt);
         assert!(matches!(result, Err(StoreError::Rejected { .. })));
+        Ok(())
+    }
+
+    /// Concurrent writers to the same branch index file must all
+    /// succeed and produce the union of their entries — no lost
+    /// updates, no corrupt JSON. Without `with_index_lock`, two
+    /// writers reading the same `BranchIndexFile::default()` would
+    /// each upsert against their private copy and the slower writer
+    /// would overwrite the faster one's entry on `atomic_write`.
+    #[test]
+    fn concurrent_branch_writes_do_not_lose_updates() -> TestResult {
+        const THREADS: usize = 8;
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        store.put_actor(&fresh_genesis())?;
+
+        std::thread::scope(|scope| {
+            for index in 0..THREADS {
+                let store = store.clone();
+                let actor = actor.clone();
+                let object = object.clone();
+                scope.spawn(move || {
+                    let name = format!("branch-{index}");
+                    let revision = StatementId::from_sha256_digest([index as u8; 32]);
+                    let signed = signed_branch(actor, object, &name, revision, None, timestamp())
+                        .expect("branch signed");
+                    store.put_object_branch(&signed).expect("put_object_branch");
+                });
+            }
+        });
+
+        let tips = store.list_branches(&object)?;
+        assert_eq!(tips.len(), THREADS, "all branch entries should survive");
+        let mut names: Vec<_> = tips.iter().map(|tip| tip.name.clone()).collect();
+        names.sort();
+        for index in 0..THREADS {
+            assert!(
+                names.contains(&format!("branch-{index}")),
+                "branch-{index} should be in index"
+            );
+        }
         Ok(())
     }
 }

@@ -20,6 +20,7 @@
 
 mod error;
 mod json;
+mod lock;
 
 use std::fs;
 use std::io;
@@ -102,22 +103,24 @@ impl Keystore for FilesystemKeystore {
         secret: &SecretSigningKey,
     ) -> Result<KeyId, KeystoreError> {
         let path = self.path_for(actor_id);
+        lock::with_key_lock(&path, || {
+            if path.exists() {
+                return Err(KeystoreError::Corrupt {
+                    id: actor_id.to_string(),
+                    reason: CorruptReason::AlreadyExists,
+                });
+            }
 
-        if path.exists() {
-            return Err(KeystoreError::Corrupt {
-                id: actor_id.to_string(),
-                reason: CorruptReason::AlreadyExists,
-            });
-        }
-
-        let json = PrivateKeyJson::from_secret(actor_id, secret);
-        let bytes = serde_json::to_vec_pretty(&json).map_err(|error| KeystoreError::Corrupt {
-            id: actor_id.to_string(),
-            reason: CorruptReason::Parse(error.to_string()),
-        })?;
-        atomic_write(&path, &bytes)?;
-        set_file_permissions(&path)?;
-        Ok(secret.public_key().key_id())
+            let json = PrivateKeyJson::from_secret(actor_id, secret);
+            let bytes =
+                serde_json::to_vec_pretty(&json).map_err(|error| KeystoreError::Corrupt {
+                    id: actor_id.to_string(),
+                    reason: CorruptReason::Parse(error.to_string()),
+                })?;
+            atomic_write(&path, &bytes)?;
+            set_file_permissions(&path)?;
+            Ok(secret.public_key().key_id())
+        })
     }
 
     fn get_signing_key(&self, actor_id: &ActorId) -> Result<SecretSigningKey, KeystoreError> {
@@ -154,18 +157,21 @@ impl Keystore for FilesystemKeystore {
         secret: &SecretSigningKey,
     ) -> Result<KeyId, KeystoreError> {
         let path = self.path_for(actor_id);
-        if !path.exists() {
-            return Err(KeystoreError::Missing);
-        }
+        lock::with_key_lock(&path, || {
+            if !path.exists() {
+                return Err(KeystoreError::Missing);
+            }
 
-        let json = PrivateKeyJson::from_secret(actor_id, secret);
-        let bytes = serde_json::to_vec_pretty(&json).map_err(|error| KeystoreError::Corrupt {
-            id: actor_id.to_string(),
-            reason: CorruptReason::Parse(error.to_string()),
-        })?;
-        atomic_write(&path, &bytes)?;
-        set_file_permissions(&path)?;
-        Ok(secret.public_key().key_id())
+            let json = PrivateKeyJson::from_secret(actor_id, secret);
+            let bytes =
+                serde_json::to_vec_pretty(&json).map_err(|error| KeystoreError::Corrupt {
+                    id: actor_id.to_string(),
+                    reason: CorruptReason::Parse(error.to_string()),
+                })?;
+            atomic_write(&path, &bytes)?;
+            set_file_permissions(&path)?;
+            Ok(secret.public_key().key_id())
+        })
     }
 
     fn list_actors(&self) -> Result<Vec<ActorId>, KeystoreError> {
@@ -470,6 +476,81 @@ mod tests {
 
         let actors = keystore.list_actors()?;
         assert_eq!(actors, vec![actor_id]);
+        Ok(())
+    }
+
+    /// Concurrent `put_signing_key` calls for the *same* actor must
+    /// produce exactly one stored key — the first writer wins, every
+    /// other writer gets `AlreadyExists`. The advisory lock around
+    /// the existence-check + write is what makes this hold; without
+    /// it two writers would both pass the `path.exists()` check
+    /// before either had written.
+    #[test]
+    fn concurrent_put_for_same_actor_admits_exactly_one() -> TestResult {
+        const THREADS: usize = 8;
+        let (_dir, keystore) = open_temp()?;
+        let secret = fresh_secret();
+        let actor_id = fresh_actor_id(&secret);
+
+        let successes = std::sync::atomic::AtomicUsize::new(0);
+        let already_exists = std::sync::atomic::AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                let keystore = keystore.clone();
+                let actor_id = actor_id.clone();
+                let secret = SecretSigningKey::ed25519(*secret.seed_bytes());
+                let successes = &successes;
+                let already_exists = &already_exists;
+                scope.spawn(move || match keystore.put_signing_key(&actor_id, &secret) {
+                    Ok(_) => {
+                        successes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Err(KeystoreError::Corrupt {
+                        reason: CorruptReason::AlreadyExists,
+                        ..
+                    }) => {
+                        already_exists.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Err(error) => panic!("unexpected error: {error}"),
+                });
+            }
+        });
+
+        assert_eq!(successes.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            already_exists.load(std::sync::atomic::Ordering::SeqCst),
+            THREADS - 1
+        );
+        // The stored key must round-trip cleanly — no half-written file.
+        let loaded = keystore.get_signing_key(&actor_id)?;
+        assert_eq!(loaded.seed_bytes(), secret.seed_bytes());
+        Ok(())
+    }
+
+    /// Concurrent `put_signing_key` calls for *distinct* actors all
+    /// succeed — they take per-actor lock files, so they don't
+    /// serialize against each other. Verifies the lock granularity.
+    #[test]
+    fn concurrent_put_for_distinct_actors_all_succeed() -> TestResult {
+        const THREADS: usize = 8;
+        let (_dir, keystore) = open_temp()?;
+
+        std::thread::scope(|scope| {
+            for index in 0..THREADS {
+                let keystore = keystore.clone();
+                scope.spawn(move || {
+                    let secret = SecretSigningKey::ed25519([index as u8 + 1; 32]);
+                    let actor_id = fresh_actor_id(&secret);
+                    keystore
+                        .put_signing_key(&actor_id, &secret)
+                        .expect("put succeeds for distinct actor");
+                });
+            }
+        });
+
+        let actors = keystore.list_actors()?;
+        assert_eq!(actors.len(), THREADS);
         Ok(())
     }
 }

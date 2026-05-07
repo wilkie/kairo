@@ -9,6 +9,10 @@ pub enum KeystoreError {
     Missing,
     Corrupt { id: String, reason: CorruptReason },
     Unavailable(io::Error),
+    /// Another writer holds the per-actor advisory lock and didn't
+    /// release it within the bounded retry window. Mirrors
+    /// `StoreError::LockTimeout`.
+    LockTimeout { path: std::path::PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +41,11 @@ impl fmt::Display for KeystoreError {
             Self::Missing => f.write_str("signing key not found"),
             Self::Corrupt { id, reason } => write!(f, "corrupt key file {id}: {reason}"),
             Self::Unavailable(error) => write!(f, "keystore unavailable: {error}"),
+            Self::LockTimeout { path } => write!(
+                f,
+                "timed out acquiring advisory lock on {}",
+                path.display()
+            ),
         }
     }
 }

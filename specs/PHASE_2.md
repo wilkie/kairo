@@ -157,10 +157,9 @@ archival use case.
 
 ### 6. Multi-Process Safety / File Locks
 
-The current `FilesystemStore` is single-process; concurrent writers race on
-read-modify-write of materialized indices (branches, version tags, trust).
-Note added throughout the store doc: "Multi-process safety is not yet
-enforced; concurrent writers can race on read-modify-write."
+`FilesystemStore` and `FilesystemKeystore` now serialize concurrent
+read-modify-write on every materialized index and per-actor key file
+through per-record advisory locks. Status: **closed.**
 
 - [x] **Locking strategy: per-record advisory locks via sidecar
       `.lock` files.** One `.lock` file per materialized-index file
@@ -177,13 +176,18 @@ enforced; concurrent writers can race on read-modify-write."
 - [x] **`fs2` for cross-platform flock.** Adds `fs2 = "0.4"` to
       `kairo-store` and `kairo-keystore`. POSIX `flock(2)` and
       Windows `LockFileEx` both release on fd close, so a crashed
-      writer doesn't leave a stuck lock.
-- [x] Concurrent put/get tests in `kairo-store/tests/concurrency.rs`
-      and `kairo-keystore/tests/concurrency.rs`. Each spawns N
-      threads doing concurrent writes against the same store / key
-      set; asserts no corruption (every successful put is readable),
-      no lost updates (final state contains all distinct entries),
-      and that the refuse-overwrite contracts hold under contention.
+      writer doesn't leave a stuck lock. Helpers live in
+      `kairo-store/src/lock.rs` (`with_index_lock`) and
+      `kairo-keystore/src/lock.rs` (`with_key_lock`).
+- [x] Concurrent put/get tests as inline unit tests in
+      `kairo-store/src/lib.rs` (`concurrent_branch_writes_do_not_lose_updates`)
+      and `kairo-keystore/src/lib.rs`
+      (`concurrent_put_for_same_actor_admits_exactly_one`,
+      `concurrent_put_for_distinct_actors_all_succeed`). They spawn
+      N threads doing concurrent writes against the same store / key
+      set and assert no corruption, no lost updates, and that the
+      refuse-overwrite contract holds under contention. Lock-level
+      serialization is also covered by `lock::tests` in each crate.
 - [x] **Failure mode: bounded retry, then `LockTimeout` error.**
       `try_lock_exclusive` in a loop with 50ms sleep and a 2s
       deadline; expired contention surfaces as `StoreError::LockTimeout`

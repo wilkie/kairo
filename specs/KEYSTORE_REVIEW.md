@@ -126,7 +126,14 @@ the no-overwrite semantics atomically. Alternatively, a per-actor
 file lock (covered by PHASE_2 §6) makes the existence check race-free
 without atomic-rename gymnastics.
 
-**Action.** Roll into PHASE_2 §6 multi-process safety / file locks.
+**Action.** ~~Roll into PHASE_2 §6 multi-process safety / file locks.~~
+**Resolved** — `put_signing_key` now wraps the existence check and
+write in `lock::with_key_lock`, which holds an exclusive advisory
+flock on a `<key>.lock` sidecar for the duration of the operation.
+Verified by
+`tests::concurrent_put_for_same_actor_admits_exactly_one`: under N
+concurrent putters for the same actor, exactly one succeeds and the
+rest cleanly receive `CorruptReason::AlreadyExists`.
 
 ### 3.3 `[Low]` `replace_signing_key` likewise TOCTOU
 
@@ -148,6 +155,12 @@ unexpected content.
 **Severity.** Low, same reasoning as §3.2.
 
 **Mitigation.** Same as §3.2 — file locks under PHASE_2 §6.
+
+**Action.** **Resolved** — `replace_signing_key` now wraps the
+existence check and write in `lock::with_key_lock`, the same
+per-actor advisory lock that protects `put_signing_key`. The
+existence check and the rename are now atomic with respect to other
+keystore writers on the same actor file.
 
 ### 3.4 `[Low]` No `fsync` before rename
 
@@ -368,8 +381,8 @@ For balance, the items the review found done correctly:
 | ID  | Severity | Action                                                            |
 |-----|----------|-------------------------------------------------------------------|
 | 3.1 | Medium   | Open tmp + dirs with explicit mode `0600`/`0700` to close race    |
-| 3.2 | Low      | Roll into PHASE_2 §6 multi-process file locks                     |
-| 3.3 | Low      | Roll into PHASE_2 §6 multi-process file locks                     |
+| 3.2 | Low      | **Resolved** — `with_key_lock` around `put_signing_key`           |
+| 3.3 | Low      | **Resolved** — `with_key_lock` around `replace_signing_key`       |
 | 3.4 | Low      | Add `sync_all` + parent-dir fsync; revisit when daemon ships      |
 | 3.5 | Medium   | Track separately as "zeroize + memory hygiene" cross-crate pass   |
 | 3.6 | Info     | Out of MVP scope; passphrase encryption is documented future work |
@@ -387,8 +400,8 @@ The headline takeaways:
    race) and §3.5 (zeroize-on-drop). Neither is exploitable in the
    single-user MVP scenario; both should land before the keystore
    sees daemon traffic.
-3. Multi-process safety (§3.2, §3.3) is already tracked in
-   PHASE_2 §6.
+3. Multi-process safety (§3.2, §3.3) is now resolved by per-actor
+   advisory file locks landed under PHASE_2 §6.
 4. Encrypted-at-rest is intentionally deferred and documented.
 
 This review doesn't change any code. It exists to ground future
