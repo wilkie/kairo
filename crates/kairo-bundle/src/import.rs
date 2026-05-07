@@ -28,15 +28,20 @@ use crate::export::MVP_BLOB_DOMAIN;
 use crate::manifest::BundleManifest;
 use crate::{BUNDLE_SCHEMA, MANIFEST_FILENAME};
 
-/// Outcome counts for an import. The same counts apply to a re-import
+/// Outcome of an import. Counts apply to a re-import the same way
 /// (idempotency); the store is a sink, not an authority on whether
-/// the record was "new."
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// the record was "new." The parsed `manifest` is included so
+/// callers can act on metadata the import surface intentionally
+/// doesn't touch — most notably `manifest.git_history`, which the
+/// CLI consults to ingest shipped Git packs into the managed cache
+/// after `import_bundle` returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportSummary {
     pub actors: usize,
     pub objects: usize,
     pub statements: usize,
     pub blobs: usize,
+    pub manifest: BundleManifest,
 }
 
 /// Read the bundle at `src` and ingest its contents into `store`.
@@ -54,7 +59,10 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
     let manifest_actor_set: std::collections::BTreeSet<&str> =
         manifest.contents.actors.iter().map(|s| s.as_str()).collect();
 
-    let mut summary = ImportSummary::default();
+    let mut actors = 0usize;
+    let mut objects = 0usize;
+    let mut statements = 0usize;
+    let mut blobs = 0usize;
 
     // 1. Ingest blobs first. Statements may reference these via
     //    manifest_hash; depending on later validation, the importer
@@ -88,7 +96,7 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
             });
         }
         store.put_blob(&blob_id, &bytes).map_err(BundleError::Store)?;
-        summary.blobs += 1;
+        blobs += 1;
     }
 
     // 2. Actors next so subsequent statement ingestion can verify
@@ -131,7 +139,7 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
             });
         }
         store.put_actor(&body).map_err(BundleError::Store)?;
-        summary.actors += 1;
+        actors += 1;
     }
 
     // 3. Object genesis records.
@@ -174,7 +182,7 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
         store
             .put_object_genesis(&signed)
             .map_err(BundleError::Store)?;
-        summary.objects += 1;
+        objects += 1;
     }
 
     // 4. Statements. Dispatch on the JSON `type` field, ingest into
@@ -273,10 +281,16 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
                 });
             }
         }
-        summary.statements += 1;
+        statements += 1;
     }
 
-    Ok(summary)
+    Ok(ImportSummary {
+        actors,
+        objects,
+        statements,
+        blobs,
+        manifest,
+    })
 }
 
 fn read_manifest(src: &Path) -> Result<BundleManifest, BundleError> {

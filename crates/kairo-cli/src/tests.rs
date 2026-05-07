@@ -4918,6 +4918,221 @@ kind = "tree"
     }
 
     #[test]
+    fn kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Export a bundle with --include-git from store A, import
+        // into a fresh store B (a different `<store>` directory),
+        // then run `kairo verify object --no-cwd-repo` against B.
+        // Federation precondition: B reaches VALID without any
+        // external Git repo or working tree.
+        let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "roundtrip-fixture"
+
+            [content]
+            kind = "tree"
+        "#;
+        let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+
+        // ---- Source store A: create actor, object, revision, branch.
+        let store_a = tempfile::TempDir::new()?;
+        let manifest_path = git_dir.path().join("kairo.toml");
+
+        let actor_output = run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            }),
+        })?;
+        let actor_id = parse_field(&actor_output, "actor = ")?;
+        let object_output = run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor_id.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            }),
+        })?;
+        let object_id = parse_field(&object_output, "object = ")?;
+        let revision_output = run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: format!("git:sha256:{commit_oid}"),
+                    manifest: manifest_path,
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            }),
+        })?;
+        let revision_statement = parse_field(&revision_output, "statement = ")?;
+        run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id,
+                    object: object_id.clone(),
+                    revision: revision_statement,
+                    name: "head".to_owned(),
+                },
+            }),
+        })?;
+
+        // ---- Populate store A's cache via fetch.
+        let url = format!("file://{}", git_dir.path().display());
+        run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Fetch {
+                    object: object_id.clone(),
+                    remote: url,
+                    branch: "main".to_owned(),
+                },
+            }),
+        })?;
+
+        // ---- Export with --include-git.
+        let bundle_dir = tempfile::TempDir::new()?;
+        let bundle_path = bundle_dir.path().join("bundle");
+        run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Export {
+                    object: object_id.clone(),
+                    output: bundle_path.clone(),
+                    include_git: true,
+                },
+            }),
+        })?;
+
+        // ---- Recipient store B: import the bundle.
+        let store_b = tempfile::TempDir::new()?;
+        let import_output = run(Cli {
+            store: Some(store_b.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Import {
+                    input: bundle_path.clone(),
+                },
+            }),
+        })?;
+        assert!(import_output.contains("git_packs = 1"));
+        assert!(import_output.contains("git_refs_pinned = 1"));
+
+        // ---- Verify against B with --no-cwd-repo: cache is the
+        //      only Git source. Must reach VALID.
+        let verify_output = run(Cli {
+            store: Some(store_b.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: None,
+                    no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: true,
+                    r#as: None,
+                    no_as: true,
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        })?;
+        assert!(
+            verify_output.contains("verify object: VALID"),
+            "expected VALID after bundle import, got:\n{verify_output}"
+        );
+        assert!(verify_output.contains("content = VALID"));
+        assert!(
+            verify_output.contains(&format!("commit lookup: cache (object {object_id})")),
+            "expected cache lookup, got:\n{verify_output}"
+        );
+
+        // ---- B's cache status reflects the imported pack +
+        //      pinned ref.
+        let status_output = run(Cli {
+            store: Some(store_b.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Git {
+                command: GitCommand::Cache {
+                    command: GitCacheCommand::Status,
+                },
+            }),
+        })?;
+        assert!(status_output.contains("pool: initialized"));
+        assert!(status_output.contains("objects: 1"));
+        assert!(status_output.contains(&object_id));
+        assert!(
+            status_output.contains(&format!(
+                "refs/kairo/imported/{commit_oid} = {commit_oid}"
+            )),
+            "expected pinned imported ref, got:\n{status_output}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn kairo_bundle_import_without_git_data_skips_cache_open(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Sanity: a bundle without `git_history.included` must
+        // import without touching the cache. `git_packs = 0` and
+        // `git_refs_pinned = 0` in the output. The store-only path
+        // should not require git on PATH for this code (already
+        // tested in earlier verify-object tests for the cache-miss
+        // path; this assertion is a regression guard).
+        let (store_a, _manifest_dir, _actor_id, object_id, _revision_statement, _manifest_path) =
+            fixture_with_branch()?;
+        let bundle_dir = tempfile::TempDir::new()?;
+        let bundle_path = bundle_dir.path().join("bundle");
+
+        run(Cli {
+            store: Some(store_a.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Export {
+                    object: object_id.clone(),
+                    output: bundle_path.clone(),
+                    include_git: false,
+                },
+            }),
+        })?;
+
+        let store_b = tempfile::TempDir::new()?;
+        let import_output = run(Cli {
+            store: Some(store_b.path().to_path_buf()),
+            keys: None,
+            command: Some(Command::Bundle {
+                command: BundleCommand::Import {
+                    input: bundle_path,
+                },
+            }),
+        })?;
+        assert!(import_output.contains("git_packs = 0"));
+        assert!(import_output.contains("git_refs_pinned = 0"));
+        Ok(())
+    }
+
+    #[test]
     fn kairo_bundle_export_default_leaves_git_history_excluded(
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Sanity: without --include-git, no `git/` subdir is

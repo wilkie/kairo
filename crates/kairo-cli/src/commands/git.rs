@@ -146,9 +146,12 @@ fn walk_per_object_repos(git_root: &Path) -> Result<Vec<(String, PathBuf)>, CliE
     Ok(found)
 }
 
-/// Read `refs/heads/*` from a per-object cache repo via
+/// Read all refs from a per-object cache repo via
 /// `git for-each-ref`. Returns the refs as a sorted list of
-/// (full-ref-name, oid) pairs.
+/// (full-ref-name, oid) pairs. Walks the full `refs/` namespace
+/// (not just `refs/heads/`) so OIDs pinned by bundle import under
+/// `refs/kairo/imported/<oid>` appear in cache status alongside
+/// any branches a `kairo git fetch` left under `refs/heads/`.
 fn read_object_refs(repo_path: &Path) -> Result<Vec<(String, String)>, CliError> {
     let output = Command::new("git")
         .arg("-C")
@@ -156,7 +159,7 @@ fn read_object_refs(repo_path: &Path) -> Result<Vec<(String, String)>, CliError>
         .args([
             "for-each-ref",
             "--format=%(refname) %(objectname)",
-            "refs/heads/",
+            "refs/",
         ])
         .output()
         .map_err(|source| match source.kind() {

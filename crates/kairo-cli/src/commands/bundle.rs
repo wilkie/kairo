@@ -79,10 +79,93 @@ pub(crate) fn run_bundle_command(
             let store = open_store(paths)?;
             let summary: ImportSummary =
                 import_bundle(&input, &store).map_err(CliError::Bundle)?;
-            Ok(format!(
-                "import bundle\nactors = {}\nobjects = {}\nstatements = {}\nblobs = {}\n",
-                summary.actors, summary.objects, summary.statements, summary.blobs,
-            ))
+
+            // If the bundle ships Git packs (`git_history.included`),
+            // stream each `<input>/git/<object-id>.pack` into the
+            // managed cache and pin every `expected_commits` OID as
+            // a `refs/kairo/imported/<oid>` ref so the OID survives
+            // future GC and shows up in `kairo git cache status`.
+            // Cache is opened only when there's actually git data to
+            // ingest, so the common path stays git-binary-free.
+            let (packs_ingested, refs_pinned) = if summary.manifest.git_history.included {
+                ingest_bundle_git_data(paths, &input, &summary.manifest)?
+            } else {
+                (0, 0)
+            };
+
+            let mut out = String::new();
+            out.push_str("import bundle\n");
+            out.push_str(&format!("actors = {}\n", summary.actors));
+            out.push_str(&format!("objects = {}\n", summary.objects));
+            out.push_str(&format!("statements = {}\n", summary.statements));
+            out.push_str(&format!("blobs = {}\n", summary.blobs));
+            out.push_str(&format!("git_packs = {packs_ingested}\n"));
+            out.push_str(&format!("git_refs_pinned = {refs_pinned}\n"));
+            Ok(out)
         }
     }
+}
+
+/// Walk `<input>/git/*.pack` and stream each into the managed
+/// cache; then pin every `expected_commits` OID under each pack's
+/// per-object cache repo so future GC won't collect them. Returns
+/// `(packs_ingested, refs_pinned)` for diagnostic reporting.
+///
+/// Pack files are streamed via `File`, never read into memory.
+/// Each pack's `<object-id>` filename component identifies which
+/// per-object repo to pin refs under. Multi-pack bundles are
+/// supported (each pack pins the same expected_commits in its own
+/// repo); v1 bundles ship one pack but the loop is general.
+fn ingest_bundle_git_data(
+    paths: &StorePaths,
+    input: &std::path::Path,
+    manifest: &kairo_bundle::BundleManifest,
+) -> Result<(usize, usize), CliError> {
+    let cache = GitCache::open(paths.git_root())
+        .map_err(|source| CliError::GitOperation { source })?;
+    let git_dir = input.join("git");
+
+    let mut pack_object_ids: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(&git_dir).map_err(|source| CliError::GitOperation {
+        source: kairo_git::GitError::CacheIo {
+            path: git_dir.clone(),
+            source,
+        },
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| CliError::GitOperation {
+            source: kairo_git::GitError::CacheIo {
+                path: git_dir.clone(),
+                source,
+            },
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("pack") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let file = std::fs::File::open(&path).map_err(|source| CliError::GitOperation {
+            source: kairo_git::GitError::CacheIo {
+                path: path.clone(),
+                source,
+            },
+        })?;
+        cache
+            .ingest_pack_from(file)
+            .map_err(|source| CliError::GitOperation { source })?;
+        pack_object_ids.push(stem.to_owned());
+    }
+
+    let mut refs_pinned = 0usize;
+    for object_id in &pack_object_ids {
+        for oid in &manifest.git_history.expected_commits {
+            cache
+                .set_ref(object_id, &format!("refs/kairo/imported/{oid}"), oid)
+                .map_err(|source| CliError::GitOperation { source })?;
+            refs_pinned += 1;
+        }
+    }
+    Ok((pack_object_ids.len(), refs_pinned))
 }
