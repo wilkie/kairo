@@ -363,8 +363,14 @@ Hardening what Phase 1 shipped.
 - [ ] Statement-type indexing (carry-over from Phase 1 §2).
 - [ ] Store fixtures crate (carry-over from Phase 1 §2; Phase 2 starts
       adding test surface that benefits from shared fixtures).
-- [ ] Versioning policy: pick semver discipline, document MSRV, write a
-      `CHANGELOG.md`.
+- [x] Versioning policy: workspace-uniform pre-1.0 semver per
+      `VERSIONING.md`; bump `0.x.0` for any breaking change in either
+      Rust API or wire format, `0.x.y` for additions and fixes. MSRV
+      pinned at Rust 1.95 (`workspace.package.rust-version`); MSRV
+      bumps are themselves treated as breaking. Wire-format changes
+      (anything that alters canonical bytes / `*Id` derivation) get
+      a distinct `Wire format` section in `CHANGELOG.md` so they're
+      impossible to miss in review.
 - [x] Threat model document — `specs/THREAT_MODEL.md`. Drafted as a
       consolidation of the security argument scattered across the
       spec set: assets, adversaries, defended-against attacks (with
