@@ -378,8 +378,14 @@ Hardening what Phase 1 shipped.
       non-goals, social recovery, operator monitoring. Surfaces the
       v1 gap that an `ActorAttestationKeyRevocation` should close
       (Phase 2 §14 follow-on).
-- [ ] Security review of the keystore (mode bits, atomic write semantics,
-      passphrase encryption deferred-but-documented).
+- [x] Security review of the keystore — `specs/KEYSTORE_REVIEW.md`.
+      Ten findings categorized Medium / Low / Info. The two worth
+      fixing soon are §3.1 (mode-bits race window between
+      atomic-rename and chmod) and §3.5 (no zeroize-on-drop for
+      `SecretSigningKey`). Multi-process TOCTOU findings (§3.2,
+      §3.3) are tracked under PHASE_2 §6. Plaintext-at-rest is
+      explicitly out-of-MVP-scope; passphrase encryption is the
+      documented post-MVP work.
 
 **Why it matters:** the MVP works but is unhardened. Polish here makes
 every later Phase 2 / Phase 3 item cheaper and safer to land.
