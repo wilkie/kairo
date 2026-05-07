@@ -64,3 +64,34 @@ fn rev_parse(dir: &Path, rev: &str) -> String {
 pub(crate) fn skip_if_no_git() -> bool {
     Command::new("git").arg("--version").output().is_err()
 }
+
+/// Build a Git pack file from every commit reachable in `src` and
+/// return its raw bytes. Uses `git pack-objects --all --stdout`,
+/// the same packing path `git push` and bundle-create use.
+pub(crate) fn build_pack_from(src: &Path) -> Vec<u8> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(src)
+        .args(["pack-objects", "--all", "--stdout"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pack-objects");
+    let mut buf = Vec::new();
+    child
+        .stdout
+        .as_mut()
+        .expect("stdout")
+        .read_to_end(&mut buf)
+        .expect("read stdout");
+    let status = child.wait().expect("wait");
+    assert!(
+        status.success(),
+        "pack-objects failed with exit {:?}",
+        status.code()
+    );
+    buf
+}
