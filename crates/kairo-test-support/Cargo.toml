@@ -1,5 +1,5 @@
 [package]
-name = "kairo-cli"
+name = "kairo-test-support"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,26 +7,17 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-base64 = "=0.21.7"
-clap = { version = "4.4", features = ["derive", "env"] }
-kairo-bundle = { path = "../kairo-bundle" }
 kairo-core = { path = "../kairo-core" }
-kairo-git = { path = "../kairo-git" }
 kairo-identity = { path = "../kairo-identity" }
 kairo-keystore = { path = "../kairo-keystore" }
 kairo-object = { path = "../kairo-object" }
 kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
-serde_json = "1"
-
-[dev-dependencies]
-ed25519-dalek = "=2.1.1"
-kairo-test-support = { path = "../kairo-test-support" }
 tempfile = "3"
 
-[[bin]]
-name = "kairo"
-path = "src/main.rs"
+[lib]
+name = "kairo_test_support"
+path = "src/lib.rs"
 
 [lints]
 workspace = true

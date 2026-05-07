@@ -117,24 +117,73 @@ them.
 ### 2. Daemon
 
 Long-running local service that coordinates store access, federation,
-policy, scheduling, and (eventually) build/run execution. `specs/DAEMON.md`
-and `specs/API.md` already describe the intended shape; this section is
-about implementation.
+policy, scheduling, and (eventually) build/run execution.
+`specs/DAEMON.md` and `specs/API.md` describe the long-term shape; the
+v1 daemon is a deliberate sliver — see `DECISIONS.md` §10 for the
+locked MVP scope (foreground process, Unix-socket-only, read-only
+HTTP+JSON, ~11 endpoints, stateful daemon with stateless requests,
+OpenAPI deferred to §5).
 
-- [ ] Reconcile `specs/DAEMON.md` and `specs/API.md` with what's been built
-      since the spec was written; mark stale assumptions and update.
-- [ ] Stand up a minimal `kairo-daemon` binary that exposes a local Unix-
-      socket API for store reads.
+- [x] **MVP scope locked.** See `DECISIONS.md` §10. Eight
+      sub-decisions: foreground-only process model; Unix-socket
+      transport (no TCP/TLS in v1); OpenAPI deferred until §5;
+      ~11 read-only endpoints under `/api/v1/`; stateful daemon
+      with stateless requests; CLI probe-and-fall-back dispatch
+      with explicit `--daemon`/`--direct` overrides; structured-
+      text logs via `tracing` (JSON + rolling files deferred);
+      HTTP framework pending separate decision.
+- [x] **Multi-process safety.** Done in §6 (`kairo-store` /
+      `kairo-keystore` advisory locks). The precondition that
+      makes a stateful daemon + concurrent CLI direct mode safe.
+- [x] **Two-process architecture and HTTP framework.** See
+      `DECISIONS.md` §11. Daemon and (future) web-server are
+      separate processes in separate crates with distinct trust
+      models — daemon is Unix-socket-only and trusted; web-server
+      (Phase 2 §5) is the TCP / browser-facing demilitarized zone.
+      Bridged by a small `kairo-daemon-client` Rust crate that
+      `kairo-cli` (and a future Rust web-server impl) consume.
+      Daemon framework is `axum` + `tokio`; blocking store calls
+      go through `tokio::task::spawn_blocking`. Other frameworks
+      (raw `hyper`, sync `tiny_http`-style) rejected — see §11.
+- [ ] Spec reconciliation pass: `DAEMON.md` §5.1 / §6.1 trimmed
+      to v1 components; §13 transport list narrowed to Unix
+      socket. `API.md` §3 contract-strategy section updated to
+      note OpenAPI deferral and the two-process split; §9 auth
+      section describes daemon (Unix-socket-perms) vs web-server
+      (TCP+auth). `CLI.md` §3.3 clarified that v1 daemon serves
+      reads only; write commands stay direct. Both
+      `kairo daemon start|status|stop` and (deferred)
+      `kairo web start|status|stop` documented.
+- [ ] Stand up `crates/kairo-daemon`: foreground binary that
+      opens `FilesystemStore` once, binds a listening Unix socket
+      at `<store>/daemon.sock`, writes a PID file at
+      `<store>/daemon.pid`, runs the axum app, and shuts down
+      gracefully on `SIGTERM`/`SIGINT`. Wraps blocking store
+      calls in `tokio::task::spawn_blocking`.
+- [ ] Implement the read-only endpoints listed in `DECISIONS.md`
+      §10.4. `GET /api/v1/blobs/{id}` streams response bodies via
+      the §1 streaming-first patterns (no full materialization).
+- [ ] Stand up `crates/kairo-daemon-client`: tiny Rust crate
+      wrapping HTTP-over-Unix-socket calls against the daemon's
+      `/api/v1/...`. Async (tokio + hyper). One Rust function per
+      endpoint plus a typed error enum. Used by `kairo-cli`'s
+      daemon-mode dispatch in v1; future Rust web-server impl
+      uses the same crate.
 - [ ] Add `kairo daemon start | status | stop` to the CLI.
-- [ ] Decide protocol: HTTP+JSON, custom framed binary, or gRPC. Document
-      the choice in `specs/API.md`.
-- [ ] Implement `kairo` CLI's daemon-mode dispatch (`specs/CLI.md` §3.1
-      already describes the mode-selection rules).
-- [ ] Multi-process safety: file locks in `kairo-store` (see §6) become
-      mandatory once daemon + CLI may write concurrently.
+      `start` runs the daemon in the foreground; `status` checks
+      the PID file + socket and queries `GET /api/v1/status`;
+      `stop` reads the PID and sends `SIGTERM` (optional `--wait`).
+- [ ] Implement CLI daemon-mode dispatch (`CLI.md` §3.3) using
+      `kairo-daemon-client`: probe `<store>/daemon.sock`, fall
+      back to direct mode if absent or unreachable. Wire at least
+      one read command (e.g., `kairo branch show`) through the
+      daemon path so the dispatch is exercised end-to-end. Write
+      commands stay direct regardless of mode.
 
-**Why it matters:** every downstream surface (web client, federation-as-
-service, daemon-mode CLI) depends on the daemon existing.
+**Why it matters:** every downstream surface (web client,
+federation-as-service, daemon-mode CLI, multi-actor workflows)
+depends on the daemon existing as the local coordination layer.
+§4 federation and §5 web client cannot start until v1 daemon ships.
 
 ### 3. Capability / Delegation Model
 
@@ -452,9 +501,25 @@ Hardening what Phase 1 shipped.
       `body == body'` after `BodyJson::from_body → serde_json → BodyJson
       → to_body`. Catches drift between `CanonicalEncode` and the
       JSON serialization pair on every supported body type.
-- [ ] Statement-type indexing (carry-over from Phase 1 §2).
-- [ ] Store fixtures crate (carry-over from Phase 1 §2; Phase 2 starts
-      adding test surface that benefits from shared fixtures).
+- [ ] **Statement-type indexing — explicitly deferred until first
+      consumer.** Carry-over from Phase 1 §2 ("index statements by
+      object, actor, and statement type"). Today's `kairo-store`
+      only materializes indexes when a query consumer demands them;
+      "all statements by actor X" and "all statements of kind T"
+      still have no consumer. Natural consumers are §2 daemon
+      (browse-by-author), §4 federation (replicate-by-actor), and
+      §5 web client (statement timeline view). Land alongside the
+      first surface that actually queries by these dimensions —
+      adding a materialized index without a consumer is the
+      anti-pattern Phase 1 §2 explicitly cited.
+- [x] **Store fixtures crate.** Carry-over from Phase 1 §2.
+      `kairo-test-support` collects shared test setup: git-repo
+      fixtures (`init_source_repo`, `build_pack_from`,
+      `skip_if_no_git`), and `StoreFixture` for actor/object/
+      revision/branch chains driven through library APIs. Used as
+      a `dev-dependency` from `kairo-git`, `kairo-cli`, and
+      `kairo-bundle`; replaces ~200 LOC of duplicated inline test
+      helpers across those crates.
 - [x] Versioning policy: workspace-uniform pre-1.0 semver per
       `VERSIONING.md`; bump `0.x.0` for any breaking change in either
       Rust API or wire format, `0.x.y` for additions and fixes. MSRV

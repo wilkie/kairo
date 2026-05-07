@@ -194,7 +194,7 @@ fn run_git(
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::test_support::{init_source_repo, skip_if_no_git};
+    use kairo_test_support::git::{init_source_repo, skip_if_no_git};
     use std::process::Command;
     use tempfile::TempDir;
 

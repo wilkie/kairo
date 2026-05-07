@@ -1134,6 +1134,7 @@ dependencies = [
  "kairo-object",
  "kairo-statement",
  "kairo-store",
+ "kairo-test-support",
  "serde_json",
  "tempfile",
 ]
@@ -1151,6 +1152,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "gix",
+ "kairo-test-support",
  "tempfile",
 ]
 
@@ -1217,6 +1219,19 @@ dependencies = [
  "kairo-statement",
  "serde",
  "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kairo-test-support"
+version = "0.1.0"
+dependencies = [
+ "kairo-core",
+ "kairo-identity",
+ "kairo-keystore",
+ "kairo-object",
+ "kairo-statement",
+ "kairo-store",
  "tempfile",
 ]
 

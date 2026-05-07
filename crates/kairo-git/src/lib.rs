@@ -12,8 +12,6 @@
 mod cache;
 mod lock;
 mod shard;
-#[cfg(test)]
-mod test_support;
 mod transport;
 
 use std::error::Error;

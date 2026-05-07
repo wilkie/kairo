@@ -569,8 +569,8 @@ mod tests {
     use std::sync::Barrier;
     use tempfile::TempDir;
 
-    use crate::test_support::{build_pack_from, init_source_repo, skip_if_no_git};
     use crate::transport::GitCli;
+    use kairo_test_support::git::{build_pack_from, init_source_repo, skip_if_no_git};
 
     /// A real Kairo-shape ID: `z` + `Qm` + 44 base58 characters.
     /// Sharded on positions 3-4 / 5-6 → `R8` / `3z`.

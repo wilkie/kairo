@@ -343,3 +343,225 @@ Affected specs:
   `BundleGitHistory.included = true` becomes meaningful;
   default-flip path documented as future work.
 - `CLI.md` — `kairo git ...` verb tree documented.
+
+---
+
+## 10. Daemon MVP Shape
+
+Decision: the Phase 2 §2 daemon ships as a **deliberate sliver** of
+the long-term `DAEMON.md` shape — a stateful, foreground-only,
+Unix-socket-bound, read-only HTTP+JSON facade in front of
+`FilesystemStore`. Federation, executors, policy, and tasks are
+post-MVP and left as later phases.
+
+Eight sub-decisions, all locked together because they're tightly
+coupled MVP scope:
+
+1. **Process model: foreground only.** `kairo daemon start` blocks
+   in the foreground; users supervise it with systemd, launchd,
+   tmux, `nohup`, or a plain `&`. No double-fork. Shutdown on
+   `SIGTERM`/`SIGINT`. Adds zero supervision complexity to our
+   code; modern process managers are the right place for that
+   responsibility.
+
+2. **Transport: Unix domain socket only.** Socket at
+   `<store>/daemon.sock`, owned by user, mode `0600`. Filesystem
+   permissions are the only authn/authz surface in v1 — no TCP, no
+   TLS, no bearer tokens. Network exposure is a §5 web-client
+   concern.
+
+3. **OpenAPI: deferred to §5 web client work.** Likely needed
+   eventually, but the v1 daemon's only client is `kairo-cli` and
+   both sides are Rust. Hand-coded handlers for v1; pick `utoipa`
+   (or alternative) when the web-client contract crystallizes
+   the external shape.
+
+4. **API surface: ~11 read-only endpoints under `/api/v1/`.**
+   `GET /version`, `GET /status`, `GET /actors/{id}`,
+   `GET /objects/{id}`, `GET /statements/{id}`,
+   `GET /branches/{object}`, `GET /branches/{object}/{name}/latest`,
+   `GET /version-tags/{object}/{version}`,
+   `GET /trust/{by}/{of}`, `GET /capabilities/{grantor}`,
+   `GET /blobs/{id}` (streaming). No write paths in v1; CLI
+   write commands continue running direct against the store.
+
+5. **State model: stateful daemon, stateless requests.** The
+   daemon process holds a single `Arc<FilesystemStore>` opened at
+   startup and a listening socket. Each request is self-contained
+   — no per-client session state, no cursors, no long-running
+   task references. Statelessness at the request level keeps
+   crash recovery trivial (restart re-opens the store and re-binds
+   the socket); statefulness at the process level avoids the
+   cost of re-opening the store per request.
+
+6. **CLI dispatch: probe-and-fall-back.** Default behavior:
+   probe `<store>/daemon.sock` existence. If present and
+   `GET /api/v1/status` responds, route reads through the daemon.
+   Otherwise direct. Explicit overrides: `--daemon` requires
+   daemon mode (errors if unreachable); `--direct` / `--offline`
+   forces direct. Write commands stay direct regardless of mode.
+
+7. **Logging: stderr, human-readable, structured-text for v1.**
+   Format: `time level component msg`. JSON log format and
+   configurable rolling log files are known future work — the
+   shape (typed events through `tracing`) leaves room to swap
+   in a JSON subscriber later without touching call sites.
+
+8. **HTTP framework: axum + tokio.** See §11 for the two-process
+   architecture and full rationale. Daemon handlers are async;
+   blocking `FilesystemStore` calls are wrapped in
+   `tokio::task::spawn_blocking`.
+
+Rationale: every sub-decision narrows scope toward "this is the
+foundation §4/§5/§7 build on." The §6 multi-process safety work
+is the precondition that makes a stateful daemon + concurrent CLI
+direct mode safe; without it, this whole shape would race.
+
+Affected specs:
+
+- `PHASE_2.md` §2 — bullets reframed against this decision.
+- `DAEMON.md` — §5.1/§6.1 reconciled to v1 (post-MVP components
+  marked deferred); §13 transport list narrowed to Unix socket.
+- `API.md` — §3 contract-strategy section updated to note
+  OpenAPI deferral; §10–§22 endpoint groups tagged for v1
+  inclusion vs deferral.
+- `CLI.md` §3.3 — clarified that v1 daemon serves reads only;
+  write commands stay direct regardless.
+
+---
+
+## 11. Two-Process Architecture: `kairo-daemon` and `kairo-web`
+
+Decision: the daemon and the web-server are **separate processes
+in separate crates with distinct trust models**, bridged by a
+small `kairo-daemon-client` Rust crate that speaks HTTP over the
+daemon's Unix socket. The daemon framework is **`axum` + `tokio`**.
+
+### Layout
+
+```text
+kairo-daemon process                 kairo-web process
+  ├── crates/kairo-daemon              ├── crates/kairo-web (Phase 5)
+  ├── Unix socket only                 ├── TCP (browser-facing)
+  ├── /api/v1/... (axum + tokio)       ├── auth, CORS, static SPA
+  └── trusted: filesystem perms        └── translates → daemon-client
+        ↑                                    │ HTTP-over-Unix-socket
+        │                                    │
+        └────── crates/kairo-daemon-client ──┘
+                  (consumed by kairo-cli too)
+```
+
+### Trust model
+
+The daemon's trust contract is "you connected via the Unix socket,
+you're trusted." Filesystem permissions on `<store>/daemon.sock`
+(mode 0600) are the only authn/authz. Anything reaching the daemon
+has been vetted; it never sees a browser request directly.
+
+The web-server is the **public trust boundary**. It terminates TCP
+(and TLS, eventually), serves the SPA bundle, handles cookies /
+bearer tokens / OAuth, applies CORS and rate limits, validates
+browser-shaped input, and translates approved requests into
+daemon-client calls. A bug in the web-server's untrusted-input
+handling cannot compromise the daemon's address space.
+
+This is the standard pattern for systems that pair a privileged
+daemon with a public web UI: PostgreSQL + a web frontend (PostgREST
+or app server), `systemd-journald` + `systemd-journal-gatewayd`,
+many database-admin tools. The privilege separation is genuine —
+the web-server can run as a different user, in a sandbox, in a
+container, with no filesystem access except its static-asset
+directory and the daemon socket.
+
+### Crate split
+
+- **`crates/kairo-daemon`** (Phase 2 §2): the daemon binary.
+  Owns the store, listens on Unix socket, implements the §10.4
+  read endpoints. Async via tokio; HTTP via axum.
+- **`crates/kairo-daemon-client`** (Phase 2 §2): tiny Rust crate
+  that wraps HTTP-over-Unix-socket calls. Used by `kairo-cli`'s
+  daemon-mode dispatch. The same crate becomes the path Rust
+  callers (including a Rust web-server impl, if §5 picks Rust)
+  use to reach the daemon.
+- **`crates/kairo-web`** (Phase 2 §5, deferred): the web-server
+  binary. Framework choice is **separate and deferred** until
+  §5 — could be axum (sharing types with the daemon's responses),
+  could be Node, could be anything. Doesn't affect §2.
+
+### Daemon framework: axum + tokio
+
+`axum` + `tokio` is the daemon's HTTP/runtime stack. Rejected
+alternatives:
+
+- **Raw `hyper`** without a framework: still pulls in tokio (hyper
+  requires it), so we don't avoid the runtime; we just hand-roll
+  routing/middleware. Costs us code, gains nothing.
+- **Sync mini-frameworks** (`tiny_http`, `rouille`): tiny dep
+  footprint and matches the rest of the workspace's sync style,
+  but it's an ecosystem dead-end. Federation (§4) needs async
+  HTTP clients to peers; executor supervision (§7) wants async
+  process management; streaming responses want `AsyncRead`/
+  `AsyncWrite`. Adopting tokio later means rewriting handlers.
+
+Async/sync split is contained: only `kairo-daemon` and
+`kairo-daemon-client` are async. `kairo-cli`, `kairo-store`,
+`kairo-keystore`, etc. stay sync. Blocking store calls inside the
+daemon are wrapped in `tokio::task::spawn_blocking` so they don't
+stall the runtime.
+
+### CLI surface
+
+```text
+kairo daemon start | status | stop      # Phase 2 §2
+kairo web    start | status | stop      # Phase 2 §5 (deferred)
+```
+
+Symmetric verb shape; obvious which binary each manages. Each can
+be invoked in the foreground; supervisors (systemd, launchd, tmux,
+`nohup`, `&`) handle backgrounding. Future convenience verb like
+`kairo daemon start --serve-web` could in-process both for casual
+deployments — explicitly out of scope for v1.
+
+### Rationale
+
+- **Trust isolation.** Daemon never sees untrusted input. Security
+  review reduces to two narrower problems instead of one bigger
+  one. The daemon owns signing keys; the network-facing process
+  doesn't.
+- **Performance is fine.** Per-request overhead of the extra hop
+  is ~10–100µs over the Unix socket; streaming throughput cost is
+  ~20–30% but absolute speed is bounded by disk/network. Browser-
+  driven traffic is interactive, so invisible. Federation,
+  executors, and CLI all bypass the web-server entirely.
+- **Tech-stack independence for the web-server.** The web-server
+  doesn't have to be Rust. If §5 chooses Node (for SPA toolchain
+  affinity), the daemon stays Rust. The HTTP+JSON contract is the
+  only boundary.
+- **Async adoption is contained.** Tokio in the daemon now buys
+  us federation, executors, and streaming for free; rest of
+  workspace stays sync.
+
+### Reservations accepted
+
+- Two binaries to manage. Mitigated by symmetric `start|status|stop`
+  verbs and future supervisor-friendly conveniences.
+- API contract drift between daemon and web-server. Mitigated by
+  one OpenAPI doc describing both surfaces (when §5 lands); the
+  web-server is mostly a passthrough.
+- No "single binary, just run it" deployment story for v1. Could
+  be added later as `kairo daemon start --serve-web` without
+  changing the architecture.
+
+Affected specs:
+
+- `PHASE_2.md` §2 — bullets reframed; new bullets for
+  `kairo-daemon-client`, `kairo-web` deferral.
+- `PHASE_2.md` §5 — web-client section will reference this
+  decision when scope-locked.
+- `DAEMON.md` — §5.7 ApiService text aligned with Unix-socket-only
+  + axum.
+- `API.md` — §3 contract-strategy notes the two-process model;
+  §9 authentication describes the daemon (Unix-socket-perms) vs
+  web-server (TCP+auth) split.
+- `CLI.md` — `kairo daemon` and `kairo web` verb trees both
+  documented.

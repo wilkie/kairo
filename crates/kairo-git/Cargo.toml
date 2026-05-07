@@ -11,6 +11,7 @@ fs2 = "0.4"
 gix = { version = "0.66", default-features = false, features = ["max-performance-safe"] }
 
 [dev-dependencies]
+kairo-test-support = { path = "../kairo-test-support" }
 tempfile = "3"
 
 [lib]

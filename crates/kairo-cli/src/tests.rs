@@ -1679,40 +1679,7 @@ kind = "tree"
         ));
     }
 
-    /// Init a Git repo, commit a kairo.toml that matches `manifest_text`,
-    /// and return (tempdir, commit_oid).
-    fn init_git_repo_with_manifest(
-        manifest_text: &str,
-    ) -> Result<(tempfile::TempDir, String), Box<dyn std::error::Error>> {
-        use std::process::Command as Process;
-        let dir = tempfile::TempDir::new()?;
-        let run_git = |args: &[&str]| -> Result<(), Box<dyn std::error::Error>> {
-            let status = Process::new("git")
-                .current_dir(dir.path())
-                .args(args)
-                .status()?;
-            if !status.success() {
-                return Err(format!("git {args:?} failed").into());
-            }
-            Ok(())
-        };
-        run_git(&["init", "--initial-branch=main", "--quiet"])?;
-        run_git(&["config", "user.name", "Kairo Test"])?;
-        run_git(&["config", "user.email", "test@kairo.test"])?;
-        run_git(&["config", "commit.gpgsign", "false"])?;
-        std::fs::write(dir.path().join("kairo.toml"), manifest_text)?;
-        run_git(&["add", "kairo.toml"])?;
-        run_git(&["commit", "-m", "first", "--quiet"])?;
-        let output = Process::new("git")
-            .current_dir(dir.path())
-            .args(["rev-parse", "HEAD"])
-            .output()?;
-        if !output.status.success() {
-            return Err("rev-parse failed".into());
-        }
-        let oid = String::from_utf8(output.stdout)?.trim().to_owned();
-        Ok((dir, oid))
-    }
+    use kairo_test_support::git::{build_pack_from, init_git_repo_with_manifest};
 
     #[test]
     fn verify_object_with_real_git_repo_can_reach_valid(
@@ -1828,35 +1795,6 @@ kind = "tree"
             "expected cwd repo lookup, got:\n{output}"
         );
         Ok(())
-    }
-
-    /// Build a Git pack containing every commit reachable in `src`,
-    /// returning the raw bytes. Mirrors `kairo_git::test_support::
-    /// build_pack_from`, duplicated here because that helper is
-    /// crate-private.
-    fn build_pack_from(src: &std::path::Path) -> Vec<u8> {
-        use std::io::Read;
-        use std::process::Command as Process;
-        use std::process::Stdio;
-        let mut child = Process::new("git")
-            .arg("-C")
-            .arg(src)
-            .args(["pack-objects", "--all", "--stdout"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn pack-objects");
-        let mut buf = Vec::new();
-        child
-            .stdout
-            .as_mut()
-            .expect("stdout")
-            .read_to_end(&mut buf)
-            .expect("read stdout");
-        let status = child.wait().expect("wait");
-        assert!(status.success(), "pack-objects failed");
-        buf
     }
 
     /// Populate the managed Git cache under `<store>/git/` with the
