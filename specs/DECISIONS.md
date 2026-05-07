@@ -151,9 +151,9 @@ Affected specs:
 
 ---
 
-## 7. Managed Git Mirror Layout
+## 7. Managed Git Cache Layout
 
-Decision: the `~/.kairo/git/` managed mirror uses **per-Kairo-object bare
+Decision: the `~/.kairo/git/` managed cache uses **per-Kairo-object bare
 repositories sharded two levels deep, with a shared object pool referenced
 via `objects/info/alternates`**. Layout:
 
@@ -183,8 +183,8 @@ init --bare` plus an alternates line plus copying refs — effectively free
 on disk.
 
 The cost is a single point of failure: deleting `pool/` breaks every
-mirror at once. We accept that and surface it as "treat the pool as a
-load-bearing cache"; `kairo git mirror verify` can detect breakage. The
+cached repo at once. We accept that and surface it as "treat the pool
+as a load-bearing cache"; `kairo git cache verify` can detect breakage. The
 fetch dance (objects to pool, refs to per-object) is standard Git
 plumbing and is what `git clone --reference` and Forgejo/Gitea object
 storage already do.
@@ -194,17 +194,17 @@ Affected specs:
 - `STORE.md` — adds the `git/` slot to §4 layout, documents pool
   ownership semantics.
 - `PACKAGE.md` — bundle import/export ingest into / pack from the
-  mirror; `BundleGitHistory.included = true` becomes meaningful.
+  cache; `BundleGitHistory.included = true` becomes meaningful.
 - `PHASE_2.md` §1 — layout bullet marked closed against this decision.
-- `THREAT_MODEL.md` — mirror tampering detectable via Git OIDs;
+- `THREAT_MODEL.md` — cache tampering detectable via Git OIDs;
   pool-loss surfaces as cache miss, not authority loss.
 
 ---
 
-## 8. Managed Git Mirror Fetch Transport
+## 8. Managed Git Cache Fetch Transport
 
-Decision: the managed mirror fetches commits by **shelling out to the
-host's `git` binary**, structured behind a `MirrorTransport` trait so a
+Decision: the managed cache fetches commits by **shelling out to the
+host's `git` binary**, structured behind a `GitCacheTransport` trait so a
 future `gix-protocol` implementation is a localized swap.
 
 V1 invocation pattern (canonical form, normalized to bypass user
@@ -219,10 +219,10 @@ Fetches land in `~/.kairo/git/pool/objects/` (the §7 alternates pool);
 resolved refs are then mirrored into the per-object bare repo.
 
 `git ≥ 2.x` becomes a documented runtime dependency. The CLI probes
-`git --version` on first mirror operation and emits a clear error with
+`git --version` on first cache operation and emits a clear error with
 installation pointers if absent. `git` is already a test-time dependency
 across `kairo-git`, `kairo-cli`, and `kairo-bundle` test suites; this
-change makes it a runtime dep for the mirror surface (not for `verify
+change makes it a runtime dep for the cache surface (not for `verify
 object` against a cwd-discovered repo, which uses `gix` reads only).
 
 Rationale: the two options were `gix-protocol` (enable
@@ -264,8 +264,8 @@ Costs accepted, with mitigations:
 
 Future swap path: when `gix-protocol` stabilizes past 1.0 and the
 auth-helper story closes (or a long-running daemon makes fork-exec
-costs visible), add a second `MirrorTransport` impl and gate
-selection on a feature flag. The `MirrorTransport` trait surface is
+costs visible), add a second `GitCacheTransport` impl and gate
+selection on a feature flag. The `GitCacheTransport` trait surface is
 intentionally tiny — open URL, request refspec, stream pack into
 pool, return resolved OIDs — so the swap is localized.
 
@@ -275,13 +275,13 @@ Affected specs:
   this decision; writer-module bullet now references the trait
   shape.
 - `STORE.md` — `git/` runtime-dep note (`git ≥ 2.x` required for
-  mirror operations; not required for cwd-only `verify object`).
+  cache operations; not required for cwd-only `verify object`).
 
 ---
 
-## 9. Managed Git Mirror CLI and Bundle Surface
+## 9. Managed Git Cache CLI and Bundle Surface
 
-Decision: managed-mirror CLI commands live under the **`kairo git ...`**
+Decision: managed-cache CLI commands live under the **`kairo git ...`**
 verb tree, and bundles are **opt-in** to shipping Git packs via
 `kairo bundle export --include-git`.
 
@@ -289,9 +289,9 @@ CLI shape:
 
 ```text
 kairo git fetch --object <id> --remote <url> [--refspec <ref>]
-kairo git mirror status
-kairo git mirror verify          # pool integrity probe (later)
-kairo git mirror gc [--object <id>]   # paired with STORE.md §12 (later)
+kairo git cache status
+kairo git cache verify          # pool integrity probe (later)
+kairo git cache gc [--object <id>]   # paired with STORE.md §12 (later)
 ```
 
 Bundle export:
@@ -302,21 +302,21 @@ kairo bundle export <object-id> --output <path>
 kairo bundle export <object-id> --output <path> --include-git
                                    # BundleGitHistory.included = true,
                                    # ships git/<object-id>.pack from
-                                   # the §7 mirror pool
+                                   # the §7 cache pool
 ```
 
 Bundle import side always ingests a shipped `git/` subdirectory into
-the managed mirror — there is no `--ignore-git` flag; if the bundle
+the managed cache — there is no `--ignore-git` flag; if the bundle
 ships pack data, it lands in the pool.
 
 Rationale:
 
 - **`kairo git ...` matches the surface naming.** The verb tree is for
-  managing the local Git mirror that Kairo owns. `kairo mirror ...`
-  was considered but loses information (mirror of *what*?).
+  managing the local Git cache that Kairo owns. `kairo cache ...`
+  was considered but loses information (cache of *what*?).
   Folding fetch into `kairo verify object --fetch` was considered
   but conflates "verify" (read-only, idempotent) with "fetch"
-  (network I/O, mutates the mirror); keeping them as distinct verbs
+  (network I/O, mutates the cache); keeping them as distinct verbs
   preserves the read-only contract of `verify`.
 - **Opt-in `--include-git` for bundle export.** Default-off keeps
   bundle exports cheap and predictable: today's exports stay the
@@ -330,7 +330,7 @@ Rationale:
   present because (a) ingest is cheap (a copy + `git index-pack`
   into the pool that already exists), (b) ignoring shipped git data
   would create the bug where the same bundle yields a different
-  mirror state on different recipients, and (c) a recipient who
+  cache state on different recipients, and (c) a recipient who
   truly doesn't want git data should not be importing the bundle in
   the first place.
 

@@ -14,7 +14,7 @@ position where the next strategic surfaces — federation, multi-actor
 authority, and runtime/build execution — can be designed and implemented
 without rework of the core. The shortest path to that position requires:
 
-1. Closing the storage story (managed Git mirror; multi-process safety).
+1. Closing the storage story (managed Git cache; multi-process safety).
 2. Standing up the long-running services that downstream surfaces depend on
    (daemon).
 3. Doing the spec-first design work for the items the long-term system needs
@@ -27,11 +27,11 @@ one spec-first design pass** rather than attempting all twelve sections.
 
 ## Catalog
 
-### 1. `~/.kairo/git/` Managed Git Mirror
+### 1. `~/.kairo/git/` Managed Git Cache
 
 Pairs with Phase 1 §9 and §11 deferred work. The MVP's `kairo verify object`
 walks upward to find the user's working Git repo; bundles do not carry Git
-history. A managed mirror at `~/.kairo/git/` would:
+history. A managed cache at `~/.kairo/git/` would:
 
 - [x] **Layout: per-Kairo-object bare repos sharded two levels deep,
       with a shared object pool referenced via
@@ -48,40 +48,40 @@ history. A managed mirror at `~/.kairo/git/` would:
       per-object GC; plain per-object-bare duplicates Git objects
       across forks, which matters for federation/archival.
 - [x] **Fetch transport: shell out to host `git` binary, structured
-      behind a `MirrorTransport` trait.** See `DECISIONS.md` §8.
+      behind a `GitCacheTransport` trait.** See `DECISIONS.md` §8.
       V1 invocation: `git -c protocol.version=2 fetch --no-tags
       --no-write-fetch-head <url> <refspec>:refs/kairo/<object-id>/<branch>`.
-      `git ≥ 2.x` becomes a documented runtime dep for mirror
+      `git ≥ 2.x` becomes a documented runtime dep for cache
       operations (not for `verify object` against a cwd repo, which
       keeps using `gix` reads). `gix-protocol` rejected for v1 on
       hosting-compatibility, dep-weight, and API-stability grounds;
-      a future swap is a localized second `MirrorTransport` impl.
+      a future swap is a localized second `GitCacheTransport` impl.
 - [ ] Add `kairo-git` write paths (or a sibling crate) for fetching commits
       from a remote URL or from a Git pack file. Per-object bare init,
       alternates wiring, namespaced fetch into pool (via the §8
-      `MirrorTransport` shell-out), ref mirror into per-object repo,
+      `GitCacheTransport` shell-out), ref mirror into per-object repo,
       per-object advisory locking via the §6 `with_*_lock` pattern.
       Pack-file ingest path bypasses transport: copy/index pack
       bytes directly into pool.
-- [ ] Teach `verify object` to consult the managed mirror as the
+- [ ] Teach `verify object` to consult the managed cache as the
       first-tried source for `git:sha256:` revisions, with the
       cwd-discovered repo as fallback so existing "I cloned the
       source, just verify it" workflows keep working. Optional
-      `--no-cwd-repo` for mirror-only verification (will matter when
+      `--no-cwd-repo` for cache-only verification (will matter when
       §2 daemon is the verifier).
 - [ ] Bundle integration: import-side always ingests a shipped
-      `git/` subdirectory into the §7 mirror pool; export-side adds
+      `git/` subdirectory into the §7 cache pool; export-side adds
       `kairo bundle export --include-git` opt-in flag that packs
-      relevant commits from the mirror and flips
+      relevant commits from the cache and flips
       `BundleGitHistory.included = true`. Default-off; default-on
       flip is deferred future work (see `DECISIONS.md` §9). Import
       and export sides can land independently.
 - [x] **CLI shape: `kairo git ...` verb tree.** See `DECISIONS.md` §9.
       First slice: `kairo git fetch --object <id> --remote <url>
-      [--refspec <ref>]` and `kairo git mirror status`. Later:
-      `kairo git mirror verify` (pool integrity probe) and
-      `kairo git mirror gc [--object <id>]` (paired with `STORE.md`
-      §12 GC work). `kairo mirror ...` and folding into
+      [--refspec <ref>]` and `kairo git cache status`. Later:
+      `kairo git cache verify` (pool integrity probe) and
+      `kairo git cache gc [--object <id>]` (paired with `STORE.md`
+      §12 GC work). `kairo cache ...` and folding into
       `kairo verify object --fetch` were both rejected to preserve
       naming clarity and the read-only contract of `verify`.
 - [ ] Update `STORE.md` §4 with the `git/` slot and pool ownership
@@ -173,7 +173,7 @@ turns the spec into something a Kairo node can actually do.
 **Why it matters:** validates the entire bundle + trust design under real
 multi-node use; surfaces wrinkles before users hit them.
 
-**Depends on:** §1 (Git mirror) for serving Git data, §2 (daemon) for
+**Depends on:** §1 (Git cache) for serving Git data, §2 (daemon) for
 running federation as a service, possibly §3 (capability model) for
 cross-actor authority during sync.
 
@@ -361,7 +361,7 @@ deferred bullet in `CAPABILITIES.md` §8.
 Deferred from Phase 1 §9 (`specs/PACKAGE.md` "MVP slice").
 
 - [ ] Optional `git/` subdirectory in bundles + import side ingestion into
-      the §1 managed mirror (paired work).
+      the §1 managed cache (paired work).
 - [ ] Tar/zip archive transport (`*.kairo.tar` per `specs/PACKAGE.md` §5.2).
 - [ ] Deterministic export (`specs/PACKAGE.md` §17).
 - [ ] Snapshot-closure bundle type (`specs/PACKAGE.md` §4.2).
@@ -856,7 +856,7 @@ detection comes too late.
 Once Phase 2 picks and lands a focused slice from the catalog, the natural
 follow-ups depend on which slice was chosen. Sketches:
 
-- **If Phase 2 = Git mirror + daemon + capability model:** the path to
+- **If Phase 2 = Git cache + daemon + capability model:** the path to
   Phase 3 is *federation made real* — sync between two daemons, opt-in
   trust propagation, distributed snapshot resolution. Web client and
   build/run execution become tractable on top.
@@ -873,7 +873,7 @@ Recurring themes that will keep showing up in any Phase 3+ direction:
 - **Capability model load-bearing.** Several Phase 2 items (federation
   policy, cross-actor branch/tag supersedes, build executor scoping) are
   blocked by it. The longer it's deferred, the more workarounds accumulate.
-- **`~/.kairo/git/` managed mirror is a federation precondition.** Bundles
+- **`~/.kairo/git/` managed cache is a federation precondition.** Bundles
   that aren't self-contained limit federation to "you also need to share
   the Git URL" — workable for collaborators on one forge, weak for
   archival.

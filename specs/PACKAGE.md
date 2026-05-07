@@ -33,7 +33,7 @@ strict subset of this spec:
   [...] }`); recipients must obtain those commits separately to reach
   end-to-end `VALID`. A future bundle version flips
   `git_history.included = true`, adds a `git/` subdirectory carrying
-  the Git pack, and ingests it into a `~/.kairo/git/` managed mirror
+  the Git pack, and ingests it into a `~/.kairo/git/` managed cache
   on import.
 - **No bundle-level signature** (§24). Every signed statement inside
   is independently verifiable on its own bytes; the manifest is an
