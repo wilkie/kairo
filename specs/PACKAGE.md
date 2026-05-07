@@ -27,14 +27,18 @@ strict subset of this spec:
 - **Directory format only** (§5.1). Tar, gzip, and the deterministic
   rules in §17 are not implemented; users tar/compress the directory
   with their own tooling if they need single-file transport.
-- **No Git history in the bundle.** The manifest declares the Git
-  commit ids the bundle's `ObjectRevision` statements name in a new
-  `git_history` field (`{ "included": false, "expected_commits":
-  [...] }`); recipients must obtain those commits separately to reach
-  end-to-end `VALID`. A future bundle version flips
-  `git_history.included = true`, adds a `git/` subdirectory carrying
-  the Git pack, and ingests it into a `~/.kairo/git/` managed cache
-  on import.
+- **Git history is opt-in via `--include-git`.** The manifest carries
+  a `git_history` field (`{ "included": <bool>, "expected_commits":
+  [<oid>...] }`). Default-off keeps bundles cheap and predictable.
+  When `kairo bundle export --include-git` is set, `included = true`,
+  a `git/` subdirectory ships pack data
+  (`<bundle>/git/<object-id>.pack`), and bundle import streams those
+  packs into the recipient's managed Git cache (`~/.kairo/git/`,
+  see `STORE.md` §4 and `DECISIONS.md` §7–§9). After import, the
+  recipient can run `kairo verify object` against `expected_commits`
+  without an external Git repo or working tree. Default-on flip is
+  deferred future work; for now, default-off is the safe shipping
+  shape.
 - **No bundle-level signature** (§24). Every signed statement inside
   is independently verifiable on its own bytes; the manifest is an
   inventory, not an authority claim.
@@ -291,6 +295,9 @@ blobs/
     <prefix>/
       <hash>
 
+git/
+  <object_id>.pack
+
 artifacts/
   <artifact_id>.json
 
@@ -309,7 +316,64 @@ provenance/
   package.json
 ```
 
-Only `manifest.json` is always required. Other directories appear as needed.
+Only `manifest.json` is always required. Other directories appear as
+needed. `git/` is present iff `manifest.git_history.included = true`
+(see §6.1).
+
+### 6.1 Git history (`git/`)
+
+When a package wants to be self-contained for `kairo verify object`,
+it ships Git pack data alongside the statement records. One pack
+file per Kairo object whose revisions reference Git commits:
+
+```text
+git/<object-id>.pack
+```
+
+Each pack contains every commit/tree/blob reachable from that
+object's per-cache refs at export time, generated via
+`git pack-objects --all --stdout` against the exporter's managed
+cache (`~/.kairo/git/<XX>/<YY>/<object-id>/`, see `STORE.md` §4).
+The `manifest.git_history` field reflects the shipped state:
+
+```json
+{
+  "git_history": {
+    "included": true,
+    "expected_commits": ["<hex-oid-1>", "<hex-oid-2>", ...]
+  }
+}
+```
+
+`expected_commits` is auto-derived from every `ObjectRevision`'s
+`git:sha256:<oid>` in the bundle, regardless of whether
+`included` is true; it serves as a manifest of which commits the
+bundle expects to reach for end-to-end VALID. Recipients may use
+it to fetch missing commits from elsewhere when `included = false`.
+
+**Import semantics.** When `included = true`, bundle import streams
+each `git/<object-id>.pack` into the recipient's
+`~/.kairo/git/pool/objects/` via `git index-pack --stdin`, then
+pins every `expected_commits` OID under the matching per-object
+cache repo as `refs/kairo/imported/<oid>`. The pinned refs keep
+those OIDs alive against future cache GC and surface them in
+`kairo git cache status`. After import, the recipient's
+`kairo verify object` reaches the cached commits via the §6.1
+cache-first precedence in `STORE.md` §4 / `PHASE_2.md` §1, with
+no external Git repo required.
+
+**Streaming end-to-end.** Both export and import flow pack bytes
+through `File ↔ child process stdio` via `std::io::copy`; pack
+data is never materialized in memory. This is the canonical shape
+for any future package format that ships large byte streams (see
+`feedback_streaming_first.md` notes).
+
+**Bundle types and `git/`.** Object packages (§4.1) use
+`git/<root-object-id>.pack`. Snapshot-closure (§4.2),
+archive-mirror (§4.3), and execution-record (§4.4) packages may
+extend the `git/` subdirectory with one pack per object in their
+closure when those types land; the layout convention is per-object
+filename throughout.
 
 ---
 

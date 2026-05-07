@@ -142,6 +142,16 @@ characters from the record id's base58 payload:
   keys/<actor-id>.json                   # FilesystemKeystore (mode 0600
                                          # on Unix; not part of the store
                                          # crate proper)
+  git/                                   # managed Git cache
+    pool/                                # shared bare repo: holds every
+      objects/                           #   commit/tree/blob, content-
+                                         #   addressed; deduplicated across
+                                         #   forked Kairo objects via
+                                         #   alternates
+    <XX>/<YY>/<object-id>/               # per-Kairo-object bare repo
+      objects/info/alternates            #   → ../../../pool/objects
+      refs/heads/<branch>                #   set by `kairo git fetch`
+      refs/kairo/imported/<oid>          #   set by bundle import
 ```
 
 Sharding (2 levels of 2 base58 chars from positions 3–4 and 5–6 of the
@@ -157,6 +167,42 @@ them consistent.
 Snapshots are not stored in the MVP — `kairo snapshot compute` derives
 a `SnapshotId` on demand from the resolved frontier; closure caching
 is future work.
+
+#### Managed Git cache (`git/`)
+
+The `git/` subtree is a **load-bearing cache**, not authoritative
+storage. It exists so `kairo verify object` can resolve `git:sha256:`
+revisions without depending on a working tree, and so federated
+bundles can ship Git history alongside their statements. See
+`specs/DECISIONS.md` §7–§9 for the locked design.
+
+- **`pool/`**: a single bare Git repo whose `objects/` directory
+  holds every Git object (commit/tree/blob) the cache has ingested.
+  Each object lives once regardless of how many Kairo objects
+  reference it — forked Kairo objects share Git history with no disk
+  duplication. Pool fetches/ingests serialize on `pool.lock`.
+- **`<XX>/<YY>/<object-id>/`**: a per-Kairo-object bare repo whose
+  `objects/info/alternates` points at `pool/objects/`. Refs and
+  locking are per-object; `git ≥ 2.x` reads transparently see the
+  pool. Two unrelated objects' fetches don't block each other.
+- **Refs**: `refs/heads/<branch>` is set by `kairo git fetch` (one
+  per fetched branch); `refs/kairo/imported/<oid>` is set by
+  `kairo bundle import` for every commit OID a bundle's manifest
+  named in `expected_commits` (one per OID). Both kinds appear in
+  `kairo git cache status`.
+- **Cache vs authoritative.** The pool is treated as recoverable —
+  losing it forces a re-fetch but loses no Kairo statements, no
+  signatures, and no signed history. Per-object directories are
+  similarly disposable. Operators MAY delete `git/` to reclaim disk;
+  subsequent verify-object runs that miss the cache will fall back
+  to cwd-discovered repos, and bundle re-import re-populates.
+- **Runtime dep.** Cache operations (init, fetch, ingest, ref-write)
+  shell out to the host's `git` binary per `DECISIONS.md` §8. Verify
+  against a cwd-discovered repo, and verify with `--no-cache`, do
+  not require `git` on PATH — they go through `gix` reads only.
+
+The `~/.kairo/git/pool.lock`, `~/.kairo/git/<XX>/<YY>/<object-id>.lock`
+sidecar files are `flock(2)` subjects per `PHASE_2.md` §6.
 
 ---
 

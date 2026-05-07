@@ -29,9 +29,13 @@ one spec-first design pass** rather than attempting all twelve sections.
 
 ### 1. `~/.kairo/git/` Managed Git Cache
 
-Pairs with Phase 1 §9 and §11 deferred work. The MVP's `kairo verify object`
-walks upward to find the user's working Git repo; bundles do not carry Git
-history. A managed cache at `~/.kairo/git/` would:
+**Status: closed.** Bundles can now ship Git history end-to-end:
+exporter packs from the cache via `kairo bundle export --include-git`,
+recipient streams `git/<object-id>.pack` into their own cache via
+`kairo bundle import`, and `kairo verify object` resolves
+`git:sha256:` revisions through the cache without needing a working
+tree. See `DECISIONS.md` §7–§9 for the locked design and `STORE.md`
+§4 / `PACKAGE.md` §6.1 for the on-disk shape.
 
 - [x] **Layout: per-Kairo-object bare repos sharded two levels deep,
       with a shared object pool referenced via
@@ -56,40 +60,59 @@ history. A managed cache at `~/.kairo/git/` would:
       keeps using `gix` reads). `gix-protocol` rejected for v1 on
       hosting-compatibility, dep-weight, and API-stability grounds;
       a future swap is a localized second `GitCacheTransport` impl.
-- [ ] Add `kairo-git` write paths (or a sibling crate) for fetching commits
-      from a remote URL or from a Git pack file. Per-object bare init,
-      alternates wiring, namespaced fetch into pool (via the §8
-      `GitCacheTransport` shell-out), ref mirror into per-object repo,
-      per-object advisory locking via the §6 `with_*_lock` pattern.
-      Pack-file ingest path bypasses transport: copy/index pack
-      bytes directly into pool.
-- [ ] Teach `verify object` to consult the managed cache as the
-      first-tried source for `git:sha256:` revisions, with the
-      cwd-discovered repo as fallback so existing "I cloned the
-      source, just verify it" workflows keep working. Optional
-      `--no-cwd-repo` for cache-only verification (will matter when
-      §2 daemon is the verifier).
-- [ ] Bundle integration: import-side always ingests a shipped
-      `git/` subdirectory into the §7 cache pool; export-side adds
-      `kairo bundle export --include-git` opt-in flag that packs
-      relevant commits from the cache and flips
-      `BundleGitHistory.included = true`. Default-off; default-on
-      flip is deferred future work (see `DECISIONS.md` §9). Import
-      and export sides can land independently.
+- [x] **`kairo-git` writer module.** `GitCache` in
+      `crates/kairo-git/src/cache.rs` provides `open`, `path_for`,
+      `ensure_repo` (per-object bare init + alternates wiring),
+      `has_commit`, `fetch` (orchestrates pool fetch under pool
+      lock + ref-mirror under per-object lock via the
+      `GitCacheTransport` shell-out), `ingest_pack_from(impl Read)`
+      (streams to `git index-pack --stdin`), `pack_for_object_to(_,
+      impl Write)` (streams from `git pack-objects --stdout`), and
+      `set_ref`. Streaming primitives drain stderr in worker
+      threads to avoid pipe-buffer deadlock; `Vec<u8>`-returning
+      wrappers exist for tests and small callers.
+- [x] **`verify object` cache integration.** `kairo verify object`
+      now consults the managed cache as the first-tried source for
+      `git:sha256:` revisions, with cwd-discovery as fallback. New
+      flags `--no-cache` (skip cache, force cwd) and `--no-cwd-repo`
+      (skip cwd discovery, cache-only — the federation/daemon
+      mode). Output adds a `commit lookup: ...` diagnostic line
+      so the operator can tell which source served the verify.
+      `--json` shape unchanged in this slice.
+- [x] **Bundle integration.** Export-side
+      `kairo bundle export --include-git` packs commits from the
+      cache via streaming and writes `<bundle>/git/<object-id>.pack`;
+      manifest's `git_history.included` flips to `true`. Import-side
+      detects shipped `git/` packs, streams each into the
+      recipient's cache via `ingest_pack_from`, and pins every
+      `expected_commits` OID as `refs/kairo/imported/<oid>` in the
+      matching per-object repo. End-to-end roundtrip verified by
+      `kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo`:
+      a recipient with no working tree reaches `VALID` against
+      a federated bundle. Default-on flip remains deferred future
+      work.
 - [x] **CLI shape: `kairo git ...` verb tree.** See `DECISIONS.md` §9.
-      First slice: `kairo git fetch --object <id> --remote <url>
-      [--refspec <ref>]` and `kairo git cache status`. Later:
+      Shipped: `kairo git fetch --object <id> --remote <url>
+      [--branch <name>]` and `kairo git cache status`. Later:
       `kairo git cache verify` (pool integrity probe) and
       `kairo git cache gc [--object <id>]` (paired with `STORE.md`
       §12 GC work). `kairo cache ...` and folding into
       `kairo verify object --fetch` were both rejected to preserve
       naming clarity and the read-only contract of `verify`.
-- [ ] Update `STORE.md` §4 with the `git/` slot and pool ownership
-      semantics; update `PACKAGE.md` with the bundle git-history
-      flow; add the threat-model paragraph noted in `DECISIONS.md` §7.
+- [x] **Spec sweeps.** `STORE.md` §4 documents the `git/` layout
+      (pool + sharded per-object repos with alternates, pool/per-
+      object lock files, cache-vs-authoritative semantics).
+      `PACKAGE.md` §6.1 documents the bundle git-history flow
+      (export packs, import streams, ref-pinning, streaming
+      end-to-end). `THREAT_MODEL.md` §5.16 covers cache tampering
+      (Git's content-addressing inherits all the fixity defenses;
+      pool loss is a cache miss, not authority loss).
 
-**Why it matters:** unblocks self-contained bundles; required by federation
-to serve Git data without depending on the user's working tree.
+**Why it matters (now realized):** self-contained bundles ship and
+import end-to-end; `kairo verify object` no longer requires a cwd
+repo when the cache or a federated bundle has the commits. Future
+federation (§4) builds on these primitives without re-deriving
+them.
 
 ### 2. Daemon
 

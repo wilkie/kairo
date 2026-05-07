@@ -307,6 +307,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | The verification report distinguishes `Invalid` (rule was checked and failed) from `Indeterminate` (predecessor data is missing) and from `ResolverUnavailable` (transient). Trust is per-truster; a node can choose not to federate from peers that consistently produce Indeterminate. Multi-peer redundancy is the operational defense — out of scope for v1. |
 | **Residual risk** | If the operator only federates from one peer, that peer's selective withholding is undetectable from the protocol. Future federation work (`PHASE_2.md` §4) addresses multi-peer reconciliation. |
 
+### 5.16 Tampering with the managed Git cache
+
+| | |
+|---|---|
+| **Adversary** | §4.7 (hostile local environment), §4.2 / §4.6 (malicious peer shipping a tampered bundle pack) |
+| **Attack** | An attacker modifies bytes inside `~/.kairo/git/pool/objects/`, swaps a per-object repo's refs to point at a forged commit, or ships a bundle whose `git/<object-id>.pack` contains commits whose contents diverge from their declared OIDs. Goal: have `kairo verify object` resolve `git:sha256:<oid>` to attacker-chosen tree/blob bytes. |
+| **Mechanism** | Git's object database is itself content-addressed: every commit, tree, and blob is named by the SHA-1 (or SHA-256, depending on backend) of its serialized contents. `git index-pack` (run by `GitCache::ingest_pack_from`) refuses packs whose declared OIDs don't match their bytes — bundle-shipped tampering fails at ingest time, not at verify time. Once an object is in the pool, gix's reads (used by `kairo verify object`'s content-layer check) re-verify the digest as part of object decode, so a post-ingest byte flip surfaces as a structured error rather than a silent VALID. Refs (`refs/heads/<branch>`, `refs/kairo/imported/<oid>`) are pointers to OIDs; pointing one at a forged OID requires the forged OID to already exist in the object DB, which the content-addressing prevents. The cache layer adds nothing on top of Git's existing fixity story — it just inherits it. |
+| **Residual risk** | A SHA-1 pre-image attack would break the underlying assumption (Git is migrating to SHA-256 to address this; out of scope for v1). Catastrophic pool corruption (e.g., `rm -rf pool/`) is not an attack but a cache miss: the per-object repos report errors via alternates and verify-object falls back to cwd discovery or reports `INDETERMINATE` if `--no-cwd-repo` is set. The cache is **not authoritative storage** — losing it never affects signed Kairo statements, only the ability to resolve `git:sha256:` revisions locally. See `STORE.md` §4 and `DECISIONS.md` §7 for the cache-vs-storage boundary. |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by
