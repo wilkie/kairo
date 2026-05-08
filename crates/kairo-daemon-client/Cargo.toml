@@ -10,12 +10,16 @@ repository.workspace = true
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+kairo-identity = { path = "../kairo-identity" }
+kairo-statement = { path = "../kairo-statement" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["net", "time"] }
 
 [dev-dependencies]
+kairo-core = { path = "../kairo-core" }
 kairo-daemon = { path = "../kairo-daemon" }
+kairo-test-support = { path = "../kairo-test-support" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 

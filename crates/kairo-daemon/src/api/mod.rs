@@ -13,6 +13,7 @@ pub mod dto;
 pub mod envelope;
 pub mod handlers;
 pub mod state;
+pub(crate) mod store_errors;
 
 pub use state::AppState;
 
@@ -25,6 +26,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/version", get(handlers::version::handler))
         .route("/api/v1/status", get(handlers::status::handler))
+        .route("/api/v1/actors/:id", get(handlers::actors::handler))
+        .route("/api/v1/objects/:id", get(handlers::objects::handler))
+        .route(
+            "/api/v1/statements/:id",
+            get(handlers::statements::handler),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

@@ -25,7 +25,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use http_body_util as _;
 #[cfg(test)]
-use serde_json as _;
+use kairo_test_support as _;
 #[cfg(test)]
 use tempfile as _;
 

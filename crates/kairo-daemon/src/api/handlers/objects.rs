@@ -1,0 +1,30 @@
+//! `GET /api/v1/objects/{object_id}` — returns the object's
+//! genesis statement JSON.
+
+use axum::extract::{Path, State};
+use kairo_core::ObjectId;
+use kairo_statement::json::ObjectGenesisStatementJson;
+use kairo_store::ObjectStore;
+
+use crate::api::envelope::{ApiError, ApiResult};
+use crate::api::state::AppState;
+use crate::api::store_errors::map_store_error;
+
+pub async fn handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<ApiResult<ObjectGenesisStatementJson>, ApiError> {
+    let object_id: ObjectId = id
+        .parse()
+        .map_err(|error| ApiError::bad_request(format!("invalid object id {id:?}: {error}")))?;
+
+    let store = state.store.clone();
+    let statement = tokio::task::spawn_blocking(move || store.get_object_genesis(&object_id))
+        .await
+        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+        .map_err(|error| map_store_error(error, "get_object_genesis"))?;
+
+    Ok(ApiResult(ObjectGenesisStatementJson::from_statement(
+        &statement,
+    )))
+}

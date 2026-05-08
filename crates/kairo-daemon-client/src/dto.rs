@@ -11,6 +11,21 @@
 
 use serde::{Deserialize, Serialize};
 
+// Re-export the canonical JSON wrapper types from upstream so
+// callers don't need to depend on `kairo-identity` /
+// `kairo-statement` directly. The wire format matches what the
+// daemon serves in the success envelope's `result` field.
+pub use kairo_identity::json::ActorGenesisJson;
+pub use kairo_statement::json::ObjectGenesisStatementJson;
+
+/// Polymorphic statement payload: any signed statement variant
+/// the store keeps under `statements/`. The kind discriminator
+/// is inside the JSON (each `*StatementJson` shape has a `body`
+/// with a tagged kind), so callers either match on the embedded
+/// type field or feed the bytes back into `serde_json::from_value`
+/// against the typed shape they expect.
+pub type StatementValue = serde_json::Value;
+
 /// Response body for `GET /api/v1/version`.
 ///
 /// All four fields are crate-version strings (semver), drawn

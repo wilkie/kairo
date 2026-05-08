@@ -21,7 +21,7 @@ use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::dto::{StatusInfo, VersionInfo};
+use crate::dto::{ActorGenesisJson, ObjectGenesisStatementJson, StatementValue, StatusInfo, VersionInfo};
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};
 
@@ -89,6 +89,30 @@ impl Client {
     /// `GET /api/v1/status`.
     pub async fn status(&self) -> ClientResult<StatusInfo> {
         self.get_json("/api/v1/status").await
+    }
+
+    /// `GET /api/v1/actors/{actor_id}` — returns the actor's
+    /// genesis JSON. The `id` is appended verbatim; the daemon
+    /// returns 400 (`bad_request`) for shape-invalid IDs and 404
+    /// (`not_found`) when the actor is absent from the store.
+    pub async fn actor(&self, actor_id: &str) -> ClientResult<ActorGenesisJson> {
+        self.get_json(&format!("/api/v1/actors/{actor_id}")).await
+    }
+
+    /// `GET /api/v1/objects/{object_id}` — returns the object's
+    /// genesis statement JSON.
+    pub async fn object(&self, object_id: &str) -> ClientResult<ObjectGenesisStatementJson> {
+        self.get_json(&format!("/api/v1/objects/{object_id}"))
+            .await
+    }
+
+    /// `GET /api/v1/statements/{statement_id}` — returns the
+    /// statement's JSON envelope by id, polymorphic across
+    /// statement kinds. The kind discriminator is inside the
+    /// returned value.
+    pub async fn statement(&self, statement_id: &str) -> ClientResult<StatementValue> {
+        self.get_json(&format!("/api/v1/statements/{statement_id}"))
+            .await
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> ClientResult<T> {

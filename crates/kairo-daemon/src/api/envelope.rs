@@ -75,6 +75,14 @@ impl ApiError {
         }
     }
 
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: ApiErrorCode::BadRequest,
+            message: message.into(),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -120,13 +128,12 @@ struct ErrorBody {
     message: String,
 }
 
-/// Wire-stable error codes (subset of `specs/API.md` §8). Slice
-/// 2 needs only `not_found`, `store_error`, and `internal_error`;
-/// later slices add the rest as the surfaces that produce them
-/// land.
+/// Wire-stable error codes (subset of `specs/API.md` §8). Later
+/// slices add codes as the surfaces that produce them land.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub enum ApiErrorCode {
+    BadRequest,
     NotFound,
     StoreError,
     InternalError,
@@ -135,6 +142,7 @@ pub enum ApiErrorCode {
 impl ApiErrorCode {
     fn as_str(self) -> &'static str {
         match self {
+            Self::BadRequest => "bad_request",
             Self::NotFound => "not_found",
             Self::StoreError => "store_error",
             Self::InternalError => "internal_error",

@@ -514,6 +514,21 @@ impl FilesystemStore {
         &self.root
     }
 
+    /// Read the raw JSON bytes for the statement with id `id`,
+    /// without dispatching to the typed `get_*` getter for its
+    /// kind. Used by the daemon's polymorphic
+    /// `GET /api/v1/statements/{id}` route, where the on-disk
+    /// JSON is the wire format and the response just streams
+    /// it back inside the success envelope.
+    ///
+    /// Does not validate the file's hash matches `id` — fixity
+    /// re-derivation belongs in the typed getters that decode
+    /// the body. Callers that want fixity should prefer those.
+    pub fn get_statement_bytes(&self, id: &StatementId) -> Result<Vec<u8>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        read_or_missing(&path)
+    }
+
     fn shard_path(&self, type_dir: &str, id: &str, suffix: &str) -> Result<PathBuf, StoreError> {
         shard::shard_path(&self.root, type_dir, id, suffix).map_err(|error| {
             StoreError::Unavailable(io::Error::new(

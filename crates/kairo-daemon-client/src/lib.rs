@@ -23,7 +23,11 @@
 // dev-deps are visible to the lib's unit-test target; shim the
 // ones used only by integration tests under `tests/`.
 #[cfg(test)]
+use kairo_core as _;
+#[cfg(test)]
 use kairo_daemon as _;
+#[cfg(test)]
+use kairo_test_support as _;
 #[cfg(test)]
 use tempfile as _;
 

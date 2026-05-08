@@ -19,8 +19,11 @@ use hyper as _;
 use hyper_util as _;
 use kairo_core as _;
 use kairo_daemon_client as _;
+use kairo_identity as _;
+use kairo_statement as _;
 use kairo_store as _;
 use serde as _;
+use serde_json as _;
 use tower as _;
 use tower_http as _;
 use tracing_subscriber as _;
@@ -28,7 +31,7 @@ use tracing_subscriber as _;
 #[cfg(test)]
 use http_body_util as _;
 #[cfg(test)]
-use serde_json as _;
+use kairo_test_support as _;
 #[cfg(test)]
 use tempfile as _;
 
