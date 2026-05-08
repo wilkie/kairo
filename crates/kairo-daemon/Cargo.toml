@@ -11,6 +11,7 @@ axum = "0.7"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "server-graceful", "http1", "tokio"] }
 kairo-core = { path = "../kairo-core" }
+kairo-daemon-client = { path = "../kairo-daemon-client" }
 kairo-store = { path = "../kairo-store" }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal", "sync", "io-util", "time"] }

@@ -1387,6 +1387,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "kairo-core",
+ "kairo-daemon-client",
  "kairo-store",
  "serde",
  "serde_json",
@@ -1401,6 +1402,16 @@ dependencies = [
 [[package]]
 name = "kairo-daemon-client"
 version = "0.1.0"
+dependencies = [
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "kairo-daemon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "kairo-git"

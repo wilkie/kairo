@@ -9,6 +9,7 @@
 // reference directly.
 use axum as _;
 use kairo_core as _;
+use kairo_daemon_client as _;
 use kairo_store as _;
 use serde as _;
 use tower as _;
