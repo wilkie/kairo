@@ -54,6 +54,10 @@ pub fn router(state: AppState) -> Router {
             get(handlers::capabilities::list_from_handler),
         )
         .route("/api/v1/blobs/:id", get(handlers::blobs::handler))
+        .route(
+            "/api/v1/verify-object/:id",
+            get(handlers::verify_object::handler),
+        )
         .route("/api/v1/openapi.json", get(openapi::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

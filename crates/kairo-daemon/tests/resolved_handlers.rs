@@ -7,6 +7,7 @@
 
 use axum as _;
 use kairo_daemon_client as _;
+use kairo_object as _;
 use kairo_store as _;
 use serde as _;
 use tempfile as _;

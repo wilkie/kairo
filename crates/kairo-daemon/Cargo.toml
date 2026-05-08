@@ -13,6 +13,7 @@ hyper-util = { version = "0.1", features = ["server", "server-auto", "server-gra
 kairo-core = { path = "../kairo-core" }
 kairo-daemon-client = { path = "../kairo-daemon-client" }
 kairo-identity = { path = "../kairo-identity" }
+kairo-object = { path = "../kairo-object" }
 kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
 serde_json = "1"

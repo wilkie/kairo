@@ -24,7 +24,7 @@ use tokio::time::timeout;
 use crate::dto::{
     ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
     ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
-    StatementValue, StatusInfo, VersionInfo,
+    StatementValue, StatusInfo, ValidationResult, VersionInfo,
 };
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};
@@ -187,6 +187,17 @@ impl Client {
         grantor: &str,
     ) -> ClientResult<Vec<CapabilityHeadDto>> {
         self.get_json(&format!("/api/v1/capabilities/{grantor}"))
+            .await
+    }
+
+    /// `GET /api/v1/verify-object/{object_id}` — verify the
+    /// object's statement-layer state and return a structured
+    /// [`ValidationResult`]. The daemon does not consult
+    /// manifests or Git; the resulting `status` is
+    /// `Indeterminate` for objects with revisions because the
+    /// content layer is unprovable server-side.
+    pub async fn verify_object(&self, object_id: &str) -> ClientResult<ValidationResult> {
+        self.get_json(&format!("/api/v1/verify-object/{object_id}"))
             .await
     }
 

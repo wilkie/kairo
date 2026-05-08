@@ -6,5 +6,6 @@ pub mod objects;
 pub mod statements;
 pub mod status;
 pub mod trust;
+pub mod verify_object;
 pub mod version;
 pub mod version_tags;

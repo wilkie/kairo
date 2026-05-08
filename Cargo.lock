@@ -1400,6 +1400,7 @@ dependencies = [
  "kairo-core",
  "kairo-daemon-client",
  "kairo-identity",
+ "kairo-object",
  "kairo-statement",
  "kairo-store",
  "kairo-test-support",

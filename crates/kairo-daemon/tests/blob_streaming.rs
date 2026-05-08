@@ -7,6 +7,7 @@
 use axum as _;
 use kairo_daemon_client as _;
 use kairo_identity as _;
+use kairo_object as _;
 use kairo_statement as _;
 use serde as _;
 use serde_json as _;

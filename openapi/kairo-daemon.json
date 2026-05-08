@@ -360,6 +360,43 @@
         }
       }
     },
+    "/api/v1/verify-object/{id}": {
+      "get": {
+        "tags": [
+          "verify"
+        ],
+        "operationId": "verifyObject",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verification result. Status is the worst-of-fold across all checks; issues list explains every contributing finding.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id"
+          },
+          "404": {
+            "description": "Object genesis not found"
+          }
+        }
+      }
+    },
     "/api/v1/version": {
       "get": {
         "tags": [
@@ -1017,6 +1054,96 @@
           }
         }
       },
+      "ValidationIssue": {
+        "type": "object",
+        "description": "One concrete finding from a `verify-object` run.\n\n`kind` is a wire-stable identifier callers can switch on;\n`message` is a human-readable explanation. `statement_id` and\n`actor_id` are populated when the issue refers to a specific\nstatement / actor; `details` is reserved for future structured\npayloads (mirroring `specs/API.md` §28's open-ended `details`\nfield). Daemon v1 always emits `details` as an empty object.",
+        "required": [
+          "kind",
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "actor_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "details": {
+            "type": "object"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/ValidationIssueSeverity"
+          },
+          "statement_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ValidationIssueSeverity": {
+        "type": "string",
+        "description": "Severity of a single validation issue (`specs/API.md` §28).",
+        "enum": [
+          "info",
+          "warning",
+          "error"
+        ]
+      },
+      "ValidationResult": {
+        "type": "object",
+        "description": "Response body for `GET /api/v1/verify-object/{id}`.\n\nCombines the worst-of-fold `status` with the underlying issue\nlist. The genesis statement is identified by `object_id`\nitself (the object id is the genesis's content address); the\nrevision / branch fields are populated when a head branch tip\ncould be resolved. Daemon v1 cannot prove `valid` for objects\nwith revisions because it lacks closure data (manifest, Git\ncommit) — the practical outcomes are `valid` (genesis-only)\nand `indeterminate` (signature verifies, content layer\nunprovable). `invalid` lights up when a check fails outright.",
+        "required": [
+          "object_id",
+          "status",
+          "issues"
+        ],
+        "properties": {
+          "branch_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            }
+          },
+          "object_id": {
+            "type": "string"
+          },
+          "revision_statement_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ValidationStatus"
+          }
+        }
+      },
+      "ValidationStatus": {
+        "type": "string",
+        "description": "Validation status summarizing a `verify-object` result.\n\nMirrors `specs/WEB_CLIENT.md` §10. Daemon v1 emits `valid`,\n`invalid`, and `indeterminate`; `conflicted` (multi-actor\ndisagreement) and `unverified` (caller-skipped) are reserved\nfor future use so the wire enum is stable.",
+        "enum": [
+          "valid",
+          "invalid",
+          "conflicted",
+          "indeterminate",
+          "unverified"
+        ]
+      },
       "VersionInfo": {
         "type": "object",
         "description": "Response body for `GET /api/v1/version`.\n\nAll four fields are crate-version strings (semver), drawn\nfrom the corresponding `Cargo.toml` package versions at\nbuild time. `api_version` is the URL-prefix version, not a\ncrate version.",
@@ -1079,6 +1206,10 @@
     {
       "name": "blobs",
       "description": "Raw blob streaming"
+    },
+    {
+      "name": "verify",
+      "description": "Object verification"
     }
   ]
 }
