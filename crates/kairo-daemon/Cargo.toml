@@ -1,0 +1,23 @@
+[package]
+name = "kairo-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[lib]
+name = "kairo_daemon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kairo-daemon"
+path = "src/main.rs"
+
+[lints]
+workspace = true

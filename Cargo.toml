@@ -9,6 +9,8 @@ members = [
     "crates/kairo-git",
     "crates/kairo-bundle",
     "crates/kairo-cli",
+    "crates/kairo-daemon",
+    "crates/kairo-daemon-client",
     "crates/kairo-test-support",
 ]
 resolver = "2"
