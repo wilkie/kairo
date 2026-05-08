@@ -19,6 +19,26 @@ pub(crate) struct Cli {
     #[arg(long, env = "KAIRO_KEYS", global = true)]
     pub(crate) keys: Option<PathBuf>,
 
+    /// Require the daemon for read commands; exit 9 when the
+    /// daemon is unreachable. Without this flag, read commands
+    /// silently fall back to direct mode (probe-and-fall-back —
+    /// `specs/CLI.md` §3.3). Slice 4 only consumes this flag in
+    /// `kairo daemon status`; slice 8 wires the rest of the
+    /// dispatch.
+    #[arg(long, global = true)]
+    pub(crate) daemon: bool,
+
+    /// Force direct/local mode (skip the daemon even if it is
+    /// reachable). Mutually exclusive with `--daemon`. Wired into
+    /// dispatch in slice 8.
+    #[arg(long, global = true, conflicts_with = "daemon")]
+    pub(crate) direct: bool,
+
+    /// Like `--direct`, plus refuse network / federation
+    /// operations. Wired into dispatch in slice 8 / phase 4.
+    #[arg(long, global = true, conflicts_with = "daemon")]
+    pub(crate) offline: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -87,6 +107,37 @@ pub(crate) enum Command {
     Git {
         #[command(subcommand)]
         command: GitCommand,
+    },
+    /// Manage the local Kairo daemon process. The daemon serves
+    /// the read-only HTTP+JSON API on `<store>/daemon.sock`
+    /// (`specs/DAEMON.md`, `specs/PHASE_2_DAEMON.md`).
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum DaemonCommand {
+    /// Run the daemon in the foreground until SIGTERM/SIGINT.
+    /// Foreground only in v1 (`specs/DECISIONS.md` §10.1); users
+    /// supervise via systemd / launchd / tmux / `&` / `nohup`.
+    Start,
+    /// Probe the daemon and print its status, or "not running"
+    /// when unreachable. With the global `--daemon` flag, exits
+    /// 9 (`daemon_unavailable`) instead of 0 when not running.
+    Status,
+    /// Send SIGTERM to the daemon's PID and (optionally) wait
+    /// for it to exit. Errors when the PID file is missing or
+    /// the recorded process is not running.
+    Stop {
+        /// Block until the daemon's listening socket disappears
+        /// or the timeout is reached (default 10s).
+        #[arg(long)]
+        wait: bool,
+        /// How long `--wait` will poll before giving up.
+        #[arg(long, default_value = "10", value_name = "SECONDS")]
+        wait_timeout: u64,
     },
 }
 

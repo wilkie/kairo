@@ -11,13 +11,17 @@ base64 = "=0.21.7"
 clap = { version = "4.4", features = ["derive", "env"] }
 kairo-bundle = { path = "../kairo-bundle" }
 kairo-core = { path = "../kairo-core" }
+kairo-daemon = { path = "../kairo-daemon" }
+kairo-daemon-client = { path = "../kairo-daemon-client" }
 kairo-git = { path = "../kairo-git" }
 kairo-identity = { path = "../kairo-identity" }
 kairo-keystore = { path = "../kairo-keystore" }
 kairo-object = { path = "../kairo-object" }
 kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
+nix = { version = "0.29", default-features = false, features = ["signal"] }
 serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }
 
 [dev-dependencies]
 ed25519-dalek = "=2.1.1"

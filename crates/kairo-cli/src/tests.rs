@@ -49,6 +49,7 @@
         assert!(matches!(
             cli,
             Ok(Cli { store: None, keys: None,
+                daemon: false, direct: false, offline: false,
                 command: Some(Command::Manifest {
                     command: ManifestCommand::Hash { path }
                 })
@@ -63,6 +64,7 @@
         assert!(matches!(
             cli,
             Ok(Cli { store: None, keys: None,
+                daemon: false, direct: false, offline: false,
                 command: Some(Command::Manifest {
                     command: ManifestCommand::Inspect { path }
                 })
@@ -85,6 +87,7 @@
         assert!(matches!(
             cli,
             Ok(Cli { store: None, keys: None,
+                daemon: false, direct: false, offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::ValidateManifest {
                         statement,
@@ -129,6 +132,7 @@
         assert!(matches!(
             cli,
             Ok(Cli { store: None, keys: None,
+                daemon: false, direct: false, offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::VerifySignature {
                         statement,
@@ -147,6 +151,7 @@
         assert!(matches!(
             cli,
             Ok(Cli { store: None, keys: None,
+                daemon: false, direct: false, offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Id { genesis }
                 })
@@ -169,6 +174,7 @@
         assert!(matches!(
             cli,
             Ok(Cli { store: None, keys: None,
+                daemon: false, direct: false, offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::VerifyActorGenesis {
                         statement,
@@ -338,6 +344,9 @@
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -353,6 +362,9 @@
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -367,6 +379,9 @@
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -439,6 +454,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Import { genesis }
                 })
@@ -455,6 +473,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Object {
                     command: ObjectSubcommand::Import { statement }
                 })
@@ -471,6 +492,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::Import { statement }
                 })
@@ -494,6 +518,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::Inspect {
                         statement,
@@ -513,6 +540,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::List { object }
                 })
@@ -538,6 +568,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::VerifyActorGenesis {
                         statement: _,
@@ -572,6 +605,9 @@
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -585,6 +621,9 @@
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -597,6 +636,9 @@
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -620,6 +662,9 @@
         let imported_actor = run(Cli {
             store: Some(other_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Import {
                     genesis: actor_json,
@@ -632,6 +677,9 @@
         let imported_object = run(Cli {
             store: Some(other_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Import {
                     statement: object_json,
@@ -644,6 +692,9 @@
         let imported_revision = run(Cli {
             store: Some(other_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Import {
                     statement: statement_json,
@@ -657,6 +708,9 @@
         let inspect_text = run(Cli {
             store: Some(other_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Inspect {
                     statement: statement_id.clone(),
@@ -671,6 +725,9 @@
         let inspect_json = run(Cli {
             store: Some(other_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Inspect {
                     statement: statement_id.clone(),
@@ -687,6 +744,9 @@
         let list_text = run(Cli {
             store: Some(other_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::List {
                     object: object_id.clone(),
@@ -743,6 +803,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Branch {
                     command: BranchCommand::Set { name, .. }
                 })
@@ -771,6 +834,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Branch {
                     command: BranchCommand::Set { name, .. }
                 })
@@ -787,6 +853,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Branch {
                     command: BranchCommand::Show {
                         actor: None,
@@ -808,6 +877,9 @@
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Branch {
                     command: BranchCommand::List { object }
                 })
@@ -837,6 +909,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -850,6 +925,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -864,6 +942,9 @@ kind = "tree"
         let r1 = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -884,6 +965,9 @@ kind = "tree"
         let r2 = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -902,6 +986,9 @@ kind = "tree"
         let set_r1 = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id.clone(),
@@ -918,6 +1005,9 @@ kind = "tree"
         let show_r1 = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Show {
                     object: object_id.clone(),
@@ -937,6 +1027,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id.clone(),
@@ -951,6 +1044,9 @@ kind = "tree"
         let show_r2 = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Show {
                     object: object_id.clone(),
@@ -967,6 +1063,9 @@ kind = "tree"
         let list_text = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::List {
                     object: object_id.clone(),
@@ -1003,6 +1102,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -1019,6 +1121,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Object {
                     command: ObjectSubcommand::Create {
                         actor: actor_id.clone(),
@@ -1033,6 +1138,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Object {
                     command: ObjectSubcommand::Create {
                         actor: actor_id.clone(),
@@ -1048,6 +1156,9 @@ kind = "tree"
         let r_b = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -1064,6 +1175,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -1087,6 +1201,9 @@ kind = "tree"
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Snapshot {
                     command: SnapshotCommand::Compute {
                         statement: None,
@@ -1118,6 +1235,9 @@ kind = "tree"
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Snapshot {
                     command: SnapshotCommand::Compute {
                         statement: Some(stmt),
@@ -1169,6 +1289,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -1184,6 +1307,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Object {
                     command: ObjectSubcommand::Create {
                         actor: actor_id.clone(),
@@ -1198,6 +1324,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Revision {
                     command: RevisionCommand::Create {
                         actor: actor_id.clone(),
@@ -1216,6 +1345,9 @@ kind = "tree"
         let no_branch = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Snapshot {
                 command: SnapshotCommand::Compute {
                     object: object_id.clone(),
@@ -1232,6 +1364,9 @@ kind = "tree"
         let pinned = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Snapshot {
                 command: SnapshotCommand::Compute {
                     object: object_id.clone(),
@@ -1255,6 +1390,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id.clone(),
@@ -1269,6 +1407,9 @@ kind = "tree"
         let resolved = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Snapshot {
                 command: SnapshotCommand::Compute {
                     object: object_id.clone(),
@@ -1289,6 +1430,9 @@ kind = "tree"
         let human = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Snapshot {
                 command: SnapshotCommand::Compute {
                     object: object_id,
@@ -1340,6 +1484,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -1354,6 +1501,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -1367,6 +1517,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -1383,6 +1536,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id.clone(),
@@ -1414,6 +1570,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id.clone(),
@@ -1448,6 +1607,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -1479,6 +1641,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -1524,6 +1689,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -1557,6 +1725,9 @@ kind = "tree"
         let json = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id.clone(),
@@ -1597,6 +1768,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -1610,6 +1784,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id,
@@ -1623,6 +1800,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -1708,6 +1888,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -1721,6 +1904,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -1734,6 +1920,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -1749,6 +1938,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -1765,6 +1957,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -1836,6 +2031,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -1849,6 +2047,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -1861,6 +2062,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -1876,6 +2080,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -1893,6 +2100,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id.clone(),
@@ -1941,6 +2151,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -1954,6 +2167,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -1966,6 +2182,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -1981,6 +2200,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -1996,6 +2218,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2041,6 +2266,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2093,6 +2321,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -2106,6 +2337,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -2118,6 +2352,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -2134,6 +2371,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -2147,6 +2387,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2207,6 +2450,9 @@ kind = "tree"
         let truster_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -2221,6 +2467,9 @@ kind = "tree"
         let trusted_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -2236,6 +2485,9 @@ kind = "tree"
         let grant = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Grant {
                     by: truster_id.clone(),
@@ -2251,6 +2503,9 @@ kind = "tree"
         let show = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Show {
                     by: truster_id.clone(),
@@ -2265,6 +2520,9 @@ kind = "tree"
         let list = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::List {
                     by: truster_id.clone(),
@@ -2285,6 +2543,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2300,6 +2561,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2315,6 +2579,9 @@ kind = "tree"
         let block = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Block {
                     by: truster_id.clone(),
@@ -2333,6 +2600,9 @@ kind = "tree"
         let withdraw = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Withdraw {
                     by: truster_id.clone(),
@@ -2348,6 +2618,9 @@ kind = "tree"
         let show = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Show {
                     by: truster_id.clone(),
@@ -2364,6 +2637,9 @@ kind = "tree"
         let history = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::History {
                     by: truster_id.clone(),
@@ -2385,6 +2661,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2400,6 +2679,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2415,6 +2697,9 @@ kind = "tree"
         let show = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Show {
                     by: truster_id,
@@ -2434,6 +2719,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2449,6 +2737,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2464,6 +2755,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Withdraw {
                     by: truster_id,
@@ -2491,6 +2785,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2527,6 +2824,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.path().to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2542,6 +2842,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Grant {
                     by: truster_id.clone(),
@@ -2554,6 +2857,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2585,6 +2891,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2618,6 +2927,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -2631,6 +2943,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id,
@@ -2669,6 +2984,9 @@ kind = "tree"
         let export_output = run(Cli {
             store: Some(src_store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Export {
                     object: object_id.clone(),
@@ -2685,6 +3003,9 @@ kind = "tree"
         let import_output = run(Cli {
             store: Some(dest_store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Import {
                     input: bundle_path.clone(),
@@ -2699,6 +3020,9 @@ kind = "tree"
         let show_output = run(Cli {
             store: Some(dest_store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Show {
                     object: object_id.clone(),
@@ -2719,6 +3043,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Import { input: nowhere },
             }),
@@ -2734,6 +3061,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::Create {
                         kind: "person".to_owned(),
@@ -2755,6 +3085,9 @@ kind = "tree"
             &run(Cli {
                 store: Some(store_dir.to_path_buf()),
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Object {
                     command: ObjectSubcommand::Create {
                         actor: actor.to_owned(),
@@ -2778,6 +3111,9 @@ kind = "tree"
         let grant_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Grant {
                     grantor: grantor.clone(),
@@ -2798,6 +3134,9 @@ kind = "tree"
         let list_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::List {
                     grantor: Some(grantor.clone()),
@@ -2822,6 +3161,9 @@ kind = "tree"
         let first = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Grant {
                     grantor: grantor.clone(),
@@ -2843,6 +3185,9 @@ kind = "tree"
         let second = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Grant {
                     grantor: grantor.clone(),
@@ -2877,6 +3222,9 @@ kind = "tree"
         let grant = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Grant {
                     grantor: grantor.clone(),
@@ -2896,6 +3244,9 @@ kind = "tree"
         let intruder_attempt = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Revoke {
                     grantor: intruder,
@@ -2914,6 +3265,9 @@ kind = "tree"
         let revoke = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Revoke {
                     grantor,
@@ -2936,6 +3290,9 @@ kind = "tree"
         let neither = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::List {
                     grantor: None,
@@ -2957,6 +3314,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Grant {
                     grantor,
@@ -2984,6 +3344,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::Grant {
                     grantor: grantor.clone(),
@@ -3001,6 +3364,9 @@ kind = "tree"
         let by_object = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Capability {
                 command: CapabilityCommand::List {
                     grantor: None,
@@ -3024,6 +3390,9 @@ kind = "tree"
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::RotateKey { actor }
                 })
@@ -3051,6 +3420,9 @@ kind = "tree"
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::RevokeKey {
                         actor,
@@ -3079,6 +3451,9 @@ kind = "tree"
             Ok(Cli {
                 store: None,
                 keys: None,
+                daemon: false,
+                direct: false,
+                offline: false,
                 command: Some(Command::Actor {
                     command: ActorCommand::KeyHistory { actor, json: true }
                 })
@@ -3095,6 +3470,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3112,6 +3490,9 @@ kind = "tree"
         let rotate_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RotateKey {
                     actor: actor_id.clone(),
@@ -3130,6 +3511,9 @@ kind = "tree"
         let rotate_two = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RotateKey {
                     actor: actor_id.clone(),
@@ -3143,6 +3527,9 @@ kind = "tree"
         let history = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id,
@@ -3163,6 +3550,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3180,6 +3570,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RevokeKey {
                     actor: actor_id.clone(),
@@ -3196,6 +3589,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RevokeKey {
                     actor: actor_id,
@@ -3225,6 +3621,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3239,6 +3638,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RotateKey {
                     actor: actor_id.clone(),
@@ -3249,6 +3651,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id,
@@ -3269,6 +3674,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3285,6 +3693,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RotateKey {
                     actor: actor_id.clone(),
@@ -3297,6 +3708,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RevokeKey {
                     actor: actor_id,
@@ -3319,6 +3733,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3347,6 +3764,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3371,6 +3791,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3399,6 +3822,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3419,6 +3845,9 @@ kind = "tree"
         let recover_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Sign {
@@ -3442,6 +3871,9 @@ kind = "tree"
         let history_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id.clone(),
@@ -3459,6 +3891,9 @@ kind = "tree"
         let rotate_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RotateKey {
                     actor: actor_id,
@@ -3480,6 +3915,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3511,6 +3949,9 @@ kind = "tree"
         let prepare_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Prepare {
@@ -3534,6 +3975,9 @@ kind = "tree"
         let submit_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Submit {
@@ -3549,6 +3993,9 @@ kind = "tree"
         let history_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id,
@@ -3585,6 +4032,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3606,6 +4056,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Prepare {
@@ -3627,6 +4080,9 @@ kind = "tree"
         let early_submit = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Submit {
@@ -3641,6 +4097,9 @@ kind = "tree"
         let cosign_a = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::CoSign {
                     prepared: envelope_path.clone(),
@@ -3655,6 +4114,9 @@ kind = "tree"
         let mid_submit = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Submit {
@@ -3670,6 +4132,9 @@ kind = "tree"
         let dup = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::CoSign {
                     prepared: envelope_path.clone(),
@@ -3683,6 +4148,9 @@ kind = "tree"
         let cosign_b = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::CoSign {
                     prepared: envelope_path.clone(),
@@ -3696,6 +4164,9 @@ kind = "tree"
         let submit_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RecoverKey {
                     command: RecoverKeyCommand::Submit {
@@ -3733,6 +4204,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3750,6 +4224,9 @@ kind = "tree"
         let refuse_raise = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::ChangeAttestationThreshold {
                     command: ChangeAttestationThresholdCommand::Sign {
@@ -3773,6 +4250,9 @@ kind = "tree"
         let sign_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::ChangeAttestationThreshold {
                     command: ChangeAttestationThresholdCommand::Sign {
@@ -3809,6 +4289,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3829,6 +4312,9 @@ kind = "tree"
         let prepare_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::ChangeAttestationThreshold {
                     command: ChangeAttestationThresholdCommand::Prepare {
@@ -3844,6 +4330,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::CoSign {
                     prepared: envelope_path.clone(),
@@ -3855,6 +4344,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::CoSign {
                     prepared: envelope_path.clone(),
@@ -3867,6 +4359,9 @@ kind = "tree"
         let submit_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::ChangeAttestationThreshold {
                     command: ChangeAttestationThresholdCommand::Submit {
@@ -3885,6 +4380,9 @@ kind = "tree"
         let history = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id.clone(),
@@ -3904,6 +4402,9 @@ kind = "tree"
         let history_json = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id,
@@ -3933,6 +4434,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -3952,6 +4456,9 @@ kind = "tree"
         let add_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::AddAttestationKey {
                     command: AddAttestationKeyCommand::Sign {
@@ -3972,6 +4479,9 @@ kind = "tree"
         let history_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id,
@@ -4004,6 +4514,9 @@ kind = "tree"
         let create_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -4026,6 +4539,9 @@ kind = "tree"
         let early = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RevokeAttestationKey {
                     command: RevokeAttestationKeyCommand::Sign {
@@ -4044,6 +4560,9 @@ kind = "tree"
         let add_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::AddAttestationKey {
                     command: AddAttestationKeyCommand::Sign {
@@ -4064,6 +4583,9 @@ kind = "tree"
         let revoke_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::RevokeAttestationKey {
                     command: RevokeAttestationKeyCommand::Sign {
@@ -4082,6 +4604,9 @@ kind = "tree"
         let history = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::KeyHistory {
                     actor: actor_id,
@@ -4170,6 +4695,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -4185,6 +4713,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -4199,6 +4730,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -4216,6 +4750,9 @@ kind = "tree"
         let inspect_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Manifest {
                 command: ManifestCommand::Inspect {
                     path: manifest_path.clone(),
@@ -4229,6 +4766,9 @@ kind = "tree"
         let revision_inspect = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Inspect {
                     statement: statement_id.clone(),
@@ -4240,6 +4780,9 @@ kind = "tree"
         let revision_list = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::List {
                     object: object_id.clone(),
@@ -4252,6 +4795,9 @@ kind = "tree"
         let branch_set = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id.clone(),
@@ -4265,6 +4811,9 @@ kind = "tree"
         let branch_show = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Show {
                     object: object_id.clone(),
@@ -4278,6 +4827,9 @@ kind = "tree"
         let branch_list = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::List {
                     object: object_id.clone(),
@@ -4290,6 +4842,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Tag {
                 command: TagCommand::Bind {
                     actor: actor_id.clone(),
@@ -4302,6 +4857,9 @@ kind = "tree"
         let tag_show = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Tag {
                 command: TagCommand::Show {
                     object: object_id.clone(),
@@ -4315,6 +4873,9 @@ kind = "tree"
         let tag_list = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Tag {
                 command: TagCommand::List {
                     object: object_id.clone(),
@@ -4327,6 +4888,9 @@ kind = "tree"
         let snapshot_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Snapshot {
                 command: SnapshotCommand::Compute {
                     object: object_id.clone(),
@@ -4341,6 +4905,9 @@ kind = "tree"
         let snapshot_json = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Snapshot {
                 command: SnapshotCommand::Compute {
                     object: object_id.clone(),
@@ -4361,6 +4928,9 @@ kind = "tree"
         let verify_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id.clone(),
@@ -4386,6 +4956,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Grant {
                     by: actor_id.clone(),
@@ -4397,6 +4970,9 @@ kind = "tree"
         let trust_show = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::Show {
                     by: actor_id.clone(),
@@ -4409,6 +4985,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Trust {
                 command: TrustCommand::List {
                     by: actor_id.clone(),
@@ -4420,6 +4999,9 @@ kind = "tree"
         let reverify_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id.clone(),
@@ -4452,6 +5034,9 @@ kind = "tree"
         run(Cli {
             store: Some(fresh_store.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Import {
                     genesis: actor_file,
@@ -4461,6 +5046,9 @@ kind = "tree"
         run(Cli {
             store: Some(fresh_store.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Import {
                     statement: object_file,
@@ -4470,6 +5058,9 @@ kind = "tree"
         run(Cli {
             store: Some(fresh_store.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Import {
                     statement: statement_file,
@@ -4483,6 +5074,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Export {
                     object: object_id.clone(),
@@ -4495,6 +5089,9 @@ kind = "tree"
         run(Cli {
             store: Some(bundled_store.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Import {
                     input: bundle_root.clone(),
@@ -4504,6 +5101,9 @@ kind = "tree"
         let bundled_branch_show = run(Cli {
             store: Some(bundled_store.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Show {
                     object: object_id.clone(),
@@ -4543,6 +5143,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Fetch {
                     object: OBJECT_ID.to_owned(),
@@ -4589,6 +5192,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Fetch {
                     object: OBJECT_ID.to_owned(),
@@ -4617,6 +5223,9 @@ kind = "tree"
         let result = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Fetch {
                     object: OBJECT_ID.to_owned(),
@@ -4639,6 +5248,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Cache {
                     command: GitCacheCommand::Status,
@@ -4668,6 +5280,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Fetch {
                     object: OBJECT_ID.to_owned(),
@@ -4680,6 +5295,9 @@ kind = "tree"
         let output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Cache {
                     command: GitCacheCommand::Status,
@@ -4757,6 +5375,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -4770,6 +5391,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -4782,6 +5406,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -4797,6 +5424,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -4812,6 +5442,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Fetch {
                     object: object_id.clone(),
@@ -4827,6 +5460,9 @@ kind = "tree"
         let export_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Export {
                     object: object_id.clone(),
@@ -4881,6 +5517,9 @@ kind = "tree"
         let actor_output = run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Actor {
                 command: ActorCommand::Create {
                     kind: "person".to_owned(),
@@ -4894,6 +5533,9 @@ kind = "tree"
         let object_output = run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Object {
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
@@ -4906,6 +5548,9 @@ kind = "tree"
         let revision_output = run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Revision {
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
@@ -4921,6 +5566,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Branch {
                 command: BranchCommand::Set {
                     actor: actor_id,
@@ -4936,6 +5584,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Fetch {
                     object: object_id.clone(),
@@ -4951,6 +5602,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Export {
                     object: object_id.clone(),
@@ -4965,6 +5619,9 @@ kind = "tree"
         let import_output = run(Cli {
             store: Some(store_b.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Import {
                     input: bundle_path.clone(),
@@ -4979,6 +5636,9 @@ kind = "tree"
         let verify_output = run(Cli {
             store: Some(store_b.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Verify {
                 command: VerifyCommand::Object {
                     object: object_id.clone(),
@@ -5011,6 +5671,9 @@ kind = "tree"
         let status_output = run(Cli {
             store: Some(store_b.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Git {
                 command: GitCommand::Cache {
                     command: GitCacheCommand::Status,
@@ -5046,6 +5709,9 @@ kind = "tree"
         run(Cli {
             store: Some(store_a.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Export {
                     object: object_id.clone(),
@@ -5059,6 +5725,9 @@ kind = "tree"
         let import_output = run(Cli {
             store: Some(store_b.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Import {
                     input: bundle_path,
@@ -5083,6 +5752,9 @@ kind = "tree"
         let export_output = run(Cli {
             store: Some(store_dir.path().to_path_buf()),
             keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
             command: Some(Command::Bundle {
                 command: BundleCommand::Export {
                     object: object_id.clone(),

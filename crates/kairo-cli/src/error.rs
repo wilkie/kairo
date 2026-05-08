@@ -336,6 +336,60 @@ pub(crate) enum CliError {
         expected: usize,
         actual: usize,
     },
+    /// Failed to build a tokio runtime for an async daemon
+    /// command (start / status / stop). Surfaces an OS-level
+    /// resource issue.
+    DaemonRuntime(std::io::Error),
+    /// `kairo_daemon::serve` returned an error during the request
+    /// loop (bind failed, store open failed, double-start, etc).
+    DaemonServe {
+        source: Box<dyn Error + Send + Sync>,
+    },
+    /// `kairo daemon status --daemon` couldn't reach the daemon.
+    /// Maps to exit code 9 (`daemon_unavailable` per `CLI.md`
+    /// §7).
+    DaemonUnavailable {
+        socket: std::path::PathBuf,
+    },
+    /// Could not read the daemon's PID file (`<store>/daemon.pid`).
+    /// Most commonly: no daemon was ever started against this
+    /// store, or the daemon shut down cleanly and removed it.
+    ReadPid {
+        path: std::path::PathBuf,
+        source: std::io::Error,
+    },
+    /// PID file exists but its contents do not parse as an i32.
+    /// Indicates a corrupted file — surface verbatim so the user
+    /// can decide whether to remove it.
+    InvalidPid {
+        path: std::path::PathBuf,
+        contents: String,
+    },
+    /// `kill(pid, SIGTERM)` failed. Reports `ESRCH` when the PID
+    /// in the file is no longer a live process.
+    DaemonKill {
+        pid: i32,
+        source: nix::Error,
+    },
+    /// `kairo daemon stop --wait` reached its timeout before the
+    /// listening socket disappeared.
+    DaemonStopTimeout {
+        socket: std::path::PathBuf,
+        waited: std::time::Duration,
+    },
+}
+
+impl CliError {
+    /// Process exit code for this error. Defaults to 1 (general
+    /// error). Variants whose mapping is in `specs/CLI.md` §7
+    /// override here — slice 4 introduces `daemon_unavailable`
+    /// (exit 9); later slices add validation, policy, etc.
+    pub(crate) fn exit_code(&self) -> u8 {
+        match self {
+            Self::DaemonUnavailable { .. } => 9,
+            _ => 1,
+        }
+    }
 }
 
 impl fmt::Display for CliError {
@@ -344,7 +398,8 @@ impl fmt::Display for CliError {
             Self::ReadManifest { path, source }
             | Self::ReadStatement { path, source }
             | Self::ReadPublicKey { path, source }
-            | Self::ReadActorGenesis { path, source } => {
+            | Self::ReadActorGenesis { path, source }
+            | Self::ReadPid { path, source } => {
                 write!(f, "failed to read {}: {source}", path.display())
             }
             Self::ParseManifest(error) => write!(f, "{error}"),
@@ -693,6 +748,29 @@ impl fmt::Display for CliError {
             Self::InvalidPublicKeyLength { expected, actual } => {
                 write!(f, "invalid public key length {actual}; expected {expected}")
             }
+            Self::DaemonRuntime(error) => {
+                write!(f, "failed to build async runtime: {error}")
+            }
+            Self::DaemonServe { source } => write!(f, "daemon serve loop failed: {source}"),
+            Self::DaemonUnavailable { socket } => write!(
+                f,
+                "daemon is not running at {} (--daemon was set)",
+                socket.display()
+            ),
+            Self::InvalidPid { path, contents } => write!(
+                f,
+                "PID file {} does not contain a valid i32 (got {contents:?})",
+                path.display()
+            ),
+            Self::DaemonKill { pid, source } => {
+                write!(f, "kill(pid={pid}, SIGTERM) failed: {source}")
+            }
+            Self::DaemonStopTimeout { socket, waited } => write!(
+                f,
+                "daemon did not stop within {:.0}s (socket {} still present)",
+                waited.as_secs_f64(),
+                socket.display()
+            ),
         }
     }
 }
@@ -709,7 +787,8 @@ impl Error for CliError {
             | Self::ReadAttestationSeed { source, .. }
             | Self::ReadSignatureFile { source, .. }
             | Self::WritePreparedEnvelope { source, .. }
-            | Self::ReadPreparedEnvelope { source, .. } => Some(source),
+            | Self::ReadPreparedEnvelope { source, .. }
+            | Self::ReadPid { source, .. } => Some(source),
             Self::ParseManifest(error) => Some(error),
             Self::ParseActorGenesisJson(error)
             | Self::ParseStatementJson(error)
@@ -802,8 +881,14 @@ impl Error for CliError {
             | Self::ChangeThresholdSignNeedsCosign { .. }
             | Self::AddAttestationKeyMissingKeySource
             | Self::AttestationKeyAlreadyInSet { .. }
-            | Self::AttestationKeySharesSigningKey { .. } => None,
+            | Self::AttestationKeySharesSigningKey { .. }
+            | Self::DaemonUnavailable { .. }
+            | Self::InvalidPid { .. }
+            | Self::DaemonStopTimeout { .. } => None,
             Self::ChangeThresholdShape(error) => Some(error),
+            Self::DaemonRuntime(error) => Some(error),
+            Self::DaemonServe { source } => Some(source.as_ref()),
+            Self::DaemonKill { source, .. } => Some(source),
         }
     }
 }

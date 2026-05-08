@@ -4,5 +4,6 @@
 //! and return either the formatted output or a `CliError`.
 
 pub(crate) mod bundle;
+pub(crate) mod daemon;
 pub(crate) mod git;
 pub(crate) mod manifest;

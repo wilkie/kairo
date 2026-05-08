@@ -68,7 +68,7 @@ fn main() -> ExitCode {
         }
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::from(1)
+            ExitCode::from(error.exit_code())
         }
     }
 }
@@ -105,6 +105,13 @@ fn require_active_signing_key(
 }
 
 fn run(cli: Cli) -> Result<String, CliError> {
+    let require_daemon = cli.daemon;
+    // `--direct` and `--offline` are parsed for forward compat
+    // (slice 8 plumbs them into read-command dispatch); accepted
+    // here as no-ops in slice 4 except for the clap-enforced
+    // mutual-exclusion with `--daemon`.
+    let _ = (cli.direct, cli.offline);
+
     let paths = StorePaths::resolve(cli.store, cli.keys)?;
     match cli.command {
         Some(Command::Actor { command }) => run_actor_command(command, &paths),
@@ -119,6 +126,9 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         Some(Command::Verify { command }) => run_verify_command(command, &paths),
         Some(Command::Git { command }) => commands::git::run_git_command(command, &paths),
+        Some(Command::Daemon { command }) => {
+            commands::daemon::run_daemon_command(command, &paths, require_daemon)
+        }
         None => Ok(help_text()),
     }
 }
