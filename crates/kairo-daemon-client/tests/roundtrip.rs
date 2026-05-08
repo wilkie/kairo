@@ -359,3 +359,196 @@ async fn client_statement_method_returns_404_for_missing_id() {
 
     handle.shutdown().await;
 }
+
+// ---------------------------------------------------------------------------
+// Slice 6: branch / version-tag / trust / capability methods.
+
+const SAMPLE_MANIFEST: &str = r#"
+[kairo]
+schema = 1
+kind = "kairo/object"
+name = "fixture"
+
+[content]
+kind = "tree"
+"#;
+
+#[tokio::test]
+async fn client_list_branches_round_trips() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:r1"),
+        SAMPLE_MANIFEST,
+        Vec::new(),
+    );
+    fixture.set_branch(&actor, &object, &revision, "head");
+    let object_id = object.object_id.to_string();
+    let actor_id = actor.actor_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let tips = client.list_branches(&object_id).await.expect("list");
+    assert_eq!(tips.len(), 1);
+    assert_eq!(tips[0].name, "head");
+    assert_eq!(tips[0].actor, actor_id);
+    assert_eq!(tips[0].object, object_id);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_latest_branch_round_trips() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:r1"),
+        SAMPLE_MANIFEST,
+        Vec::new(),
+    );
+    fixture.set_branch(&actor, &object, &revision, "head");
+    let object_id = object.object_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let signed = client
+        .latest_branch(&object_id, "head", None)
+        .await
+        .expect("latest branch");
+    let raw = serde_json::to_value(&signed).expect("serialize");
+    assert_eq!(raw["body"]["name"], "head");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_latest_branch_returns_404_when_missing() {
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    // No branch set.
+    let object_id = object.object_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    match client.latest_branch(&object_id, "head", None).await {
+        Err(ClientError::Http { status, code, .. }) => {
+            assert_eq!(status, 404);
+            assert_eq!(code, "not_found");
+        }
+        other => panic!("expected 404 not_found, got {other:?}"),
+    }
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_trust_round_trips() {
+    use kairo_core::canonical::CanonicalEncode;
+    use kairo_statement::{
+        ActorTrustBody, Signature, SignedStatement, TrustDecision, UnsignedStatement,
+    };
+    use kairo_store::StatementStore;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+
+    // Inline trust signing.
+    let body = ActorTrustBody::new(bob.actor_id.clone(), Some(TrustDecision::Trusted), None, None)
+        .expect("trust body");
+    let subject: kairo_core::KairoRef = format!("actor:{}", bob.actor_id)
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        subject,
+        kairo_core::Timestamp::from_seconds(1_700_000_000),
+        body,
+    );
+    let bytes = alice.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    fixture.store.put_actor_trust(&signed).expect("put_actor_trust");
+
+    let alice_id = alice.actor_id.to_string();
+    let bob_id = bob.actor_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let trust = client.trust(&alice_id, &bob_id).await.expect("trust call");
+    let raw = serde_json::to_value(&trust).expect("serialize");
+    assert_eq!(raw["body"]["trusted_actor"], bob_id);
+    assert_eq!(raw["body"]["decision"], "trusted");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_trust_returns_404_for_missing_opinion() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let alice_id = alice.actor_id.to_string();
+    let bob_id = bob.actor_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    match client.trust(&alice_id, &bob_id).await {
+        Err(ClientError::Http { status, code, .. }) => {
+            assert_eq!(status, 404);
+            assert_eq!(code, "not_found");
+        }
+        other => panic!("expected 404 not_found, got {other:?}"),
+    }
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_list_capabilities_round_trips() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let alice_id = alice.actor_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    // Empty — alice has no grants. Smoke-test the empty-list path
+    // — populating capabilities here would re-do everything in the
+    // daemon's own resolved_handlers.rs; the daemon-side test
+    // already exercises a populated grantor.
+    let heads = client
+        .list_capabilities_from(&alice_id)
+        .await
+        .expect("list");
+    assert!(heads.is_empty());
+
+    handle.shutdown().await;
+}

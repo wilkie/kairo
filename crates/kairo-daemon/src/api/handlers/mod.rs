@@ -1,5 +1,9 @@
 pub mod actors;
+pub mod branches;
+pub mod capabilities;
 pub mod objects;
 pub mod statements;
 pub mod status;
+pub mod trust;
 pub mod version;
+pub mod version_tags;

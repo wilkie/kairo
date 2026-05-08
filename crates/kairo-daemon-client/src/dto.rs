@@ -16,7 +16,10 @@ use serde::{Deserialize, Serialize};
 // `kairo-statement` directly. The wire format matches what the
 // daemon serves in the success envelope's `result` field.
 pub use kairo_identity::json::ActorGenesisJson;
-pub use kairo_statement::json::ObjectGenesisStatementJson;
+pub use kairo_statement::json::{
+    ActorTrustStatementJson, CapabilityScopeJson, ObjectBranchStatementJson,
+    ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
+};
 
 /// Polymorphic statement payload: any signed statement variant
 /// the store keeps under `statements/`. The kind discriminator
@@ -25,6 +28,36 @@ pub use kairo_statement::json::ObjectGenesisStatementJson;
 /// type field or feed the bytes back into `serde_json::from_value`
 /// against the typed shape they expect.
 pub type StatementValue = serde_json::Value;
+
+/// Branch tip summary returned by `GET /api/v1/branches/{object}`.
+///
+/// Light shape — just identity fields. Callers who need the full
+/// `ObjectBranchStatementJson` follow up with
+/// `GET /api/v1/statements/{statement_id}` (or
+/// `GET /api/v1/branches/{object}/{name}/latest` for the
+/// resolved head).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchTipDto {
+    pub actor: String,
+    pub object: String,
+    pub name: String,
+    pub statement_id: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+}
+
+/// Capability head summary returned by
+/// `GET /api/v1/capabilities/{grantor}`. One entry per
+/// `(grantee, scope)` chain leaf — mirrors the shape produced
+/// by `kairo capability list --grantor` in direct mode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityHeadDto {
+    pub grantor: String,
+    pub grantee: String,
+    pub scope: CapabilityScopeJson,
+    pub statement_id: String,
+    pub created_at: String,
+}
 
 /// Response body for `GET /api/v1/version`.
 ///

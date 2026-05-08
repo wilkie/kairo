@@ -27,6 +27,8 @@ use kairo_core as _;
 #[cfg(test)]
 use kairo_daemon as _;
 #[cfg(test)]
+use kairo_store as _;
+#[cfg(test)]
 use kairo_test_support as _;
 #[cfg(test)]
 use tempfile as _;

@@ -603,7 +603,7 @@ impl CapabilityScopeJson {
         }
     }
 
-    fn from_scope(scope: &CapabilityScope) -> Self {
+    pub fn from_scope(scope: &CapabilityScope) -> Self {
         match scope {
             CapabilityScope::Object(id) => Self::Object(id.to_string()),
             CapabilityScope::Actor(id) => Self::Actor(id.to_string()),

@@ -19,6 +19,7 @@ tokio = { version = "1", features = ["net", "time"] }
 [dev-dependencies]
 kairo-core = { path = "../kairo-core" }
 kairo-daemon = { path = "../kairo-daemon" }
+kairo-store = { path = "../kairo-store" }
 kairo-test-support = { path = "../kairo-test-support" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }

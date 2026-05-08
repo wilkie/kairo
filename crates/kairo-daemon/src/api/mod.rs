@@ -32,6 +32,26 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/statements/:id",
             get(handlers::statements::handler),
         )
+        .route(
+            "/api/v1/branches/:object",
+            get(handlers::branches::list_handler),
+        )
+        .route(
+            "/api/v1/branches/:object/:name/latest",
+            get(handlers::branches::latest_handler),
+        )
+        .route(
+            "/api/v1/version-tags/:object/:version",
+            get(handlers::version_tags::latest_handler),
+        )
+        .route(
+            "/api/v1/trust/:by/:of",
+            get(handlers::trust::handler),
+        )
+        .route(
+            "/api/v1/capabilities/:grantor",
+            get(handlers::capabilities::list_from_handler),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

@@ -21,7 +21,11 @@ use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
 
-use crate::dto::{ActorGenesisJson, ObjectGenesisStatementJson, StatementValue, StatusInfo, VersionInfo};
+use crate::dto::{
+    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
+    StatementValue, StatusInfo, VersionInfo,
+};
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};
 
@@ -112,6 +116,77 @@ impl Client {
     /// returned value.
     pub async fn statement(&self, statement_id: &str) -> ClientResult<StatementValue> {
         self.get_json(&format!("/api/v1/statements/{statement_id}"))
+            .await
+    }
+
+    /// `GET /api/v1/branches/{object}` — list of `(actor, name)`
+    /// branch heads on the object. Each entry is a lightweight
+    /// summary; fetch the full envelope with [`Self::statement`]
+    /// or [`Self::latest_branch`].
+    pub async fn list_branches(&self, object_id: &str) -> ClientResult<Vec<BranchTipDto>> {
+        self.get_json(&format!("/api/v1/branches/{object_id}"))
+            .await
+    }
+
+    /// `GET /api/v1/branches/{object}/{name}/latest` — the
+    /// chain-leaf `ObjectBranch` statement for `(actor, object,
+    /// name)`. `actor` defaults to the object's `created_by`
+    /// when omitted.
+    pub async fn latest_branch(
+        &self,
+        object_id: &str,
+        name: &str,
+        actor: Option<&str>,
+    ) -> ClientResult<ObjectBranchStatementJson> {
+        let path = match actor {
+            Some(actor) => format!("/api/v1/branches/{object_id}/{name}/latest?actor={actor}"),
+            None => format!("/api/v1/branches/{object_id}/{name}/latest"),
+        };
+        self.get_json(&path).await
+    }
+
+    /// `GET /api/v1/version-tags/{object}/{version}` — the
+    /// chain-leaf `ObjectVersionTag` statement for `(actor,
+    /// object, version)`. Honors cross-actor `supersedes` when
+    /// the successor's signer holds an `ObjectVersionTag`
+    /// capability on the object. `actor` defaults to the
+    /// object's `created_by` when omitted.
+    pub async fn latest_version_tag(
+        &self,
+        object_id: &str,
+        version: &str,
+        actor: Option<&str>,
+    ) -> ClientResult<ObjectVersionTagStatementJson> {
+        let path = match actor {
+            Some(actor) => {
+                format!("/api/v1/version-tags/{object_id}/{version}?actor={actor}")
+            }
+            None => format!("/api/v1/version-tags/{object_id}/{version}"),
+        };
+        self.get_json(&path).await
+    }
+
+    /// `GET /api/v1/trust/{by_actor}/{of_actor}` — the chain-
+    /// leaf `ActorTrust` statement (grant, block, or
+    /// withdrawal). Returns 404 when `by_actor` has never
+    /// expressed an opinion about `of_actor`.
+    pub async fn trust(
+        &self,
+        by_actor: &str,
+        of_actor: &str,
+    ) -> ClientResult<ActorTrustStatementJson> {
+        self.get_json(&format!("/api/v1/trust/{by_actor}/{of_actor}"))
+            .await
+    }
+
+    /// `GET /api/v1/capabilities/{grantor}` — list of
+    /// `(grantee, scope)` capability heads issued by the
+    /// grantor. Mirrors `kairo capability list --grantor`.
+    pub async fn list_capabilities_from(
+        &self,
+        grantor: &str,
+    ) -> ClientResult<Vec<CapabilityHeadDto>> {
+        self.get_json(&format!("/api/v1/capabilities/{grantor}"))
             .await
     }
 
