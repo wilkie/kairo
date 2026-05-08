@@ -68,6 +68,12 @@ pub struct Config {
     /// Each `/api/v1/*` request opens a fresh `connect(2)` to
     /// this path.
     pub daemon_socket: PathBuf,
+    /// Optional PID file. When `Some`, the server writes
+    /// `<pid>\n` atomically at startup and removes the file on
+    /// shutdown. Used by `kairo web stop` to locate the running
+    /// process. Mirrors `kairo-daemon`'s `<store>/daemon.pid`
+    /// pattern.
+    pub pid_file: Option<PathBuf>,
 }
 
 /// Install the web-server's tracing subscriber on stderr with the

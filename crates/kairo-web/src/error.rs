@@ -30,6 +30,12 @@ pub enum Error {
         addr: SocketAddr,
         source: std::io::Error,
     },
+    /// I/O failure writing or removing the PID file (atomic
+    /// rename, write, or removal).
+    PidIo {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// The accept loop or graceful shutdown returned an error.
     Serve {
         source: Box<dyn StdError + Send + Sync>,
@@ -54,6 +60,9 @@ impl fmt::Display for Error {
                 path.display()
             ),
             Self::Bind { addr, source } => write!(f, "bind {addr} failed: {source}"),
+            Self::PidIo { path, source } => {
+                write!(f, "PID file I/O at {} failed: {source}", path.display())
+            }
             Self::Serve { source } => write!(f, "server loop failed: {source}"),
         }
     }
@@ -62,7 +71,7 @@ impl fmt::Display for Error {
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::Bind { source, .. } => Some(source),
+            Self::Bind { source, .. } | Self::PidIo { source, .. } => Some(source),
             Self::Serve { source } => Some(source.as_ref()),
             Self::NonLoopbackBind { .. }
             | Self::SpaDirInvalid { .. }

@@ -12,6 +12,9 @@
 use base64 as _;
 use clap as _;
 use ed25519_dalek as _;
+use http_body_util as _;
+use hyper as _;
+use hyper_util as _;
 use kairo_bundle as _;
 use kairo_core as _;
 use kairo_daemon as _;
@@ -22,6 +25,7 @@ use kairo_keystore as _;
 use kairo_object as _;
 use kairo_statement as _;
 use kairo_store as _;
+use kairo_web as _;
 use nix as _;
 use serde_json as _;
 use tempfile as _;

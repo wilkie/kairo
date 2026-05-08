@@ -115,6 +115,14 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+    /// Manage the local Kairo web server (`kairo-web`). The web
+    /// server is the browser-facing TCP front-end that proxies
+    /// `/api/v1/*` to the daemon's Unix socket and serves the
+    /// SPA bundle (`specs/DECISIONS.md` §12).
+    Web {
+        #[command(subcommand)]
+        command: WebCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -133,6 +141,44 @@ pub(crate) enum DaemonCommand {
     Stop {
         /// Block until the daemon's listening socket disappears
         /// or the timeout is reached (default 10s).
+        #[arg(long)]
+        wait: bool,
+        /// How long `--wait` will poll before giving up.
+        #[arg(long, default_value = "10", value_name = "SECONDS")]
+        wait_timeout: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WebCommand {
+    /// Run the web server in the foreground until SIGTERM/SIGINT.
+    /// Foreground only in v1 (`specs/DECISIONS.md` §12.7); users
+    /// supervise via systemd / launchd / tmux / `&` / `nohup`.
+    Start {
+        /// Filesystem path of the built SPA bundle. Required —
+        /// no convention default for v1.
+        #[arg(long, value_name = "PATH")]
+        spa_dir: std::path::PathBuf,
+        /// TCP address to listen on. Must be a loopback address;
+        /// non-loopback values are rejected at startup. Default
+        /// `127.0.0.1:7878`.
+        #[arg(long, value_name = "ADDR")]
+        bind: Option<String>,
+    },
+    /// Probe the web server and print its status, or "not running"
+    /// when unreachable. Default probe address `127.0.0.1:7878`;
+    /// override with `--bind`.
+    Status {
+        /// TCP address to probe. Default `127.0.0.1:7878`.
+        #[arg(long, value_name = "ADDR")]
+        bind: Option<String>,
+    },
+    /// Send SIGTERM to the web server's PID and (optionally) wait
+    /// for it to exit. Errors when the PID file is missing or the
+    /// recorded process is not running.
+    Stop {
+        /// Block until the web server's PID file disappears or
+        /// the timeout is reached (default 10s).
         #[arg(long)]
         wait: bool,
         /// How long `--wait` will poll before giving up.

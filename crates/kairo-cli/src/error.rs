@@ -377,6 +377,27 @@ pub(crate) enum CliError {
         socket: std::path::PathBuf,
         waited: std::time::Duration,
     },
+    /// `kairo web start` failed to build a tokio runtime. Same
+    /// shape as `DaemonRuntime` — surfaces an OS-level resource
+    /// issue.
+    WebRuntime(std::io::Error),
+    /// `kairo_web::serve` returned an error during startup or
+    /// the request loop (bind failed, non-loopback bind, missing
+    /// SPA dir, missing daemon socket, etc.).
+    WebServe {
+        source: Box<dyn Error + Send + Sync>,
+    },
+    /// `--bind` argument did not parse as a `SocketAddr`.
+    ParseWebBind {
+        value: String,
+        source: std::net::AddrParseError,
+    },
+    /// `kairo web stop --wait` reached its timeout before the
+    /// PID file disappeared.
+    WebStopTimeout {
+        pid_file: std::path::PathBuf,
+        waited: std::time::Duration,
+    },
     /// A daemon-mode request through `kairo-daemon-client`
     /// failed for a reason other than a typed 404 (which the
     /// dispatch handler maps to direct-mode-equivalent
@@ -788,6 +809,17 @@ impl fmt::Display for CliError {
             Self::ParseCreatedAt { value, source } => {
                 write!(f, "invalid created_at timestamp {value:?}: {source}")
             }
+            Self::WebRuntime(error) => write!(f, "failed to build async runtime: {error}"),
+            Self::WebServe { source } => write!(f, "web serve loop failed: {source}"),
+            Self::ParseWebBind { value, source } => {
+                write!(f, "invalid --bind {value:?}: {source}")
+            }
+            Self::WebStopTimeout { pid_file, waited } => write!(
+                f,
+                "web server did not stop within {:.0}s (PID file {} still present)",
+                waited.as_secs_f64(),
+                pid_file.display()
+            ),
         }
     }
 }
@@ -901,13 +933,15 @@ impl Error for CliError {
             | Self::AttestationKeySharesSigningKey { .. }
             | Self::DaemonUnavailable { .. }
             | Self::InvalidPid { .. }
-            | Self::DaemonStopTimeout { .. } => None,
+            | Self::DaemonStopTimeout { .. }
+            | Self::WebStopTimeout { .. } => None,
             Self::ChangeThresholdShape(error) => Some(error),
-            Self::DaemonRuntime(error) => Some(error),
-            Self::DaemonServe { source } => Some(source.as_ref()),
+            Self::DaemonRuntime(error) | Self::WebRuntime(error) => Some(error),
+            Self::DaemonServe { source } | Self::WebServe { source } => Some(source.as_ref()),
             Self::DaemonKill { source, .. } => Some(source),
             Self::DaemonRequestFailed(error) => Some(error),
             Self::ParseCreatedAt { source, .. } => Some(source),
+            Self::ParseWebBind { source, .. } => Some(source),
         }
     }
 }

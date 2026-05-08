@@ -42,7 +42,7 @@ use tempfile as _;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "\
-usage: kairo-web --spa-dir <path> --daemon-socket <path> [--bind <addr>]
+usage: kairo-web --spa-dir <path> --daemon-socket <path> [--bind <addr>] [--pid-file <path>]
        kairo-web --version
 ";
 
@@ -102,6 +102,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut bind_addr: Option<SocketAddr> = None;
     let mut spa_dir: Option<PathBuf> = None;
     let mut daemon_socket: Option<PathBuf> = None;
+    let mut pid_file: Option<PathBuf> = None;
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -126,6 +127,12 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                     .ok_or_else(|| "--daemon-socket requires a path argument".to_owned())?;
                 daemon_socket = Some(PathBuf::from(value));
             }
+            "--pid-file" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--pid-file requires a path argument".to_owned())?;
+                pid_file = Some(PathBuf::from(value));
+            }
             other => return Err(format!("unrecognized argument: {other}")),
         }
     }
@@ -141,6 +148,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         bind_addr,
         spa_dir,
         daemon_socket,
+        pid_file,
     })
 }
 
@@ -164,11 +172,26 @@ mod tests {
             "/tmp/spa",
             "--daemon-socket",
             "/tmp/daemon.sock",
+            "--pid-file",
+            "/tmp/web.pid",
         ]))
         .expect("parse");
         assert_eq!(parsed.bind_addr.port(), 9000);
         assert_eq!(parsed.spa_dir, PathBuf::from("/tmp/spa"));
         assert_eq!(parsed.daemon_socket, PathBuf::from("/tmp/daemon.sock"));
+        assert_eq!(parsed.pid_file.as_deref(), Some(PathBuf::from("/tmp/web.pid").as_path()));
+    }
+
+    #[test]
+    fn pid_file_defaults_to_none() {
+        let parsed = parse_args(&args(&[
+            "--spa-dir",
+            "/tmp/spa",
+            "--daemon-socket",
+            "/tmp/daemon.sock",
+        ]))
+        .expect("parse");
+        assert!(parsed.pid_file.is_none());
     }
 
     #[test]

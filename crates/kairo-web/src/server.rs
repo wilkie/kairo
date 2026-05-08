@@ -87,20 +87,69 @@ where
             source,
         })?;
 
+    let pid_guard = match config.pid_file.as_deref() {
+        Some(path) => Some(PidFile::write(path)?),
+        None => None,
+    };
+
     let app = router(&config.spa_dir, config.daemon_socket.clone());
 
     tracing::info!(
         bind = %bound,
         spa_dir = %config.spa_dir.display(),
         daemon_socket = %config.daemon_socket.display(),
+        pid_file = ?config.pid_file.as_deref().map(Path::display),
         "kairo-web listening"
     );
 
     let result = run_accept_loop(listener, app, shutdown).await;
 
+    // `Drop` on the guard removes the PID file; held explicitly
+    // so it survives the await above even on panic-during-shutdown.
+    drop(pid_guard);
+
     tracing::info!(bind = %bound, "kairo-web shut down");
 
     result
+}
+
+/// PID file that unlinks itself on drop. Created with an atomic
+/// rename so a partial write is never observable. Mirrors
+/// `kairo_daemon::server::PidFile`.
+struct PidFile {
+    path: PathBuf,
+}
+
+impl PidFile {
+    fn write(path: &Path) -> Result<Self, Error> {
+        let pid = std::process::id();
+        let tmp_path = path.with_extension(format!("pid.tmp.{pid}"));
+        std::fs::write(&tmp_path, format!("{pid}\n")).map_err(|error| Error::PidIo {
+            path: tmp_path.clone(),
+            source: error,
+        })?;
+        std::fs::rename(&tmp_path, path).map_err(|error| Error::PidIo {
+            path: path.to_path_buf(),
+            source: error,
+        })?;
+        Ok(Self {
+            path: path.to_path_buf(),
+        })
+    }
+}
+
+impl Drop for PidFile {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    error = %error,
+                    "failed to unlink PID file on shutdown",
+                );
+            }
+        }
+    }
 }
 
 /// Validate that `addr` is a loopback address. v1 binds

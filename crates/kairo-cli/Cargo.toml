@@ -9,6 +9,9 @@ repository.workspace = true
 [dependencies]
 base64 = "=0.21.7"
 clap = { version = "4.4", features = ["derive", "env"] }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 kairo-bundle = { path = "../kairo-bundle" }
 kairo-core = { path = "../kairo-core" }
 kairo-daemon = { path = "../kairo-daemon" }
@@ -19,6 +22,7 @@ kairo-keystore = { path = "../kairo-keystore" }
 kairo-object = { path = "../kairo-object" }
 kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
+kairo-web = { path = "../kairo-web" }
 nix = { version = "0.29", default-features = false, features = ["signal"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "fs"] }

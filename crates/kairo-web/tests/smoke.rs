@@ -197,6 +197,7 @@ async fn proxies_api_v1_version_through_to_daemon() {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         spa_dir: spa_dir.path().to_path_buf(),
         daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
     })
     .await;
 
@@ -231,6 +232,7 @@ async fn serves_index_html_at_root() {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         spa_dir: spa_dir.path().to_path_buf(),
         daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
     })
     .await;
 
@@ -262,6 +264,7 @@ async fn serves_spa_static_asset() {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         spa_dir: spa_dir.path().to_path_buf(),
         daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
     })
     .await;
 
@@ -288,6 +291,7 @@ async fn html5_route_falls_back_to_index() {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         spa_dir: spa_dir.path().to_path_buf(),
         daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
     })
     .await;
 
@@ -321,6 +325,7 @@ async fn refuses_non_loopback_bind() {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             spa_dir: spa_dir.path().to_path_buf(),
             daemon_socket: store_path.join("daemon.sock"),
+            pid_file: None,
         },
         async {
             // Future never resolves; serve must error before we get here.
