@@ -85,7 +85,16 @@ pub use error::{CorruptReason, StoreError};
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
 
-const STORE_VERSION: &str = "1";
+/// Crate version string, drawn from `Cargo.toml`. Surfaced in
+/// daemon `/api/v1/version` responses and similar diagnostics.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// On-disk schema version recorded in `<store>/version.txt` when
+/// a store is opened. Surfaced in daemon `/api/v1/status`. Bumped
+/// when the on-disk layout changes incompatibly.
+pub const SCHEMA_VERSION: &str = "1";
+
+const STORE_VERSION: &str = SCHEMA_VERSION;
 const VERSION_FILE: &str = "version.txt";
 
 const ACTORS_DIR: &str = "actors";

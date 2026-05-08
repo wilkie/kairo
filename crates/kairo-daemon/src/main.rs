@@ -1,9 +1,9 @@
 //! `kairo-daemon` binary entry point.
 //!
-//! Slice 1: parses `--store <path>`, installs the tracing
-//! subscriber, prints a banner, and exits. Slice 2 replaces the
-//! body with a real `serve` invocation, signal handling, and
-//! lifecycle.
+//! Foreground only (DECISIONS.md §10.1). Parses `--store
+//! <path>`, installs the tracing subscriber, builds a multi-
+//! thread tokio runtime, and calls [`serve`]. `serve` runs until
+//! `SIGTERM` or `SIGINT`, then drains and exits.
 
 use std::env;
 use std::path::PathBuf;
@@ -11,10 +11,25 @@ use std::process::ExitCode;
 
 use kairo_daemon::{install_tracing, serve, Config};
 
-// `tracing-subscriber` is a direct dep so the lib's `install_tracing`
-// can install a real fmt subscriber; the bin reaches it through the
-// lib API rather than depending on subscriber types directly.
+// All HTTP-stack deps live in the lib; the bin only drives the
+// public API. These shims silence `unused_crate_dependencies`
+// for crates the bin doesn't reference directly.
+use axum as _;
+use hyper as _;
+use hyper_util as _;
+use kairo_core as _;
+use kairo_store as _;
+use serde as _;
+use tower as _;
+use tower_http as _;
 use tracing_subscriber as _;
+// dev-deps are visible to the bin's unit-test target.
+#[cfg(test)]
+use http_body_util as _;
+#[cfg(test)]
+use serde_json as _;
+#[cfg(test)]
+use tempfile as _;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -32,7 +47,7 @@ fn main() -> ExitCode {
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         store = %store_path.display(),
-        "kairo-daemon starting (slice 1 stub)"
+        "kairo-daemon starting"
     );
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -46,9 +61,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let result = runtime.block_on(serve(Config { store_path }));
-
-    match result {
+    match runtime.block_on(serve(Config { store_path })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("kairo-daemon: {error}");
@@ -73,4 +86,3 @@ fn parse_store_path(args: &[String]) -> Result<PathBuf, String> {
     }
     store.ok_or_else(|| "--store <path> is required".to_owned())
 }
-
