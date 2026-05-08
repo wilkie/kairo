@@ -9,6 +9,15 @@ use crate::api::dto::StatusInfo;
 use crate::api::envelope::ApiResult;
 use crate::api::state::AppState;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/status",
+    tag = "system",
+    operation_id = "getStatus",
+    responses(
+        (status = 200, description = "Live daemon status (v1 fields only)", body = StatusInfo),
+    ),
+)]
 pub async fn handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
     ApiResult(StatusInfo {
         daemon_running: true,

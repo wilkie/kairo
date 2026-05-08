@@ -1,0 +1,1084 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "kairo-daemon",
+    "description": "Read-only HTTP+JSON API over a local Kairo store.\n\nAll non-streaming responses are wrapped in an envelope:\n`{ \"ok\": true, \"schema\": \"kairo.api.result.v1\", \"result\": <T> }`.\nErrors use the same envelope with `ok: false` and an `error` body\ncarrying a stable `code` and a human `message` (see `specs/API.md` §8).\nThe `body = T` declarations on each path describe the *inner* result\ntype; clients are expected to unwrap the envelope before consuming.\n\nThe blob endpoint (`GET /api/v1/blobs/{id}`) bypasses the envelope\nentirely and streams `application/octet-stream` bytes.",
+    "license": {
+      "name": "MIT OR Apache-2.0",
+      "identifier": "MIT OR Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/actors/{id}": {
+      "get": {
+        "tags": [
+          "actors"
+        ],
+        "operationId": "getActor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Actor id (kairo:actor:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Actor genesis JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActorGenesisJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed actor id"
+          },
+          "404": {
+            "description": "Actor not found"
+          }
+        }
+      }
+    },
+    "/api/v1/blobs/{id}": {
+      "get": {
+        "tags": [
+          "blobs"
+        ],
+        "operationId": "getBlob",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Blob id (kairo:blob:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw blob bytes streamed with chunked transfer encoding",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed blob id"
+          },
+          "404": {
+            "description": "Blob not found"
+          }
+        }
+      }
+    },
+    "/api/v1/branches/{object}": {
+      "get": {
+        "tags": [
+          "branches"
+        ],
+        "summary": "`GET /api/v1/branches/{object_id}`",
+        "operationId": "listBranches",
+        "parameters": [
+          {
+            "name": "object",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Branch tip summaries: one per (actor, name) chain leaf",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/BranchTipDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id"
+          }
+        }
+      }
+    },
+    "/api/v1/branches/{object}/{name}/latest": {
+      "get": {
+        "tags": [
+          "branches"
+        ],
+        "summary": "`GET /api/v1/branches/{object_id}/{name}/latest?actor=<id>`",
+        "operationId": "getLatestBranch",
+        "parameters": [
+          {
+            "name": "object",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Branch name (e.g., \"head\")",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Actor whose branch to resolve; defaults to the object's `created_by`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest ObjectBranch statement (chain leaf)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectBranchStatementJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id, branch name, or actor query"
+          },
+          "404": {
+            "description": "Branch head not found"
+          }
+        }
+      }
+    },
+    "/api/v1/capabilities/{grantor}": {
+      "get": {
+        "tags": [
+          "capabilities"
+        ],
+        "operationId": "listCapabilitiesFromGrantor",
+        "parameters": [
+          {
+            "name": "grantor",
+            "in": "path",
+            "description": "Grantor actor id (kairo:actor:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Capability head summaries: one per (grantee, scope) chain leaf",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilityHeadDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed grantor id"
+          }
+        }
+      }
+    },
+    "/api/v1/objects/{id}": {
+      "get": {
+        "tags": [
+          "objects"
+        ],
+        "operationId": "getObject",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Object genesis statement JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectGenesisStatementJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id"
+          },
+          "404": {
+            "description": "Object not found"
+          }
+        }
+      }
+    },
+    "/api/v1/statements/{id}": {
+      "get": {
+        "tags": [
+          "statements"
+        ],
+        "operationId": "getStatement",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Statement id (kairo:stmt:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Polymorphic signed statement JSON; refine via the embedded `type` discriminator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed statement id"
+          },
+          "404": {
+            "description": "Statement not found"
+          }
+        }
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "description": "Live daemon status (v1 fields only)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/trust/{by}/{of}": {
+      "get": {
+        "tags": [
+          "trust"
+        ],
+        "operationId": "getTrust",
+        "parameters": [
+          {
+            "name": "by",
+            "in": "path",
+            "description": "Actor whose opinion to read (kairo:actor:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "of",
+            "in": "path",
+            "description": "Actor whose trust state to look up",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest ActorTrust statement (grant, block, or withdrawal)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActorTrustStatementJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed actor id"
+          },
+          "404": {
+            "description": "No trust opinion recorded; treat as `unknown`"
+          }
+        }
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "operationId": "getVersion",
+        "responses": {
+          "200": {
+            "description": "Daemon, API, core, and store version metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionInfo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/version-tags/{object}/{version}": {
+      "get": {
+        "tags": [
+          "version-tags"
+        ],
+        "operationId": "getLatestVersionTag",
+        "parameters": [
+          {
+            "name": "object",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "path",
+            "description": "Version label (e.g., \"v1.0.0\")",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "description": "Actor whose tag chain to resolve; defaults to the object's `created_by`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Latest ObjectVersionTag statement honoring cross-actor supersedes flips",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectVersionTagStatementJson"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id, version, or actor query"
+          },
+          "404": {
+            "description": "Version tag head not found"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActorGenesisJson": {
+        "type": "object",
+        "required": [
+          "type",
+          "version",
+          "actor_kind",
+          "initial_key",
+          "attestation_keys",
+          "attestation_threshold",
+          "created_at",
+          "nonce"
+        ],
+        "properties": {
+          "actor_kind": {
+            "type": "string"
+          },
+          "attestation_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicKeyJson"
+            }
+          },
+          "attestation_threshold": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "initial_key": {
+            "$ref": "#/components/schemas/PublicKeyJson"
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ActorTrustBodyJson": {
+        "type": "object",
+        "required": [
+          "trusted_actor"
+        ],
+        "properties": {
+          "decision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trusted_actor": {
+            "type": "string"
+          }
+        }
+      },
+      "ActorTrustStatementJson": {
+        "type": "object",
+        "required": [
+          "type",
+          "version",
+          "actor",
+          "subject",
+          "created_at",
+          "body",
+          "signature"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "body": {
+            "$ref": "#/components/schemas/ActorTrustBodyJson"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureJson"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "BranchTipDto": {
+        "type": "object",
+        "description": "Branch tip summary returned by `GET /api/v1/branches/{object}`.\n\nLight shape — just identity fields. Callers who need the full\n`ObjectBranchStatementJson` follow up with\n`GET /api/v1/statements/{statement_id}` (or\n`GET /api/v1/branches/{object}/{name}/latest` for the\nresolved head).",
+        "required": [
+          "actor",
+          "object",
+          "name",
+          "statement_id",
+          "created_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "name": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "statement_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CapabilityConstraintJson": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "RFC 3339 UTC seconds, matching the envelope `created_at` shape.",
+            "required": [
+              "expires_at"
+            ],
+            "properties": {
+              "expires_at": {
+                "type": "string",
+                "description": "RFC 3339 UTC seconds, matching the envelope `created_at` shape."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "max_delegation_depth"
+            ],
+            "properties": {
+              "max_delegation_depth": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "key_pinned"
+            ],
+            "properties": {
+              "key_pinned": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "CapabilityHeadDto": {
+        "type": "object",
+        "description": "Capability head summary returned by\n`GET /api/v1/capabilities/{grantor}`. One entry per\n`(grantee, scope)` chain leaf — mirrors the shape produced\nby `kairo capability list --grantor` in direct mode.",
+        "required": [
+          "grantor",
+          "grantee",
+          "scope",
+          "statement_id",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "grantee": {
+            "type": "string"
+          },
+          "grantor": {
+            "type": "string"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CapabilityScopeJson"
+          },
+          "statement_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CapabilityJson": {
+        "type": "object",
+        "required": [
+          "scope",
+          "statement_kinds",
+          "delegable"
+        ],
+        "properties": {
+          "constraints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CapabilityConstraintJson"
+            }
+          },
+          "delegable": {
+            "type": "boolean"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/CapabilityScopeJson"
+          },
+          "statement_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "CapabilityScopeJson": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "object"
+            ],
+            "properties": {
+              "object": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "actor"
+            ],
+            "properties": {
+              "actor": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "ObjectBranchBodyJson": {
+        "type": "object",
+        "required": [
+          "object",
+          "name",
+          "revision"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "supersedes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ObjectBranchStatementJson": {
+        "type": "object",
+        "required": [
+          "type",
+          "version",
+          "actor",
+          "subject",
+          "created_at",
+          "body",
+          "signature"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "body": {
+            "$ref": "#/components/schemas/ObjectBranchBodyJson"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureJson"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ObjectGenesisBodyJson": {
+        "type": "object",
+        "required": [
+          "object_kind",
+          "created_by",
+          "created_at",
+          "nonce"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "initial_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nonce": {
+            "type": "string"
+          },
+          "object_kind": {
+            "type": "string"
+          }
+        }
+      },
+      "ObjectGenesisStatementJson": {
+        "type": "object",
+        "required": [
+          "type",
+          "version",
+          "body",
+          "signature"
+        ],
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/ObjectGenesisBodyJson"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureJson"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ObjectRevisionBodyJson": {
+        "type": "object",
+        "required": [
+          "object",
+          "revision",
+          "parents",
+          "manifest_hash",
+          "attests_reachable_history"
+        ],
+        "properties": {
+          "attests_reachable_history": {
+            "type": "boolean"
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "revision": {
+            "type": "string"
+          }
+        }
+      },
+      "ObjectRevisionStatementJson": {
+        "type": "object",
+        "required": [
+          "type",
+          "version",
+          "actor",
+          "subject",
+          "created_at",
+          "body",
+          "signature"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "body": {
+            "$ref": "#/components/schemas/ObjectRevisionBodyJson"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureJson"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "ObjectVersionTagBodyJson": {
+        "type": "object",
+        "required": [
+          "object",
+          "version"
+        ],
+        "properties": {
+          "object": {
+            "type": "string"
+          },
+          "supersedes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ObjectVersionTagStatementJson": {
+        "type": "object",
+        "required": [
+          "type",
+          "version",
+          "actor",
+          "subject",
+          "created_at",
+          "body",
+          "signature"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "body": {
+            "$ref": "#/components/schemas/ObjectVersionTagBodyJson"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureJson"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
+      "PublicKeyJson": {
+        "type": "object",
+        "required": [
+          "algorithm",
+          "bytes"
+        ],
+        "properties": {
+          "algorithm": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "string"
+          }
+        }
+      },
+      "SignatureJson": {
+        "type": "object",
+        "required": [
+          "actor",
+          "key_id",
+          "algorithm",
+          "bytes"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "algorithm": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StatusInfo": {
+        "type": "object",
+        "description": "Response body for `GET /api/v1/status`.\n\nV1 fields only: federation, runtime, and task counts are\nomitted because those subsystems are post-v1 (see\n`specs/API.md` §11.2 v1 surface note).",
+        "required": [
+          "daemon_running",
+          "store_path",
+          "store_schema_version",
+          "pid",
+          "daemon_version"
+        ],
+        "properties": {
+          "daemon_running": {
+            "type": "boolean"
+          },
+          "daemon_version": {
+            "type": "string"
+          },
+          "pid": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "store_path": {
+            "type": "string"
+          },
+          "store_schema_version": {
+            "type": "string"
+          }
+        }
+      },
+      "VersionInfo": {
+        "type": "object",
+        "description": "Response body for `GET /api/v1/version`.\n\nAll four fields are crate-version strings (semver), drawn\nfrom the corresponding `Cargo.toml` package versions at\nbuild time. `api_version` is the URL-prefix version, not a\ncrate version.",
+        "required": [
+          "daemon_version",
+          "api_version",
+          "core_version",
+          "store_version"
+        ],
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "core_version": {
+            "type": "string"
+          },
+          "daemon_version": {
+            "type": "string"
+          },
+          "store_version": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "system",
+      "description": "Daemon metadata (version, status)"
+    },
+    {
+      "name": "actors",
+      "description": "Actor genesis lookups"
+    },
+    {
+      "name": "objects",
+      "description": "Object genesis lookups"
+    },
+    {
+      "name": "statements",
+      "description": "Polymorphic statement-by-id lookups"
+    },
+    {
+      "name": "branches",
+      "description": "Branch tip listing and resolution"
+    },
+    {
+      "name": "version-tags",
+      "description": "Version-tag chain-leaf resolution"
+    },
+    {
+      "name": "trust",
+      "description": "First-person trust opinions"
+    },
+    {
+      "name": "capabilities",
+      "description": "Capability head listings"
+    },
+    {
+      "name": "blobs",
+      "description": "Raw blob streaming"
+    }
+  ]
+}

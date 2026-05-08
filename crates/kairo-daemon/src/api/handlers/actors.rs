@@ -14,6 +14,20 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/actors/{id}",
+    tag = "actors",
+    operation_id = "getActor",
+    params(
+        ("id" = String, Path, description = "Actor id (kairo:actor:...)"),
+    ),
+    responses(
+        (status = 200, description = "Actor genesis JSON", body = ActorGenesisJson),
+        (status = 400, description = "Malformed actor id"),
+        (status = 404, description = "Actor not found"),
+    ),
+)]
 pub async fn handler(
     State(state): State<AppState>,
     Path(id): Path<String>,

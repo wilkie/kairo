@@ -14,6 +14,21 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/trust/{by}/{of}",
+    tag = "trust",
+    operation_id = "getTrust",
+    params(
+        ("by" = String, Path, description = "Actor whose opinion to read (kairo:actor:...)"),
+        ("of" = String, Path, description = "Actor whose trust state to look up"),
+    ),
+    responses(
+        (status = 200, description = "Latest ActorTrust statement (grant, block, or withdrawal)", body = ActorTrustStatementJson),
+        (status = 400, description = "Malformed actor id"),
+        (status = 404, description = "No trust opinion recorded; treat as `unknown`"),
+    ),
+)]
 pub async fn handler(
     State(state): State<AppState>,
     Path((by, of)): Path<(String, String)>,

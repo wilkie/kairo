@@ -18,6 +18,24 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/statements/{id}",
+    tag = "statements",
+    operation_id = "getStatement",
+    params(
+        ("id" = String, Path, description = "Statement id (kairo:stmt:...)"),
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Polymorphic signed statement JSON; refine via the embedded `type` discriminator",
+            body = Object,
+        ),
+        (status = 400, description = "Malformed statement id"),
+        (status = 404, description = "Statement not found"),
+    ),
+)]
 pub async fn handler(
     State(state): State<AppState>,
     Path(id): Path<String>,

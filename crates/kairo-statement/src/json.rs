@@ -7,6 +7,7 @@ use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, Ti
 use kairo_identity::json::{ActorGenesisJsonError, PublicKeyJson};
 use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::{
     ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
@@ -108,7 +109,7 @@ impl Error for StatementJsonError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct SignatureJson {
     pub actor: String,
     pub key_id: String,
@@ -147,7 +148,7 @@ fn signatures_to_envelope(
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectGenesisStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -176,7 +177,7 @@ impl ObjectGenesisStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectGenesisBodyJson {
     pub object_kind: String,
     pub created_by: String,
@@ -231,7 +232,7 @@ fn hex_char(value: u8) -> char {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectRevisionStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -281,7 +282,7 @@ impl ObjectRevisionStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectRevisionBodyJson {
     pub object: String,
     pub revision: String,
@@ -316,7 +317,7 @@ impl ObjectRevisionBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectBranchStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -366,7 +367,7 @@ impl ObjectBranchStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectBranchBodyJson {
     pub object: String,
     pub name: String,
@@ -403,7 +404,7 @@ impl ObjectBranchBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectVersionTagStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -455,7 +456,7 @@ impl ObjectVersionTagStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObjectVersionTagBodyJson {
     pub object: String,
     pub version: String,
@@ -495,7 +496,7 @@ impl ObjectVersionTagBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorTrustStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -545,7 +546,7 @@ impl ActorTrustStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorTrustBodyJson {
     pub trusted_actor: String,
     pub decision: Option<String>,
@@ -584,7 +585,7 @@ impl ActorTrustBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityScopeJson {
     Object(String),
@@ -611,7 +612,7 @@ impl CapabilityScopeJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityConstraintJson {
     /// RFC 3339 UTC seconds, matching the envelope `created_at` shape.
@@ -643,7 +644,7 @@ impl CapabilityConstraintJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CapabilityJson {
     pub scope: CapabilityScopeJson,
     pub statement_kinds: Vec<String>,
@@ -688,7 +689,7 @@ impl CapabilityJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorCapabilityGrantStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -740,7 +741,7 @@ impl ActorCapabilityGrantStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorCapabilityGrantBodyJson {
     pub grantee: String,
     pub capability: CapabilityJson,
@@ -770,7 +771,7 @@ impl ActorCapabilityGrantBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorCapabilityRevocationStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -827,7 +828,7 @@ impl ActorCapabilityRevocationStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorCapabilityRevocationBodyJson {
     pub revoked_grant: String,
     pub retroactive: bool,
@@ -855,7 +856,7 @@ impl ActorCapabilityRevocationBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorKeyRotationStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -907,7 +908,7 @@ impl ActorKeyRotationStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorKeyRotationBodyJson {
     pub next_key: PublicKeyJson,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -938,7 +939,7 @@ impl ActorKeyRotationBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorKeyRevocationStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -990,7 +991,7 @@ impl ActorKeyRevocationStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorKeyRevocationBodyJson {
     pub revoked_key: String,
     pub retroactive: bool,
@@ -1016,7 +1017,7 @@ impl ActorKeyRevocationBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorEmergencyKeyRotationStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -1078,7 +1079,7 @@ impl ActorEmergencyKeyRotationStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorEmergencyKeyRotationBodyJson {
     pub next_key: PublicKeyJson,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1109,7 +1110,7 @@ impl ActorEmergencyKeyRotationBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorEmergencyKeyRevocationStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -1171,7 +1172,7 @@ impl ActorEmergencyKeyRevocationStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorEmergencyKeyRevocationBodyJson {
     pub revoked_key: String,
     pub retroactive: bool,
@@ -1197,7 +1198,7 @@ impl ActorEmergencyKeyRevocationBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorAttestationKeyAddStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -1257,7 +1258,7 @@ impl ActorAttestationKeyAddStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorAttestationKeyAddBodyJson {
     pub new_key: PublicKeyJson,
 }
@@ -1278,7 +1279,7 @@ impl ActorAttestationKeyAddBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorAttestationKeyRevocationStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -1340,7 +1341,7 @@ impl ActorAttestationKeyRevocationStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorAttestationKeyRevocationBodyJson {
     pub revoked_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1363,7 +1364,7 @@ impl ActorAttestationKeyRevocationBodyJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorAttestationThresholdChangeStatementJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -1425,7 +1426,7 @@ impl ActorAttestationThresholdChangeStatementJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorAttestationThresholdChangeBodyJson {
     pub new_threshold: u8,
 }

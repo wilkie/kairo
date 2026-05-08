@@ -5,6 +5,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use kairo_core::{Timestamp, TimestampError};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::{ActorGenesisBody, ActorGenesisShapeError, ActorKind, PublicKey};
 
@@ -68,7 +69,7 @@ impl Error for ActorGenesisJsonError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorGenesisJson {
     #[serde(rename = "type")]
     pub statement_type: String,
@@ -124,7 +125,7 @@ impl ActorGenesisJson {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct PublicKeyJson {
     pub algorithm: String,
     pub bytes: String,

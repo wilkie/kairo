@@ -24,6 +24,19 @@ pub struct ActorQuery {
 }
 
 /// `GET /api/v1/branches/{object_id}`
+#[utoipa::path(
+    get,
+    path = "/api/v1/branches/{object}",
+    tag = "branches",
+    operation_id = "listBranches",
+    params(
+        ("object" = String, Path, description = "Object id (kairo:object:...)"),
+    ),
+    responses(
+        (status = 200, description = "Branch tip summaries: one per (actor, name) chain leaf", body = [BranchTipDto]),
+        (status = 400, description = "Malformed object id"),
+    ),
+)]
 pub async fn list_handler(
     State(state): State<AppState>,
     Path(object_id): Path<String>,
@@ -53,6 +66,22 @@ pub async fn list_handler(
 }
 
 /// `GET /api/v1/branches/{object_id}/{name}/latest?actor=<id>`
+#[utoipa::path(
+    get,
+    path = "/api/v1/branches/{object}/{name}/latest",
+    tag = "branches",
+    operation_id = "getLatestBranch",
+    params(
+        ("object" = String, Path, description = "Object id (kairo:object:...)"),
+        ("name" = String, Path, description = "Branch name (e.g., \"head\")"),
+        ("actor" = Option<String>, Query, description = "Actor whose branch to resolve; defaults to the object's `created_by`"),
+    ),
+    responses(
+        (status = 200, description = "Latest ObjectBranch statement (chain leaf)", body = ObjectBranchStatementJson),
+        (status = 400, description = "Malformed object id, branch name, or actor query"),
+        (status = 404, description = "Branch head not found"),
+    ),
+)]
 pub async fn latest_handler(
     State(state): State<AppState>,
     Path((object_id, name)): Path<(String, String)>,

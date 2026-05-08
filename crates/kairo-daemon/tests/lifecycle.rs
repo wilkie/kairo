@@ -20,6 +20,7 @@ use tower as _;
 use tower_http as _;
 use tracing as _;
 use tracing_subscriber as _;
+use utoipa as _;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

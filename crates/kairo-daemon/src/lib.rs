@@ -33,6 +33,7 @@ pub mod api;
 mod error;
 mod server;
 
+pub use api::openapi::ApiDoc;
 pub use error::Error;
 pub use server::{serve, serve_with_shutdown};
 

@@ -15,6 +15,7 @@ use tower as _;
 use tower_http as _;
 use tracing as _;
 use tracing_subscriber as _;
+use utoipa as _;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

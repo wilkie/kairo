@@ -29,6 +29,25 @@ use crate::api::store_errors::map_store_error;
 /// stays in the noise.
 const STREAM_CHUNK_BYTES: usize = 64 * 1024;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blobs/{id}",
+    tag = "blobs",
+    operation_id = "getBlob",
+    params(
+        ("id" = String, Path, description = "Blob id (kairo:blob:...)"),
+    ),
+    responses(
+        (
+            status = 200,
+            description = "Raw blob bytes streamed with chunked transfer encoding",
+            content_type = "application/octet-stream",
+            body = [u8],
+        ),
+        (status = 400, description = "Malformed blob id"),
+        (status = 404, description = "Blob not found"),
+    ),
+)]
 pub async fn handler(
     State(state): State<AppState>,
     Path(id): Path<String>,

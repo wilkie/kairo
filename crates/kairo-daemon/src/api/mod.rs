@@ -12,6 +12,7 @@ use tower_http::trace::TraceLayer;
 pub mod dto;
 pub mod envelope;
 pub mod handlers;
+pub mod openapi;
 pub mod state;
 pub(crate) mod store_errors;
 
@@ -53,6 +54,7 @@ pub fn router(state: AppState) -> Router {
             get(handlers::capabilities::list_from_handler),
         )
         .route("/api/v1/blobs/:id", get(handlers::blobs::handler))
+        .route("/api/v1/openapi.json", get(openapi::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

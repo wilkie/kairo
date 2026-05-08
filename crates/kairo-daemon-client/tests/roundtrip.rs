@@ -13,6 +13,7 @@ use hyper_util as _;
 use kairo_identity as _;
 use serde as _;
 use tokio_util as _;
+use utoipa as _;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

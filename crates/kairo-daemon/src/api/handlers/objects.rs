@@ -10,6 +10,20 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/objects/{id}",
+    tag = "objects",
+    operation_id = "getObject",
+    params(
+        ("id" = String, Path, description = "Object id (kairo:object:...)"),
+    ),
+    responses(
+        (status = 200, description = "Object genesis statement JSON", body = ObjectGenesisStatementJson),
+        (status = 400, description = "Malformed object id"),
+        (status = 404, description = "Object not found"),
+    ),
+)]
 pub async fn handler(
     State(state): State<AppState>,
     Path(id): Path<String>,

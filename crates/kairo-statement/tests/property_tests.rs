@@ -19,6 +19,7 @@ use base64 as _;
 use ed25519_dalek as _;
 use semver as _;
 use serde as _;
+use utoipa as _;
 
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};

@@ -10,6 +10,7 @@
 //! daemon's handlers serialize them.
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 // Re-export the canonical JSON wrapper types from upstream so
 // callers don't need to depend on `kairo-identity` /
@@ -36,7 +37,7 @@ pub type StatementValue = serde_json::Value;
 /// `GET /api/v1/statements/{statement_id}` (or
 /// `GET /api/v1/branches/{object}/{name}/latest` for the
 /// resolved head).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct BranchTipDto {
     pub actor: String,
     pub object: String,
@@ -50,7 +51,7 @@ pub struct BranchTipDto {
 /// `GET /api/v1/capabilities/{grantor}`. One entry per
 /// `(grantee, scope)` chain leaf — mirrors the shape produced
 /// by `kairo capability list --grantor` in direct mode.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CapabilityHeadDto {
     pub grantor: String,
     pub grantee: String,
@@ -65,7 +66,7 @@ pub struct CapabilityHeadDto {
 /// from the corresponding `Cargo.toml` package versions at
 /// build time. `api_version` is the URL-prefix version, not a
 /// crate version.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct VersionInfo {
     pub daemon_version: String,
     pub api_version: String,
@@ -78,7 +79,7 @@ pub struct VersionInfo {
 /// V1 fields only: federation, runtime, and task counts are
 /// omitted because those subsystems are post-v1 (see
 /// `specs/API.md` §11.2 v1 surface note).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct StatusInfo {
     pub daemon_running: bool,
     pub store_path: String,

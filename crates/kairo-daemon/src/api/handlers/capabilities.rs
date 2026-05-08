@@ -12,6 +12,19 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/capabilities/{grantor}",
+    tag = "capabilities",
+    operation_id = "listCapabilitiesFromGrantor",
+    params(
+        ("grantor" = String, Path, description = "Grantor actor id (kairo:actor:...)"),
+    ),
+    responses(
+        (status = 200, description = "Capability head summaries: one per (grantee, scope) chain leaf", body = [CapabilityHeadDto]),
+        (status = 400, description = "Malformed grantor id"),
+    ),
+)]
 pub async fn list_from_handler(
     State(state): State<AppState>,
     Path(grantor): Path<String>,

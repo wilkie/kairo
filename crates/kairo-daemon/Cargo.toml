@@ -23,6 +23,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+utoipa = { version = "5", features = ["axum_extras"] }
 
 [dev-dependencies]
 hyper = { version = "1", features = ["client", "http1"] }
