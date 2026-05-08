@@ -124,6 +124,9 @@ locked MVP scope (foreground process, Unix-socket-only, read-only
 HTTP+JSON, ~11 endpoints, stateful daemon with stateless requests,
 OpenAPI deferred to §5).
 
+- [x] **Slice plan.** See `specs/PHASE_2_DAEMON.md` — eight
+      sliced commits decomposing the bullets below. Each slice
+      is reviewable independently.
 - [x] **MVP scope locked.** See `DECISIONS.md` §10. Eight
       sub-decisions: foreground-only process model; Unix-socket
       transport (no TCP/TLS in v1); OpenAPI deferred until §5;

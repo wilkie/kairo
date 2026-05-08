@@ -846,6 +846,32 @@ The daemon must:
 11. Prefer sandboxed runtime execution.
 12. Log security-relevant denials and failures.
 
+### 18.1 Authentication direction
+
+**[v1] filesystem perms only.** The daemon listens on a Unix
+socket at `<store>/daemon.sock` (mode 0600); anyone who can
+`connect(2)` is fully trusted, identical to a `kairo-cli`
+direct-mode caller. No bearer tokens, no per-request auth.
+
+**[post-v1] actor signing-key request auth + capability
+statements.** When mutation/execution endpoints land, clients
+will sign `(method, path, body-hash, timestamp, nonce)` with
+their actor's active signing key (ed25519); the daemon resolves
+the actor through the same `ActorResolver` the rest of the
+system uses. Authorization is then a capability lookup against
+the existing `CAPABILITIES.md` model — `ActorCapabilityGrant`
+is the authorization token; `ActorCapabilityRevocation` is the
+revocation surface.
+
+The daemon stays a single-mechanism auth surface. JWT, OIDC,
+cookies, WebAuthn, and other browser-facing schemes belong in
+`kairo-web` (Phase 2 §5), which terminates them and forwards
+to the daemon over the Unix socket using its own actor key
+(or a delegated capability) — never a forwarded user token.
+This is the same auth mechanism federation peers will use, so
+the daemon, federation, and (via the web server) the browser
+share one identity model.
+
 ---
 
 ## 19. Concurrency Requirements

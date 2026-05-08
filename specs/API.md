@@ -473,6 +473,26 @@ dangerous operations require daemon policy approval even if the
 API request is authenticated. v1 has no mutation/execution
 endpoints, so this section is informational until those land.
 
+### 9.4 Post-v1 authentication direction
+
+When per-request authentication lands on the daemon (alongside
+mutation/execution endpoints), the mechanism is **actor
+signing-key request auth**: clients sign `(method, path, body-
+hash, timestamp, nonce)` with their actor's active signing key
+(ed25519); the daemon verifies via the same `ActorResolver`
+the rest of the system uses. Authorization is a capability
+lookup against the existing `CAPABILITIES.md` model —
+`ActorCapabilityGrant` doubles as the authorization token, and
+`ActorCapabilityRevocation` is the revocation surface.
+
+JWT, OIDC, cookies, WebAuthn, and other browser-facing schemes
+stay in `kairo-web` (§9.2) — the web server terminates them
+and forwards to the daemon over Unix socket using its own
+actor key (or a delegated capability), never a forwarded user
+token. This is the same auth mechanism federation peers use,
+so the daemon, federation, and (via the web server) the
+browser share one identity model. See `DAEMON.md` §18.1.
+
 ---
 
 ## 10. Endpoint Groups
