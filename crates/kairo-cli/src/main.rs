@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod dispatch;
 mod error;
 mod format;
 mod store_paths;
@@ -106,11 +107,15 @@ fn require_active_signing_key(
 
 fn run(cli: Cli) -> Result<String, CliError> {
     let require_daemon = cli.daemon;
-    // `--direct` and `--offline` are parsed for forward compat
-    // (slice 8 plumbs them into read-command dispatch); accepted
-    // here as no-ops in slice 4 except for the clap-enforced
-    // mutual-exclusion with `--daemon`.
-    let _ = (cli.direct, cli.offline);
+    // `--offline` falls under "force direct" for the v1 dispatch:
+    // there is no federation surface to disable yet, so the
+    // operative effect is the same as `--direct`. When Phase 2
+    // §4 lands, the federation-disable bit will split out.
+    let force_direct = cli.direct || cli.offline;
+    let dispatch_opts = dispatch::DispatchOptions {
+        require_daemon,
+        force_direct,
+    };
 
     let paths = StorePaths::resolve(cli.store, cli.keys)?;
     match cli.command {
@@ -118,9 +123,9 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Manifest { command }) => commands::manifest::run_manifest_command(command),
         Some(Command::Object { command }) => run_object_command(command, &paths),
         Some(Command::Revision { command }) => run_revision_command(command, &paths),
-        Some(Command::Branch { command }) => run_branch_command(command, &paths),
-        Some(Command::Tag { command }) => run_tag_command(command, &paths),
-        Some(Command::Trust { command }) => run_trust_command(command, &paths),
+        Some(Command::Branch { command }) => run_branch_command(command, &paths, dispatch_opts),
+        Some(Command::Tag { command }) => run_tag_command(command, &paths, dispatch_opts),
+        Some(Command::Trust { command }) => run_trust_command(command, &paths, dispatch_opts),
         Some(Command::Capability { command }) => run_capability_command(command, &paths),
         Some(Command::Bundle { command }) => commands::bundle::run_bundle_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
@@ -2479,7 +2484,11 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
     }
 }
 
-fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<String, CliError> {
+fn run_branch_command(
+    command: BranchCommand,
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+) -> Result<String, CliError> {
     match command {
         BranchCommand::Set {
             actor,
@@ -2575,44 +2584,7 @@ fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<Stri
             actor,
             name,
             json,
-        } => {
-            let object_id = ObjectId::new(object.clone())
-                .map_err(|source| CliError::ParseObjectId { object, source })?;
-            let store = open_store(paths)?;
-
-            let actor_id = match actor {
-                Some(actor) => ActorId::new(actor.clone())
-                    .map_err(|source| CliError::ParseActorId { actor, source })?,
-                None => {
-                    let genesis = store.get_object_genesis(&object_id).map_err(|error| {
-                        CliError::ReadObjectGenesis {
-                            object: object_id.clone(),
-                            source: error,
-                        }
-                    })?;
-                    genesis.body().created_by().clone()
-                }
-            };
-
-            let resolved = store
-                .latest_branch(&actor_id, &object_id, &name)
-                .map_err(CliError::ReadBranch)?;
-
-            match resolved {
-                Some(signed) => {
-                    if json {
-                        Ok(format_branch_show_json(&signed))
-                    } else {
-                        Ok(format_branch_show(&signed))
-                    }
-                }
-                None => Err(CliError::BranchNotFound {
-                    actor: actor_id,
-                    object: object_id,
-                    name,
-                }),
-            }
-        }
+        } => run_branch_show(paths, dispatch_opts, object, actor, name, json),
         BranchCommand::List { object } => {
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
@@ -2621,6 +2593,92 @@ fn run_branch_command(command: BranchCommand, paths: &StorePaths) -> Result<Stri
                 .list_branches(&object_id)
                 .map_err(CliError::ReadBranch)?;
             Ok(format_branch_list(&object_id, &tips))
+        }
+    }
+}
+
+fn run_branch_show(
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+    object: String,
+    actor: Option<String>,
+    name: String,
+    json: bool,
+) -> Result<String, CliError> {
+    let object_id = ObjectId::new(object.clone())
+        .map_err(|source| CliError::ParseObjectId { object, source })?;
+
+    // Resolve dispatch before any store reads so `--daemon`
+    // against a missing/unreachable socket fails with exit 9
+    // before we touch the genesis.
+    let mode = dispatch::resolve(paths, dispatch_opts)?;
+
+    // Resolve the actor via direct genesis read so the not-found
+    // error message names the same actor in both modes and the
+    // daemon URL carries an explicit ?actor=. The store read is
+    // lock-safe alongside a running daemon (advisory locks
+    // from §6).
+    let actor_id = resolve_actor_for_object(actor, paths, &object_id)?;
+
+    let signed_or_missing = match mode {
+        dispatch::Mode::Daemon { runtime, client } => {
+            let result = runtime.block_on(client.latest_branch(
+                object_id.as_str(),
+                &name,
+                Some(actor_id.as_str()),
+            ));
+            match result {
+                Ok(json_form) => Some(
+                    json_form
+                        .to_statement()
+                        .map_err(CliError::ParseStatement)?,
+                ),
+                Err(kairo_daemon_client::ClientError::Http { status: 404, .. }) => None,
+                Err(error) => return Err(CliError::DaemonRequestFailed(error)),
+            }
+        }
+        dispatch::Mode::Direct => {
+            let store = open_store(paths)?;
+            store
+                .latest_branch(&actor_id, &object_id, &name)
+                .map_err(CliError::ReadBranch)?
+        }
+    };
+
+    match signed_or_missing {
+        Some(signed) => {
+            if json {
+                Ok(format_branch_show_json(&signed))
+            } else {
+                Ok(format_branch_show(&signed))
+            }
+        }
+        None => Err(CliError::BranchNotFound {
+            actor: actor_id,
+            object: object_id,
+            name,
+        }),
+    }
+}
+
+fn resolve_actor_for_object(
+    actor: Option<String>,
+    paths: &StorePaths,
+    object_id: &ObjectId,
+) -> Result<ActorId, CliError> {
+    match actor {
+        Some(actor) => ActorId::new(actor.clone())
+            .map_err(|source| CliError::ParseActorId { actor, source }),
+        None => {
+            let store = open_store(paths)?;
+            let genesis =
+                store
+                    .get_object_genesis(object_id)
+                    .map_err(|error| CliError::ReadObjectGenesis {
+                        object: object_id.clone(),
+                        source: error,
+                    })?;
+            Ok(genesis.body().created_by().clone())
         }
     }
 }
@@ -2666,7 +2724,11 @@ fn format_branch_list(object: &ObjectId, tips: &[kairo_store::BranchTip]) -> Str
     output
 }
 
-fn run_tag_command(command: TagCommand, paths: &StorePaths) -> Result<String, CliError> {
+fn run_tag_command(
+    command: TagCommand,
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+) -> Result<String, CliError> {
     match command {
         TagCommand::Bind {
             actor,
@@ -2835,45 +2897,7 @@ fn run_tag_command(command: TagCommand, paths: &StorePaths) -> Result<String, Cl
             actor,
             version,
             json,
-        } => {
-            let object_id = ObjectId::new(object.clone())
-                .map_err(|source| CliError::ParseObjectId { object, source })?;
-            let semver = SemverVersion::parse(&version).map_err(CliError::ParseSemver)?;
-            let store = open_store(paths)?;
-
-            let actor_id = match actor {
-                Some(actor) => ActorId::new(actor.clone())
-                    .map_err(|source| CliError::ParseActorId { actor, source })?,
-                None => {
-                    let genesis = store.get_object_genesis(&object_id).map_err(|error| {
-                        CliError::ReadObjectGenesis {
-                            object: object_id.clone(),
-                            source: error,
-                        }
-                    })?;
-                    genesis.body().created_by().clone()
-                }
-            };
-
-            let resolved = store
-                .latest_version_tag(&actor_id, &object_id, semver.as_str())
-                .map_err(CliError::ReadVersionTag)?;
-
-            match resolved {
-                Some(signed) => {
-                    if json {
-                        Ok(format_tag_show_json(&signed))
-                    } else {
-                        Ok(format_tag_show(&signed))
-                    }
-                }
-                None => Err(CliError::TagNotFound {
-                    actor: actor_id,
-                    object: object_id,
-                    version: semver.as_str().to_owned(),
-                }),
-            }
-        }
+        } => run_tag_show(paths, dispatch_opts, object, actor, version, json),
         TagCommand::List { object } => {
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
@@ -2957,6 +2981,62 @@ fn walk_tag_chain(
         }
     }
     Ok(chain)
+}
+
+fn run_tag_show(
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+    object: String,
+    actor: Option<String>,
+    version: String,
+    json: bool,
+) -> Result<String, CliError> {
+    let object_id = ObjectId::new(object.clone())
+        .map_err(|source| CliError::ParseObjectId { object, source })?;
+    let semver = SemverVersion::parse(&version).map_err(CliError::ParseSemver)?;
+
+    let mode = dispatch::resolve(paths, dispatch_opts)?;
+    let actor_id = resolve_actor_for_object(actor, paths, &object_id)?;
+
+    let signed_or_missing = match mode {
+        dispatch::Mode::Daemon { runtime, client } => {
+            let result = runtime.block_on(client.latest_version_tag(
+                object_id.as_str(),
+                semver.as_str(),
+                Some(actor_id.as_str()),
+            ));
+            match result {
+                Ok(json_form) => Some(
+                    json_form
+                        .to_statement()
+                        .map_err(CliError::ParseStatement)?,
+                ),
+                Err(kairo_daemon_client::ClientError::Http { status: 404, .. }) => None,
+                Err(error) => return Err(CliError::DaemonRequestFailed(error)),
+            }
+        }
+        dispatch::Mode::Direct => {
+            let store = open_store(paths)?;
+            store
+                .latest_version_tag(&actor_id, &object_id, semver.as_str())
+                .map_err(CliError::ReadVersionTag)?
+        }
+    };
+
+    match signed_or_missing {
+        Some(signed) => {
+            if json {
+                Ok(format_tag_show_json(&signed))
+            } else {
+                Ok(format_tag_show(&signed))
+            }
+        }
+        None => Err(CliError::TagNotFound {
+            actor: actor_id,
+            object: object_id,
+            version: semver.as_str().to_owned(),
+        }),
+    }
 }
 
 fn format_tag_show(signed: &SignedStatement<ObjectVersionTagBody>) -> String {
@@ -3086,7 +3166,11 @@ fn format_tag_history_json(
     output
 }
 
-fn run_trust_command(command: TrustCommand, paths: &StorePaths) -> Result<String, CliError> {
+fn run_trust_command(
+    command: TrustCommand,
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+) -> Result<String, CliError> {
     match command {
         TrustCommand::Grant { by, of, reason } => {
             run_trust_decide(paths, by, of, reason, Some(TrustDecision::Trusted), "grant")
@@ -3098,19 +3182,7 @@ fn run_trust_command(command: TrustCommand, paths: &StorePaths) -> Result<String
             run_trust_decide(paths, by, of, reason, None, "withdraw")
         }
         TrustCommand::Show { by, of, json } => {
-            let by_actor = ActorId::new(by.clone())
-                .map_err(|source| CliError::ParseActorId { actor: by, source })?;
-            let trusted_actor = ActorId::new(of.clone())
-                .map_err(|source| CliError::ParseActorId { actor: of, source })?;
-            let store = open_store(paths)?;
-            let resolved = store
-                .latest_trust(&by_actor, &trusted_actor)
-                .map_err(CliError::ReadActorTrust)?;
-            if json {
-                Ok(format_trust_show_json(&by_actor, &trusted_actor, resolved.as_ref()))
-            } else {
-                Ok(format_trust_show(&by_actor, &trusted_actor, resolved.as_ref()))
-            }
+            run_trust_show(paths, dispatch_opts, by, of, json)
         }
         TrustCommand::List { by } => {
             let by_actor = ActorId::new(by.clone())
@@ -3250,6 +3322,57 @@ fn walk_trust_chain(
         }
     }
     Ok(chain)
+}
+
+fn run_trust_show(
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+    by: String,
+    of: String,
+    json: bool,
+) -> Result<String, CliError> {
+    let by_actor =
+        ActorId::new(by.clone()).map_err(|source| CliError::ParseActorId { actor: by, source })?;
+    let trusted_actor =
+        ActorId::new(of.clone()).map_err(|source| CliError::ParseActorId { actor: of, source })?;
+
+    let mode = dispatch::resolve(paths, dispatch_opts)?;
+    let resolved = match mode {
+        dispatch::Mode::Daemon { runtime, client } => {
+            let result =
+                runtime.block_on(client.trust(by_actor.as_str(), trusted_actor.as_str()));
+            match result {
+                Ok(json_form) => Some(
+                    json_form
+                        .to_statement()
+                        .map_err(CliError::ParseStatement)?,
+                ),
+                // 404 means "no opinion" — same as direct's None.
+                Err(kairo_daemon_client::ClientError::Http { status: 404, .. }) => None,
+                Err(error) => return Err(CliError::DaemonRequestFailed(error)),
+            }
+        }
+        dispatch::Mode::Direct => {
+            let store = open_store(paths)?;
+            store
+                .latest_trust(&by_actor, &trusted_actor)
+                .map_err(CliError::ReadActorTrust)?
+        }
+    };
+
+    if json {
+        Ok(format_trust_show_json(
+            &by_actor,
+            &trusted_actor,
+            resolved.as_ref(),
+        ))
+    } else {
+        Ok(format_trust_show(
+            &by_actor,
+            &trusted_actor,
+            resolved.as_ref(),
+        ))
+    }
 }
 
 fn format_trust_show(

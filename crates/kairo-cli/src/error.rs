@@ -377,6 +377,12 @@ pub(crate) enum CliError {
         socket: std::path::PathBuf,
         waited: std::time::Duration,
     },
+    /// A daemon-mode request through `kairo-daemon-client`
+    /// failed for a reason other than a typed 404 (which the
+    /// dispatch handler maps to direct-mode-equivalent
+    /// `NotFound` variants). Surfaces transport, decode, and
+    /// non-404 HTTP errors verbatim.
+    DaemonRequestFailed(kairo_daemon_client::ClientError),
 }
 
 impl CliError {
@@ -771,6 +777,7 @@ impl fmt::Display for CliError {
                 waited.as_secs_f64(),
                 socket.display()
             ),
+            Self::DaemonRequestFailed(error) => write!(f, "daemon request failed: {error}"),
         }
     }
 }
@@ -889,6 +896,7 @@ impl Error for CliError {
             Self::DaemonRuntime(error) => Some(error),
             Self::DaemonServe { source } => Some(source.as_ref()),
             Self::DaemonKill { source, .. } => Some(source),
+            Self::DaemonRequestFailed(error) => Some(error),
         }
     }
 }

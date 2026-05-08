@@ -148,7 +148,7 @@ OpenAPI deferred to §5).
       Daemon framework is `axum` + `tokio`; blocking store calls
       go through `tokio::task::spawn_blocking`. Other frameworks
       (raw `hyper`, sync `tiny_http`-style) rejected — see §11.
-- [ ] Spec reconciliation pass: `DAEMON.md` §5.1 / §6.1 trimmed
+- [x] Spec reconciliation pass: `DAEMON.md` §5.1 / §6.1 trimmed
       to v1 components; §13 transport list narrowed to Unix
       socket. `API.md` §3 contract-strategy section updated to
       note OpenAPI deferral and the two-process split; §9 auth
@@ -157,36 +157,60 @@ OpenAPI deferred to §5).
       reads only; write commands stay direct. Both
       `kairo daemon start|status|stop` and (deferred)
       `kairo web start|status|stop` documented.
-- [ ] Stand up `crates/kairo-daemon`: foreground binary that
-      opens `FilesystemStore` once, binds a listening Unix socket
-      at `<store>/daemon.sock`, writes a PID file at
-      `<store>/daemon.pid`, runs the axum app, and shuts down
-      gracefully on `SIGTERM`/`SIGINT`. Wraps blocking store
-      calls in `tokio::task::spawn_blocking`.
-- [ ] Implement the read-only endpoints listed in `DECISIONS.md`
-      §10.4. `GET /api/v1/blobs/{id}` streams response bodies via
-      the §1 streaming-first patterns (no full materialization).
-- [ ] Stand up `crates/kairo-daemon-client`: tiny Rust crate
-      wrapping HTTP-over-Unix-socket calls against the daemon's
-      `/api/v1/...`. Async (tokio + hyper). One Rust function per
-      endpoint plus a typed error enum. Used by `kairo-cli`'s
-      daemon-mode dispatch in v1; future Rust web-server impl
-      uses the same crate.
-- [ ] Add `kairo daemon start | status | stop` to the CLI.
-      `start` runs the daemon in the foreground; `status` checks
-      the PID file + socket and queries `GET /api/v1/status`;
-      `stop` reads the PID and sends `SIGTERM` (optional `--wait`).
-- [ ] Implement CLI daemon-mode dispatch (`CLI.md` §3.3) using
-      `kairo-daemon-client`: probe `<store>/daemon.sock`, fall
-      back to direct mode if absent or unreachable. Wire at least
-      one read command (e.g., `kairo branch show`) through the
-      daemon path so the dispatch is exercised end-to-end. Write
-      commands stay direct regardless of mode.
+- [x] Stand up `crates/kairo-daemon` (slices 1–2): foreground
+      binary that opens `FilesystemStore` once, binds a listening
+      Unix socket at `<store>/daemon.sock` (mode 0600), writes a
+      PID file at `<store>/daemon.pid`, runs the axum app
+      (driven by a hyper-util accept loop because axum 0.7's
+      `serve` is TCP-only), and shuts down gracefully on
+      `SIGTERM`/`SIGINT` with a 10s drain cap. Blocking store
+      calls run on `tokio::task::spawn_blocking`. Double-start
+      is refused via a connect-probe + stale-socket unlink.
+- [x] Implement the read-only endpoints listed in `DECISIONS.md`
+      §10.4 (slices 5–7). `GET /api/v1/blobs/{id}` streams
+      response bodies through `tokio_util::io::ReaderStream`
+      (64 KiB chunks) — no full materialization. The version-
+      tag endpoint honors cross-actor `supersedes` via the
+      capability evaluator already shipped in §3.
+- [x] Stand up `crates/kairo-daemon-client` (slices 3 / 5–7):
+      Rust crate wrapping HTTP-over-Unix-socket calls against
+      `/api/v1/...`. Hand-rolled `hyper::client::conn::http1`
+      handshake per request (no pool yet — added if it ever
+      matters). Per-endpoint typed methods plus `BlobReader`
+      (`AsyncRead` over the streaming blob body) and a typed
+      `ClientError` enum. Used by `kairo-cli`'s dispatch in v1;
+      future Rust web-server impl uses the same crate.
+- [x] Add `kairo daemon start | status | stop` to the CLI
+      (slice 4). `start` runs the daemon in the foreground;
+      `status` probes the socket and prints PID/store/schema/
+      version, exiting 9 (`daemon_unavailable`) under `--daemon`
+      when absent; `stop` reads the PID and sends `SIGTERM`
+      via `nix::sys::signal::kill` (workspace forbids
+      `unsafe_code`), with `--wait` polling until the socket
+      disappears.
+- [x] Implement CLI daemon-mode dispatch (`CLI.md` §3.3) using
+      `kairo-daemon-client` (slice 8). The `cli::dispatch`
+      module probes the socket and returns `Mode::Daemon` /
+      `Mode::Direct`; `--daemon` requires reachable, `--direct`
+      / `--offline` force direct. `kairo branch show`,
+      `kairo tag show`, and `kairo trust show` route through
+      dispatch end-to-end; remaining read commands are
+      one-line follow-ups (tracked as polish, not §2
+      blockers). Write commands stay direct regardless of mode.
+
+**Status: shipped.** All eight slices in `PHASE_2_DAEMON.md`
+landed. The new crates are `crates/kairo-daemon` (lib + bin)
+and `crates/kairo-daemon-client` (lib). `kairo-cli` gained
+the `daemon` verb tree, the `--daemon` / `--direct` /
+`--offline` global flags, and the `cli::dispatch` module.
+Mutation, execution, federation, policy, GC, and OpenAPI are
+explicitly out of v1 scope and gated on later phases (§4 / §5
+/ §7) or their own `DECISIONS.md` follow-ups.
 
 **Why it matters:** every downstream surface (web client,
 federation-as-service, daemon-mode CLI, multi-actor workflows)
 depends on the daemon existing as the local coordination layer.
-§4 federation and §5 web client cannot start until v1 daemon ships.
+§4 federation and §5 web client can now start.
 
 ### 3. Capability / Delegation Model
 
