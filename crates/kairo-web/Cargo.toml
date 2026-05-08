@@ -1,0 +1,41 @@
+[package]
+name = "kairo-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum = "0.7"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["server", "server-auto", "server-graceful", "client", "client-legacy", "http1", "tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "signal", "sync", "io-util", "time"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+kairo-core = { path = "../kairo-core" }
+kairo-daemon = { path = "../kairo-daemon" }
+kairo-daemon-client = { path = "../kairo-daemon-client" }
+kairo-store = { path = "../kairo-store" }
+kairo-test-support = { path = "../kairo-test-support" }
+serde_json = "1"
+tempfile = "3"
+
+[lib]
+name = "kairo_web"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kairo-web"
+path = "src/main.rs"
+
+[lints]
+workspace = true

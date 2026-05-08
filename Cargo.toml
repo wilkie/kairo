@@ -12,6 +12,7 @@ members = [
     "crates/kairo-daemon",
     "crates/kairo-daemon-client",
     "crates/kairo-test-support",
+    "crates/kairo-web",
 ]
 resolver = "2"
 
