@@ -320,3 +320,166 @@ fn direct_write_succeeds_while_daemon_serves_concurrent_read() {
     let _ = daemon.wait();
     drop(dir);
 }
+
+const FIXTURE_MANIFEST: &str = r#"
+    [kairo]
+    schema = 1
+    kind = "kairo/object"
+    name = "fixture"
+
+    [content]
+    kind = "tree"
+"#;
+
+/// Compare daemon-mode and direct-mode output for `args`. Both
+/// runs must succeed and produce byte-identical stdout.
+fn assert_modes_agree(store_path: &Path, args: &[&str]) {
+    let mut daemon_args = vec!["--store", store_path.to_str().unwrap(), "--daemon"];
+    daemon_args.extend_from_slice(args);
+    let daemon_run = run_kairo(&daemon_args);
+    assert!(
+        daemon_run.status.success(),
+        "daemon mode failed: stderr = {}",
+        String::from_utf8_lossy(&daemon_run.stderr)
+    );
+
+    let mut direct_args = vec!["--store", store_path.to_str().unwrap(), "--direct"];
+    direct_args.extend_from_slice(args);
+    let direct_run = run_kairo(&direct_args);
+    assert!(
+        direct_run.status.success(),
+        "direct mode failed: stderr = {}",
+        String::from_utf8_lossy(&direct_run.stderr)
+    );
+
+    let daemon_out = String::from_utf8(daemon_run.stdout).expect("utf-8");
+    let direct_out = String::from_utf8(direct_run.stdout).expect("utf-8");
+    assert_eq!(
+        daemon_out, direct_out,
+        "modes diverge for args {args:?}\n\ndaemon:\n{daemon_out}\n\ndirect:\n{direct_out}"
+    );
+}
+
+#[test]
+fn branch_list_round_trips_in_both_modes() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    fixture.set_branch(&actor, &object, &revision, "head");
+    let object_id = object.object_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    assert_modes_agree(
+        &store_path,
+        &["branch", "list", "--object", &object_id],
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn revision_inspect_round_trips_in_both_modes() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let statement_id = revision.statement_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    assert_modes_agree(
+        &store_path,
+        &["revision", "inspect", "--statement", &statement_id],
+    );
+    assert_modes_agree(
+        &store_path,
+        &["revision", "inspect", "--statement", &statement_id, "--json"],
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn capability_list_grantor_round_trips_in_both_modes() {
+    use kairo_core::canonical::CanonicalEncode;
+    use kairo_statement::{
+        ActorCapabilityGrantBody, Capability, CapabilityScope, Signature, SignedStatement,
+        StatementKind, UnsignedStatement,
+    };
+    use kairo_store::StatementStore;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+
+    // Issue one capability grant alice → bob on this object.
+    let cap = Capability::new(
+        CapabilityScope::Object(object.object_id.clone()),
+        vec![StatementKind::ObjectVersionTag],
+        false,
+        Vec::new(),
+    )
+    .expect("capability");
+    let body = ActorCapabilityGrantBody::new(bob.actor_id.clone(), cap, None);
+    let subject: kairo_core::KairoRef =
+        format!("actor:{}", bob.actor_id).parse().expect("subject");
+    let unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        subject,
+        kairo_core::Timestamp::from_seconds(1_700_000_000),
+        body,
+    );
+    let bytes = alice.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bytes.bytes().to_vec(),
+    );
+    fixture
+        .store
+        .put_actor_capability_grant(&SignedStatement::new(unsigned, signature))
+        .expect("put_actor_capability_grant");
+
+    let alice_id = alice.actor_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    assert_modes_agree(
+        &store_path,
+        &["capability", "list", "--grantor", &alice_id],
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}

@@ -122,11 +122,11 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Actor { command }) => run_actor_command(command, &paths),
         Some(Command::Manifest { command }) => commands::manifest::run_manifest_command(command),
         Some(Command::Object { command }) => run_object_command(command, &paths),
-        Some(Command::Revision { command }) => run_revision_command(command, &paths),
+        Some(Command::Revision { command }) => run_revision_command(command, &paths, dispatch_opts),
         Some(Command::Branch { command }) => run_branch_command(command, &paths, dispatch_opts),
         Some(Command::Tag { command }) => run_tag_command(command, &paths, dispatch_opts),
         Some(Command::Trust { command }) => run_trust_command(command, &paths, dispatch_opts),
-        Some(Command::Capability { command }) => run_capability_command(command, &paths),
+        Some(Command::Capability { command }) => run_capability_command(command, &paths, dispatch_opts),
         Some(Command::Bundle { command }) => commands::bundle::run_bundle_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         Some(Command::Verify { command }) => run_verify_command(command, &paths),
@@ -2297,7 +2297,11 @@ fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<S
 }
 
 
-fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<String, CliError> {
+fn run_revision_command(
+    command: RevisionCommand,
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+) -> Result<String, CliError> {
     match command {
         RevisionCommand::ValidateManifest {
             statement,
@@ -2459,20 +2463,7 @@ fn run_revision_command(command: RevisionCommand, paths: &StorePaths) -> Result<
             ))
         }
         RevisionCommand::Inspect { statement, json } => {
-            let statement_id = kairo_core::StatementId::new(statement.clone())
-                .map_err(|source| CliError::ParseStatementId { statement, source })?;
-            let store = open_store(paths)?;
-            let signed = store.get_object_revision(&statement_id).map_err(|error| {
-                CliError::ReadRevision {
-                    statement: statement_id.clone(),
-                    source: error,
-                }
-            })?;
-            if json {
-                Ok(format_revision_inspect_json(&signed))
-            } else {
-                Ok(format_revision_inspect(&signed))
-            }
+            run_revision_inspect(paths, dispatch_opts, statement, json)
         }
         RevisionCommand::List { object } => {
             let object_id = ObjectId::new(object.clone())
@@ -2585,16 +2576,65 @@ fn run_branch_command(
             name,
             json,
         } => run_branch_show(paths, dispatch_opts, object, actor, name, json),
-        BranchCommand::List { object } => {
-            let object_id = ObjectId::new(object.clone())
-                .map_err(|source| CliError::ParseObjectId { object, source })?;
-            let store = open_store(paths)?;
-            let tips = store
-                .list_branches(&object_id)
-                .map_err(CliError::ReadBranch)?;
-            Ok(format_branch_list(&object_id, &tips))
-        }
+        BranchCommand::List { object } => run_branch_list(paths, dispatch_opts, object),
     }
+}
+
+fn run_branch_list(
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+    object: String,
+) -> Result<String, CliError> {
+    let object_id = ObjectId::new(object.clone())
+        .map_err(|source| CliError::ParseObjectId { object, source })?;
+
+    let mode = dispatch::resolve(paths, dispatch_opts)?;
+
+    let tips = match mode {
+        dispatch::Mode::Daemon { runtime, client } => {
+            let dtos = runtime
+                .block_on(client.list_branches(object_id.as_str()))
+                .map_err(CliError::DaemonRequestFailed)?;
+            dtos.into_iter()
+                .map(|dto| {
+                    Ok::<_, CliError>(kairo_store::BranchTip {
+                        actor: ActorId::new(dto.actor.clone()).map_err(|source| {
+                            CliError::ParseActorId {
+                                actor: dto.actor,
+                                source,
+                            }
+                        })?,
+                        object: ObjectId::new(dto.object.clone()).map_err(|source| {
+                            CliError::ParseObjectId {
+                                object: dto.object,
+                                source,
+                            }
+                        })?,
+                        name: dto.name,
+                        statement_id: kairo_core::StatementId::new(dto.statement_id.clone())
+                            .map_err(|source| CliError::ParseStatementId {
+                                statement: dto.statement_id,
+                                source,
+                            })?,
+                        created_at: dto.created_at.parse().map_err(|source| {
+                            CliError::ParseCreatedAt {
+                                source,
+                                value: dto.created_at,
+                            }
+                        })?,
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        dispatch::Mode::Direct => {
+            let store = open_store(paths)?;
+            store
+                .list_branches(&object_id)
+                .map_err(CliError::ReadBranch)?
+        }
+    };
+
+    Ok(format_branch_list(&object_id, &tips))
 }
 
 fn run_branch_show(
@@ -3534,6 +3574,7 @@ fn format_trust_history_json(
 fn run_capability_command(
     command: CapabilityCommand,
     paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
 ) -> Result<String, CliError> {
     match command {
         CapabilityCommand::Grant {
@@ -3563,7 +3604,7 @@ fn run_capability_command(
             reason,
         } => run_capability_revoke(paths, grantor, grant, retroactive, reason),
         CapabilityCommand::List { grantor, object } => {
-            run_capability_list(paths, grantor, object)
+            run_capability_list(paths, dispatch_opts, grantor, object)
         }
     }
 }
@@ -3749,6 +3790,7 @@ fn run_capability_revoke(
 
 fn run_capability_list(
     paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
     grantor: Option<String>,
     object: Option<String>,
 ) -> Result<String, CliError> {
@@ -3757,13 +3799,31 @@ fn run_capability_list(
         (Some(grantor), None) => {
             let grantor_id = ActorId::new(grantor.clone())
                 .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
-            let store = open_store(paths)?;
-            let heads = store
-                .list_capabilities_from(&grantor_id)
-                .map_err(CliError::ReadCapability)?;
+
+            let mode = dispatch::resolve(paths, dispatch_opts)?;
+            let heads = match mode {
+                dispatch::Mode::Daemon { runtime, client } => {
+                    let dtos = runtime
+                        .block_on(client.list_capabilities_from(grantor_id.as_str()))
+                        .map_err(CliError::DaemonRequestFailed)?;
+                    dtos.into_iter()
+                        .map(capability_head_dto_to_head)
+                        .collect::<Result<Vec<_>, _>>()?
+                }
+                dispatch::Mode::Direct => {
+                    let store = open_store(paths)?;
+                    store
+                        .list_capabilities_from(&grantor_id)
+                        .map_err(CliError::ReadCapability)?
+                }
+            };
+
             Ok(format_capability_list_by_grantor(&grantor_id, &heads))
         }
         (None, Some(object)) => {
+            // `capability list --object` has no daemon endpoint
+            // (slice 6 only shipped /capabilities/{grantor});
+            // stays direct until a follow-up adds the route.
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
             let store = open_store(paths)?;
@@ -3773,6 +3833,55 @@ fn run_capability_list(
             Ok(format_capability_list_by_object(&object_id, &heads))
         }
     }
+}
+
+fn capability_head_dto_to_head(
+    dto: kairo_daemon_client::dto::CapabilityHeadDto,
+) -> Result<kairo_store::CapabilityHead, CliError> {
+    let grantor =
+        ActorId::new(dto.grantor.clone()).map_err(|source| CliError::ParseActorId {
+            actor: dto.grantor,
+            source,
+        })?;
+    let grantee =
+        ActorId::new(dto.grantee.clone()).map_err(|source| CliError::ParseActorId {
+            actor: dto.grantee,
+            source,
+        })?;
+    let scope = match dto.scope {
+        kairo_statement::json::CapabilityScopeJson::Object(id) => CapabilityScope::Object(
+            ObjectId::new(id.clone()).map_err(|source| CliError::ParseObjectId {
+                object: id,
+                source,
+            })?,
+        ),
+        kairo_statement::json::CapabilityScopeJson::Actor(id) => CapabilityScope::Actor(
+            ActorId::new(id.clone()).map_err(|source| CliError::ParseActorId {
+                actor: id,
+                source,
+            })?,
+        ),
+    };
+    let statement_id = kairo_core::StatementId::new(dto.statement_id.clone()).map_err(|source| {
+        CliError::ParseStatementId {
+            statement: dto.statement_id,
+            source,
+        }
+    })?;
+    let created_at = dto
+        .created_at
+        .parse()
+        .map_err(|source| CliError::ParseCreatedAt {
+            source,
+            value: dto.created_at,
+        })?;
+    Ok(kairo_store::CapabilityHead {
+        grantor,
+        grantee,
+        scope,
+        statement_id,
+        created_at,
+    })
 }
 
 fn format_capability_list_by_grantor(grantor: &ActorId, heads: &[CapabilityHead]) -> String {
@@ -4800,6 +4909,47 @@ fn list_object_revisions(
         }
     }
     Ok(found)
+}
+
+fn run_revision_inspect(
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+    statement: String,
+    json: bool,
+) -> Result<String, CliError> {
+    let statement_id = kairo_core::StatementId::new(statement.clone())
+        .map_err(|source| CliError::ParseStatementId { statement, source })?;
+    let mode = dispatch::resolve(paths, dispatch_opts)?;
+
+    let signed = match mode {
+        dispatch::Mode::Daemon { runtime, client } => {
+            let value = runtime
+                .block_on(client.statement(statement_id.as_str()))
+                .map_err(CliError::DaemonRequestFailed)?;
+            // Polymorphic /statements/{id} returns any kind. We
+            // only handle ObjectRevision here; other kinds will
+            // fail to deserialize, mirroring direct mode's
+            // "wrong-kind statement file" behavior.
+            let json_form: kairo_statement::json::ObjectRevisionStatementJson =
+                serde_json::from_value(value).map_err(CliError::ParseStatementJson)?;
+            json_form.to_statement().map_err(CliError::ParseStatement)?
+        }
+        dispatch::Mode::Direct => {
+            let store = open_store(paths)?;
+            store.get_object_revision(&statement_id).map_err(|error| {
+                CliError::ReadRevision {
+                    statement: statement_id.clone(),
+                    source: error,
+                }
+            })?
+        }
+    };
+
+    if json {
+        Ok(format_revision_inspect_json(&signed))
+    } else {
+        Ok(format_revision_inspect(&signed))
+    }
 }
 
 fn format_revision_inspect(signed: &SignedStatement<ObjectRevisionBody>) -> String {

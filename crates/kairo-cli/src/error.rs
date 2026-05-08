@@ -383,6 +383,13 @@ pub(crate) enum CliError {
     /// `NotFound` variants). Surfaces transport, decode, and
     /// non-404 HTTP errors verbatim.
     DaemonRequestFailed(kairo_daemon_client::ClientError),
+    /// An RFC 3339 timestamp string in a daemon-side DTO did not
+    /// parse. Should not happen on a well-formed daemon, but the
+    /// dispatch path needs a typed error to surface.
+    ParseCreatedAt {
+        value: String,
+        source: kairo_core::TimestampError,
+    },
 }
 
 impl CliError {
@@ -778,6 +785,9 @@ impl fmt::Display for CliError {
                 socket.display()
             ),
             Self::DaemonRequestFailed(error) => write!(f, "daemon request failed: {error}"),
+            Self::ParseCreatedAt { value, source } => {
+                write!(f, "invalid created_at timestamp {value:?}: {source}")
+            }
         }
     }
 }
@@ -897,6 +907,7 @@ impl Error for CliError {
             Self::DaemonServe { source } => Some(source.as_ref()),
             Self::DaemonKill { source, .. } => Some(source),
             Self::DaemonRequestFailed(error) => Some(error),
+            Self::ParseCreatedAt { source, .. } => Some(source),
         }
     }
 }
