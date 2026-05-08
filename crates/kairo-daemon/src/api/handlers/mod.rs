@@ -1,4 +1,5 @@
 pub mod actors;
+pub mod blobs;
 pub mod branches;
 pub mod capabilities;
 pub mod objects;

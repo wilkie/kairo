@@ -33,10 +33,12 @@ use kairo_test_support as _;
 #[cfg(test)]
 use tempfile as _;
 
+mod blob;
 mod client;
 pub mod dto;
 mod envelope;
 mod error;
 
+pub use blob::BlobReader;
 pub use client::{Client, DEFAULT_PROBE_TIMEOUT};
 pub use error::{ClientError, ClientResult};

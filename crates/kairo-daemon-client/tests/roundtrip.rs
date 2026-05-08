@@ -6,11 +6,13 @@
 
 // Production deps the integration test doesn't reference directly
 // — silence `unused_crate_dependencies` for them.
+use futures_util as _;
 use http_body_util as _;
 use hyper as _;
 use hyper_util as _;
 use kairo_identity as _;
 use serde as _;
+use tokio_util as _;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -549,6 +551,86 @@ async fn client_list_capabilities_round_trips() {
         .await
         .expect("list");
     assert!(heads.is_empty());
+
+    handle.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// Slice 7: streaming blob.
+
+#[tokio::test]
+async fn client_blob_round_trips_via_async_read() {
+    use kairo_core::BlobId;
+    use kairo_store::BlobStore;
+    use tokio::io::AsyncReadExt;
+
+    const DOMAIN: &[u8] = b"kairo-daemon-client-test/blob";
+    const SIZE: usize = 2 * 1024 * 1024;
+    let mut payload = Vec::with_capacity(SIZE);
+    let mut state: u32 = 0xDEAD_BEEF;
+    while payload.len() < SIZE {
+        state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+        payload.extend_from_slice(&state.to_le_bytes());
+    }
+    payload.truncate(SIZE);
+
+    let (dir, fixture) = StoreFixture::temp();
+    let blob_id = BlobId::from_bytes(DOMAIN, &payload);
+    fixture.store.put_blob(&blob_id, &payload).expect("put_blob");
+    let id_str = blob_id.to_string();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let mut reader = client.blob(&id_str).await.expect("blob open");
+    let mut received = Vec::with_capacity(SIZE);
+    reader
+        .read_to_end(&mut received)
+        .await
+        .expect("read_to_end");
+
+    assert_eq!(received.len(), payload.len());
+    assert_eq!(received, payload);
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_blob_returns_404_for_missing_id() {
+    use kairo_core::BlobId;
+
+    let (dir, _fixture) = StoreFixture::temp();
+    drop(_fixture);
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let absent = BlobId::from_sha256_digest([0xFF; 32]).to_string();
+    match client.blob(&absent).await {
+        Err(ClientError::Http { status, code, .. }) => {
+            assert_eq!(status, 404);
+            assert_eq!(code, "not_found");
+        }
+        other => panic!("expected 404 not_found, got {other:?}"),
+    }
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn client_blob_returns_400_for_malformed_id() {
+    let (dir, _fixture) = StoreFixture::temp();
+    drop(_fixture);
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    match client.blob("not-an-id").await {
+        Err(ClientError::Http { status, code, .. }) => {
+            assert_eq!(status, 400);
+            assert_eq!(code, "bad_request");
+        }
+        other => panic!("expected 400 bad_request, got {other:?}"),
+    }
 
     handle.shutdown().await;
 }

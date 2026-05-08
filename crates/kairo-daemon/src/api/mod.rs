@@ -52,6 +52,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/capabilities/:grantor",
             get(handlers::capabilities::list_from_handler),
         )
+        .route("/api/v1/blobs/:id", get(handlers::blobs::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }

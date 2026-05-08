@@ -24,6 +24,7 @@ use kairo_statement as _;
 use kairo_store as _;
 use serde as _;
 use serde_json as _;
+use tokio_util as _;
 use tower as _;
 use tower_http as _;
 use tracing_subscriber as _;

@@ -10,6 +10,7 @@ use kairo_daemon_client as _;
 use kairo_store as _;
 use serde as _;
 use tempfile as _;
+use tokio_util as _;
 use tower as _;
 use tower_http as _;
 use tracing as _;

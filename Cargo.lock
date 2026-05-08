@@ -1406,6 +1406,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http",
  "tracing",
@@ -1416,6 +1417,7 @@ dependencies = [
 name = "kairo-daemon-client"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1429,6 +1431,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -529,6 +529,30 @@ impl FilesystemStore {
         read_or_missing(&path)
     }
 
+    /// Open the on-disk blob for `id` for streaming reads.
+    ///
+    /// Returns the opened [`std::fs::File`] so callers can drive
+    /// the read without materializing the whole blob. The daemon
+    /// uses this for `GET /api/v1/blobs/{id}` (chunked transfer);
+    /// large packs and bundles will use it post-v1.
+    ///
+    /// Returns [`StoreError::Missing`] when the blob is not on
+    /// disk, mirroring the semantic / I/O split the typed
+    /// getters use. Other open failures surface as
+    /// [`StoreError::Unavailable`].
+    ///
+    /// Does not validate fixity. The blob hash is domain-prefixed
+    /// (`sha256(domain || bytes)`); the store cannot recompute
+    /// without the caller's domain context (`BlobStore` doc).
+    pub fn open_blob(&self, id: &BlobId) -> Result<fs::File, StoreError> {
+        let path = self.shard_path(BLOBS_DIR, id.as_str(), BLOB_SUFFIX)?;
+        match fs::File::open(&path) {
+            Ok(file) => Ok(file),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(StoreError::Missing),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
     fn shard_path(&self, type_dir: &str, id: &str, suffix: &str) -> Result<PathBuf, StoreError> {
         shard::shard_path(&self.root, type_dir, id, suffix).map_err(|error| {
             StoreError::Unavailable(io::Error::new(

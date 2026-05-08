@@ -15,6 +15,7 @@ use kairo_statement as _;
 use kairo_store as _;
 use kairo_test_support as _;
 use serde as _;
+use tokio_util as _;
 use tower as _;
 use tower_http as _;
 use tracing as _;

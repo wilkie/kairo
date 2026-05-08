@@ -35,7 +35,7 @@ pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Connect-phase timeout used by request methods other than
 /// `probe`. Bounded so a hung accept queue can't wedge the CLI.
-const REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) const REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Whole-request timeout (connect + handshake + response). Long
 /// enough for modest blob streaming; future streaming methods
