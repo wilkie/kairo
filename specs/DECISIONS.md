@@ -565,3 +565,110 @@ Affected specs:
   web-server (TCP+auth) split.
 - `CLI.md` — `kairo daemon` and `kairo web` verb trees both
   documented.
+
+---
+
+## 12. Web Client v1 Shape
+
+Decision: the Phase 2 §5 web client ships as a **read-only
+inspector** that exercises the daemon's existing read endpoints
+end-to-end. Like §10's daemon sliver, it is a deliberately narrow
+slice of the long-term `WEB_CLIENT.md` shape — no build, run,
+runtime sessions, federation, policy, tasks, or write paths in v1.
+Every visitor is treated as an **anonymous public viewer**; real
+actor auth is post-v1.
+
+Nine sub-decisions, locked together because they're tightly
+coupled MVP scope:
+
+1. **Surface: read-only inspector over the 11 daemon endpoints.**
+   v1 covers object/genesis/branch/tag/trust/capability views and
+   raw blob preview. No build/run/policy/federation/tasks UI; each
+   waits for its own daemon endpoint group to ship. The web client
+   is the daemon's broad consumer — its job is to drive every
+   shipped read endpoint into a user-visible surface.
+
+2. **Auth: anonymous public viewer, no login in v1.** Browser
+   visitors are treated as a non-actor "public" persona that may
+   perform any read-only action. No login UI, no signing keys in
+   the browser, no token storage. Deferred to post-v1: a bearer-
+   token capability flow tied to actor signing keys (see the
+   long-term `project_daemon_auth_direction` direction — the v1
+   anonymous path leaves that ground untouched).
+
+3. **Network surface: localhost-only TCP.** `kairo-web` binds
+   `127.0.0.1:<port>` (default port chosen at slice time). No
+   remote exposure in v1 — the trust model is "you can reach the
+   loopback port = you are the local user," analogous to §10's
+   "you can reach the Unix socket." Multi-user-machine hardening
+   and TLS land with the bearer-token work.
+
+4. **Tech stack: pnpm + Turborepo + Vite + React + TypeScript,
+   TanStack Router + TanStack Query.** Per `WEB_CLIENT.md` §3.
+   No deviation; the prescribed stack is well-suited to the
+   inspector shape and lines up with the OpenAPI-driven type
+   pipeline.
+
+5. **Repo layout: full pnpm/Turborepo monorepo at `frontend/`.**
+   `frontend/apps/web-client` plus the five prescribed packages
+   (`api-client`, `ui`, `object-model`, `validation-viewer`,
+   `artifact-viewers`) per `WEB_CLIENT.md` §4. Packages start as
+   thin shells and grow as feature slices land; the layout is
+   chosen now so cross-package imports never need to be retrofitted.
+
+6. **API contract: OpenAPI now, generated TypeScript types.**
+   Closes the `§10.3` deferral. `utoipa` annotations on daemon
+   handlers + DTOs; daemon serves `GET /api/v1/openapi.json` and
+   the schema is checked into the repo at
+   `openapi/kairo-daemon.json`. Frontend generates TS types via
+   `openapi-typescript`. `Zod` schemas validate API envelopes
+   and errors at runtime per `WEB_CLIENT.md` §5.2. Generator
+   choice: **`utoipa`** — most popular axum-compatible OpenAPI
+   crate, derive macros on existing handlers and DTOs, minimal
+   blast radius on the §2 daemon code.
+
+7. **`kairo-web` Rust process: axum + tokio, daemon-client over
+   Unix socket.** Mirrors the §10/§11 daemon stack. Holds a
+   long-lived `kairo_daemon_client::Client`. Browser HTTP
+   requests are translated to daemon-client calls; the daemon
+   socket is never visible to the browser. Foreground-only,
+   `kairo web start | status | stop` verbs symmetric with
+   `kairo daemon`.
+
+8. **SPA bundle served from disk.** `kairo-web --spa-dir <path>`
+   serves the built Vite bundle from a configurable directory.
+   `tower_http::services::ServeDir` for the static surface.
+   No `include_bytes!` embedding in v1 — the binary stays small
+   and bundles can be iterated on without rebuilding `kairo-web`.
+   Embedded-bundle deploy mode is a clean follow-up if it's ever
+   needed.
+
+9. **New daemon endpoint: `GET /api/v1/verify-object/:id`.**
+   Lands as a daemon slice that precedes the web client itself.
+   Wraps the existing `kairo-core` verify pipeline, returns a
+   `ValidationResult` DTO synchronously (no task envelope), so
+   the inspector can show real validation status instead of
+   "unverified" placeholders. Brings the daemon to **12 read
+   endpoints** under `/api/v1/`. Async/streaming validation is
+   post-v1.
+
+Rationale: the v1 web client's job is to prove the daemon's
+read API is good — not to ship the long-term web surface. Every
+sub-decision narrows scope toward that proof. The OpenAPI work is
+deliberately pulled forward of the TS code (§6) because typed
+contracts are far cheaper to introduce before the consumer exists
+than after. The verify endpoint is pulled in as a single extra
+daemon slice (§9) because shipping an inspector that lies about
+validation would set the wrong tone for every later consumer.
+
+Affected specs:
+
+- `PHASE_2.md` §5 — bullets reframed against this decision.
+- `WEB_CLIENT.md` — Phase 1 vs long-term scope tagged inline; the
+  five packages stay; deferred features (build/run/policy/
+  federation/tasks/runtime) marked post-v1.
+- `API.md` — §3 contract-strategy and §9 authentication updated;
+  new §-block for `/verify-object/:id` if it isn't already.
+- `DAEMON.md` — note the `verify-object` addition; web-server
+  trust model carries forward from §11.
+- `CLI.md` §3 / §10 — `kairo web` verbs documented in detail.

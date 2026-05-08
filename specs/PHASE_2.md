@@ -279,22 +279,39 @@ cross-actor authority during sync.
 ### 5. Web Client
 
 `specs/WEB_CLIENT.md` describes the long-term TypeScript/React surface.
-Phase 2 stands up the minimum needed for browse/inspect.
+Phase 2 stands up a **read-only inspector** that drives every shipped
+daemon read endpoint end-to-end. Shape is locked in `DECISIONS.md` §12;
+slice plan in `specs/PHASE_2_WEB_CLIENT.md`.
 
-- [ ] Decide MVP scope: read-only inspector? Or also expose
-      object/revision/branch/tag/trust write paths via the daemon API?
-- [ ] Reconcile `specs/WEB_CLIENT.md` and `specs/API.md` with current
-      implementation (esp. statement types added in Phase 1).
-- [ ] Stand up project structure for the client (separate workspace? same
-      monorepo? new directory?).
-- [ ] Implement object browser (genesis + branches + tags + revision
-      history).
-- [ ] Implement verify-object UI surface that calls the daemon.
+Bullets, by slice (see `PHASE_2_WEB_CLIENT.md` §3):
+
+- [ ] Slice 1 — `utoipa` annotations on the daemon; `GET /api/v1/openapi.json`;
+      `kairo-daemon dump-openapi`; checked-in `openapi/kairo-daemon.json`.
+- [ ] Slice 2 — `GET /api/v1/verify-object/:id` daemon endpoint
+      returning `ValidationResult`. (12th read endpoint.)
+- [ ] Slice 3 — `crates/kairo-web` Rust crate: axum proxy + `ServeDir`
+      for the SPA bundle, loopback-only TCP, daemon-client passthrough.
+- [ ] Slice 4 — CLI verbs `kairo web start | status | stop`.
+- [ ] Slice 5 — `frontend/` monorepo scaffold (pnpm + Turborepo + Vite);
+      five package shells + `pnpm generate:api` pipeline.
+- [ ] Slice 6 — `api-client` + `object-model` packages; TanStack Query
+      hooks for all 12 endpoints; Zod runtime envelopes.
+- [ ] Slice 7 — App shell, TanStack Router routes, `ui` package primitives,
+      dashboard backed by `useDaemonStatus`.
+- [ ] Slice 8 — Object browser: genesis + branches + tags + revisions +
+      capability heads + trust panel; actor and statement detail pages.
+- [ ] Slice 9 — `validation-viewer` package; `verify-object` integration
+      with status badges per `WEB_CLIENT.md` §10.
+- [ ] Slice 10 — `artifact-viewers` (text/JSON/binary); Playwright suite;
+      CI pipeline; close-out.
 
 **Why it matters:** primary user-facing surface for the federation /
-archival use case.
+archival use case, and the daemon's first broad consumer — every shipped
+read endpoint gets exercised end-to-end through this client.
 
-**Depends on:** §2 (daemon) — there is no web client without a daemon API.
+**Depends on:** §2 (daemon). Pulls slices 1–2 of the web-client plan
+forward as additional daemon work (OpenAPI annotations + verify-object
+endpoint) before any TypeScript code is written.
 
 ### 6. Multi-Process Safety / File Locks
 
