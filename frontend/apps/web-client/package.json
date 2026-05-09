@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@kairo/api-client": "workspace:*",
+    "@kairo/object-model": "workspace:*",
     "@tanstack/react-query": "^5.66.0",
     "@tanstack/react-router": "^1.92.0",
     "react": "^19.1.0",
