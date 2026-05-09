@@ -3,6 +3,7 @@ pub mod blobs;
 pub mod branches;
 pub mod capabilities;
 pub mod objects;
+pub mod revisions;
 pub mod statements;
 pub mod status;
 pub mod trust;

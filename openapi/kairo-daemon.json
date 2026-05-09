@@ -183,6 +183,44 @@
         }
       }
     },
+    "/api/v1/capabilities/for-object/{object}": {
+      "get": {
+        "tags": [
+          "capabilities"
+        ],
+        "summary": "`GET /api/v1/capabilities/for-object/{object_id}`",
+        "operationId": "listCapabilitiesForObject",
+        "parameters": [
+          {
+            "name": "object",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Capability head summaries scoped to this object, hydrated with each head's scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilityHeadDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id"
+          }
+        }
+      }
+    },
     "/api/v1/capabilities/{grantor}": {
       "get": {
         "tags": [
@@ -257,6 +295,44 @@
         }
       }
     },
+    "/api/v1/revisions/{object}": {
+      "get": {
+        "tags": [
+          "revisions"
+        ],
+        "summary": "`GET /api/v1/revisions/{object_id}`",
+        "operationId": "listRevisions",
+        "parameters": [
+          {
+            "name": "object",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revision heads for the object, sorted by created_at ascending (ties by statement_id)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RevisionHeadDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id"
+          }
+        }
+      }
+    },
     "/api/v1/statements/{id}": {
       "get": {
         "tags": [
@@ -310,6 +386,44 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/trust/about/{of}": {
+      "get": {
+        "tags": [
+          "trust"
+        ],
+        "summary": "`GET /api/v1/trust/about/{of}`",
+        "operationId": "listTrustAbout",
+        "parameters": [
+          {
+            "name": "of",
+            "in": "path",
+            "description": "Actor whose incoming opinions to list (kairo:actor:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chain-leaf trust heads expressed about the actor (one per by_actor)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrustHeadDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed actor id"
           }
         }
       }
@@ -413,6 +527,44 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/version-tags/{object}": {
+      "get": {
+        "tags": [
+          "version-tags"
+        ],
+        "summary": "`GET /api/v1/version-tags/{object_id}`",
+        "operationId": "listVersionTags",
+        "parameters": [
+          {
+            "name": "object",
+            "in": "path",
+            "description": "Object id (kairo:object:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Version-tag head summaries: one per (actor, version) chain leaf",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VersionTagHeadDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id"
           }
         }
       }
@@ -659,7 +811,7 @@
       },
       "CapabilityHeadDto": {
         "type": "object",
-        "description": "Capability head summary returned by\n`GET /api/v1/capabilities/{grantor}`. One entry per\n`(grantee, scope)` chain leaf — mirrors the shape produced\nby `kairo capability list --grantor` in direct mode.",
+        "description": "Capability head summary returned by\n`GET /api/v1/capabilities/{grantor}` and\n`GET /api/v1/capabilities/for-object/{object}`. One entry\nper `(grantee, scope)` chain leaf — mirrors the shape\nproduced by `kairo capability list --grantor` in direct\nmode.",
         "required": [
           "grantor",
           "grantee",
@@ -1001,6 +1153,46 @@
           }
         }
       },
+      "RevisionHeadDto": {
+        "type": "object",
+        "description": "Revision head summary returned by\n`GET /api/v1/revisions/{object}`. Light shape, one entry\nper `ObjectRevision` statement targeting the object —\ncallers who want the signed envelope follow up with\n`GET /api/v1/statements/{statement_id}`.\n\n`parents` carries the revision-id parent set (zero for\ninitial revisions, one for linear history, multiple for\nmerges); `manifest_hash` is the canonical blob id of the\nrevision's manifest.",
+        "required": [
+          "actor",
+          "object",
+          "revision_id",
+          "statement_id",
+          "parents",
+          "manifest_hash",
+          "created_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "manifest_hash": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "statement_id": {
+            "type": "string"
+          }
+        }
+      },
       "SignatureJson": {
         "type": "object",
         "required": [
@@ -1050,6 +1242,37 @@
             "type": "string"
           },
           "store_schema_version": {
+            "type": "string"
+          }
+        }
+      },
+      "TrustHeadDto": {
+        "type": "object",
+        "description": "Trust head summary returned by\n`GET /api/v1/trust/about/{actor}`. One entry per `by_actor`\nchain leaf — callers who want the signed `ActorTrust` body\nfollow up with `GET /api/v1/trust/{by}/{of}` or\n`GET /api/v1/statements/{statement_id}`.\n\n`decision` is `\"trusted\"`, `\"untrusted\"`, or `null` (the\nlatter encodes a withdrawal — first-person \"no opinion\",\ndistinct from \"never expressed an opinion\").",
+        "required": [
+          "by_actor",
+          "trusted_actor",
+          "statement_id",
+          "created_at"
+        ],
+        "properties": {
+          "by_actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "decision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "statement_id": {
+            "type": "string"
+          },
+          "trusted_actor": {
             "type": "string"
           }
         }
@@ -1167,6 +1390,35 @@
             "type": "string"
           }
         }
+      },
+      "VersionTagHeadDto": {
+        "type": "object",
+        "description": "Version-tag head summary returned by\n`GET /api/v1/version-tags/{object}`. Light shape, one entry\nper `(actor, version)` chain leaf — callers who want the\nsigned tag follow up with\n`GET /api/v1/version-tags/{object}/{version}` or\n`GET /api/v1/statements/{statement_id}`.",
+        "required": [
+          "actor",
+          "object",
+          "version",
+          "statement_id",
+          "created_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "object": {
+            "type": "string"
+          },
+          "statement_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
       }
     }
   },
@@ -1193,7 +1445,11 @@
     },
     {
       "name": "version-tags",
-      "description": "Version-tag chain-leaf resolution"
+      "description": "Version-tag listing and chain-leaf resolution"
+    },
+    {
+      "name": "revisions",
+      "description": "Object revision history"
     },
     {
       "name": "trust",

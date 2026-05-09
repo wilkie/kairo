@@ -210,9 +210,9 @@ pub(crate) enum CliError {
         statement: String,
         source: kairo_core::IdError,
     },
-    ScanStatements {
-        path: PathBuf,
-        source: std::io::Error,
+    ListRevisions {
+        object: String,
+        source: kairo_store::StoreError,
     },
     WriteBranch {
         statement: kairo_core::StatementId,
@@ -629,12 +629,8 @@ impl fmt::Display for CliError {
             Self::ParseStatementId { statement, source } => {
                 write!(f, "invalid statement id {statement}: {source}")
             }
-            Self::ScanStatements { path, source } => {
-                write!(
-                    f,
-                    "failed to scan statements at {}: {source}",
-                    path.display()
-                )
+            Self::ListRevisions { object, source } => {
+                write!(f, "failed to list revisions for object {object}: {source}")
             }
             Self::WriteBranch { statement, source } => {
                 write!(f, "failed to write branch statement {statement}: {source}")
@@ -831,7 +827,6 @@ impl Error for CliError {
             | Self::ReadStatement { source, .. }
             | Self::ReadPublicKey { source, .. }
             | Self::ReadActorGenesis { source, .. }
-            | Self::ScanStatements { source, .. }
             | Self::CwdUnavailable { source }
             | Self::ReadAttestationSeed { source, .. }
             | Self::ReadSignatureFile { source, .. }
@@ -865,7 +860,8 @@ impl Error for CliError {
             | Self::WriteThresholdChange { source, .. }
             | Self::WriteAttestationKeyRevocation { source, .. }
             | Self::ReadGrant { source, .. }
-            | Self::ReadObjectGenesis { source, .. } => Some(source),
+            | Self::ReadObjectGenesis { source, .. }
+            | Self::ListRevisions { source, .. } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)

@@ -4849,67 +4849,12 @@ fn list_object_revisions(
     store: &FilesystemStore,
     object: &ObjectId,
 ) -> Result<Vec<SignedStatement<ObjectRevisionBody>>, CliError> {
-    let statements_dir = store.root().join("statements");
-    let mut found = Vec::new();
-    let level1 = match std::fs::read_dir(&statements_dir) {
-        Ok(level1) => level1,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(found),
-        Err(error) => {
-            return Err(CliError::ScanStatements {
-                path: statements_dir,
-                source: error,
-            });
-        }
-    };
-    for shard1 in level1 {
-        let shard1 = shard1.map_err(|source| CliError::ScanStatements {
-            path: statements_dir.clone(),
+    store
+        .list_object_revisions(object)
+        .map_err(|source| CliError::ListRevisions {
+            object: object.to_string(),
             source,
-        })?;
-        if !shard1.path().is_dir() {
-            continue;
-        }
-        for shard2 in
-            std::fs::read_dir(shard1.path()).map_err(|source| CliError::ScanStatements {
-                path: shard1.path(),
-                source,
-            })?
-        {
-            let shard2 = shard2.map_err(|source| CliError::ScanStatements {
-                path: shard1.path(),
-                source,
-            })?;
-            if !shard2.path().is_dir() {
-                continue;
-            }
-            for entry in
-                std::fs::read_dir(shard2.path()).map_err(|source| CliError::ScanStatements {
-                    path: shard2.path(),
-                    source,
-                })?
-            {
-                let entry = entry.map_err(|source| CliError::ScanStatements {
-                    path: shard2.path(),
-                    source,
-                })?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                let bytes = std::fs::read(&path).map_err(|source| CliError::ScanStatements {
-                    path: path.clone(),
-                    source,
-                })?;
-                let dto: ObjectRevisionStatementJson =
-                    serde_json::from_slice(&bytes).map_err(CliError::ParseStatementJson)?;
-                let signed = dto.to_statement().map_err(CliError::ParseStatement)?;
-                if signed.unsigned().body().object() == object {
-                    found.push(signed);
-                }
-            }
-        }
-    }
-    Ok(found)
+        })
 }
 
 fn run_revision_inspect(

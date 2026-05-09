@@ -37,7 +37,7 @@
       "inputs": ["src/**", "tests/**", "package.json"]
     },
     "generate:api": {
-      "inputs": ["../../openapi/kairo-daemon.json", "package.json"],
+      "inputs": ["$TURBO_ROOT$/../openapi/kairo-daemon.json", "package.json"],
       "outputs": ["src/generated/**"]
     },
     "storybook:build": {

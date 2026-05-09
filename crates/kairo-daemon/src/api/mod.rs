@@ -42,16 +42,32 @@ pub fn router(state: AppState) -> Router {
             get(handlers::branches::latest_handler),
         )
         .route(
+            "/api/v1/version-tags/:object",
+            get(handlers::version_tags::list_handler),
+        )
+        .route(
             "/api/v1/version-tags/:object/:version",
             get(handlers::version_tags::latest_handler),
+        )
+        .route(
+            "/api/v1/revisions/:object",
+            get(handlers::revisions::list_handler),
         )
         .route(
             "/api/v1/trust/:by/:of",
             get(handlers::trust::handler),
         )
         .route(
+            "/api/v1/trust/about/:of",
+            get(handlers::trust::list_about_handler),
+        )
+        .route(
             "/api/v1/capabilities/:grantor",
             get(handlers::capabilities::list_from_handler),
+        )
+        .route(
+            "/api/v1/capabilities/for-object/:object",
+            get(handlers::capabilities::list_for_object_handler),
         )
         .route("/api/v1/blobs/:id", get(handlers::blobs::handler))
         .route(

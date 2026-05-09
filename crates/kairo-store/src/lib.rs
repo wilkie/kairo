@@ -529,6 +529,85 @@ impl FilesystemStore {
         read_or_missing(&path)
     }
 
+    /// List every `ObjectRevision` statement on disk whose body
+    /// targets `object`, sorted by `created_at` ascending (ties
+    /// broken by `statement_id`).
+    ///
+    /// This is a full directory scan over `<root>/statements/`
+    /// — there's no per-object revision index in the v1 store
+    /// layout, so every call walks the sharded statement tree
+    /// once. The cost is acceptable for inspector tooling on
+    /// MVP-sized stores; if a future workload demands faster
+    /// listing, add a `RevisionResolver` trait backed by a
+    /// per-object materialized index (mirroring how
+    /// `BranchResolver` / `VersionTagResolver` work) and move
+    /// the method there.
+    ///
+    /// I/O errors surface as [`StoreError::Unavailable`]; an
+    /// individual file that fails to parse as
+    /// `ObjectRevisionStatementJson` surfaces as
+    /// [`StoreError::Corrupt`] with the offending statement id
+    /// in the error.
+    pub fn list_object_revisions(
+        &self,
+        object: &ObjectId,
+    ) -> Result<Vec<SignedStatement<ObjectRevisionBody>>, StoreError> {
+        let statements_dir = self.root().join(STATEMENTS_DIR);
+        let mut found = Vec::new();
+        let level1 = match fs::read_dir(&statements_dir) {
+            Ok(level1) => level1,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(found),
+            Err(error) => return Err(StoreError::Unavailable(error)),
+        };
+        for shard1 in level1 {
+            let shard1 = shard1?;
+            if !shard1.path().is_dir() {
+                continue;
+            }
+            for shard2 in fs::read_dir(shard1.path())? {
+                let shard2 = shard2?;
+                if !shard2.path().is_dir() {
+                    continue;
+                }
+                for entry in fs::read_dir(shard2.path())? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let bytes = fs::read(&path)?;
+                    let dto: ObjectRevisionStatementJson = match serde_json::from_slice(&bytes) {
+                        Ok(dto) => dto,
+                        // Parse failure here means either a non-revision
+                        // statement (we share the directory across all
+                        // statement kinds) or a genuinely corrupt file. We
+                        // can't tell from the deserializer alone — let
+                        // through anything that doesn't decode as a
+                        // revision shape. Per-kind parse errors don't
+                        // belong to "list revisions for object".
+                        Err(_) => continue,
+                    };
+                    let statement_id =
+                        path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+                    let signed = dto.to_statement().map_err(|reason| StoreError::Corrupt {
+                        id: statement_id.to_owned(),
+                        reason: CorruptReason::Parse(reason.to_string()),
+                    })?;
+                    if signed.unsigned().body().object() == object {
+                        found.push(signed);
+                    }
+                }
+            }
+        }
+        found.sort_by(|a, b| {
+            a.unsigned()
+                .created_at()
+                .cmp(&b.unsigned().created_at())
+                .then_with(|| a.unsigned().statement_id().cmp(&b.unsigned().statement_id()))
+        });
+        Ok(found)
+    }
+
     /// Open the on-disk blob for `id` for streaming reads.
     ///
     /// Returns the opened [`std::fs::File`] so callers can drive

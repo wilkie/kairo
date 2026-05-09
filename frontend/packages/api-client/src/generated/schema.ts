@@ -70,6 +70,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/capabilities/for-object/{object}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/capabilities/for-object/{object_id}` */
+        get: operations["listCapabilitiesForObject"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/capabilities/{grantor}": {
         parameters: {
             query?: never;
@@ -102,6 +119,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/revisions/{object}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/revisions/{object_id}` */
+        get: operations["listRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/statements/{id}": {
         parameters: {
             query?: never;
@@ -126,6 +160,23 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/trust/about/{of}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/trust/about/{of}` */
+        get: operations["listTrustAbout"];
         put?: never;
         post?: never;
         delete?: never;
@@ -174,6 +225,23 @@ export interface paths {
             cookie?: never;
         };
         get: operations["getVersion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/version-tags/{object}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/version-tags/{object_id}` */
+        get: operations["listVersionTags"];
         put?: never;
         post?: never;
         delete?: never;
@@ -258,9 +326,11 @@ export interface components {
         };
         /**
          * @description Capability head summary returned by
-         *     `GET /api/v1/capabilities/{grantor}`. One entry per
-         *     `(grantee, scope)` chain leaf — mirrors the shape produced
-         *     by `kairo capability list --grantor` in direct mode.
+         *     `GET /api/v1/capabilities/{grantor}` and
+         *     `GET /api/v1/capabilities/for-object/{object}`. One entry
+         *     per `(grantee, scope)` chain leaf — mirrors the shape
+         *     produced by `kairo capability list --grantor` in direct
+         *     mode.
          */
         CapabilityHeadDto: {
             created_at: string;
@@ -347,6 +417,28 @@ export interface components {
             algorithm: string;
             bytes: string;
         };
+        /**
+         * @description Revision head summary returned by
+         *     `GET /api/v1/revisions/{object}`. Light shape, one entry
+         *     per `ObjectRevision` statement targeting the object —
+         *     callers who want the signed envelope follow up with
+         *     `GET /api/v1/statements/{statement_id}`.
+         *
+         *     `parents` carries the revision-id parent set (zero for
+         *     initial revisions, one for linear history, multiple for
+         *     merges); `manifest_hash` is the canonical blob id of the
+         *     revision's manifest.
+         */
+        RevisionHeadDto: {
+            actor: string;
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            manifest_hash: string;
+            object: string;
+            parents: string[];
+            revision_id: string;
+            statement_id: string;
+        };
         SignatureJson: {
             actor: string;
             algorithm: string;
@@ -367,6 +459,25 @@ export interface components {
             pid: number;
             store_path: string;
             store_schema_version: string;
+        };
+        /**
+         * @description Trust head summary returned by
+         *     `GET /api/v1/trust/about/{actor}`. One entry per `by_actor`
+         *     chain leaf — callers who want the signed `ActorTrust` body
+         *     follow up with `GET /api/v1/trust/{by}/{of}` or
+         *     `GET /api/v1/statements/{statement_id}`.
+         *
+         *     `decision` is `"trusted"`, `"untrusted"`, or `null` (the
+         *     latter encodes a withdrawal — first-person "no opinion",
+         *     distinct from "never expressed an opinion").
+         */
+        TrustHeadDto: {
+            by_actor: string;
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            decision?: string | null;
+            statement_id: string;
+            trusted_actor: string;
         };
         /**
          * @description One concrete finding from a `verify-object` run.
@@ -434,6 +545,22 @@ export interface components {
             core_version: string;
             daemon_version: string;
             store_version: string;
+        };
+        /**
+         * @description Version-tag head summary returned by
+         *     `GET /api/v1/version-tags/{object}`. Light shape, one entry
+         *     per `(actor, version)` chain leaf — callers who want the
+         *     signed tag follow up with
+         *     `GET /api/v1/version-tags/{object}/{version}` or
+         *     `GET /api/v1/statements/{statement_id}`.
+         */
+        VersionTagHeadDto: {
+            actor: string;
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            object: string;
+            statement_id: string;
+            version: string;
         };
     };
     responses: never;
@@ -590,6 +717,36 @@ export interface operations {
             };
         };
     };
+    listCapabilitiesForObject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Object id (kairo:object:...) */
+                object: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capability head summaries scoped to this object, hydrated with each head's scope */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityHeadDto"][];
+                };
+            };
+            /** @description Malformed object id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listCapabilitiesFromGrantor: {
         parameters: {
             query?: never;
@@ -657,6 +814,36 @@ export interface operations {
             };
         };
     };
+    listRevisions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Object id (kairo:object:...) */
+                object: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revision heads for the object, sorted by created_at ascending (ties by statement_id) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionHeadDto"][];
+                };
+            };
+            /** @description Malformed object id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getStatement: {
         parameters: {
             query?: never;
@@ -711,6 +898,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["StatusInfo"];
                 };
+            };
+        };
+    };
+    listTrustAbout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Actor whose incoming opinions to list (kairo:actor:...) */
+                of: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Chain-leaf trust heads expressed about the actor (one per by_actor) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrustHeadDto"][];
+                };
+            };
+            /** @description Malformed actor id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -807,6 +1024,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["VersionInfo"];
                 };
+            };
+        };
+    };
+    listVersionTags: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Object id (kairo:object:...) */
+                object: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Version-tag head summaries: one per (actor, version) chain leaf */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionTagHeadDto"][];
+                };
+            };
+            /** @description Malformed object id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

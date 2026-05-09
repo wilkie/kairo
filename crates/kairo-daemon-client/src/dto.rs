@@ -48,9 +48,11 @@ pub struct BranchTipDto {
 }
 
 /// Capability head summary returned by
-/// `GET /api/v1/capabilities/{grantor}`. One entry per
-/// `(grantee, scope)` chain leaf — mirrors the shape produced
-/// by `kairo capability list --grantor` in direct mode.
+/// `GET /api/v1/capabilities/{grantor}` and
+/// `GET /api/v1/capabilities/for-object/{object}`. One entry
+/// per `(grantee, scope)` chain leaf — mirrors the shape
+/// produced by `kairo capability list --grantor` in direct
+/// mode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CapabilityHeadDto {
     pub grantor: String,
@@ -58,6 +60,63 @@ pub struct CapabilityHeadDto {
     pub scope: CapabilityScopeJson,
     pub statement_id: String,
     pub created_at: String,
+}
+
+/// Version-tag head summary returned by
+/// `GET /api/v1/version-tags/{object}`. Light shape, one entry
+/// per `(actor, version)` chain leaf — callers who want the
+/// signed tag follow up with
+/// `GET /api/v1/version-tags/{object}/{version}` or
+/// `GET /api/v1/statements/{statement_id}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct VersionTagHeadDto {
+    pub actor: String,
+    pub object: String,
+    pub version: String,
+    pub statement_id: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+}
+
+/// Revision head summary returned by
+/// `GET /api/v1/revisions/{object}`. Light shape, one entry
+/// per `ObjectRevision` statement targeting the object —
+/// callers who want the signed envelope follow up with
+/// `GET /api/v1/statements/{statement_id}`.
+///
+/// `parents` carries the revision-id parent set (zero for
+/// initial revisions, one for linear history, multiple for
+/// merges); `manifest_hash` is the canonical blob id of the
+/// revision's manifest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RevisionHeadDto {
+    pub actor: String,
+    pub object: String,
+    pub revision_id: String,
+    pub statement_id: String,
+    pub parents: Vec<String>,
+    pub manifest_hash: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+}
+
+/// Trust head summary returned by
+/// `GET /api/v1/trust/about/{actor}`. One entry per `by_actor`
+/// chain leaf — callers who want the signed `ActorTrust` body
+/// follow up with `GET /api/v1/trust/{by}/{of}` or
+/// `GET /api/v1/statements/{statement_id}`.
+///
+/// `decision` is `"trusted"`, `"untrusted"`, or `null` (the
+/// latter encodes a withdrawal — first-person "no opinion",
+/// distinct from "never expressed an opinion").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct TrustHeadDto {
+    pub by_actor: String,
+    pub trusted_actor: String,
+    pub statement_id: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+    pub decision: Option<String>,
 }
 
 /// Response body for `GET /api/v1/version`.
