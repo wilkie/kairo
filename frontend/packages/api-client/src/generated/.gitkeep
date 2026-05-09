@@ -1,0 +1,3 @@
+# Generated TypeScript types from openapi/kairo-daemon.json.
+# Re-generate via `pnpm generate:api`. The file `schema.ts` in
+# this directory is committed; do not edit it by hand.

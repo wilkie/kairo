@@ -1,0 +1,37 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build", "generate:api"],
+      "inputs": [
+        "src/**",
+        "index.html",
+        "tsconfig.json",
+        "package.json",
+        "vite.config.ts",
+        "vite.config.js"
+      ],
+      "outputs": ["dist/**", "build/**", ".tsbuildinfo"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "typecheck": {
+      "dependsOn": ["^build", "generate:api"],
+      "inputs": ["src/**", "tsconfig.json", "package.json"]
+    },
+    "lint": {
+      "inputs": ["src/**", "package.json"]
+    },
+    "test": {
+      "dependsOn": ["^build", "generate:api"],
+      "inputs": ["src/**", "tests/**", "package.json"]
+    },
+    "generate:api": {
+      "inputs": ["../../openapi/kairo-daemon.json", "package.json"],
+      "outputs": ["src/generated/**"]
+    }
+  }
+}

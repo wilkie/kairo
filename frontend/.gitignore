@@ -1,0 +1,12 @@
+node_modules
+.turbo
+.pnpm-store
+dist
+build
+*.tsbuildinfo
+.cache
+
+# Local environment overrides (never commit)
+.env
+.env.*
+!.env.example

@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Allow esbuild's postinstall to fetch its native binary. esbuild
+# is a transitive dep of Vite; without this, the dev server fails
+# to start.
+onlyBuiltDependencies:
+  - esbuild
