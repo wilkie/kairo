@@ -25,6 +25,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@tanstack/react-devtools": "^0.10.2",
     "@tanstack/react-query-devtools": "^5.66.0",
     "@tanstack/router-devtools": "^1.92.0",
     "@types/react": "^19.0.0",
