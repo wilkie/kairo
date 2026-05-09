@@ -13,10 +13,18 @@
 
 import { createTheme, type Theme, type ThemeOptions } from '@mui/material/styles';
 
-/** Raw brand colors lifted from `kairo_icon.svg`. Exported so
- * apps can use them in non-MUI surfaces (charts, embeds). */
+/** Raw brand colors lifted from the logo SVGs. The mark uses
+ * two purples: a bright icon-outline purple and a darker
+ * wordmark purple. Exported so apps can use them in non-MUI
+ * surfaces (charts, embeds). */
 export const kairoBrandColors = {
+  /** Wordmark purple — darker, used for the "Kairo" text in
+   * the full logo. Also our default for interactive surfaces. */
+  purpleDeep: '#780078',
+  /** Icon-outline purple — brighter, used for the hexagonal
+   * mark. Reserve for the logo and brand-forward accents. */
   purple: '#ab00ab',
+  /** Inner-symbol teal. */
   teal: '#007373',
 } as const;
 
@@ -86,11 +94,13 @@ export function createKairoTheme(mode: 'light' | 'dark'): Theme {
   return createTheme({
     palette: {
       mode,
-      // Brand purple, slightly tuned per-mode for legibility on
-      // interactive surfaces. The logo itself always renders the
-      // full-saturation `kairoBrandColors.purple`.
+      // Wordmark purple for interactive surfaces — matches the
+      // "Kairo" text in the logo. The brighter icon-outline
+      // purple (`kairoBrandColors.purple`) is reserved for the
+      // logo itself and brand-forward accents. Dark mode tints
+      // up so the color reads on a near-black background.
       primary: {
-        main: mode === 'light' ? '#a3009f' : '#d56cd5',
+        main: mode === 'light' ? kairoBrandColors.purpleDeep : '#d56cd5',
         contrastText: '#ffffff',
       },
       // Brand teal as the secondary/accent — pairs naturally
