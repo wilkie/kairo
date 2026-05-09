@@ -60,6 +60,49 @@ export function truncateId(id: string, opts: TruncateIdOptions = {}): string {
   return `${id.slice(0, prefixChars)}${ellipsis}${id.slice(id.length - suffixChars)}`;
 }
 
+/** Identifier kinds the inspector navigates to. The associated
+ * `kairo:<prefix>:` token is implied by the surrounding route
+ * (`/objects/`, `/actors/`, etc.), so URLs can carry the bare
+ * multibase payload to keep them readable. */
+export type IdKind = 'object' | 'actor' | 'statement' | 'blob';
+
+const KIND_TO_PREFIX: Record<IdKind, string> = {
+  object: 'kairo:object:',
+  actor: 'kairo:actor:',
+  // Statement ids use `kairo:stmt:` even though the route
+  // segment is `/statements/` — the wire prefix is shorter.
+  statement: 'kairo:stmt:',
+  blob: 'kairo:blob:',
+};
+
+/** Returns the `kairo:<kind>:` prefix string for a kind. */
+export function idPrefix(kind: IdKind): string {
+  return KIND_TO_PREFIX[kind];
+}
+
+/** True when `value` already starts with the canonical prefix
+ * for `kind`. */
+export function isCanonicalId(kind: IdKind, value: string): boolean {
+  return value.startsWith(KIND_TO_PREFIX[kind]);
+}
+
+/** Add the `kairo:<kind>:` prefix to `raw` unless it's already
+ * canonical. The route layer uses this to accept either bare
+ * payloads (`/objects/zXyz`) or full canonical ids
+ * (`/objects/kairo:object:zXyz`) and hand a single shape to
+ * the api-client hooks. */
+export function canonicalizeId(kind: IdKind, raw: string): string {
+  return isCanonicalId(kind, raw) ? raw : `${KIND_TO_PREFIX[kind]}${raw}`;
+}
+
+/** Strip the `kairo:<kind>:` prefix when present so the value
+ * fits in a clean URL slug. Pairs with `canonicalizeId` for
+ * round-tripping between API calls and route URLs. */
+export function bareId(kind: IdKind, canonical: string): string {
+  const prefix = KIND_TO_PREFIX[kind];
+  return canonical.startsWith(prefix) ? canonical.slice(prefix.length) : canonical;
+}
+
 /**
  * Copy a value to the clipboard. Returns `true` on success,
  * `false` if the browser blocked the request (insecure origin,

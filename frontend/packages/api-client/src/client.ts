@@ -24,6 +24,9 @@ export type ObjectVersionTagStatementJson = components['schemas']['ObjectVersion
 export type ActorTrustStatementJson = components['schemas']['ActorTrustStatementJson'];
 export type BranchTipDto = components['schemas']['BranchTipDto'];
 export type CapabilityHeadDto = components['schemas']['CapabilityHeadDto'];
+export type VersionTagHeadDto = components['schemas']['VersionTagHeadDto'];
+export type RevisionHeadDto = components['schemas']['RevisionHeadDto'];
+export type TrustHeadDto = components['schemas']['TrustHeadDto'];
 export type ValidationResult = components['schemas']['ValidationResult'];
 export type ValidationStatus = components['schemas']['ValidationStatus'];
 export type ValidationIssue = components['schemas']['ValidationIssue'];
@@ -63,16 +66,24 @@ export interface KairoApiClient {
     name: string,
     opts?: BranchActorOption,
   ): Promise<ObjectBranchStatementJson>;
+  /** `GET /api/v1/version-tags/{object}` — list of `(actor, version)` heads. */
+  listVersionTags(objectId: string): Promise<VersionTagHeadDto[]>;
   /** `GET /api/v1/version-tags/{object}/{version}`. */
   getLatestVersionTag(
     objectId: string,
     version: string,
     opts?: BranchActorOption,
   ): Promise<ObjectVersionTagStatementJson>;
+  /** `GET /api/v1/revisions/{object}` — chronological revision heads. */
+  listRevisions(objectId: string): Promise<RevisionHeadDto[]>;
   /** `GET /api/v1/trust/{by}/{of}`. */
   getTrust(byActor: string, ofActor: string): Promise<ActorTrustStatementJson>;
+  /** `GET /api/v1/trust/about/{of}` — list of opinions expressed about an actor. */
+  listTrustAbout(ofActor: string): Promise<TrustHeadDto[]>;
   /** `GET /api/v1/capabilities/{grantor}`. */
   listCapabilitiesFromGrantor(grantorId: string): Promise<CapabilityHeadDto[]>;
+  /** `GET /api/v1/capabilities/for-object/{object}` — capability heads scoped to an object, hydrated with each head's scope. */
+  listCapabilitiesForObject(objectId: string): Promise<CapabilityHeadDto[]>;
   /**
    * `GET /api/v1/blobs/{id}` — raw `application/octet-stream`.
    * Returns a `Blob` to keep the browser-side surface tractable;
@@ -136,11 +147,23 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
         actorQuery(opts),
       );
     },
+    async listVersionTags(objectId) {
+      return getJson<VersionTagHeadDto[]>(
+        http,
+        `api/v1/version-tags/${encodeURIComponent(objectId)}`,
+      );
+    },
     async getLatestVersionTag(objectId, version, opts) {
       return getJson<ObjectVersionTagStatementJson>(
         http,
         `api/v1/version-tags/${encodeURIComponent(objectId)}/${encodeURIComponent(version)}`,
         actorQuery(opts),
+      );
+    },
+    async listRevisions(objectId) {
+      return getJson<RevisionHeadDto[]>(
+        http,
+        `api/v1/revisions/${encodeURIComponent(objectId)}`,
       );
     },
     async getTrust(byActor, ofActor) {
@@ -149,10 +172,22 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
         `api/v1/trust/${encodeURIComponent(byActor)}/${encodeURIComponent(ofActor)}`,
       );
     },
+    async listTrustAbout(ofActor) {
+      return getJson<TrustHeadDto[]>(
+        http,
+        `api/v1/trust/about/${encodeURIComponent(ofActor)}`,
+      );
+    },
     async listCapabilitiesFromGrantor(grantorId) {
       return getJson<CapabilityHeadDto[]>(
         http,
         `api/v1/capabilities/${encodeURIComponent(grantorId)}`,
+      );
+    },
+    async listCapabilitiesForObject(objectId) {
+      return getJson<CapabilityHeadDto[]>(
+        http,
+        `api/v1/capabilities/for-object/${encodeURIComponent(objectId)}`,
       );
     },
     async getBlob(blobId) {

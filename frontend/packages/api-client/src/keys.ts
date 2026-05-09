@@ -26,14 +26,20 @@ export const kairoKeys = {
   branch: (objectId: string, name: string, actor?: string) =>
     [...kairoKeys.branches(objectId), name, actor ?? null] as const,
 
+  versionTags: (objectId: string) => [...kairoKeys.object(objectId), 'version-tags'] as const,
   versionTag: (objectId: string, version: string, actor?: string) =>
     [...kairoKeys.object(objectId), 'version-tag', version, actor ?? null] as const,
 
+  revisions: (objectId: string) => [...kairoKeys.object(objectId), 'revisions'] as const,
+
   trust: (byActor: string, ofActor: string) =>
     [...kairoKeys.all, 'trust', byActor, ofActor] as const,
+  trustAbout: (ofActor: string) => [...kairoKeys.all, 'trust', 'about', ofActor] as const,
 
   capabilitiesFrom: (grantor: string) =>
     [...kairoKeys.all, 'capabilities', 'from', grantor] as const,
+  capabilitiesForObject: (objectId: string) =>
+    [...kairoKeys.object(objectId), 'capabilities'] as const,
 
   verifyObject: (id: string) => [...kairoKeys.object(id), 'verify'] as const,
 

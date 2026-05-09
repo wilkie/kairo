@@ -25,10 +25,13 @@ import type {
   ObjectBranchStatementJson,
   ObjectGenesisStatementJson,
   ObjectVersionTagStatementJson,
+  RevisionHeadDto,
   StatementValue,
   StatusInfo,
+  TrustHeadDto,
   ValidationResult,
   VersionInfo,
+  VersionTagHeadDto,
 } from './client';
 import { kairoKeys } from './keys';
 import { useKairoClient } from './provider';
@@ -95,6 +98,14 @@ export function useLatestBranch(
   });
 }
 
+export function useVersionTags(objectId: string): QueryResult<VersionTagHeadDto[]> {
+  const client = useKairoClient();
+  return useQuery<VersionTagHeadDto[], KairoApiClientError>({
+    queryKey: kairoKeys.versionTags(objectId),
+    queryFn: () => client.listVersionTags(objectId),
+  });
+}
+
 export function useLatestVersionTag(
   objectId: string,
   version: string,
@@ -107,6 +118,14 @@ export function useLatestVersionTag(
   });
 }
 
+export function useRevisions(objectId: string): QueryResult<RevisionHeadDto[]> {
+  const client = useKairoClient();
+  return useQuery<RevisionHeadDto[], KairoApiClientError>({
+    queryKey: kairoKeys.revisions(objectId),
+    queryFn: () => client.listRevisions(objectId),
+  });
+}
+
 export function useTrust(byActor: string, ofActor: string): QueryResult<ActorTrustStatementJson> {
   const client = useKairoClient();
   return useQuery<ActorTrustStatementJson, KairoApiClientError>({
@@ -115,11 +134,39 @@ export function useTrust(byActor: string, ofActor: string): QueryResult<ActorTru
   });
 }
 
+export interface UseTrustAboutOptions {
+  /** Skip the request when false. Use for chained queries where
+   * the actor id only becomes available after a parent query
+   * resolves (e.g., reading `object.body.created_by` before
+   * fetching trust opinions about that actor). */
+  enabled?: boolean;
+}
+
+export function useTrustAbout(
+  ofActor: string,
+  opts: UseTrustAboutOptions = {},
+): QueryResult<TrustHeadDto[]> {
+  const client = useKairoClient();
+  return useQuery<TrustHeadDto[], KairoApiClientError>({
+    queryKey: kairoKeys.trustAbout(ofActor),
+    queryFn: () => client.listTrustAbout(ofActor),
+    enabled: opts.enabled !== false,
+  });
+}
+
 export function useCapabilitiesFromGrantor(grantorId: string): QueryResult<CapabilityHeadDto[]> {
   const client = useKairoClient();
   return useQuery<CapabilityHeadDto[], KairoApiClientError>({
     queryKey: kairoKeys.capabilitiesFrom(grantorId),
     queryFn: () => client.listCapabilitiesFromGrantor(grantorId),
+  });
+}
+
+export function useCapabilitiesForObject(objectId: string): QueryResult<CapabilityHeadDto[]> {
+  const client = useKairoClient();
+  return useQuery<CapabilityHeadDto[], KairoApiClientError>({
+    queryKey: kairoKeys.capabilitiesForObject(objectId),
+    queryFn: () => client.listCapabilitiesForObject(objectId),
   });
 }
 

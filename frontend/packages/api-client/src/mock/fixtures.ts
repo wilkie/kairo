@@ -1,188 +1,73 @@
-// Canned response bodies the MSW handlers serve. Field shapes
-// match the OpenAPI schema exactly — typed against
-// `components['schemas']['*']` so a daemon-side schema change
-// surfaces as a TS error here, not a runtime mismatch in the
-// inspector.
+// Legacy single-fixture exports. Slice 8 introduced a typed
+// mock registry (`./registry.ts`) with multiple objects /
+// actors / statements; the named exports here remain so that
+// pre-registry callers (the contract test, ad-hoc consumers)
+// keep working — each one just re-exposes the corresponding
+// canonical entry from the registry.
 //
-// Every fixture is a complete response body (the inner
-// `result`); the handlers wrap it in the success envelope so
-// the wire format matches the real daemon byte-for-byte.
+// New code should reach for `mockRegistry` and `mockIds`
+// directly. The fixture-as-aggregated-object pattern (`fixtures`
+// below) only carries the single-row entries the slice 6 mock
+// surface had.
 
+import { legacyMockIdAliases, mockIds as registryIds, mockRegistry } from './registry';
 import type { components } from '../generated/schema';
 
-const MOCK_ACTOR = 'kairo:actor:zMockActor00000000000000000000000000000000';
-const MOCK_OBJECT = 'kairo:object:zMockObject00000000000000000000000000000000';
-const MOCK_REVISION_STMT = 'kairo:stmt:zMockRevisionStmt00000000000000000000000000';
-const MOCK_BRANCH_STMT = 'kairo:stmt:zMockBranchStmt000000000000000000000000000000';
-const MOCK_TAG_STMT = 'kairo:stmt:zMockTagStmt0000000000000000000000000000000000';
-const MOCK_TRUST_STMT = 'kairo:stmt:zMockTrustStmt000000000000000000000000000000';
-const MOCK_GRANT_STMT = 'kairo:stmt:zMockGrantStmt000000000000000000000000000000';
-const MOCK_BLOB = 'kairo:blob:zMockBlob000000000000000000000000000000000000';
-const MOCK_REVISION = 'git:sha256:0000000000000000000000000000000000000001';
-const MOCK_NONCE = '0'.repeat(64);
-const MOCK_PUBKEY_B64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
-const MOCK_SIG_B64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' + 'A'.repeat(44);
-const MOCK_TIMESTAMP = '2026-01-01T00:00:00Z';
+type Schemas = components['schemas'];
 
-const mockSignature: components['schemas']['SignatureJson'] = {
-  actor: MOCK_ACTOR,
-  key_id: 'mock-key-1',
-  algorithm: 'ed25519',
-  bytes: MOCK_SIG_B64,
-};
-
-const mockPublicKey: components['schemas']['PublicKeyJson'] = {
-  algorithm: 'ed25519',
-  bytes: MOCK_PUBKEY_B64,
-};
-
-export const versionFixture: components['schemas']['VersionInfo'] = {
-  daemon_version: 'mock-0.1.0',
-  api_version: 'v1',
-  core_version: 'mock-0.1.0',
-  store_version: 'mock-0.1.0',
-};
-
-export const statusFixture: components['schemas']['StatusInfo'] = {
-  daemon_running: true,
-  store_path: '/mock/store',
-  store_schema_version: '1',
-  pid: 1,
-  daemon_version: 'mock-0.1.0',
-};
-
-export const actorFixture: components['schemas']['ActorGenesisJson'] = {
-  type: 'ActorGenesis',
-  version: 1,
-  actor_kind: 'kairo/actor',
-  initial_key: mockPublicKey,
-  attestation_keys: [mockPublicKey],
-  attestation_threshold: 1,
-  created_at: MOCK_TIMESTAMP,
-  nonce: MOCK_NONCE,
-};
-
-export const objectFixture: components['schemas']['ObjectGenesisStatementJson'] = {
-  type: 'ObjectGenesis',
-  version: 1,
-  body: {
-    object_kind: 'kairo/object',
-    created_by: MOCK_ACTOR,
-    created_at: MOCK_TIMESTAMP,
-    nonce: MOCK_NONCE,
-  },
-  signature: mockSignature,
-};
-
-export const branchTipsFixture: components['schemas']['BranchTipDto'][] = [
-  {
-    actor: MOCK_ACTOR,
-    object: MOCK_OBJECT,
-    name: 'head',
-    statement_id: MOCK_BRANCH_STMT,
-    created_at: MOCK_TIMESTAMP,
-  },
+const aliceActor = mockRegistry.actors[registryIds.alice];
+const alphaObject = mockRegistry.objects[registryIds.alpha];
+const aliceSelfTrust = mockRegistry.trustPair[`${registryIds.alice}:${registryIds.alice}`];
+const alphaHeadBranch = mockRegistry.branchLatest[
+  `${registryIds.alpha}:head:${registryIds.alice}`
 ];
-
-export const branchLatestFixture: components['schemas']['ObjectBranchStatementJson'] = {
-  type: 'ObjectBranch',
-  version: 1,
-  actor: MOCK_ACTOR,
-  subject: `object:${MOCK_OBJECT}`,
-  created_at: MOCK_TIMESTAMP,
-  body: {
-    object: MOCK_OBJECT,
-    name: 'head',
-    revision: MOCK_REVISION_STMT,
-  },
-  signature: mockSignature,
-};
-
-export const versionTagLatestFixture: components['schemas']['ObjectVersionTagStatementJson'] = {
-  type: 'ObjectVersionTag',
-  version: 1,
-  actor: MOCK_ACTOR,
-  subject: `object:${MOCK_OBJECT}`,
-  created_at: MOCK_TIMESTAMP,
-  body: {
-    object: MOCK_OBJECT,
-    version: 'v1.0.0',
-    target: MOCK_REVISION,
-  },
-  signature: mockSignature,
-};
-
-export const trustFixture: components['schemas']['ActorTrustStatementJson'] = {
-  type: 'ActorTrust',
-  version: 1,
-  actor: MOCK_ACTOR,
-  subject: `actor:${MOCK_ACTOR}`,
-  created_at: MOCK_TIMESTAMP,
-  body: {
-    trusted_actor: MOCK_ACTOR,
-    decision: 'trusted',
-  },
-  signature: mockSignature,
-};
-
-export const capabilityHeadsFixture: components['schemas']['CapabilityHeadDto'][] = [
-  {
-    grantor: MOCK_ACTOR,
-    grantee: MOCK_ACTOR,
-    scope: { object: MOCK_OBJECT },
-    statement_id: MOCK_GRANT_STMT,
-    created_at: MOCK_TIMESTAMP,
-  },
+const alphaV1Tag = mockRegistry.versionTagLatest[
+  `${registryIds.alpha}:v1.0.0:${registryIds.alice}`
 ];
+const aliceCapabilityHeads = mockRegistry.capabilitiesFromGrantor[registryIds.alice] ?? [];
+const alphaRevisionStmt = mockRegistry.statements[registryIds.alphaRev1Stmt];
+const alphaBlobBytes = mockRegistry.blobs[registryIds.alphaManifestBlob] ?? new Uint8Array();
+const alphaValidation = mockRegistry.verifyObject[registryIds.alpha];
 
-export const verifyObjectFixture: components['schemas']['ValidationResult'] = {
-  object_id: MOCK_OBJECT,
-  status: 'indeterminate',
-  issues: [
-    {
-      kind: 'manifest_not_provided',
-      severity: 'info',
-      message: 'no manifest available; the daemon does not resolve manifests from a working tree',
-      statement_id: MOCK_REVISION_STMT,
-      details: {},
-    },
-    {
-      kind: 'content_layer_indeterminate',
-      severity: 'info',
-      message: 'no Git repository was supplied; the content layer cannot be verified server-side',
-      statement_id: MOCK_REVISION_STMT,
-      details: {},
-    },
-  ],
-  revision_statement_id: MOCK_REVISION_STMT,
-  branch_name: 'head',
-};
+if (
+  aliceActor === undefined ||
+  alphaObject === undefined ||
+  aliceSelfTrust === undefined ||
+  alphaHeadBranch === undefined ||
+  alphaV1Tag === undefined ||
+  alphaRevisionStmt === undefined ||
+  alphaValidation === undefined
+) {
+  // Registry seeding bug — fail loud at import time.
+  throw new Error('mock registry is missing canonical entries');
+}
+
+export const versionFixture: Schemas['VersionInfo'] = mockRegistry.version;
+export const statusFixture: Schemas['StatusInfo'] = mockRegistry.status;
+export const actorFixture: Schemas['ActorGenesisJson'] = aliceActor;
+export const objectFixture: Schemas['ObjectGenesisStatementJson'] = alphaObject;
+export const branchTipsFixture: Schemas['BranchTipDto'][] =
+  mockRegistry.branchTips[registryIds.alpha] ?? [];
+export const branchLatestFixture: Schemas['ObjectBranchStatementJson'] = alphaHeadBranch;
+export const versionTagLatestFixture: Schemas['ObjectVersionTagStatementJson'] = alphaV1Tag;
+export const trustFixture: Schemas['ActorTrustStatementJson'] = aliceSelfTrust;
+export const capabilityHeadsFixture: Schemas['CapabilityHeadDto'][] = aliceCapabilityHeads;
+export const versionTagHeadsFixture: Schemas['VersionTagHeadDto'][] =
+  mockRegistry.versionTagHeads[registryIds.alpha] ?? [];
+export const revisionHeadsFixture: Schemas['RevisionHeadDto'][] =
+  mockRegistry.revisionHeads[registryIds.alpha] ?? [];
+export const trustHeadsFixture: Schemas['TrustHeadDto'][] =
+  mockRegistry.trustAbout[registryIds.alice] ?? [];
+export const verifyObjectFixture: Schemas['ValidationResult'] = alphaValidation;
+
+/** Polymorphic statement-by-id fixture — the canonical revision
+ * statement on Alpha. */
+export const statementFixture: unknown = alphaRevisionStmt;
 
 /**
- * Polymorphic statement-by-id fixture. Defaults to the same
- * revision the branch tip points at, but tests can swap in a
- * different statement kind.
- */
-export const statementFixture: unknown = {
-  type: 'ObjectRevision',
-  version: 1,
-  actor: MOCK_ACTOR,
-  subject: `object:${MOCK_OBJECT}`,
-  created_at: MOCK_TIMESTAMP,
-  body: {
-    object: MOCK_OBJECT,
-    revision: MOCK_REVISION,
-    parents: [],
-    manifest_hash: MOCK_BLOB,
-    attests_reachable_history: false,
-  },
-  signature: mockSignature,
-};
-
-/**
- * Default fixture set. Tests can override individual fields by
- * passing a partial spread to `createHandlers({...defaults,
- * version: customVersion})`.
+ * Aggregated single-row default fixture set. Kept for callers
+ * that haven't migrated to `mockRegistry`. New code should
+ * reach for the registry directly.
  */
 export const fixtures = {
   version: versionFixture,
@@ -192,26 +77,23 @@ export const fixtures = {
   statement: statementFixture,
   branchTips: branchTipsFixture,
   branchLatest: branchLatestFixture,
+  versionTagHeads: versionTagHeadsFixture,
   versionTagLatest: versionTagLatestFixture,
+  revisionHeads: revisionHeadsFixture,
   trust: trustFixture,
+  trustHeads: trustHeadsFixture,
   capabilityHeads: capabilityHeadsFixture,
-  blob: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+  capabilityHeadsForObject: capabilityHeadsFixture,
+  blob: alphaBlobBytes,
   verifyObject: verifyObjectFixture,
 } as const;
 
-/**
- * Stable identifier strings the mock handlers and tests reach
- * for. Re-exported so tests can build URLs without typing the
- * 50-char base58 forms.
- */
+/** Stable identifier strings the mock handlers and tests reach
+ * for. The legacy short-name keys (`actor`, `object`, etc.)
+ * point at Alice / Alpha for back-compat with the slice 6
+ * contract tests; the full set of registry ids is also
+ * exposed by spreading {@link registryIds}. */
 export const mockIds = {
-  actor: MOCK_ACTOR,
-  object: MOCK_OBJECT,
-  blob: MOCK_BLOB,
-  branchStmt: MOCK_BRANCH_STMT,
-  revisionStmt: MOCK_REVISION_STMT,
-  tagStmt: MOCK_TAG_STMT,
-  trustStmt: MOCK_TRUST_STMT,
-  grantStmt: MOCK_GRANT_STMT,
-  revision: MOCK_REVISION,
+  ...registryIds,
+  ...legacyMockIdAliases,
 } as const;

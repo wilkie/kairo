@@ -19,6 +19,7 @@ export { Button, type ButtonProps, type ButtonVariant } from './Button';
 export { Panel, type PanelProps } from './Panel';
 export { Table, type TableProps, type TableColumn } from './Table';
 export { StatusBadge, type StatusBadgeProps, type StatusBadgeTone } from './StatusBadge';
+export { LocalityBadge, type LocalityBadgeProps, type LocalityState } from './LocalityBadge';
 export { Tabs, type TabsProps, type TabsTab } from './Tabs';
 export { Dialog, type DialogProps } from './Dialog';
 export { EmptyState, type EmptyStateProps } from './EmptyState';

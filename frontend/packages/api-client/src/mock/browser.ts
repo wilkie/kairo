@@ -11,11 +11,12 @@
 // transparently).
 
 import { setupWorker, type SetupWorker } from 'msw/browser';
-import { handlers as defaultHandlers, type MockFixtures } from './handlers';
+import { handlers as defaultHandlers } from './handlers';
+import type { MockRegistry } from './registry';
 
 export interface StartMockWorkerOptions {
-  /** Override the default fixtures (`createHandlers(custom)`). */
-  fixtures?: MockFixtures;
+  /** Replace the default mock registry wholesale. */
+  registry?: MockRegistry;
   /**
    * What to do with requests no handler matches. `'bypass'`
    * lets non-API URLs (the SPA bundle, source maps, dev
@@ -33,7 +34,7 @@ export async function startMockWorker(opts: StartMockWorkerOptions = {}): Promis
     return worker;
   }
   const { createHandlers } = await import('./handlers');
-  const handlers = opts.fixtures ? createHandlers(opts.fixtures) : defaultHandlers;
+  const handlers = opts.registry ? createHandlers(opts.registry) : defaultHandlers;
   worker = setupWorker(...handlers);
   await worker.start({
     onUnhandledRequest: opts.onUnhandledRequest ?? 'bypass',

@@ -6,7 +6,8 @@
 // Tests that need the request-interception server import
 // `@kairo/api-client/mock/node` instead.
 
-export { fixtures, versionFixture, statusFixture } from './fixtures';
+export { fixtures, mockIds, versionFixture, statusFixture } from './fixtures';
+export { mockRegistry, type MockRegistry } from './registry';
 export { successEnvelope, errorEnvelope } from './envelope';
-export { handlers, createHandlers, type MockFixtures } from './handlers';
+export { handlers, createHandlers } from './handlers';
 export { startMockWorker, stopMockWorker, type StartMockWorkerOptions } from './browser';

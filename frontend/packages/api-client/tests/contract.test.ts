@@ -68,8 +68,8 @@ describe('typed read methods unwrap the success envelope', () => {
 
   it('listBranches returns the branch-tip array', async () => {
     const result = await client.listBranches(mockIds.object);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.name).toBe('head');
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.map((tip) => tip.name)).toContain('head');
   });
 
   it('getLatestBranch returns the chain-leaf branch statement', async () => {
@@ -91,6 +91,37 @@ describe('typed read methods unwrap the success envelope', () => {
     const result = await client.listCapabilitiesFromGrantor(mockIds.actor);
     expect(result).toHaveLength(1);
     expect(result[0]?.grantor).toBe(mockIds.actor);
+  });
+
+  it('listVersionTags returns the version-tag head array', async () => {
+    const result = await client.listVersionTags(mockIds.object);
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.map((tag) => tag.version)).toContain('v1.0.0');
+  });
+
+  it('listRevisions returns the revision head array', async () => {
+    const result = await client.listRevisions(mockIds.object);
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.map((rev) => rev.statement_id)).toContain(mockIds.revisionStmt);
+    // The initial (no-parents) revision must always be present.
+    expect(result.some((rev) => rev.parents.length === 0)).toBe(true);
+  });
+
+  it('listTrustAbout returns trust heads expressed about an actor', async () => {
+    const result = await client.listTrustAbout(mockIds.actor);
+    expect(result.length).toBeGreaterThan(0);
+    for (const head of result) {
+      expect(head.trusted_actor).toBe(mockIds.actor);
+    }
+    // The seeded "trusted" opinion (Bob → Alice) is the
+    // canonical happy-path entry.
+    expect(result.map((head) => head.decision)).toContain('trusted');
+  });
+
+  it('listCapabilitiesForObject returns capability heads scoped to the object', async () => {
+    const result = await client.listCapabilitiesForObject(mockIds.object);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.scope).toMatchObject({ object: mockIds.object });
   });
 
   it('verifyObject returns ValidationResult', async () => {

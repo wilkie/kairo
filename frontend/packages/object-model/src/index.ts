@@ -24,6 +24,9 @@ export type {
   ActorTrustStatementJson,
   BranchTipDto,
   CapabilityHeadDto,
+  VersionTagHeadDto,
+  RevisionHeadDto,
+  TrustHeadDto,
   StatementValue,
   ValidationResult,
   ValidationStatus,
@@ -31,7 +34,16 @@ export type {
   ValidationIssueSeverity,
 } from '@kairo/api-client';
 
-export { truncateId, copyToClipboard, type TruncateIdOptions } from './identifiers';
+export {
+  truncateId,
+  copyToClipboard,
+  type TruncateIdOptions,
+  type IdKind,
+  idPrefix,
+  isCanonicalId,
+  canonicalizeId,
+  bareId,
+} from './identifiers';
 
 export {
   KNOWN_STATEMENT_KINDS,
