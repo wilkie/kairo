@@ -36,6 +36,7 @@ export default tseslint.config(
       '**/.turbo/**',
       '**/generated/**',
       '**/public/mockServiceWorker.js',
+      '**/storybook-static/**',
     ],
   },
   js.configs.recommended,

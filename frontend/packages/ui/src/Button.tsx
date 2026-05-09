@@ -1,16 +1,29 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+// Thin wrapper around MUI Button. We keep our own variant
+// vocabulary (`default | primary | ghost`) so call sites read
+// in kairo-flavored terms; under the hood it maps to MUI's
+// `variant` + `color` props.
 
-export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  children: ReactNode;
-};
+import MuiButton, { type ButtonProps as MuiButtonProps } from '@mui/material/Button';
+
+export type ButtonVariant = 'default' | 'primary' | 'ghost';
+
+export interface ButtonProps extends Omit<MuiButtonProps, 'variant' | 'color'> {
+  variant?: ButtonVariant;
+}
 
 /**
- * Slice 5 placeholder. Slice 7 replaces this with the real
- * design-system Button (variants, sizes, icon slots, focus ring,
- * keyboard parity per `WEB_CLIENT.md` §20). For now: a typed,
- * pass-through native button so the package has something
- * exporting and the workspace's import graph compiles.
+ * Default variant: outlined neutral button.
+ * Primary: filled primary-color button (the headline action).
+ * Ghost: text-only button for low-weight actions.
  */
-export function Button({ children, ...rest }: ButtonProps) {
-  return <button {...rest}>{children}</button>;
+export function Button({ variant = 'default', ...rest }: ButtonProps) {
+  switch (variant) {
+    case 'primary':
+      return <MuiButton variant="contained" color="primary" {...rest} />;
+    case 'ghost':
+      return <MuiButton variant="text" color="inherit" {...rest} />;
+    case 'default':
+    default:
+      return <MuiButton variant="outlined" color="inherit" {...rest} />;
+  }
 }

@@ -5,6 +5,7 @@ dist
 build
 *.tsbuildinfo
 .cache
+storybook-static
 
 # Local environment overrides (never commit)
 .env

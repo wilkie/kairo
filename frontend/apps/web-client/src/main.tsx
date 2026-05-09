@@ -7,6 +7,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { KairoProvider, createKairoClient } from '@kairo/api-client';
+import { KairoUiProvider } from '@kairo/ui';
+import { ErrorBoundary } from './ErrorBoundary';
 import { RouterProvider } from './router';
 
 async function bootstrap() {
@@ -25,9 +27,13 @@ async function bootstrap() {
 
   createRoot(root).render(
     <StrictMode>
-      <KairoProvider client={kairoClient}>
-        <RouterProvider />
-      </KairoProvider>
+      <KairoUiProvider>
+        <ErrorBoundary>
+          <KairoProvider client={kairoClient}>
+            <RouterProvider />
+          </KairoProvider>
+        </ErrorBoundary>
+      </KairoUiProvider>
     </StrictMode>,
   );
 }

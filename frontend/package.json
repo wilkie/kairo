@@ -16,6 +16,8 @@
     "lint": "turbo run lint",
     "lint:fix": "eslint --fix .",
     "test": "turbo run test",
+    "storybook": "turbo run storybook",
+    "storybook:build": "turbo run storybook:build",
     "generate:api": "turbo run generate:api",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

@@ -1,5 +1,24 @@
-// Slice 5 stub. Slice 7 lands the real ui surface (panels, table,
-// tabs, dialog, status badge, empty state, error display) —
-// see `WEB_CLIENT.md` §4.3 and `PHASE_2_WEB_CLIENT.md` slice 7.
+// `@kairo/ui` — design-system primitives for the inspector.
+//
+// Built on top of MUI (`@mui/material`) and Material Icons
+// (`@mui/icons-material`). The wrappers in this package
+// preserve a kairo-flavored prop API (variant vocabularies,
+// column-driven Table, status-tone vocabulary) while delegating
+// rendering, accessibility, and theming to MUI.
+//
+// Apps mount `<KairoUiProvider>` once near the root; that
+// installs MUI's CssBaseline + the Kairo theme (light/dark via
+// system preference). Material icons are imported per-call
+// from `@mui/icons-material/<IconName>` for tree-shaking.
 
-export { Button, type ButtonProps } from './Button';
+export { KairoUiProvider, type KairoUiProviderProps } from './KairoUiProvider';
+export { kairoLightTheme, kairoDarkTheme, createKairoTheme } from './theme';
+
+export { Button, type ButtonProps, type ButtonVariant } from './Button';
+export { Panel, type PanelProps } from './Panel';
+export { Table, type TableProps, type TableColumn } from './Table';
+export { StatusBadge, type StatusBadgeProps, type StatusBadgeTone } from './StatusBadge';
+export { Tabs, type TabsProps, type TabsTab } from './Tabs';
+export { Dialog, type DialogProps } from './Dialog';
+export { EmptyState, type EmptyStateProps } from './EmptyState';
+export { ErrorDisplay, type ErrorDisplayProps } from './ErrorDisplay';

@@ -39,6 +39,15 @@
     "generate:api": {
       "inputs": ["../../openapi/kairo-daemon.json", "package.json"],
       "outputs": ["src/generated/**"]
+    },
+    "storybook:build": {
+      "inputs": ["src/**", ".storybook/**", "package.json"],
+      "outputs": ["storybook-static/**"]
+    },
+    "storybook": {
+      "cache": false,
+      "persistent": true,
+      "interactive": true
     }
   }
 }
