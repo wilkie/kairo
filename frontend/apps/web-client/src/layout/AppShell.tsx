@@ -12,10 +12,10 @@ import ListItemButton from '@mui/material/ListItemButton';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import Toolbar from '@mui/material/Toolbar';
-import Typography from '@mui/material/Typography';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import StorageIcon from '@mui/icons-material/Storage';
 import SettingsIcon from '@mui/icons-material/Settings';
+import { KairoLogo } from '@kairo/ui';
 import { forwardRef, type ReactNode } from 'react';
 
 type NavTo = '/' | '/objects' | '/settings';
@@ -49,10 +49,10 @@ export function AppShell() {
           },
         }}
       >
-        <Toolbar sx={{ alignItems: 'center', minHeight: '64px' }}>
-          <Typography variant="h6" component="h1">
-            Kairo
-          </Typography>
+        <Toolbar sx={{ alignItems: 'center', minHeight: '64px', px: 2 }}>
+          <Box component="h1" sx={{ m: 0, display: 'flex', alignItems: 'center' }}>
+            <KairoLogo height={28} />
+          </Box>
         </Toolbar>
         <List component="nav" aria-label="Primary">
           {NAV_ITEMS.map((item) => (

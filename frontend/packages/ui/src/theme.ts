@@ -2,16 +2,26 @@
 // shape; dark mode is opted into via system preference at the
 // `KairoUiProvider` boundary.
 //
-// We keep the palette deliberately close to MUI's defaults for
-// most semantic colors so out-of-the-box components (Alert,
-// Chip, Button) feel native. The accent moves to a slightly
-// less-saturated indigo than MUI's default to read as "tooling"
-// rather than "marketing."
+// The palette is anchored on the brand mark — magenta-purple
+// (#ab00ab) and a deep teal (#007373) drawn straight out of
+// the hexagonal icon. The full-saturation brand purple lives in
+// the logo; for interactive surfaces we shift slightly toward
+// a more legible "tooling" purple in light mode and lighten it
+// for dark mode so it reads on a near-black background. Border
+// radius is kept tight (4px) to echo the icon's hard angles
+// without leaking the literal hexagon shape into every panel.
 
 import { createTheme, type Theme, type ThemeOptions } from '@mui/material/styles';
 
+/** Raw brand colors lifted from `kairo_icon.svg`. Exported so
+ * apps can use them in non-MUI surfaces (charts, embeds). */
+export const kairoBrandColors = {
+  purple: '#ab00ab',
+  teal: '#007373',
+} as const;
+
 const sharedShape: NonNullable<ThemeOptions['shape']> = {
-  borderRadius: 6,
+  borderRadius: 4,
 };
 
 const sharedTypography: NonNullable<ThemeOptions['typography']> = {
@@ -76,13 +86,24 @@ export function createKairoTheme(mode: 'light' | 'dark'): Theme {
   return createTheme({
     palette: {
       mode,
+      // Brand purple, slightly tuned per-mode for legibility on
+      // interactive surfaces. The logo itself always renders the
+      // full-saturation `kairoBrandColors.purple`.
       primary: {
-        main: mode === 'light' ? '#3a6df0' : '#6191ff',
+        main: mode === 'light' ? '#a3009f' : '#d56cd5',
+        contrastText: '#ffffff',
+      },
+      // Brand teal as the secondary/accent — pairs naturally
+      // with the icon and gives us a complementary tone for
+      // accents, links, and selection.
+      secondary: {
+        main: mode === 'light' ? kairoBrandColors.teal : '#3aa6a6',
+        contrastText: '#ffffff',
       },
       background:
         mode === 'light'
-          ? { default: '#f6f7f9', paper: '#ffffff' }
-          : { default: '#0f1115', paper: '#1a1f26' },
+          ? { default: '#f7f4f8', paper: '#ffffff' }
+          : { default: '#11070f', paper: '#1c141b' },
     },
     shape: sharedShape,
     typography: sharedTypography,

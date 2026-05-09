@@ -12,7 +12,8 @@
 // from `@mui/icons-material/<IconName>` for tree-shaking.
 
 export { KairoUiProvider, type KairoUiProviderProps } from './KairoUiProvider';
-export { kairoLightTheme, kairoDarkTheme, createKairoTheme } from './theme';
+export { kairoLightTheme, kairoDarkTheme, createKairoTheme, kairoBrandColors } from './theme';
+export { KairoLogo, KairoIcon, type KairoLogoProps } from './KairoLogo';
 
 export { Button, type ButtonProps, type ButtonVariant } from './Button';
 export { Panel, type PanelProps } from './Panel';
