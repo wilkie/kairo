@@ -11,7 +11,7 @@
   "packageManager": "pnpm@10.31.0",
   "scripts": {
     "build": "turbo run build",
-    "dev": "turbo run dev --parallel",
+    "dev": "turbo run dev",
     "typecheck": "turbo run typecheck",
     "lint": "turbo run lint",
     "lint:fix": "eslint --fix .",
