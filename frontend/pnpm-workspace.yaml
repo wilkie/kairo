@@ -6,4 +6,9 @@ packages:
 # is a transitive dep of Vite; without this, the dev server fails
 # to start.
 onlyBuiltDependencies:
+  # Vite uses esbuild for transforms; postinstall fetches the
+  # native binary.
   - esbuild
+  # MSW's postinstall sets up `mockServiceWorker.js` in the SW
+  # registry directory the user opts into via `msw init`.
+  - msw

@@ -23,7 +23,13 @@
       "inputs": ["src/**", "tsconfig.json", "package.json"]
     },
     "lint": {
-      "inputs": ["src/**", "package.json"]
+      "dependsOn": ["generate:api"],
+      "inputs": [
+        "src/**",
+        "package.json",
+        "tsconfig.json",
+        "../../eslint.config.js"
+      ]
     },
     "test": {
       "dependsOn": ["^build", "generate:api"],

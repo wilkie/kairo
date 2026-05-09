@@ -1,136 +1,103 @@
-import createClient, { type Client } from 'openapi-fetch';
-import type { paths, components } from './generated/schema';
+// Imperative typed client. Each method maps to one daemon
+// endpoint, sends a `ky` request, and unwraps the envelope into
+// the inner `T` declared by the OpenAPI annotations.
+//
+// Slice 5 ships the single `getVersion` method. Slice 6 will
+// fill in the remaining 11 endpoints (`getStatus`, `getActor`,
+// `getObject`, `getStatement`, `listBranches`, `getLatestBranch`,
+// `getLatestVersionTag`, `getTrust`, `listCapabilitiesFromGrantor`,
+// `getBlob`, `verifyObject`).
 
-/**
- * Stripped envelope shape: every non-streaming daemon response
- * is `{ ok: true, schema, result } | { ok: false, schema, error }`.
- * The OpenAPI annotations (slice 1) declare the response `body`
- * as the *inner* result type, so the generated `paths` types
- * describe `result` shape directly. We just have to unwrap the
- * envelope at the fetch boundary.
- */
-type ApiSuccess<T> = {
-  ok: true;
-  schema: string;
-  result: T;
-};
-
-type ApiFailure = {
-  ok: false;
-  schema: string;
-  error: {
-    code: string;
-    message: string;
-  };
-};
-
-type ApiEnvelope<T> = ApiSuccess<T> | ApiFailure;
+import { HTTPError, type KyInstance } from 'ky';
+import type { components } from './generated/schema';
+import { EnvelopeError, unwrapEnvelope } from './envelope';
+import { KairoApiClientError } from './error';
+import { createTransport, type TransportOptions } from './transport';
 
 export type VersionInfo = components['schemas']['VersionInfo'];
+export type StatusInfo = components['schemas']['StatusInfo'];
+export type ValidationResult = components['schemas']['ValidationResult'];
 
-/**
- * Errors surfaced by `KairoApiClient`. Mirrors `WEB_CLIENT.md`
- * §6 `ApiClientError`. Slice 6 adds the `validation` /
- * `unauthorized` variants when the relevant endpoints are wired.
- */
-export type ApiClientError =
-  | { kind: 'network'; message: string }
-  | { kind: 'daemon'; code: string; message: string; status: number }
-  | { kind: 'decode'; message: string };
-
-export class KairoApiClientError extends Error {
-  readonly detail: ApiClientError;
-
-  constructor(detail: ApiClientError) {
-    super(formatMessage(detail));
-    this.name = 'KairoApiClientError';
-    this.detail = detail;
-  }
-}
-
-function formatMessage(detail: ApiClientError): string {
-  switch (detail.kind) {
-    case 'network':
-      return `network error: ${detail.message}`;
-    case 'daemon':
-      return `daemon error (${detail.code}, HTTP ${detail.status}): ${detail.message}`;
-    case 'decode':
-      return `decode error: ${detail.message}`;
-  }
-}
-
-/**
- * Public surface of the typed client. Slice 5 ships only
- * `getVersion`; slice 6 fills in the rest of the read endpoints
- * with the same envelope-unwrap pattern.
- */
 export interface KairoApiClient {
+  /** `GET /api/v1/version`. */
   getVersion(): Promise<VersionInfo>;
 }
 
-export function createKairoClient(baseUrl: string): KairoApiClient {
-  const fetchClient: Client<paths> = createClient<paths>({ baseUrl });
+export interface CreateKairoClientOptions extends Partial<TransportOptions> {
+  /**
+   * Pre-built `ky` instance to use instead of constructing one
+   * from `baseUrl`. Useful for tests that swap in a fetch mock,
+   * or for hosts that need custom hooks (auth, tracing).
+   */
+  http?: KyInstance;
+}
+
+export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApiClient {
+  const http: KyInstance =
+    opts.http ??
+    createTransport({
+      baseUrl: opts.baseUrl ?? '',
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      ...(opts.hooks !== undefined ? { hooks: opts.hooks } : {}),
+    });
 
   return {
-    async getVersion(): Promise<VersionInfo> {
-      const { data, error, response } = await fetchClient.GET('/api/v1/version');
-      if (error !== undefined) {
-        throw decodeFailure(response, error);
-      }
-      return unwrap<VersionInfo>(response, data);
+    async getVersion() {
+      return getJson<VersionInfo>(http, 'api/v1/version');
     },
   };
 }
 
-/**
- * Unwrap the success envelope. `data` is the parsed JSON body;
- * we re-parse the `ok`/`schema`/`result` shape ourselves rather
- * than trust the generated path schema, because the OpenAPI
- * annotations describe the *inner* result type (see slice 1's
- * doc-level note on the envelope).
- */
-function unwrap<T>(response: Response, data: unknown): T {
-  const envelope = data as ApiEnvelope<T>;
-  if (envelope == null || typeof envelope !== 'object') {
-    throw new KairoApiClientError({
-      kind: 'decode',
-      message: `expected JSON envelope; got ${typeof envelope}`,
-    });
+async function getJson<T>(http: KyInstance, path: string): Promise<T> {
+  try {
+    const body = await http.get(path).json<unknown>();
+    return unwrapEnvelope<T>(body);
+  } catch (error) {
+    throw await mapTransportError(error);
   }
-  if (envelope.ok === true) {
-    return envelope.result;
-  }
-  if (envelope.ok === false) {
-    throw new KairoApiClientError({
-      kind: 'daemon',
-      code: envelope.error.code,
-      message: envelope.error.message,
-      status: response.status,
-    });
-  }
-  throw new KairoApiClientError({
-    kind: 'decode',
-    message: `envelope missing required \`ok\` discriminator`,
-  });
 }
 
-/**
- * `openapi-fetch` returns `{ data, error, response }` for non-2xx
- * responses; `error` is the parsed body. Map that to the typed
- * `ApiClientError` shape.
- */
-function decodeFailure(response: Response, error: unknown): KairoApiClientError {
-  const envelope = error as ApiFailure | undefined;
-  if (envelope && envelope.ok === false && envelope.error) {
+async function mapTransportError(error: unknown): Promise<KairoApiClientError> {
+  if (error instanceof KairoApiClientError) {
+    return error;
+  }
+  if (error instanceof EnvelopeError) {
     return new KairoApiClientError({
-      kind: 'daemon',
-      code: envelope.error.code,
-      message: envelope.error.message,
-      status: response.status,
+      kind: 'decode',
+      message: error.message,
     });
+  }
+  if (error instanceof HTTPError) {
+    // Try to read the daemon's error envelope off the response.
+    // If the body isn't well-formed, fall back to a generic
+    // network-level message.
+    try {
+      const body = (await error.response.clone().json()) as unknown;
+      unwrapEnvelope<unknown>(body, error.response.status);
+      // unwrapEnvelope only returns when ok=true; throwing the
+      // failure envelope is the contract above. If we land here
+      // the response was 2xx but ky still threw — bail to the
+      // network branch.
+    } catch (decoded) {
+      if (decoded instanceof EnvelopeError) {
+        return new KairoApiClientError({
+          kind: 'daemon',
+          code: decoded.code,
+          message: decoded.message,
+          status: error.response.status,
+        });
+      }
+    }
+    return new KairoApiClientError({
+      kind: 'network',
+      message: `unexpected non-2xx response (HTTP ${error.response.status})`,
+    });
+  }
+  if (error instanceof Error) {
+    return new KairoApiClientError({ kind: 'network', message: error.message });
   }
   return new KairoApiClientError({
     kind: 'network',
-    message: `unexpected non-2xx response (HTTP ${response.status})`,
+    message: `unknown transport error: ${String(error)}`,
   });
 }

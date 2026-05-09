@@ -37,11 +37,19 @@ slices fill them in.
 - **Turborepo** 2.x (task pipeline + caching).
 - **Vite** 6.x (dev server + build for the app).
 - **React** 19.x + **TypeScript** 5.7+ (strict mode workspace-wide).
-- **openapi-typescript** 7.x for type generation.
-- **openapi-fetch** 0.13.x for the typed wrapper.
-
-TanStack Router / TanStack Query land in slice 7 / slice 6
-respectively — they're not pulled in by slice 5.
+- **TanStack Query** 5.x (server-state cache + suspense-friendly
+  hooks).
+- **TanStack Router** 1.x (file-system-style typed routing).
+- **ky** 1.x as the HTTP transport — `KairoApiClient` wraps it
+  with typed methods that unwrap the API envelope.
+- **openapi-typescript** 7.x for `paths`/`components` types.
+- **MSW** 2.x for the dev / test mock daemon (lazy-loaded — never
+  in the production bundle).
+- **ESLint 9** flat config with `typescript-eslint`,
+  `eslint-plugin-react`, `eslint-plugin-react-hooks`,
+  `eslint-plugin-jsx-a11y`, and `eslint-config-prettier`.
+- **Prettier 3** with two non-default tweaks (`singleQuote: true`,
+  `printWidth: 100`).
 
 ## OpenAPI pipeline
 
@@ -90,9 +98,9 @@ kairo --store /tmp/kairo-dev web start \
 # Browse to http://127.0.0.1:7878
 ```
 
-For frontend-only iteration, prefer Vite's dev server. It
-proxies `/api/v1/*` to a running `kairo-web` so you keep hot
-module replacement while still hitting a real daemon:
+For frontend-only iteration there are two options.
+
+**Option 1 — proxy to a running kairo-web (real daemon):**
 
 ```sh
 # Terminals 1 & 2: daemon + kairo-web as above.
@@ -104,6 +112,26 @@ cd frontend && pnpm dev
 The proxy target is `127.0.0.1:7878` by default; override with
 the `KAIRO_WEB_PORT` env var.
 
+**Option 2 — mock daemon in-browser (no Rust required):**
+
+```sh
+cd frontend && VITE_USE_MOCK_API=true pnpm dev
+# Browse to http://127.0.0.1:5173
+```
+
+When `VITE_USE_MOCK_API=true` is set, `apps/web-client/src/main.tsx`
+dynamically imports `@kairo/api-client/mock` and starts an MSW
+service worker before mounting React. Every `/api/v1/*` request
+the SPA issues is answered by the in-process handlers in
+`packages/api-client/src/mock/handlers.ts`, so frontend
+development can proceed without the Rust daemon running. The
+mock module is code-split — it never enters the production
+bundle.
+
+Test-side mocking lives at the `@kairo/api-client/mock/node`
+subpath: Vitest setup files import `setupMockServer()` to
+intercept fetch calls in Node.
+
 ## Scripts
 
 Run from `frontend/`. All are routed through Turborepo so caching
@@ -113,6 +141,8 @@ Run from `frontend/`. All are routed through Turborepo so caching
 pnpm install          # Install workspace deps.
 pnpm generate:api     # Regenerate src/generated/schema.ts.
 pnpm typecheck        # tsc --noEmit across all packages.
+pnpm lint             # ESLint across all packages.
+pnpm lint:fix         # ESLint auto-fix from the workspace root.
 pnpm build            # Build apps + libraries; produces
                       # apps/web-client/dist/.
 pnpm dev              # Run all dev servers in parallel.

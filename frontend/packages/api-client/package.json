@@ -6,18 +6,28 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mock": "./src/mock/index.ts",
+    "./mock/node": "./src/mock/node.ts"
   },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit",
-    "generate:api": "openapi-typescript ../../../openapi/kairo-daemon.json -o src/generated/schema.ts"
+    "generate:api": "openapi-typescript ../../../openapi/kairo-daemon.json -o src/generated/schema.ts",
+    "lint": "eslint src"
   },
   "dependencies": {
-    "openapi-fetch": "^0.13.4"
+    "@tanstack/react-query": "^5.66.0",
+    "ky": "^1.7.0",
+    "react": "^19.1.0"
   },
   "devDependencies": {
+    "@types/react": "^19.0.0",
+    "msw": "^2.7.0",
     "openapi-typescript": "^7.4.4",
     "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
   }
 }
