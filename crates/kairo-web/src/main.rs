@@ -42,8 +42,13 @@ use tempfile as _;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "\
-usage: kairo-web --spa-dir <path> --daemon-socket <path> [--bind <addr>] [--pid-file <path>]
+usage: kairo-web --daemon-socket <path> [--spa-dir <path>] [--bind <addr>] [--pid-file <path>]
        kairo-web --version
+
+When --spa-dir is omitted, kairo-web runs in API-proxy-only mode:
+/api/v1/* still proxies to the daemon, but non-API paths return
+404. This is the shape the dev workflow uses (Vite serves the
+SPA on its own port).
 ";
 
 fn main() -> ExitCode {
@@ -72,7 +77,7 @@ fn main() -> ExitCode {
     tracing::info!(
         version = VERSION,
         bind = %config.bind_addr,
-        spa_dir = %config.spa_dir.display(),
+        spa_dir = ?config.spa_dir.as_deref().map(std::path::Path::display),
         daemon_socket = %config.daemon_socket.display(),
         "kairo-web starting"
     );
@@ -140,7 +145,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let bind_addr = bind_addr.unwrap_or_else(|| {
         SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), DEFAULT_PORT)
     });
-    let spa_dir = spa_dir.ok_or_else(|| "--spa-dir <path> is required".to_owned())?;
     let daemon_socket =
         daemon_socket.ok_or_else(|| "--daemon-socket <path> is required".to_owned())?;
 
@@ -177,9 +181,15 @@ mod tests {
         ]))
         .expect("parse");
         assert_eq!(parsed.bind_addr.port(), 9000);
-        assert_eq!(parsed.spa_dir, PathBuf::from("/tmp/spa"));
+        assert_eq!(parsed.spa_dir.as_deref(), Some(PathBuf::from("/tmp/spa").as_path()));
         assert_eq!(parsed.daemon_socket, PathBuf::from("/tmp/daemon.sock"));
         assert_eq!(parsed.pid_file.as_deref(), Some(PathBuf::from("/tmp/web.pid").as_path()));
+    }
+
+    #[test]
+    fn spa_dir_is_optional() {
+        let parsed = parse_args(&args(&["--daemon-socket", "/tmp/daemon.sock"])).expect("parse");
+        assert!(parsed.spa_dir.is_none());
     }
 
     #[test]
@@ -205,13 +215,6 @@ mod tests {
         .expect("parse");
         assert_eq!(parsed.bind_addr.ip().to_string(), "127.0.0.1");
         assert_eq!(parsed.bind_addr.port(), DEFAULT_PORT);
-    }
-
-    #[test]
-    fn errors_when_spa_dir_missing() {
-        let err = parse_args(&args(&["--daemon-socket", "/tmp/daemon.sock"]))
-            .expect_err("expected error");
-        assert!(err.contains("--spa-dir"), "{err:?}");
     }
 
     #[test]

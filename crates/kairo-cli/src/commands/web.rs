@@ -56,7 +56,7 @@ pub(crate) fn run_web_command(
 /// stderr so the CLI shares the web server's log shape.
 fn run_start(
     paths: &StorePaths,
-    spa_dir: std::path::PathBuf,
+    spa_dir: Option<std::path::PathBuf>,
     bind_addr: SocketAddr,
 ) -> Result<String, CliError> {
     install_tracing();

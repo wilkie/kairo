@@ -60,10 +60,15 @@ pub struct Config {
     /// TCP address to listen on. Must be a loopback address;
     /// non-loopback values are rejected with [`Error::NonLoopbackBind`].
     pub bind_addr: SocketAddr,
-    /// Filesystem path of the built SPA bundle. Served at `/` via
-    /// `tower_http::services::ServeDir` with an `index.html`
-    /// fallback for client-side routes.
-    pub spa_dir: PathBuf,
+    /// Filesystem path of the built SPA bundle. When `Some`,
+    /// served at `/` via `tower_http::services::ServeDir` with an
+    /// `index.html` fallback for client-side routes. When `None`,
+    /// `kairo-web` runs in API-proxy-only mode: `/api/v1/*` still
+    /// proxies to the daemon, but non-API paths return a 404
+    /// pointing the user at the SPA dev server. This is the
+    /// shape the dev workflow uses (Vite serves the SPA on its
+    /// own port; kairo-web is just the API proxy).
+    pub spa_dir: Option<PathBuf>,
     /// Filesystem path of the daemon's listening Unix socket.
     /// Each `/api/v1/*` request opens a fresh `connect(2)` to
     /// this path.

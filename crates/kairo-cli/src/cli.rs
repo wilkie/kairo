@@ -155,10 +155,13 @@ pub(crate) enum WebCommand {
     /// Foreground only in v1 (`specs/DECISIONS.md` §12.7); users
     /// supervise via systemd / launchd / tmux / `&` / `nohup`.
     Start {
-        /// Filesystem path of the built SPA bundle. Required —
-        /// no convention default for v1.
+        /// Filesystem path of the built SPA bundle. When omitted,
+        /// kairo-web runs in API-proxy-only mode: `/api/v1/*`
+        /// still proxies to the daemon, but non-API paths return
+        /// 404. The dev workflow uses this with Vite serving
+        /// the SPA on its own port.
         #[arg(long, value_name = "PATH")]
-        spa_dir: std::path::PathBuf,
+        spa_dir: Option<std::path::PathBuf>,
         /// TCP address to listen on. Must be a loopback address;
         /// non-loopback values are rejected at startup. Default
         /// `127.0.0.1:7878`.

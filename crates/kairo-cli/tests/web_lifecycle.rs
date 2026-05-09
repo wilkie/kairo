@@ -249,3 +249,65 @@ fn web_start_rejects_non_loopback_bind() {
     drop(spa_dir);
     drop(dir);
 }
+
+#[test]
+fn web_start_works_without_spa_dir_in_api_only_mode() {
+    // No --spa-dir → kairo-web runs as an API proxy only:
+    // /api/v1/* still works; / returns 404 with a hint.
+    let store_dir = TempDir::new().expect("tempdir");
+    let store = store_dir.path();
+
+    let mut daemon = spawn_daemon(store);
+
+    let bind = pick_free_port();
+    let bind_str = bind.to_string();
+
+    let mut web = Command::new(KAIRO_BIN)
+        .args(["--store", store.to_str().expect("utf-8 path")])
+        .args(["web", "start"])
+        .args(["--bind", &bind_str])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn kairo web start");
+
+    wait_for_tcp(&bind, Duration::from_secs(5));
+
+    let status = run_kairo(&[
+        "--store",
+        store.to_str().expect("utf-8"),
+        "web",
+        "status",
+        "--bind",
+        &bind_str,
+    ]);
+    assert!(status.status.success(), "status: {status:?}");
+    let out = String::from_utf8_lossy(&status.stdout);
+    assert!(out.contains("running"), "status stdout: {out}");
+    assert!(
+        out.contains("daemon_version"),
+        "status should still proxy daemon_version: {out}"
+    );
+
+    let stop = run_kairo(&[
+        "--store",
+        store.to_str().expect("utf-8"),
+        "web",
+        "stop",
+        "--wait",
+    ]);
+    assert!(stop.status.success(), "stop: {stop:?}");
+    let _ = web.wait().expect("wait web");
+
+    // Tear down the daemon.
+    let stop_daemon = run_kairo(&[
+        "--store",
+        store.to_str().expect("utf-8"),
+        "daemon",
+        "stop",
+        "--wait",
+    ]);
+    assert!(stop_daemon.status.success(), "stop daemon: {stop_daemon:?}");
+    let _ = daemon.wait().expect("wait daemon");
+    drop(store_dir);
+}

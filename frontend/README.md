@@ -80,39 +80,53 @@ the regenerated `openapi/kairo-daemon.json` and the regenerated
 
 ## Development workflow
 
-Run each component in its own terminal. The order matters:
-the daemon needs to come up first because the web server proxies
-to its socket.
+Pick the loop that matches what you're working on.
+
+### Daily frontend iteration (real daemon, HMR)
+
+Three terminals; no `pnpm build` needed. `kairo-web` runs in
+**API-proxy-only mode** (no `--spa-dir`); Vite serves the SPA
+with HMR and proxies `/api/v1/*` over to it.
 
 ```sh
-# 1. Start a daemon over a tempdir store.
+# Terminal 1 — daemon over a tempdir store.
 cargo run -p kairo-daemon -- --store /tmp/kairo-dev
 
-# 2. Start kairo-web pointed at the dev SPA dir. Slice 5's app
-#    shell is enough for this slice; later slices add real
-#    routes. --spa-dir wants a built bundle, so build first.
+# Terminal 2 — kairo-web as a pure API proxy.
+kairo --store /tmp/kairo-dev web start
+# (no --spa-dir; / returns 404 with a hint, /api/v1/* is the
+#  proxy target Vite uses)
+
+# Terminal 3 — Vite dev server with HMR.
+cd frontend && pnpm install && pnpm dev
+# Browse to http://127.0.0.1:5173
+```
+
+Vite proxies `/api/v1/*` to `127.0.0.1:7878` by default;
+override with the `KAIRO_WEB_PORT` env var.
+
+### Production-style serve (built bundle, no HMR)
+
+What the deployed shape looks like — kairo-web serves the SPA
+itself.
+
+```sh
+# Build the bundle.
 cd frontend && pnpm install && pnpm build
+
+# Daemon + kairo-web with --spa-dir pointed at the built
+# bundle. The browser opens kairo-web directly.
+cargo run -p kairo-daemon -- --store /tmp/kairo-dev &
 kairo --store /tmp/kairo-dev web start \
   --spa-dir frontend/apps/web-client/dist
 
 # Browse to http://127.0.0.1:7878
 ```
 
-For frontend-only iteration there are two options.
+### Frontend-only iteration (no Rust required)
 
-**Option 1 — proxy to a running kairo-web (real daemon):**
-
-```sh
-# Terminals 1 & 2: daemon + kairo-web as above.
-# Terminal 3:
-cd frontend && pnpm dev
-# Browse to http://127.0.0.1:5173
-```
-
-The proxy target is `127.0.0.1:7878` by default; override with
-the `KAIRO_WEB_PORT` env var.
-
-**Option 2 — mock daemon in-browser (no Rust required):**
+Mock daemon in-browser via MSW — no daemon, no kairo-web, just
+Vite.
 
 ```sh
 cd frontend && VITE_USE_MOCK_API=true pnpm dev

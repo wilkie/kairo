@@ -195,7 +195,7 @@ async fn proxies_api_v1_version_through_to_daemon() {
 
     let (web_addr, web_handle) = spawn_web(WebConfig {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        spa_dir: spa_dir.path().to_path_buf(),
+        spa_dir: Some(spa_dir.path().to_path_buf()),
         daemon_socket: store_path.join("daemon.sock"),
         pid_file: None,
     })
@@ -230,7 +230,7 @@ async fn serves_index_html_at_root() {
 
     let (web_addr, web_handle) = spawn_web(WebConfig {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        spa_dir: spa_dir.path().to_path_buf(),
+        spa_dir: Some(spa_dir.path().to_path_buf()),
         daemon_socket: store_path.join("daemon.sock"),
         pid_file: None,
     })
@@ -262,7 +262,7 @@ async fn serves_spa_static_asset() {
 
     let (web_addr, web_handle) = spawn_web(WebConfig {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        spa_dir: spa_dir.path().to_path_buf(),
+        spa_dir: Some(spa_dir.path().to_path_buf()),
         daemon_socket: store_path.join("daemon.sock"),
         pid_file: None,
     })
@@ -289,7 +289,7 @@ async fn html5_route_falls_back_to_index() {
 
     let (web_addr, web_handle) = spawn_web(WebConfig {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        spa_dir: spa_dir.path().to_path_buf(),
+        spa_dir: Some(spa_dir.path().to_path_buf()),
         daemon_socket: store_path.join("daemon.sock"),
         pid_file: None,
     })
@@ -323,7 +323,7 @@ async fn refuses_non_loopback_bind() {
     let result = web_serve(
         WebConfig {
             bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            spa_dir: spa_dir.path().to_path_buf(),
+            spa_dir: Some(spa_dir.path().to_path_buf()),
             daemon_socket: store_path.join("daemon.sock"),
             pid_file: None,
         },
@@ -342,5 +342,52 @@ async fn refuses_non_loopback_bind() {
 
     daemon_handle.shutdown().await;
     drop(spa_dir);
+    drop(store_dir);
+}
+
+#[tokio::test]
+async fn api_only_mode_proxies_api_and_404s_root() {
+    let (store_dir, _fixture) = StoreFixture::temp();
+    let store_path = store_dir.path().to_path_buf();
+    drop(_fixture);
+
+    let daemon_handle = spawn_daemon(store_path.clone()).await;
+
+    // No spa_dir → API-only mode. Browser hits to / get the
+    // helpful 404 fallback; /api/v1/* still proxies through.
+    let (web_addr, web_handle) = spawn_web(WebConfig {
+        bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        spa_dir: None,
+        daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
+    })
+    .await;
+
+    // /api/v1/version still works.
+    let (api_status, api_body) = http_get_tcp(&web_addr, "/api/v1/version").await;
+    assert_eq!(api_status, hyper::StatusCode::OK);
+    let envelope: serde_json::Value = serde_json::from_slice(&api_body).expect("parse JSON");
+    assert_eq!(envelope["ok"], true, "envelope: {envelope}");
+
+    // / returns 404 with the helpful body.
+    let (root_status, root_body) = http_get_tcp(&web_addr, "/").await;
+    assert_eq!(root_status, hyper::StatusCode::NOT_FOUND);
+    let body_text = std::str::from_utf8(&root_body).expect("utf-8 body");
+    assert!(
+        body_text.contains("API-proxy-only mode"),
+        "expected helpful 404 body, got: {body_text}"
+    );
+    assert!(
+        body_text.contains("--spa-dir"),
+        "expected --spa-dir hint in body, got: {body_text}"
+    );
+
+    // An HTML5-route path also returns the same 404 (no
+    // index.html fallback when there's no SPA).
+    let (subpath_status, _) = http_get_tcp(&web_addr, "/objects/abc").await;
+    assert_eq!(subpath_status, hyper::StatusCode::NOT_FOUND);
+
+    web_handle.shutdown().await;
+    daemon_handle.shutdown().await;
     drop(store_dir);
 }

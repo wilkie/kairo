@@ -10,6 +10,8 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::path::PathBuf;
 
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use axum::routing::any;
 use axum::Router;
 use hyper::body::Incoming;
@@ -40,21 +42,53 @@ const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Layered, in order of precedence:
 ///
 /// 1. `/api/v1/*path` — reverse proxy to the daemon Unix socket.
-/// 2. Anything else — static SPA bundle served by `ServeDir` with
-///    an `index.html` fallback so HTML5 history-mode routes work.
-pub fn router(spa_dir: &Path, daemon_socket: PathBuf) -> Router {
+/// 2. Anything else —
+///    - `Some(spa_dir)`: static SPA bundle served by `ServeDir`
+///      with an `index.html` fallback so HTML5 history-mode
+///      routes work.
+///    - `None`: a small 404 handler that points the user at the
+///      SPA dev server. This is the API-proxy-only mode the dev
+///      workflow uses (Vite serves the SPA on its own port; this
+///      process is just the API proxy).
+pub fn router(spa_dir: Option<&Path>, daemon_socket: PathBuf) -> Router {
     let proxy_state = ProxyState::new(daemon_socket);
 
-    let serve_dir = ServeDir::new(spa_dir).fallback(tower_http::services::ServeFile::new(
-        spa_dir.join("index.html"),
-    ));
-
-    Router::new()
+    let mut router = Router::new()
         .route("/api/v1", any(proxy::handler))
         .route("/api/v1/*rest", any(proxy::handler))
-        .with_state(proxy_state)
-        .fallback_service(serve_dir)
-        .layer(TraceLayer::new_for_http())
+        .with_state(proxy_state);
+
+    router = match spa_dir {
+        Some(dir) => {
+            let serve_dir = ServeDir::new(dir)
+                .fallback(tower_http::services::ServeFile::new(dir.join("index.html")));
+            router.fallback_service(serve_dir)
+        }
+        None => router.fallback(api_only_fallback),
+    };
+
+    router.layer(TraceLayer::new_for_http())
+}
+
+/// Fallback used in API-only mode (no `--spa-dir`). Returns 404
+/// with a short text body explaining what's going on, so the
+/// first non-API hit doesn't leave the user wondering. The body
+/// is plain text, not the JSON envelope, because this isn't a
+/// daemon API response — kairo-web is reporting its own state.
+async fn api_only_fallback() -> impl IntoResponse {
+    (
+        StatusCode::NOT_FOUND,
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        concat!(
+            "kairo-web is running in API-proxy-only mode (no --spa-dir).\n",
+            "\n",
+            "/api/v1/* requests are proxied to the daemon. Other paths\n",
+            "are not served. To run the SPA, either:\n",
+            "  - start `kairo-web` with --spa-dir <built-bundle>, or\n",
+            "  - run `pnpm dev` from frontend/ and open the Vite dev\n",
+            "    server URL (default http://127.0.0.1:5173).\n",
+        ),
+    )
 }
 
 /// Run the web server to completion. Shuts down gracefully on the
@@ -70,7 +104,9 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     validate_loopback(&config.bind_addr)?;
-    validate_spa_dir(&config.spa_dir)?;
+    if let Some(spa_dir) = config.spa_dir.as_deref() {
+        validate_spa_dir(spa_dir)?;
+    }
     validate_daemon_socket(&config.daemon_socket)?;
 
     let listener =
@@ -92,11 +128,11 @@ where
         None => None,
     };
 
-    let app = router(&config.spa_dir, config.daemon_socket.clone());
+    let app = router(config.spa_dir.as_deref(), config.daemon_socket.clone());
 
     tracing::info!(
         bind = %bound,
-        spa_dir = %config.spa_dir.display(),
+        spa_dir = ?config.spa_dir.as_deref().map(Path::display),
         daemon_socket = %config.daemon_socket.display(),
         pid_file = ?config.pid_file.as_deref().map(Path::display),
         "kairo-web listening"
