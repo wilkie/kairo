@@ -15,6 +15,7 @@
     "@emotion/react": "^11.13.5",
     "@emotion/styled": "^11.13.5",
     "@kairo/api-client": "workspace:*",
+    "@kairo/artifact-viewers": "workspace:*",
     "@kairo/object-model": "workspace:*",
     "@kairo/ui": "workspace:*",
     "@kairo/validation-viewer": "workspace:*",

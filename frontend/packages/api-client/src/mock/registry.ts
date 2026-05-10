@@ -62,8 +62,13 @@ export const mockIds = {
   // Capability grant (Alice → Bob, scope=Alpha)
   aliceGrantsBobStmt: 'kairo:stmt:zMockGrantStmt000000000000000000000000000000',
 
-  // Blob (Alpha manifest)
+  // Blobs
+  // - alphaManifestBlob: binary fixture; what revisions point at.
+  // - textBlob:          plain text (TOML-ish manifest sample).
+  // - jsonBlob:          JSON sample so the JSON viewer is exercisable.
   alphaManifestBlob: 'kairo:blob:zMockBlob000000000000000000000000000000000000',
+  textBlob: 'kairo:blob:zMockBlobText000000000000000000000000000000',
+  jsonBlob: 'kairo:blob:zMockBlobJson000000000000000000000000000000',
 
   // Revision IDs (git:sha256:* — not kairo-prefixed)
   alphaRev1: 'git:sha256:0000000000000000000000000000000000000001',
@@ -85,6 +90,32 @@ export const legacyMockIdAliases = {
   grantStmt: mockIds.aliceGrantsBobStmt,
   revision: mockIds.alphaRev1,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Inline blob payloads — small enough to keep alongside the
+// id table so the dev surface is reproducible without an
+// external fixtures directory.
+
+const SAMPLE_TEXT_BLOB = `[kairo]
+schema = 1
+kind = "kairo/object"
+name = "alpha"
+
+[content]
+kind = "tree"
+`;
+
+const SAMPLE_JSON_BLOB = JSON.stringify(
+  {
+    object: 'alpha',
+    revision: 'git:sha256:0000000000000000000000000000000000000003',
+    parents: ['git:sha256:0000000000000000000000000000000000000002'],
+    notes: 'sample structured manifest payload — for the JSON viewer demo',
+    metrics: { revisions: 3, branches: 2, tags: 2 },
+  },
+  null,
+  2,
+);
 
 // ---------------------------------------------------------------------------
 // Static building blocks
@@ -613,6 +644,8 @@ export const mockRegistry: MockRegistry = {
 
   blobs: {
     [mockIds.alphaManifestBlob]: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+    [mockIds.textBlob]: new TextEncoder().encode(SAMPLE_TEXT_BLOB),
+    [mockIds.jsonBlob]: new TextEncoder().encode(SAMPLE_JSON_BLOB),
   },
 
   verifyObject: {
