@@ -8,7 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./mock": "./src/mock/index.ts",
-    "./mock/node": "./src/mock/node.ts"
+    "./mock/node": "./src/mock/node.ts",
+    "./mock/registry": "./src/mock/registry.ts"
   },
   "scripts": {
     "build": "tsc -b",

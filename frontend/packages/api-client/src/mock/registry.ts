@@ -39,8 +39,16 @@ export const mockIds = {
   carol: 'kairo:actor:zMockActorCarol00000000000000000000000000',
 
   // Objects
+  // - alpha: rich (multi-rev/branch/tag/cap/trust); verify → indeterminate
+  // - beta:  genesis only;                          verify → valid
+  // - gamma: genesis only;                          verify → invalid
+  // - delta: genesis only;                          verify → conflicted
+  // The latter two exist so the slice 10 e2e suite can
+  // exercise every distinct ValidationBadge tone.
   alpha: 'kairo:object:zMockObject00000000000000000000000000000000',
   beta: 'kairo:object:zMockObjectBeta000000000000000000000000000',
+  gamma: 'kairo:object:zMockObjectGamma00000000000000000000000000',
+  delta: 'kairo:object:zMockObjectDelta00000000000000000000000000',
 
   // Revision statements (Alpha)
   alphaRev1Stmt: 'kairo:stmt:zMockRevisionStmt00000000000000000000000000',
@@ -192,6 +200,30 @@ const alphaGenesis: Schemas['ObjectGenesisStatementJson'] = {
 };
 
 const betaGenesis: Schemas['ObjectGenesisStatementJson'] = {
+  type: 'ObjectGenesis',
+  version: 1,
+  body: {
+    object_kind: 'kairo/object',
+    created_by: mockIds.alice,
+    created_at: T,
+    nonce: NONCE,
+  },
+  signature: signatureFor(mockIds.alice),
+};
+
+const gammaGenesis: Schemas['ObjectGenesisStatementJson'] = {
+  type: 'ObjectGenesis',
+  version: 1,
+  body: {
+    object_kind: 'kairo/object',
+    created_by: mockIds.alice,
+    created_at: T,
+    nonce: NONCE,
+  },
+  signature: signatureFor(mockIds.alice),
+};
+
+const deltaGenesis: Schemas['ObjectGenesisStatementJson'] = {
   type: 'ObjectGenesis',
   version: 1,
   body: {
@@ -503,6 +535,32 @@ const betaValidation: Schemas['ValidationResult'] = {
   issues: [],
 };
 
+const gammaValidation: Schemas['ValidationResult'] = {
+  object_id: mockIds.gamma,
+  status: 'invalid',
+  issues: [
+    {
+      kind: 'signature_invalid',
+      severity: 'error',
+      message: 'mock fixture: forced invalid for the validation badge e2e test',
+      details: {},
+    },
+  ],
+};
+
+const deltaValidation: Schemas['ValidationResult'] = {
+  object_id: mockIds.delta,
+  status: 'conflicted',
+  issues: [
+    {
+      kind: 'cross_actor_conflict',
+      severity: 'warning',
+      message: 'mock fixture: forced conflicted for the validation badge e2e test',
+      details: {},
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Registry
 
@@ -579,6 +637,8 @@ export const mockRegistry: MockRegistry = {
   objects: {
     [mockIds.alpha]: alphaGenesis,
     [mockIds.beta]: betaGenesis,
+    [mockIds.gamma]: gammaGenesis,
+    [mockIds.delta]: deltaGenesis,
   },
 
   statements: {
@@ -597,6 +657,8 @@ export const mockRegistry: MockRegistry = {
   branchTips: {
     [mockIds.alpha]: alphaBranchTips,
     [mockIds.beta]: [],
+    [mockIds.gamma]: [],
+    [mockIds.delta]: [],
   },
 
   branchLatest: {
@@ -607,6 +669,8 @@ export const mockRegistry: MockRegistry = {
   versionTagHeads: {
     [mockIds.alpha]: alphaVersionTagHeads,
     [mockIds.beta]: [],
+    [mockIds.gamma]: [],
+    [mockIds.delta]: [],
   },
 
   versionTagLatest: {
@@ -617,6 +681,8 @@ export const mockRegistry: MockRegistry = {
   revisionHeads: {
     [mockIds.alpha]: alphaRevisionHeads,
     [mockIds.beta]: [],
+    [mockIds.gamma]: [],
+    [mockIds.delta]: [],
   },
 
   trustPair: {
@@ -640,6 +706,8 @@ export const mockRegistry: MockRegistry = {
   capabilitiesForObject: {
     [mockIds.alpha]: [aliceCapabilityHead],
     [mockIds.beta]: [],
+    [mockIds.gamma]: [],
+    [mockIds.delta]: [],
   },
 
   blobs: {
@@ -651,5 +719,7 @@ export const mockRegistry: MockRegistry = {
   verifyObject: {
     [mockIds.alpha]: alphaValidation,
     [mockIds.beta]: betaValidation,
+    [mockIds.gamma]: gammaValidation,
+    [mockIds.delta]: deltaValidation,
   },
 };

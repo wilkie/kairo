@@ -27,6 +27,8 @@
       "dependsOn": ["generate:api"],
       "inputs": [
         "src/**",
+        "e2e/**",
+        "playwright.config.ts",
         "package.json",
         "tsconfig.json",
         "../../eslint.config.js"
