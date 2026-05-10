@@ -9,7 +9,7 @@
 // statements-dir scan cost).
 
 import { useActor, type ActorGenesisJson } from '@kairo/api-client';
-import { canonicalizeId } from '@kairo/object-model';
+import { idPrefix } from '@kairo/object-model';
 import { EmptyState, LocalityBadge, Panel } from '@kairo/ui';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -23,10 +23,10 @@ export interface ActorDetailProps {
 }
 
 export function ActorDetail({ id }: ActorDetailProps) {
-  // Accept either the canonical `kairo:actor:<payload>` form
-  // or the bare payload — the kind is implied by the route.
-  const actorId = canonicalizeId('actor', id);
-  const actorQ = useActor(actorId);
+  // Wire form is the bare payload (the daemon emits and accepts
+  // bare ids); `kairo:actor:` is presentational and composed
+  // for the page header below.
+  const actorQ = useActor(id);
 
   return (
     <>
@@ -34,7 +34,8 @@ export function ActorDetail({ id }: ActorDetailProps) {
         Actor
       </Typography>
       <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
-        {actorId}
+        {idPrefix('actor')}
+        {id}
       </Box>
 
       <Panel

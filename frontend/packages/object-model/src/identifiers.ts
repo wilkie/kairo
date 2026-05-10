@@ -60,10 +60,20 @@ export function truncateId(id: string, opts: TruncateIdOptions = {}): string {
   return `${id.slice(0, prefixChars)}${ellipsis}${id.slice(id.length - suffixChars)}`;
 }
 
-/** Identifier kinds the inspector navigates to. The associated
- * `kairo:<prefix>:` token is implied by the surrounding route
- * (`/objects/`, `/actors/`, etc.), so URLs can carry the bare
- * multibase payload to keep them readable. */
+/** Identifier kinds the inspector navigates to.
+ *
+ * The wire form across every Kairo surface — daemon URL paths,
+ * daemon JSON response field values, store filenames — is the
+ * **bare multibase payload** (e.g. `zXyz`). `ObjectId::Display`
+ * (and friends) emit the bare form. The `kairo:<kind>:` prefix
+ * is **presentational only**, used in human-facing copy where
+ * the kind isn't already implied by surrounding context.
+ *
+ * Helpers here cover both directions so the inspector can:
+ * - take a bare id off the wire and prepend the prefix for
+ *   display (`idPrefix(kind) + id`); and
+ * - accept either form on input from external sources (URL
+ *   bar, paste-in dialogs) and normalize via `bareId(kind, raw)`. */
 export type IdKind = 'object' | 'actor' | 'statement' | 'blob';
 
 const KIND_TO_PREFIX: Record<IdKind, string> = {
@@ -80,27 +90,27 @@ export function idPrefix(kind: IdKind): string {
   return KIND_TO_PREFIX[kind];
 }
 
-/** True when `value` already starts with the canonical prefix
- * for `kind`. */
+/** True when `value` already starts with the canonical
+ * `kairo:<kind>:` prefix. */
 export function isCanonicalId(kind: IdKind, value: string): boolean {
   return value.startsWith(KIND_TO_PREFIX[kind]);
 }
 
 /** Add the `kairo:<kind>:` prefix to `raw` unless it's already
- * canonical. The route layer uses this to accept either bare
- * payloads (`/objects/zXyz`) or full canonical ids
- * (`/objects/kairo:object:zXyz`) and hand a single shape to
- * the api-client hooks. */
+ * present. **For display composition only** — the wire form is
+ * bare, so anything that flows into the api-client / daemon
+ * should use the bare value, not the canonical form. */
 export function canonicalizeId(kind: IdKind, raw: string): string {
   return isCanonicalId(kind, raw) ? raw : `${KIND_TO_PREFIX[kind]}${raw}`;
 }
 
-/** Strip the `kairo:<kind>:` prefix when present so the value
- * fits in a clean URL slug. Pairs with `canonicalizeId` for
- * round-tripping between API calls and route URLs. */
-export function bareId(kind: IdKind, canonical: string): string {
+/** Strip the `kairo:<kind>:` prefix when present and return the
+ * bare-payload form. Defensive helper used by `IdLink` to keep
+ * URLs readable regardless of which form a caller passes in;
+ * a no-op on already-bare ids. */
+export function bareId(kind: IdKind, value: string): string {
   const prefix = KIND_TO_PREFIX[kind];
-  return canonical.startsWith(prefix) ? canonical.slice(prefix.length) : canonical;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
 }
 
 /**

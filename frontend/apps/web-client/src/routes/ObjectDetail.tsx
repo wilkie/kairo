@@ -30,7 +30,7 @@ import {
   type ValidationResult,
   type VersionTagHeadDto,
 } from '@kairo/api-client';
-import { canonicalizeId, truncateId, validationStatusDescription } from '@kairo/object-model';
+import { idPrefix, truncateId, validationStatusDescription } from '@kairo/object-model';
 import {
   EmptyState,
   LocalityBadge,
@@ -52,18 +52,17 @@ export interface ObjectDetailProps {
 }
 
 export function ObjectDetail({ id }: ObjectDetailProps) {
-  // The route param can be either the canonical
-  // `kairo:object:<payload>` form or the bare payload — the
-  // route segment already implies the kind, so URLs prefer
-  // the bare form for readability. Canonicalize before
-  // passing to the api-client hooks.
-  const objectId = canonicalizeId('object', id);
-  const objectQ = useObject(objectId);
-  const verifyQ = useVerifyObject(objectId);
-  const branchesQ = useBranches(objectId);
-  const tagsQ = useVersionTags(objectId);
-  const revisionsQ = useRevisions(objectId);
-  const capsQ = useCapabilitiesForObject(objectId);
+  // Wire form is the bare payload — the daemon returns bare
+  // ids in JSON bodies and accepts bare ids on URL paths
+  // (`ObjectId::Display` writes `as_str()`, no prefix). The
+  // `kairo:<kind>:` prefix is presentational only; we compose
+  // it for the page header below.
+  const objectQ = useObject(id);
+  const verifyQ = useVerifyObject(id);
+  const branchesQ = useBranches(id);
+  const tagsQ = useVersionTags(id);
+  const revisionsQ = useRevisions(id);
+  const capsQ = useCapabilitiesForObject(id);
 
   // Trust panel is keyed off the genesis signer; we can only
   // ask the daemon once that id resolves. Pass an explicit
@@ -78,7 +77,8 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
         Object
       </Typography>
       <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
-        {objectId}
+        {idPrefix('object')}
+        {id}
       </Box>
 
       <Panel

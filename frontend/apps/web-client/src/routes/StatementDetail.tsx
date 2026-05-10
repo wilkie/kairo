@@ -17,7 +17,7 @@ import {
   type StatementValue,
 } from '@kairo/api-client';
 import {
-  canonicalizeId,
+  idPrefix,
   isActorTrustStatement,
   isObjectBranchStatement,
   isObjectGenesisStatement,
@@ -39,10 +39,10 @@ export interface StatementDetailProps {
 }
 
 export function StatementDetail({ id }: StatementDetailProps) {
-  // Accept either the canonical `kairo:stmt:<payload>` form
-  // or the bare payload — the kind is implied by the route.
-  const statementId = canonicalizeId('statement', id);
-  const stmtQ = useStatement(statementId);
+  // Wire form is the bare payload (the daemon emits and accepts
+  // bare ids); `kairo:stmt:` is presentational and composed
+  // for the page header below.
+  const stmtQ = useStatement(id);
 
   return (
     <>
@@ -50,7 +50,8 @@ export function StatementDetail({ id }: StatementDetailProps) {
         Statement
       </Typography>
       <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
-        {statementId}
+        {idPrefix('statement')}
+        {id}
       </Box>
 
       <QueryStatusBoundary query={stmtQ}>

@@ -13,7 +13,7 @@
 //                     distinct tones once they ship.
 
 import { BlobPreview, useChosenArtifactViewer } from '@kairo/artifact-viewers';
-import { canonicalizeId } from '@kairo/object-model';
+import { idPrefix } from '@kairo/object-model';
 import { LocalityBadge, Panel, StatusBadge } from '@kairo/ui';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -24,9 +24,11 @@ export interface BlobPreviewRouteProps {
 }
 
 export function BlobPreviewRoute({ id }: BlobPreviewRouteProps) {
-  // Accept either canonical `kairo:blob:<payload>` or bare.
-  const blobId = canonicalizeId('blob', id);
-  const viewer = useChosenArtifactViewer(blobId);
+  // Wire form is the bare payload — the daemon's blob endpoint
+  // takes bare ids and the file paths under `<store>/blobs/`
+  // are sharded by bare payload too. `kairo:blob:` is composed
+  // for display only.
+  const viewer = useChosenArtifactViewer(id);
 
   return (
     <>
@@ -34,7 +36,8 @@ export function BlobPreviewRoute({ id }: BlobPreviewRouteProps) {
         Blob
       </Typography>
       <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
-        {blobId}
+        {idPrefix('blob')}
+        {id}
       </Box>
 
       <Panel
@@ -47,7 +50,7 @@ export function BlobPreviewRoute({ id }: BlobPreviewRouteProps) {
           </Stack>
         }
       >
-        <BlobPreview blobId={blobId} />
+        <BlobPreview blobId={id} />
       </Panel>
     </>
   );

@@ -31,12 +31,20 @@ type Schemas = components['schemas'];
 
 // ---------------------------------------------------------------------------
 // Canonical IDs
+//
+// Bare-payload form (no `kairo:<kind>:` prefix) — matches the
+// daemon's wire contract. The daemon takes bare ids on URL
+// paths (e.g. `/api/v1/objects/zXyz`) and returns bare ids
+// inside JSON response bodies (e.g. `created_by: "zXyz"`).
+// `ObjectId::Display` writes `as_str()` with no prefix; the
+// `kairo:<kind>:` form is presentational only and the
+// inspector composes it at render time.
 
 export const mockIds = {
   // Actors
-  alice: 'kairo:actor:zMockActor00000000000000000000000000000000',
-  bob: 'kairo:actor:zMockActorBob000000000000000000000000000000',
-  carol: 'kairo:actor:zMockActorCarol00000000000000000000000000',
+  alice: 'zMockActor00000000000000000000000000000000',
+  bob: 'zMockActorBob000000000000000000000000000000',
+  carol: 'zMockActorCarol00000000000000000000000000',
 
   // Objects
   // - alpha: rich (multi-rev/branch/tag/cap/trust); verify → indeterminate
@@ -45,40 +53,42 @@ export const mockIds = {
   // - delta: genesis only;                          verify → conflicted
   // The latter two exist so the slice 10 e2e suite can
   // exercise every distinct ValidationBadge tone.
-  alpha: 'kairo:object:zMockObject00000000000000000000000000000000',
-  beta: 'kairo:object:zMockObjectBeta000000000000000000000000000',
-  gamma: 'kairo:object:zMockObjectGamma00000000000000000000000000',
-  delta: 'kairo:object:zMockObjectDelta00000000000000000000000000',
+  alpha: 'zMockObject00000000000000000000000000000000',
+  beta: 'zMockObjectBeta000000000000000000000000000',
+  gamma: 'zMockObjectGamma00000000000000000000000000',
+  delta: 'zMockObjectDelta00000000000000000000000000',
 
   // Revision statements (Alpha)
-  alphaRev1Stmt: 'kairo:stmt:zMockRevisionStmt00000000000000000000000000',
-  alphaRev2Stmt: 'kairo:stmt:zMockRevisionStmtAlpha2000000000000000000',
-  alphaRev3Stmt: 'kairo:stmt:zMockRevisionStmtAlpha3000000000000000000',
+  alphaRev1Stmt: 'zMockRevisionStmt00000000000000000000000000',
+  alphaRev2Stmt: 'zMockRevisionStmtAlpha2000000000000000000',
+  alphaRev3Stmt: 'zMockRevisionStmtAlpha3000000000000000000',
 
   // Branch statements (Alpha)
-  alphaHeadBranchStmt: 'kairo:stmt:zMockBranchStmt000000000000000000000000000000',
-  alphaExperimentalBranchStmt: 'kairo:stmt:zMockBranchStmtAlphaExp00000000000000000000',
+  alphaHeadBranchStmt: 'zMockBranchStmt000000000000000000000000000000',
+  alphaExperimentalBranchStmt: 'zMockBranchStmtAlphaExp00000000000000000000',
 
   // Tag statements (Alpha)
-  alphaV1Stmt: 'kairo:stmt:zMockTagStmt0000000000000000000000000000000000',
-  alphaV1_1Stmt: 'kairo:stmt:zMockTagStmtAlphaV1_1000000000000000000000',
+  alphaV1Stmt: 'zMockTagStmt0000000000000000000000000000000000',
+  alphaV1_1Stmt: 'zMockTagStmtAlphaV1_1000000000000000000000',
 
   // Trust statements (about Alice)
-  bobTrustsAliceStmt: 'kairo:stmt:zMockTrustStmt000000000000000000000000000000',
-  carolTrustsAliceStmt: 'kairo:stmt:zMockTrustStmtCarolAlice00000000000000000',
+  bobTrustsAliceStmt: 'zMockTrustStmt000000000000000000000000000000',
+  carolTrustsAliceStmt: 'zMockTrustStmtCarolAlice00000000000000000',
 
   // Capability grant (Alice → Bob, scope=Alpha)
-  aliceGrantsBobStmt: 'kairo:stmt:zMockGrantStmt000000000000000000000000000000',
+  aliceGrantsBobStmt: 'zMockGrantStmt000000000000000000000000000000',
 
   // Blobs
   // - alphaManifestBlob: binary fixture; what revisions point at.
   // - textBlob:          plain text (TOML-ish manifest sample).
   // - jsonBlob:          JSON sample so the JSON viewer is exercisable.
-  alphaManifestBlob: 'kairo:blob:zMockBlob000000000000000000000000000000000000',
-  textBlob: 'kairo:blob:zMockBlobText000000000000000000000000000000',
-  jsonBlob: 'kairo:blob:zMockBlobJson000000000000000000000000000000',
+  alphaManifestBlob: 'zMockBlob000000000000000000000000000000000000',
+  textBlob: 'zMockBlobText000000000000000000000000000000',
+  jsonBlob: 'zMockBlobJson000000000000000000000000000000',
 
-  // Revision IDs (git:sha256:* — not kairo-prefixed)
+  // Revision IDs (git:sha256:* — kept fully-qualified; the
+  // `git:` scheme is the wire form for storage refs and is
+  // not a kairo-namespace id).
   alphaRev1: 'git:sha256:0000000000000000000000000000000000000001',
   alphaRev2: 'git:sha256:0000000000000000000000000000000000000002',
   alphaRev3: 'git:sha256:0000000000000000000000000000000000000003',
