@@ -390,6 +390,18 @@ test.
 - Statement detail pages handle all statement kinds the daemon
   returns.
 
+**Update — `/actors/$id` signed-statements list:** initially
+shipped with an `EmptyState` placeholder because no per-actor
+index existed in the store. The listing landed alongside the
+§13 statement-type indexing pass: `kairo-store` now keeps a
+per-actor materialized index, the daemon exposes
+`GET /api/v1/actors/{id}/statements`, and `ActorDetail` renders
+the full audit table (`StatementByActorDto` rows: kind,
+statement id, created_at). `ObjectGenesis` is excluded
+server-side (it carries `created_by`, not the envelope `actor`
+field every other statement type uses); the owned-objects view
+is a separate cut.
+
 **Deferred:** snapshot detail, build/run plan UI, runtime sessions.
 
 ---

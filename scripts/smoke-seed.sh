@@ -6,10 +6,20 @@
 #
 # Mirrors `frontend/packages/api-client/src/mock/registry.ts`:
 #
-#   - **Alice** — primary actor; signs Alpha + Beta.
+#   - **Alice** — primary actor; signs Alpha + Beta. Her
+#                 `/actors/<alice>` Signed-statements panel is
+#                 the audit-table happy path: 3 revisions, 2
+#                 branches, 2 tags, 1 capability grant — every
+#                 envelope-signing kind the v1 daemon exposes.
+#                 (`ObjectGenesis` is excluded server-side from
+#                 the per-actor index by design.)
 #   - **Bob**   — secondary actor; subject of one capability
-#                 grant from Alice and trusts Alice.
+#                 grant from Alice and trusts Alice. His
+#                 Signed-statements panel renders just the
+#                 trust-grant envelope.
 #   - **Carol** — third actor; blocks Alice (untrusted opinion).
+#                 Her Signed-statements panel renders just the
+#                 trust-block envelope.
 #   - **Alpha** — rich object: 3 revisions (linear), 2 branches
 #                 (head + experimental), 2 tags (v1.0.0,
 #                 v1.1.0), one capability grant.
@@ -146,10 +156,10 @@ cat <<EOF
 store        $STORE_DIR
 manifest     $MANIFEST (cleaned up on exit)
 
-actors
-  alice      $ALICE
-  bob        $BOB
-  carol      $CAROL
+actors                                            (signed envelopes)
+  alice      $ALICE   3 rev / 2 branch / 2 tag / 1 grant
+  bob        $BOB                                       1 trust grant
+  carol      $CAROL                                     1 trust block
 
 objects
   alpha      $ALPHA      (3 revs / 2 branches / 2 tags / 1 grant)
@@ -166,10 +176,10 @@ next:
 
 inspector URLs (drop into your browser at http://127.0.0.1:<web-port>/):
   /                           dashboard
-  /objects/${ALPHA#kairo:object:}
-  /objects/${BETA#kairo:object:}
-  /actors/${ALICE#kairo:actor:}
-  /actors/${BOB#kairo:actor:}
-  /actors/${CAROL#kairo:actor:}
-  /statements/${ALPHA_R3#kairo:stmt:}
+  /objects/${ALPHA#kairo:object:}     rich object — every populated panel
+  /objects/${BETA#kairo:object:}      genesis-only — every empty-state panel
+  /actors/${ALICE#kairo:actor:}       full signed-statements audit table
+  /actors/${BOB#kairo:actor:}         single trust grant
+  /actors/${CAROL#kairo:actor:}       single trust block
+  /statements/${ALPHA_R3#kairo:stmt:}   alpha r3 envelope (typed summary)
 EOF

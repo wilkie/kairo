@@ -597,17 +597,23 @@ Hardening what Phase 1 shipped.
       `body == body'` after `BodyJson::from_body → serde_json → BodyJson
       → to_body`. Catches drift between `CanonicalEncode` and the
       JSON serialization pair on every supported body type.
-- [ ] **Statement-type indexing — explicitly deferred until first
-      consumer.** Carry-over from Phase 1 §2 ("index statements by
-      object, actor, and statement type"). Today's `kairo-store`
-      only materializes indexes when a query consumer demands them;
-      "all statements by actor X" and "all statements of kind T"
-      still have no consumer. Natural consumers are §2 daemon
-      (browse-by-author), §4 federation (replicate-by-actor), and
-      §5 web client (statement timeline view). Land alongside the
-      first surface that actually queries by these dimensions —
-      adding a materialized index without a consumer is the
-      anti-pattern Phase 1 §2 explicitly cited.
+- [x] **Statement-type indexing — by-actor dimension landed
+      alongside §5 web client.** Carry-over from Phase 1 §2 ("index
+      statements by object, actor, and statement type"). The
+      by-actor cut shipped first because the §5 inspector's
+      `/actors/$id` page needed it: `kairo-store` now maintains a
+      per-actor materialized index at
+      `<store>/statements_by_actor/<XX>/<YY>/<actor-id>.json`, every
+      `put_*` for a signed envelope appends to it, and
+      `StatementByActorResolver::list_statements_by_actor` is wired
+      through `GET /api/v1/actors/{id}/statements`
+      (`StatementByActorDto`). `ObjectGenesis` is intentionally
+      excluded — it carries `created_by` rather than the envelope
+      `actor` field every other statement type uses; the
+      owned-objects view is a separate cut. The
+      `statements-of-kind-T` dimension is still deferred until §4
+      federation (replicate-by-kind) needs it, matching the
+      no-index-without-a-consumer rule.
 - [x] **Store fixtures crate.** Carry-over from Phase 1 §2.
       `kairo-test-support` collects shared test setup: git-repo
       fixtures (`init_source_repo`, `build_pack_from`,
