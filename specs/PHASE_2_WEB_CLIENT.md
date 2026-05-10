@@ -402,8 +402,6 @@ test.
   - `ValidationBadge` (status enum → labeled badge with
     text + color, never color-only per `WEB_CLIENT.md` §10/§20).
   - `ValidationIssueList` component.
-  - `StatementGraphView` component (lightweight; SVG or `dagre`).
-  - `AuthorityChainView` component for capability/trust paths.
 - Integration in `apps/web-client`:
   - Object detail page calls `/api/v1/verify-object/:id` and shows
     the badge + issue list inline.
@@ -418,8 +416,31 @@ test.
 - The browser never displays a "valid" badge for data that came
   from a non-verify source per `WEB_CLIENT.md` §10.
 
-**Deferred:** federation-preview labels (post-v1, no federation
-endpoints yet); deep statement graph performance work.
+**Deferred:**
+
+- `StatementGraphView` and `AuthorityChainView` — pulled out of
+  slice 9 as a follow-up. Pass A's `ValidationBadge` +
+  `ValidationIssueList` + object-detail integration meets every
+  slice 9 exit-criteria item, and the graph views are
+  *visualizations* of data the inspector already exposes via
+  tables (revisions with parents on the object page, capability
+  heads + trust opinions panels). The inspector stays usable
+  without them; revisit when user feedback prioritizes a
+  visual DAG over the existing tabular surface, or when slice
+  10 finds Playwright would benefit from a graph snapshot.
+  Implementation guidance for the follow-up:
+  - `StatementGraphView`: minimal SVG over the
+    `useRevisions(object)` data; nodes per revision, edges per
+    `parents` entry. No `dagre` dep for v1 — vertical timeline
+    with parent arrows is enough for the linear/near-linear
+    histories the daemon emits today.
+  - `AuthorityChainView`: capability + trust path summary; can
+    reuse `useCapabilitiesForObject` / `useTrustAbout` data
+    that already drive the object detail page.
+- Federation-preview labels — post-v1, no federation endpoints
+  yet.
+- Deep statement graph performance work — out of scope until
+  the basic graph views actually ship.
 
 ---
 
