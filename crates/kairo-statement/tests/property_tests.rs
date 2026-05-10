@@ -13,6 +13,8 @@
 //! sizes). IDs are derived from random 32-byte digests so they pass
 //! the multihash format check.
 
+#![allow(clippy::expect_used, clippy::panic)]
+
 // Silence unused-crate warnings for dev-deps the lib needs for its
 // own tests but this integration test doesn't touch directly.
 use base64 as _;

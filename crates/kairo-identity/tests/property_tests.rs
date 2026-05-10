@@ -6,6 +6,8 @@
 //! drift between `CanonicalEncode` and the JSON DTO would produce
 //! split actor IDs across consumers.
 
+#![allow(clippy::expect_used, clippy::panic)]
+
 // Silence unused-crate warnings for dev-deps the lib needs but this
 // integration test doesn't touch directly.
 use base64 as _;

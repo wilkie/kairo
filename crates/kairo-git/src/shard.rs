@@ -50,6 +50,7 @@ pub(crate) fn shard_path(root: &std::path::Path, id: &str) -> Result<PathBuf, Gi
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

@@ -1366,7 +1366,11 @@ impl StatementStore for FilesystemStore {
                 distinct_signers.insert(signature.key_id().to_owned());
             }
         }
-        let provided = distinct_signers.len() as u8;
+        // Threshold and signer counts are bounded by the attestation
+        // set size, which is small (single-digit in practice). Saturate
+        // explicitly so the comparison below remains well-defined even
+        // if a future caller hands us a pathological set.
+        let provided = u8::try_from(distinct_signers.len()).unwrap_or(u8::MAX);
         if provided < required {
             return Err(StoreError::Rejected {
                 reason: format!(
@@ -1387,7 +1391,7 @@ impl StatementStore for FilesystemStore {
                 ),
             });
         }
-        let projected_set_size = attestation_set.len() as u8;
+        let projected_set_size = u8::try_from(attestation_set.len()).unwrap_or(u8::MAX);
         if new_threshold > projected_set_size {
             return Err(StoreError::Rejected {
                 reason: format!(
@@ -2732,7 +2736,7 @@ fn json_to_corrupt<T: ToString>(id: &T) -> impl FnOnce(serde_json::Error) -> Sto
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
+#[allow(clippy::expect_used, clippy::panic, clippy::cast_possible_truncation)]
 mod tests {
     use std::fs;
 

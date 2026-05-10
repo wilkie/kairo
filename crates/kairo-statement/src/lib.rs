@@ -238,9 +238,11 @@ impl<B> MultiSignedStatement<B> {
     /// Construct a single-signature envelope. Convenience for the
     /// threshold = 1 case (today's only configuration); equivalent to
     /// `MultiSignedStatement::new(unsigned, vec![signature])`.
+    #[allow(clippy::expect_used)]
     pub fn single(unsigned: UnsignedStatement<B>, signature: Signature) -> Self {
-        // Construction with one signature can never fail (non-empty
-        // and trivially distinct).
+        // `Self::new` only rejects empty or duplicate-key_id signature
+        // sets; a one-element vec satisfies both invariants by
+        // construction, so the expect is unreachable.
         Self::new(unsigned, vec![signature]).expect("single-signature envelope is well-formed")
     }
 

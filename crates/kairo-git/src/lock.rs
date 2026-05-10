@@ -90,6 +90,7 @@ fn would_block(error: &std::io::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::Arc;

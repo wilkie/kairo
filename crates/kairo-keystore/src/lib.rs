@@ -252,7 +252,7 @@ fn set_file_permissions(_path: &Path) -> Result<(), KeystoreError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::panic, clippy::cast_possible_truncation)]
 mod tests {
     use std::fs;
 

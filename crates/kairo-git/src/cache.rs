@@ -495,6 +495,12 @@ impl PipeDrain {
     }
 }
 
+// `child.{stderr,stdout}.take()` returns `None` only when the
+// pipe wasn't requested at spawn time; every callsite in this
+// module pipes stdio explicitly via `Command::stdio(Stdio::piped())`,
+// so the take is infallible by construction. The focused
+// `expect_used` allow here documents that invariant.
+#[allow(clippy::expect_used)]
 fn drain_stderr(child: &mut std::process::Child) -> PipeDrain {
     let mut handle = child.stderr.take().expect("stderr was piped at spawn time");
     let join = std::thread::spawn(move || {
@@ -506,6 +512,7 @@ fn drain_stderr(child: &mut std::process::Child) -> PipeDrain {
     PipeDrain { handle: join }
 }
 
+#[allow(clippy::expect_used)]
 fn drain_stdout(child: &mut std::process::Child) -> PipeDrain {
     let mut handle = child.stdout.take().expect("stdout was piped at spawn time");
     let join = std::thread::spawn(move || {

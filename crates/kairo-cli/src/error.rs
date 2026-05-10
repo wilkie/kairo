@@ -884,7 +884,9 @@ impl Error for CliError {
             | Self::BuildActorSubjectRef { source, .. }
             | Self::BuildStatementSubjectRef { source, .. } => Some(source),
             Self::ParseStatementKind { source, .. } => Some(source),
-            Self::ParseTimestamp { source, .. } => Some(source),
+            Self::ParseTimestamp { source, .. } | Self::ParseCreatedAt { source, .. } => {
+                Some(source)
+            }
             Self::GenerateKey(error) => Some(error),
             Self::ActorGenesisShape(error) => Some(error),
             Self::OpenGitRepo { source, .. } | Self::GitOperation { source } => Some(source),
@@ -936,7 +938,6 @@ impl Error for CliError {
             Self::DaemonServe { source } | Self::WebServe { source } => Some(source.as_ref()),
             Self::DaemonKill { source, .. } => Some(source),
             Self::DaemonRequestFailed(error) => Some(error),
-            Self::ParseCreatedAt { source, .. } => Some(source),
             Self::ParseWebBind { source, .. } => Some(source),
         }
     }

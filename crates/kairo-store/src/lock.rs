@@ -13,10 +13,11 @@
 //!   (different actors, different objects) take different lock files
 //!   and don't block each other. Shard- or store-wide alternatives
 //!   would serialize unrelated work for no gain in this layer.
-//! - **Writers only.** Reads don't acquire the lock — `atomic_write`
-//!   + `fs::rename` already gives readers a consistent snapshot of
-//!   one prior write. Holding a shared lock around reads would just
-//!   add contention without improving the guarantee.
+//! - **Writers only.** Reads don't acquire the lock —
+//!   `atomic_write` followed by `fs::rename` already gives
+//!   readers a consistent snapshot of one prior write. Holding
+//!   a shared lock around reads would just add contention
+//!   without improving the guarantee.
 //! - **Bounded retry, then error.** `try_lock_exclusive` in a loop
 //!   with 50 ms sleep and a 2 s deadline. Expired contention surfaces
 //!   as `StoreError::LockTimeout` rather than blocking forever — that
@@ -111,6 +112,7 @@ fn would_block(error: &std::io::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::sync::Arc;
