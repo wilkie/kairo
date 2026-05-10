@@ -285,25 +285,77 @@ slice plan in `specs/PHASE_2_WEB_CLIENT.md`.
 
 Bullets, by slice (see `PHASE_2_WEB_CLIENT.md` §3):
 
-- [ ] Slice 1 — `utoipa` annotations on the daemon; `GET /api/v1/openapi.json`;
+- [x] Slice 1 — `utoipa` annotations on the daemon; `GET /api/v1/openapi.json`;
       `kairo-daemon dump-openapi`; checked-in `openapi/kairo-daemon.json`.
-- [ ] Slice 2 — `GET /api/v1/verify-object/:id` daemon endpoint
+- [x] Slice 2 — `GET /api/v1/verify-object/:id` daemon endpoint
       returning `ValidationResult`. (12th read endpoint.)
-- [ ] Slice 3 — `crates/kairo-web` Rust crate: axum proxy + `ServeDir`
+- [x] Slice 3 — `crates/kairo-web` Rust crate: axum proxy + `ServeDir`
       for the SPA bundle, loopback-only TCP, daemon-client passthrough.
-- [ ] Slice 4 — CLI verbs `kairo web start | status | stop`.
-- [ ] Slice 5 — `frontend/` monorepo scaffold (pnpm + Turborepo + Vite);
+- [x] Slice 4 — CLI verbs `kairo web start | status | stop`.
+- [x] Slice 5 — `frontend/` monorepo scaffold (pnpm + Turborepo + Vite);
       five package shells + `pnpm generate:api` pipeline.
-- [ ] Slice 6 — `api-client` + `object-model` packages; TanStack Query
+- [x] Slice 6 — `api-client` + `object-model` packages; TanStack Query
       hooks for all 12 endpoints; Zod runtime envelopes.
-- [ ] Slice 7 — App shell, TanStack Router routes, `ui` package primitives,
+- [x] Slice 7 — App shell, TanStack Router routes, `ui` package primitives,
       dashboard backed by `useDaemonStatus`.
-- [ ] Slice 8 — Object browser: genesis + branches + tags + revisions +
+- [x] Slice 8 — Object browser: genesis + branches + tags + revisions +
       capability heads + trust panel; actor and statement detail pages.
-- [ ] Slice 9 — `validation-viewer` package; `verify-object` integration
-      with status badges per `WEB_CLIENT.md` §10.
-- [ ] Slice 10 — `artifact-viewers` (text/JSON/binary); Playwright suite;
-      CI pipeline; close-out.
+      Pulled in 4 follow-up daemon endpoints (`/version-tags/:object`,
+      `/revisions/:object`, `/trust/about/:of`,
+      `/capabilities/for-object/:object`) so the inspector could compose
+      every panel from real reads.
+- [x] Slice 9 — `validation-viewer` package; `verify-object` integration
+      with status badges per `WEB_CLIENT.md` §10. `StatementGraphView` /
+      `AuthorityChainView` deferred (see `PHASE_2_WEB_CLIENT.md` slice 9
+      "Deferred"); the badge + issue list satisfy the slice exit criteria.
+- [x] Slice 10 — `artifact-viewers` (text/JSON/binary, content-sniff
+      registry); `/blobs/$id` route; Playwright e2e suite (5 critical
+      workflows from `WEB_CLIENT.md` §22); GitHub Actions CI
+      (`.github/workflows/ci.yml`); close-out.
+
+**What shipped (Phase 2 §5 outcome).** A read-only inspector that
+exercises every v1 daemon read endpoint end-to-end:
+
+- **Daemon surface** (`crates/kairo-daemon`): `utoipa`-annotated
+  HTTP+JSON API with 16 v1 endpoints under `/api/v1/`, an `openapi.json`
+  served live + checked in at `openapi/kairo-daemon.json`, and a
+  drift-detection test (`openapi_drift.rs`) that fails CI if the live
+  schema and the checked-in copy diverge.
+- **Daemon-side proxy** (`crates/kairo-web`): loopback-only axum +
+  `ServeDir` that bridges browser → daemon Unix socket. Optional
+  `--spa-dir` so the proxy can run API-only against the dev server.
+- **CLI**: `kairo web start | status | stop` with PID-file lifecycle.
+- **Frontend monorepo** (`frontend/`): pnpm + Turborepo, Vite + React
+  19 + MUI 6, TanStack Query/Router, ky transport, MSW for browser
+  mocks, Vitest for unit tests, Playwright for e2e. Five published
+  packages — `@kairo/api-client`, `@kairo/object-model`, `@kairo/ui`,
+  `@kairo/validation-viewer`, `@kairo/artifact-viewers` — and the
+  `@kairo/web-client` app.
+- **Inspector pages**: dashboard (daemon status), object detail
+  (genesis + branches + tags + revisions + capability heads + trust
+  opinions + validation panel), actor detail, statement detail
+  (typed summary + raw envelope, marked `Unverified` per §10), blob
+  preview (content-sniff-driven viewer registry — text / JSON /
+  binary). Locality badges on every panel per §15.
+- **Mock surface**: typed `mockRegistry` with two seeded objects
+  (rich Alpha + minimal Beta), plus Gamma (invalid) and Delta
+  (conflicted) for validation-state coverage; three actors
+  (Alice / Bob / Carol). Unknown ids return a daemon-style 404.
+- **Brand integration**: Kairo logo + favicon set, theme colors
+  derived from the icon SVG (wordmark purple `#780078` for primary,
+  hexagon teal `#007373` for secondary).
+- **CI** (`.github/workflows/ci.yml`): three parallel jobs — Rust
+  workspace tests, frontend pipeline (`typecheck/lint/test/build`),
+  Playwright e2e against MSW. Concurrency cancels superseded runs.
+
+**Deliberately deferred** (each a clean follow-up, not a v1 gap):
+`StatementGraphView` / `AuthorityChainView`; per-actor statement
+listings (currently full-scan; surfaces a placeholder until a
+proper index lands); image / audio / video / markdown / CSV
+viewers; sandboxed and runtime-required artifact viewers;
+federation-preview labels. Documented in
+`PHASE_2_WEB_CLIENT.md` §3 (slice-by-slice "Deferred" notes) and
+§4 (deliberate gaps).
 
 **Why it matters:** primary user-facing surface for the federation /
 archival use case, and the daemon's first broad consumer — every shipped
