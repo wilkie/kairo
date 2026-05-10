@@ -24,9 +24,10 @@
 //!
 //! The index is a strict materialization of the underlying statements:
 //! if it is lost or corrupt, it can be rebuilt by scanning all
-//! `ActorTrust` statements about a trusted actor. The MVP does not
-//! implement rebuild; it relies on always going through
-//! `put_actor_trust`.
+//! `ActorTrust` statements about a trusted actor. The store's
+//! `rebuild_indexes()` (surfaced as `kairo store rebuild-indexes`)
+//! does exactly this for every materialized index in one pass,
+//! including this one.
 //!
 //! Format (JSON, one file per trusted actor):
 //!

@@ -47,6 +47,9 @@ pub(crate) enum CliError {
         path: PathBuf,
         source: kairo_store::StoreError,
     },
+    RebuildIndexes {
+        source: kairo_store::StoreError,
+    },
     OpenKeystore {
         path: PathBuf,
         source: kairo_keystore::KeystoreError,
@@ -454,6 +457,9 @@ impl fmt::Display for CliError {
             Self::OpenStore { path, source } => {
                 write!(f, "failed to open store at {}: {source}", path.display())
             }
+            Self::RebuildIndexes { source } => {
+                write!(f, "failed to rebuild indexes: {source}")
+            }
             Self::OpenKeystore { path, source } => {
                 write!(f, "failed to open keystore at {}: {source}", path.display())
             }
@@ -842,6 +848,7 @@ impl Error for CliError {
             Self::ValidateRevisionManifest(error) => Some(error),
             Self::VerifyStatementSignature(error) => Some(error),
             Self::OpenStore { source, .. }
+            | Self::RebuildIndexes { source, .. }
             | Self::WriteActor { source, .. }
             | Self::ReadActor { source, .. }
             | Self::WriteObjectGenesis { source, .. }

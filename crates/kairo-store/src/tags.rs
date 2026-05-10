@@ -21,9 +21,10 @@
 //!
 //! The index is a strict materialization of the underlying statements:
 //! if it is lost or corrupt, it can be rebuilt by scanning all
-//! `ObjectVersionTag` statements about an object. The MVP does not
-//! implement rebuild; it relies on always going through
-//! `put_object_version_tag`.
+//! `ObjectVersionTag` statements about an object. The store's
+//! `rebuild_indexes()` (surfaced as `kairo store rebuild-indexes`)
+//! does exactly this for every materialized index in one pass,
+//! including this one.
 //!
 //! Format (JSON, one file per object):
 //!

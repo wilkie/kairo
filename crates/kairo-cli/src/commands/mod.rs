@@ -7,4 +7,5 @@ pub(crate) mod bundle;
 pub(crate) mod daemon;
 pub(crate) mod git;
 pub(crate) mod manifest;
+pub(crate) mod store;
 pub(crate) mod web;

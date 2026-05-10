@@ -108,6 +108,14 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: GitCommand,
     },
+    /// Maintenance operations on the local store directory itself
+    /// (rebuild materialized indexes, etc.). These touch the
+    /// store's on-disk layout — they do not produce or sign
+    /// statements.
+    Store {
+        #[command(subcommand)]
+        command: StoreCommand,
+    },
     /// Manage the local Kairo daemon process. The daemon serves
     /// the read-only HTTP+JSON API on `<store>/daemon.sock`
     /// (`specs/DAEMON.md`, `specs/PHASE_2_DAEMON.md`).
@@ -123,6 +131,26 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WebCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum StoreCommand {
+    /// Wipe and rebuild every materialized index from the on-disk
+    /// `statements/` tree. The signed statements themselves are
+    /// the source of truth and are never touched.
+    ///
+    /// Use cases:
+    ///
+    ///   - Recover from a corrupt or out-of-sync index file.
+    ///   - Backfill indexes after a new index dimension lands
+    ///     (e.g. the §13 per-actor statement index).
+    ///   - Validate that put-time and rebuild-time index updates
+    ///     agree (the diff against the pre-rebuild tree is the
+    ///     bug).
+    ///
+    /// Not safe to run concurrently with `kairo daemon start` or
+    /// any other writer; stop writers first.
+    RebuildIndexes,
 }
 
 #[derive(Debug, Subcommand)]

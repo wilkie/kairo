@@ -5763,3 +5763,125 @@ fn kairo_git_fetch_default_branch_is_main() {
         }) if branch == "main"
     ));
 }
+
+#[test]
+fn parses_store_rebuild_indexes_command() {
+    let cli = Cli::try_parse_from(["kairo", "store", "rebuild-indexes"]);
+    assert!(matches!(
+        cli,
+        Ok(Cli {
+            command: Some(Command::Store {
+                command: StoreCommand::RebuildIndexes,
+            }),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn store_rebuild_indexes_on_empty_store_reports_zero() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let output = run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Store {
+            command: StoreCommand::RebuildIndexes,
+        }),
+    })?;
+    assert!(output.contains("rebuilt indexes"));
+    assert!(output.contains("statements_scanned = 0"));
+    assert!(output.contains("by_kind = (none)"));
+    Ok(())
+}
+
+#[test]
+fn store_rebuild_indexes_after_seed_reports_per_kind_counts(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let manifest_dir = tempfile::TempDir::new()?;
+    let manifest_path = manifest_dir.path().join("kairo.toml");
+    std::fs::write(
+        &manifest_path,
+        r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [content]
+            kind = "tree"
+        "#,
+    )?;
+
+    // Create one actor + object + revision via the real CLI dispatch
+    // — this exercises the same put_*  paths whose indexes the
+    // rebuild later reproduces.
+    let actor_output = run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Actor {
+            command: ActorCommand::Create {
+                kind: "person".to_owned(),
+                attestation_keys: vec![],
+                generate_attestation_keys: 1,
+                attestation_threshold: 1,
+            },
+        }),
+    })?;
+    let actor_id = parse_field(&actor_output, "actor = ")?;
+
+    let object_output = run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Object {
+            command: ObjectSubcommand::Create {
+                actor: actor_id.clone(),
+                kind: "software".to_owned(),
+                initial_revision: None,
+            },
+        }),
+    })?;
+    let object_id = parse_field(&object_output, "object = ")?;
+
+    run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Revision {
+            command: RevisionCommand::Create {
+                actor: actor_id.clone(),
+                object: object_id.clone(),
+                revision: "git:sha256:r1".to_owned(),
+                manifest: manifest_path.clone(),
+                parents: vec![],
+                no_attests_reachable_history: false,
+            },
+        }),
+    })?;
+
+    let rebuild_output = run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Store {
+            command: StoreCommand::RebuildIndexes,
+        }),
+    })?;
+    assert!(rebuild_output.contains("rebuilt indexes"));
+    assert!(rebuild_output.contains("statements_scanned = 1"));
+    assert!(rebuild_output.contains("ObjectRevision = 1"));
+    Ok(())
+}

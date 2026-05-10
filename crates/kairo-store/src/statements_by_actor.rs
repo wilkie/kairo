@@ -34,8 +34,10 @@
 //!
 //! The index is a strict materialization of the underlying statements:
 //! if it is lost or corrupt, it can be rebuilt by scanning all signed
-//! statements and grouping by `actor`. The MVP does not implement
-//! rebuild; it relies on always going through `put_*`.
+//! statements and grouping by `actor`. The store's
+//! `rebuild_indexes()` (surfaced as `kairo store rebuild-indexes`)
+//! does exactly this for every materialized index in one pass,
+//! including this one.
 //!
 //! Format (JSON, one file per actor — the file is just an array):
 //!
@@ -119,15 +121,14 @@ impl StatementByActorIndexFile {
     ) -> Result<Vec<StatementByActor>, StoreError> {
         let mut out = Vec::with_capacity(self.entries.len());
         for entry in self.entries {
-            let statement_id =
-                StatementId::new(entry.statement_id.clone()).map_err(|error| {
-                    StoreError::Corrupt {
-                        id: entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in statements_by_actor index: {error}"
-                        )),
-                    }
-                })?;
+            let statement_id = StatementId::new(entry.statement_id.clone()).map_err(|error| {
+                StoreError::Corrupt {
+                    id: entry.statement_id.clone(),
+                    reason: CorruptReason::Parse(format!(
+                        "invalid statement id in statements_by_actor index: {error}"
+                    )),
+                }
+            })?;
             let kind = StatementKind::parse(&entry.kind).map_err(|error| StoreError::Corrupt {
                 id: entry.statement_id.clone(),
                 reason: CorruptReason::Parse(format!(
@@ -135,12 +136,15 @@ impl StatementByActorIndexFile {
                 )),
             })?;
             let created_at: Timestamp =
-                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
-                    id: entry.statement_id.clone(),
-                    reason: CorruptReason::Parse(format!(
-                        "invalid created_at in statements_by_actor index: {error}"
-                    )),
-                })?;
+                entry
+                    .created_at
+                    .parse()
+                    .map_err(|error| StoreError::Corrupt {
+                        id: entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid created_at in statements_by_actor index: {error}"
+                        )),
+                    })?;
             out.push(StatementByActor {
                 actor: actor.clone(),
                 statement_id,
@@ -193,7 +197,11 @@ mod tests {
     #[test]
     fn single_entry_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         let mut index = StatementByActorIndexFile::default();
-        let added = index.upsert(&statement_id_one(), StatementKind::ObjectBranch, timestamp(100));
+        let added = index.upsert(
+            &statement_id_one(),
+            StatementKind::ObjectBranch,
+            timestamp(100),
+        );
         assert!(added);
         let summaries = index.into_summaries(&actor())?;
         assert_eq!(summaries.len(), 1);
@@ -206,9 +214,16 @@ mod tests {
     #[test]
     fn duplicate_put_is_noop() {
         let mut index = StatementByActorIndexFile::default();
-        index.upsert(&statement_id_one(), StatementKind::ObjectBranch, timestamp(100));
-        let added =
-            index.upsert(&statement_id_one(), StatementKind::ObjectBranch, timestamp(100));
+        index.upsert(
+            &statement_id_one(),
+            StatementKind::ObjectBranch,
+            timestamp(100),
+        );
+        let added = index.upsert(
+            &statement_id_one(),
+            StatementKind::ObjectBranch,
+            timestamp(100),
+        );
         assert!(!added);
         assert_eq!(index.entries.len(), 1);
     }
@@ -218,8 +233,16 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut index = StatementByActorIndexFile::default();
         // Insert out of chronological order, with a same-timestamp pair.
-        index.upsert(&statement_id_two(), StatementKind::ActorTrust, timestamp(200));
-        index.upsert(&statement_id_one(), StatementKind::ObjectBranch, timestamp(100));
+        index.upsert(
+            &statement_id_two(),
+            StatementKind::ActorTrust,
+            timestamp(200),
+        );
+        index.upsert(
+            &statement_id_one(),
+            StatementKind::ObjectBranch,
+            timestamp(100),
+        );
         index.upsert(
             &statement_id_three(),
             StatementKind::ActorCapabilityGrant,

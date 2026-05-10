@@ -881,7 +881,10 @@ async fn actors_list_statements_returns_authored_envelopes() {
         by_kind.contains_key(trust_id.as_str()),
         "trust should be indexed under alice: {arr:#?}",
     );
-    assert_eq!(by_kind.get(branch_id.statement_id.as_str()), Some(&"ObjectBranch"));
+    assert_eq!(
+        by_kind.get(branch_id.statement_id.as_str()),
+        Some(&"ObjectBranch")
+    );
     assert_eq!(by_kind.get(trust_id.as_str()), Some(&"ActorTrust"));
     for entry in arr {
         assert_eq!(entry["actor"].as_str(), Some(alice.actor_id.as_str()));
@@ -912,8 +915,11 @@ async fn actors_list_statements_rejects_malformed_id() {
     drop(_fixture);
 
     let handle = spawn_daemon(store_path).await;
-    let (status, body) =
-        http_get(handle.socket_path(), "/api/v1/actors/not-a-real-id/statements").await;
+    let (status, body) = http_get(
+        handle.socket_path(),
+        "/api/v1/actors/not-a-real-id/statements",
+    )
+    .await;
     assert_eq!(status, hyper::StatusCode::BAD_REQUEST);
     let json: Value = serde_json::from_slice(&body).expect("parse");
     assert_eq!(json["ok"], false);
