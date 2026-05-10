@@ -818,6 +818,13 @@ impl Error for ActorTrustShapeError {}
 ///
 /// `Ord` is derived so that `Capability::statement_kinds` can be sorted
 /// for canonical-byte determinism.
+///
+/// The actor-key family (rotations, revocations, attestation set
+/// management, threshold changes) is intentionally listed here even
+/// though those statements are **not** delegatable through capability
+/// grants — the enum is the project-wide vocabulary of statement
+/// types, separate from the narrower whitelist
+/// `CapabilityScope::is_kind_valid` enforces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StatementKind {
     ObjectGenesis,
@@ -827,6 +834,13 @@ pub enum StatementKind {
     ActorTrust,
     ActorCapabilityGrant,
     ActorCapabilityRevocation,
+    ActorKeyRotation,
+    ActorKeyRevocation,
+    ActorEmergencyKeyRotation,
+    ActorEmergencyKeyRevocation,
+    ActorAttestationKeyAdd,
+    ActorAttestationKeyRevocation,
+    ActorAttestationThresholdChange,
 }
 
 impl StatementKind {
@@ -839,6 +853,13 @@ impl StatementKind {
             Self::ActorTrust => "ActorTrust",
             Self::ActorCapabilityGrant => "ActorCapabilityGrant",
             Self::ActorCapabilityRevocation => "ActorCapabilityRevocation",
+            Self::ActorKeyRotation => "ActorKeyRotation",
+            Self::ActorKeyRevocation => "ActorKeyRevocation",
+            Self::ActorEmergencyKeyRotation => "ActorEmergencyKeyRotation",
+            Self::ActorEmergencyKeyRevocation => "ActorEmergencyKeyRevocation",
+            Self::ActorAttestationKeyAdd => "ActorAttestationKeyAdd",
+            Self::ActorAttestationKeyRevocation => "ActorAttestationKeyRevocation",
+            Self::ActorAttestationThresholdChange => "ActorAttestationThresholdChange",
         }
     }
 
@@ -851,6 +872,13 @@ impl StatementKind {
             "ActorTrust" => Ok(Self::ActorTrust),
             "ActorCapabilityGrant" => Ok(Self::ActorCapabilityGrant),
             "ActorCapabilityRevocation" => Ok(Self::ActorCapabilityRevocation),
+            "ActorKeyRotation" => Ok(Self::ActorKeyRotation),
+            "ActorKeyRevocation" => Ok(Self::ActorKeyRevocation),
+            "ActorEmergencyKeyRotation" => Ok(Self::ActorEmergencyKeyRotation),
+            "ActorEmergencyKeyRevocation" => Ok(Self::ActorEmergencyKeyRevocation),
+            "ActorAttestationKeyAdd" => Ok(Self::ActorAttestationKeyAdd),
+            "ActorAttestationKeyRevocation" => Ok(Self::ActorAttestationKeyRevocation),
+            "ActorAttestationThresholdChange" => Ok(Self::ActorAttestationThresholdChange),
             other => Err(StatementKindParseError {
                 input: other.to_owned(),
             }),
@@ -893,6 +921,14 @@ impl CapabilityScope {
     /// Whether `kind` is a legal statement kind to delegate under this
     /// scope. The MVP table is conservative; future actor-surface
     /// statement kinds will join `Actor` here.
+    ///
+    /// The actor-key family (rotations, revocations, attestation set
+    /// management, threshold changes) is **never** delegatable: those
+    /// statements speak for the actor's own custody and must be signed
+    /// by the actor themselves (or, for emergency events, by the
+    /// attestation set). The whitelist below is positive, so adding
+    /// new `StatementKind` variants does not accidentally make them
+    /// grantable.
     pub fn is_kind_valid(&self, kind: StatementKind) -> bool {
         match self {
             Self::Object(_) => matches!(
@@ -2630,6 +2666,13 @@ mod tests {
             StatementKind::ActorTrust,
             StatementKind::ActorCapabilityGrant,
             StatementKind::ActorCapabilityRevocation,
+            StatementKind::ActorKeyRotation,
+            StatementKind::ActorKeyRevocation,
+            StatementKind::ActorEmergencyKeyRotation,
+            StatementKind::ActorEmergencyKeyRevocation,
+            StatementKind::ActorAttestationKeyAdd,
+            StatementKind::ActorAttestationKeyRevocation,
+            StatementKind::ActorAttestationThresholdChange,
         ] {
             assert_eq!(StatementKind::parse(kind.as_str()), Ok(kind));
         }
