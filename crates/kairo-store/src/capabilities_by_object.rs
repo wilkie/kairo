@@ -61,11 +61,12 @@
 //! race on read-modify-write. File locks land alongside the rest of
 //! the multi-process MVP work.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use kairo_core::{ActorId, ObjectId, StatementId, Timestamp};
 use serde::{Deserialize, Serialize};
 
+use crate::chain::{chain_head, ChainEntry};
 use crate::error::{CorruptReason, StoreError};
 
 /// On-disk representation of one grant chain entry in the reverse
@@ -75,6 +76,20 @@ pub(crate) struct CapabilityByObjectEntry {
     pub statement_id: String,
     pub created_at: String,
     pub supersedes: Option<String>,
+}
+
+impl ChainEntry for CapabilityByObjectEntry {
+    fn statement_id(&self) -> &str {
+        &self.statement_id
+    }
+
+    fn supersedes(&self) -> Option<&str> {
+        self.supersedes.as_deref()
+    }
+
+    fn created_at(&self) -> &str {
+        &self.created_at
+    }
 }
 
 /// On-disk representation of all object-scoped grants targeting a
@@ -202,52 +217,6 @@ impl CapabilityByObjectIndexFile {
             }
         }
         Ok(heads)
-    }
-}
-
-/// Pick the chain head from a set of entries. Same rule as the
-/// per-grantor index: supersedes-leaf wins; fork tiebreak on greatest
-/// `(created_at, statement_id)`.
-fn chain_head(entries: &[CapabilityByObjectEntry]) -> Option<&CapabilityByObjectEntry> {
-    if entries.is_empty() {
-        return None;
-    }
-    let superseded: HashSet<&str> = entries
-        .iter()
-        .filter_map(|e| e.supersedes.as_deref())
-        .collect();
-    let mut best: Option<&CapabilityByObjectEntry> = None;
-    for entry in entries {
-        if superseded.contains(entry.statement_id.as_str()) {
-            continue;
-        }
-        match best {
-            None => best = Some(entry),
-            Some(current) if entry_greater_than(entry, current) => best = Some(entry),
-            _ => {}
-        }
-    }
-    best
-}
-
-fn entry_greater_than(
-    candidate: &CapabilityByObjectEntry,
-    current: &CapabilityByObjectEntry,
-) -> bool {
-    match (
-        candidate.created_at.parse::<Timestamp>(),
-        current.created_at.parse::<Timestamp>(),
-    ) {
-        (Ok(a), Ok(b)) => {
-            if a > b {
-                return true;
-            }
-            if a < b {
-                return false;
-            }
-            candidate.statement_id > current.statement_id
-        }
-        _ => candidate.statement_id > current.statement_id,
     }
 }
 

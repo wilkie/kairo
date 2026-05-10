@@ -50,11 +50,12 @@
 //! race on read-modify-write. File locks land alongside the rest of
 //! the multi-process MVP work.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use kairo_core::{ActorId, StatementId, Timestamp};
 use serde::{Deserialize, Serialize};
 
+use crate::chain::{chain_head, ChainEntry};
 use crate::error::{CorruptReason, StoreError};
 
 /// On-disk representation of one trust entry.
@@ -65,6 +66,20 @@ pub(crate) struct TrustEntry {
     /// `"trusted"`, `"untrusted"`, or `None` (withdrawal).
     pub decision: Option<String>,
     pub supersedes: Option<String>,
+}
+
+impl ChainEntry for TrustEntry {
+    fn statement_id(&self) -> &str {
+        &self.statement_id
+    }
+
+    fn supersedes(&self) -> Option<&str> {
+        self.supersedes.as_deref()
+    }
+
+    fn created_at(&self) -> &str {
+        &self.created_at
+    }
 }
 
 /// On-disk representation of all trust entries about a single trusted
@@ -173,59 +188,6 @@ impl TrustIndexFile {
             });
         }
         Ok(heads)
-    }
-}
-
-/// Pick the chain head from a set of entries. Returns `None` if
-/// `entries` is empty. Otherwise:
-///   - Mark each entry as "superseded" if any sibling's `supersedes`
-///     names it.
-///   - The leaves are entries that are not superseded.
-///   - If exactly one leaf, that's the head.
-///   - If multiple leaves (a fork — same actor signed two trust
-///     statements both pointing at the same predecessor, or two
-///     genesis statements), tiebreak on `(created_at, statement_id)`
-///     descending.
-fn chain_head(entries: &[TrustEntry]) -> Option<&TrustEntry> {
-    if entries.is_empty() {
-        return None;
-    }
-    let superseded: HashSet<&str> = entries
-        .iter()
-        .filter_map(|e| e.supersedes.as_deref())
-        .collect();
-    let mut best: Option<&TrustEntry> = None;
-    for entry in entries {
-        if superseded.contains(entry.statement_id.as_str()) {
-            continue;
-        }
-        match best {
-            None => best = Some(entry),
-            Some(current) if entry_greater_than(entry, current) => best = Some(entry),
-            _ => {}
-        }
-    }
-    best
-}
-
-fn entry_greater_than(candidate: &TrustEntry, current: &TrustEntry) -> bool {
-    match (
-        candidate.created_at.parse::<Timestamp>(),
-        current.created_at.parse::<Timestamp>(),
-    ) {
-        (Ok(a), Ok(b)) => {
-            if a > b {
-                return true;
-            }
-            if a < b {
-                return false;
-            }
-            candidate.statement_id > current.statement_id
-        }
-        // Corrupt timestamp on either side — fall back to lexicographic
-        // statement id compare so we still produce a deterministic
-        // answer; a subsequent index read surfaces the corruption.
-        _ => candidate.statement_id > current.statement_id,
     }
 }
 

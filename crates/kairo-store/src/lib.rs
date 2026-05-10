@@ -45,6 +45,7 @@
 mod branches;
 mod capabilities;
 mod capabilities_by_object;
+mod chain;
 pub mod error;
 mod keys;
 mod lock;
@@ -2670,7 +2671,7 @@ impl FilesystemStore {
                 let candidate = ((*actor_str).to_string(), *entry);
                 match best {
                     None => best = Some(candidate),
-                    Some((_, existing)) if branch_entry_greater_than_for_walk(entry, existing) => {
+                    Some((_, existing)) if chain::entry_greater_than(entry, existing) => {
                         best = Some(candidate);
                     }
                     _ => {}
@@ -2685,27 +2686,6 @@ impl FilesystemStore {
             }
         }
         Ok(current)
-    }
-}
-
-fn branch_entry_greater_than_for_walk(
-    candidate: &branches::BranchEntry,
-    current: &branches::BranchEntry,
-) -> bool {
-    match (
-        candidate.created_at.parse::<Timestamp>(),
-        current.created_at.parse::<Timestamp>(),
-    ) {
-        (Ok(a), Ok(b)) => {
-            if a > b {
-                return true;
-            }
-            if a < b {
-                return false;
-            }
-            candidate.statement_id > current.statement_id
-        }
-        _ => candidate.statement_id > current.statement_id,
     }
 }
 
@@ -2889,7 +2869,7 @@ impl FilesystemStore {
                 let candidate = ((*actor_str).to_string(), *entry);
                 match best {
                     None => best = Some(candidate),
-                    Some((_, existing)) if entry_greater_than_for_walk(entry, existing) => {
+                    Some((_, existing)) if chain::entry_greater_than(entry, existing) => {
                         best = Some(candidate);
                     }
                     _ => {}
@@ -2904,27 +2884,6 @@ impl FilesystemStore {
             }
         }
         Ok(current)
-    }
-}
-
-fn entry_greater_than_for_walk(
-    candidate: &tags::VersionTagEntry,
-    current: &tags::VersionTagEntry,
-) -> bool {
-    match (
-        candidate.created_at.parse::<Timestamp>(),
-        current.created_at.parse::<Timestamp>(),
-    ) {
-        (Ok(a), Ok(b)) => {
-            if a > b {
-                return true;
-            }
-            if a < b {
-                return false;
-            }
-            candidate.statement_id > current.statement_id
-        }
-        _ => candidate.statement_id > current.statement_id,
     }
 }
 
