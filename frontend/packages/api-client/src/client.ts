@@ -27,6 +27,7 @@ export type CapabilityHeadDto = components['schemas']['CapabilityHeadDto'];
 export type VersionTagHeadDto = components['schemas']['VersionTagHeadDto'];
 export type RevisionHeadDto = components['schemas']['RevisionHeadDto'];
 export type TrustHeadDto = components['schemas']['TrustHeadDto'];
+export type StatementByActorDto = components['schemas']['StatementByActorDto'];
 export type ValidationResult = components['schemas']['ValidationResult'];
 export type ValidationStatus = components['schemas']['ValidationStatus'];
 export type ValidationIssue = components['schemas']['ValidationIssue'];
@@ -54,6 +55,9 @@ export interface KairoApiClient {
   getStatus(): Promise<StatusInfo>;
   /** `GET /api/v1/actors/{id}`. */
   getActor(actorId: string): Promise<ActorGenesisJson>;
+  /** `GET /api/v1/actors/{id}/statements` — every signed statement
+   * authored by the actor (ObjectGenesis excluded server-side). */
+  listStatementsByActor(actorId: string): Promise<StatementByActorDto[]>;
   /** `GET /api/v1/objects/{id}`. */
   getObject(objectId: string): Promise<ObjectGenesisStatementJson>;
   /** `GET /api/v1/statements/{id}` — polymorphic by kind. */
@@ -121,6 +125,12 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
     },
     async getActor(actorId) {
       return getJson<ActorGenesisJson>(http, `api/v1/actors/${encodeURIComponent(actorId)}`);
+    },
+    async listStatementsByActor(actorId) {
+      return getJson<StatementByActorDto[]>(
+        http,
+        `api/v1/actors/${encodeURIComponent(actorId)}/statements`,
+      );
     },
     async getObject(objectId) {
       return getJson<ObjectGenesisStatementJson>(

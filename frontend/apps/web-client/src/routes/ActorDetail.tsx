@@ -1,21 +1,35 @@
-// `/actors/$id` — actor genesis inspection. Per `WEB_CLIENT.md`
-// §15 the locality state is rendered alongside, distinct from
-// validity. v1 always renders `local`.
+// `/actors/$id` — actor genesis inspection plus the per-actor
+// signed-statement audit list. Per `WEB_CLIENT.md` §15 every
+// panel renders a locality state distinct from validity; v1
+// always renders `local`.
 //
-// Slice 8 ships only the genesis fields; the "signed statements
-// observable for this actor" listing is deferred behind a
-// placeholder per the slice plan (option (a) — defer the
-// listing until we either index by-actor or accept the
-// statements-dir scan cost).
+// The Statements panel is backed by the daemon's
+// `statements_by_actor` materialized index — `ObjectGenesis` is
+// excluded server-side because it carries `created_by` rather
+// than the envelope `actor` field every other statement type
+// uses, so this panel is "what this actor *signed*", not "what
+// this actor caused to exist". The owned-objects view is a
+// separate follow-up.
 
-import { useActor, type ActorGenesisJson } from '@kairo/api-client';
-import { idPrefix } from '@kairo/object-model';
-import { EmptyState, LocalityBadge, Panel } from '@kairo/ui';
+import {
+  useActor,
+  useStatementsByActor,
+  type ActorGenesisJson,
+  type StatementByActorDto,
+} from '@kairo/api-client';
+import { idPrefix, statementKindLabel } from '@kairo/object-model';
+import {
+  EmptyState,
+  LocalityBadge,
+  Panel,
+  Table,
+  type TableColumn,
+} from '@kairo/ui';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ReactNode } from 'react';
-import { IdText } from '../components/IdLink';
+import { IdLink, IdText } from '../components/IdLink';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 
 export interface ActorDetailProps {
@@ -27,6 +41,7 @@ export function ActorDetail({ id }: ActorDetailProps) {
   // bare ids); `kairo:actor:` is presentational and composed
   // for the page header below.
   const actorQ = useActor(id);
+  const statementsQ = useStatementsByActor(id);
 
   return (
     <>
@@ -50,15 +65,39 @@ export function ActorDetail({ id }: ActorDetailProps) {
 
       <Panel
         title="Signed statements"
-        description="What this actor has signed in the local store."
+        description="Every signed envelope this actor authored, sorted oldest first. ObjectGenesis is excluded; the daemon's per-actor index keys off the envelope signer."
         actions={<LocalityBadge state="local" />}
       >
-        <EmptyState
-          title="Statements list — coming soon"
-          description="Listing statements by signer requires either a per-actor index or a full statements-dir scan; the daemon endpoint and its cost trade-off are a follow-up to slice 8."
-        />
+        <QueryStatusBoundary query={statementsQ}>
+          {(rows) => <StatementsTable rows={rows} />}
+        </QueryStatusBoundary>
       </Panel>
     </>
+  );
+}
+
+function StatementsTable({ rows }: { rows: ReadonlyArray<StatementByActorDto> }) {
+  const columns: ReadonlyArray<TableColumn<StatementByActorDto>> = [
+    { key: 'kind', header: 'Kind', cell: (r) => <strong>{statementKindLabel(r.kind)}</strong> },
+    {
+      key: 'statement',
+      header: 'Statement',
+      cell: (r) => <IdLink kind="statement" id={r.statement_id} />,
+    },
+    { key: 'created_at', header: 'Created', cell: (r) => r.created_at },
+  ];
+  return (
+    <Table
+      columns={columns}
+      rows={rows}
+      rowKey={(r) => r.statement_id}
+      emptyState={
+        <EmptyState
+          title="No signed statements"
+          description="This actor has not signed any envelopes yet (excluding ObjectGenesis, which is tracked separately)."
+        />
+      }
+    />
   );
 }
 

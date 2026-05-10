@@ -15,6 +15,7 @@ export const kairoKeys = {
 
   actors: () => [...kairoKeys.all, 'actors'] as const,
   actor: (id: string) => [...kairoKeys.actors(), id] as const,
+  actorStatements: (id: string) => [...kairoKeys.actor(id), 'statements'] as const,
 
   objects: () => [...kairoKeys.all, 'objects'] as const,
   object: (id: string) => [...kairoKeys.objects(), id] as const,

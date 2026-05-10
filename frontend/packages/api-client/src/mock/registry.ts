@@ -514,6 +514,83 @@ const trustHeadsAboutAlice: Schemas['TrustHeadDto'][] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Per-actor signed-statement audit lists
+//
+// Mirrors the daemon's `statements_by_actor` index. ObjectGenesis is
+// intentionally absent (it carries `created_by`, not the envelope
+// `actor` field every other statement type uses), matching the
+// server-side rule.
+
+const aliceStatementsByActor: Schemas['StatementByActorDto'][] = [
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.alphaRev1Stmt,
+    kind: 'ObjectRevision',
+    created_at: T,
+  },
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.alphaV1Stmt,
+    kind: 'ObjectVersionTag',
+    created_at: '2026-01-02T00:00:00Z',
+  },
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.alphaRev2Stmt,
+    kind: 'ObjectRevision',
+    created_at: '2026-01-02T00:00:00Z',
+  },
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.alphaRev3Stmt,
+    kind: 'ObjectRevision',
+    created_at: '2026-01-03T00:00:00Z',
+  },
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.alphaV1_1Stmt,
+    kind: 'ObjectVersionTag',
+    created_at: '2026-01-03T00:00:00Z',
+  },
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.alphaHeadBranchStmt,
+    kind: 'ObjectBranch',
+    created_at: '2026-01-03T00:00:00Z',
+  },
+  {
+    actor: mockIds.alice,
+    statement_id: mockIds.aliceGrantsBobStmt,
+    kind: 'ActorCapabilityGrant',
+    created_at: T,
+  },
+];
+
+const bobStatementsByActor: Schemas['StatementByActorDto'][] = [
+  {
+    actor: mockIds.bob,
+    statement_id: mockIds.alphaExperimentalBranchStmt,
+    kind: 'ObjectBranch',
+    created_at: '2026-01-02T00:00:00Z',
+  },
+  {
+    actor: mockIds.bob,
+    statement_id: mockIds.bobTrustsAliceStmt,
+    kind: 'ActorTrust',
+    created_at: T,
+  },
+];
+
+const carolStatementsByActor: Schemas['StatementByActorDto'][] = [
+  {
+    actor: mockIds.carol,
+    statement_id: mockIds.carolTrustsAliceStmt,
+    kind: 'ActorTrust',
+    created_at: T,
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Validation results
 
 const alphaValidation: Schemas['ValidationResult'] = {
@@ -606,6 +683,9 @@ export interface MockRegistry {
   trustPair: Record<string, Schemas['ActorTrustStatementJson']>;
   /** `GET /api/v1/trust/about/:of`. */
   trustAbout: Record<string, Schemas['TrustHeadDto'][]>;
+
+  /** `GET /api/v1/actors/:id/statements`. */
+  statementsByActor: Record<string, Schemas['StatementByActorDto'][]>;
 
   /** `GET /api/v1/capabilities/:grantor`. */
   capabilitiesFromGrantor: Record<string, Schemas['CapabilityHeadDto'][]>;
@@ -705,6 +785,12 @@ export const mockRegistry: MockRegistry = {
     [mockIds.alice]: trustHeadsAboutAlice,
     [mockIds.bob]: [],
     [mockIds.carol]: [],
+  },
+
+  statementsByActor: {
+    [mockIds.alice]: aliceStatementsByActor,
+    [mockIds.bob]: bobStatementsByActor,
+    [mockIds.carol]: carolStatementsByActor,
   },
 
   capabilitiesFromGrantor: {

@@ -26,6 +26,7 @@ import type {
   ObjectGenesisStatementJson,
   ObjectVersionTagStatementJson,
   RevisionHeadDto,
+  StatementByActorDto,
   StatementValue,
   StatusInfo,
   TrustHeadDto,
@@ -59,6 +60,14 @@ export function useActor(actorId: string): QueryResult<ActorGenesisJson> {
   return useQuery<ActorGenesisJson, KairoApiClientError>({
     queryKey: kairoKeys.actor(actorId),
     queryFn: () => client.getActor(actorId),
+  });
+}
+
+export function useStatementsByActor(actorId: string): QueryResult<StatementByActorDto[]> {
+  const client = useKairoClient();
+  return useQuery<StatementByActorDto[], KairoApiClientError>({
+    queryKey: kairoKeys.actorStatements(actorId),
+    queryFn: () => client.listStatementsByActor(actorId),
   });
 }
 

@@ -44,6 +44,17 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
     http.get('*/api/v1/version', () => HttpResponse.json(successEnvelope(registry.version))),
     http.get('*/api/v1/status', () => HttpResponse.json(successEnvelope(registry.status))),
 
+    // Two-segment path is registered first so the one-segment
+    // actor handler doesn't shadow it.
+    http.get('*/api/v1/actors/:id/statements', ({ params }) => {
+      const id = pathParam(params['id']);
+      if (id === null) return badRequest('missing actor id');
+      if (registry.actors[id] === undefined) {
+        return notFound(`actor not found: ${id}`);
+      }
+      return HttpResponse.json(successEnvelope(registry.statementsByActor[id] ?? []));
+    }),
+
     http.get('*/api/v1/actors/:id', ({ params }) => {
       const id = pathParam(params['id']);
       if (id === null) return badRequest('missing actor id');

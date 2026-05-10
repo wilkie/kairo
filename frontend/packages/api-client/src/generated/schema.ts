@@ -20,6 +20,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/actors/{id}/statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/actors/{id}/statements` */
+        get: operations["listStatementsByActor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/blobs/{id}": {
         parameters: {
             query?: never;
@@ -446,6 +463,28 @@ export interface components {
             key_id: string;
         };
         /**
+         * @description One signed statement authored by an actor, returned by
+         *     `GET /api/v1/actors/{id}/statements`. Backed by the per-actor
+         *     materialized index in the store
+         *     (`statements_by_actor/<XX>/<YY>/<actor-id>.json`), so the call is
+         *     O(entries) — no statement-tree scan even on large stores.
+         *
+         *     `kind` is the `StatementKind::as_str()` discriminator (e.g.
+         *     `"ObjectBranch"`, `"ActorTrust"`); callers either branch on it
+         *     directly or follow up with `GET /api/v1/statements/{statement_id}`
+         *     for the full envelope. `ObjectGenesis` is intentionally absent —
+         *     genesis carries `created_by` rather than the envelope `actor` field
+         *     every other statement type uses; the inspector folds it in
+         *     client-side via the actor's owned-objects view if needed.
+         */
+        StatementByActorDto: {
+            actor: string;
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            kind: string;
+            statement_id: string;
+        };
+        /**
          * @description Response body for `GET /api/v1/status`.
          *
          *     V1 fields only: federation, runtime, and task counts are
@@ -601,6 +640,36 @@ export interface operations {
             };
             /** @description Actor not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listStatementsByActor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Actor id (kairo:actor:...) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed statements authored by the actor, sorted by (created_at, statement_id) ascending */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StatementByActorDto"][];
+                };
+            };
+            /** @description Malformed actor id */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

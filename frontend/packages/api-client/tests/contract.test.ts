@@ -107,6 +107,20 @@ describe('typed read methods unwrap the success envelope', () => {
     expect(result.some((rev) => rev.parents.length === 0)).toBe(true);
   });
 
+  it('listStatementsByActor returns the per-actor signed statement list', async () => {
+    const result = await client.listStatementsByActor(mockIds.actor);
+    expect(result.length).toBeGreaterThan(0);
+    for (const entry of result) {
+      expect(entry.actor).toBe(mockIds.actor);
+    }
+    // The seeded fixture covers multiple kinds — assert the big
+    // ones (revision, branch, version-tag) are all present.
+    const kinds = new Set(result.map((entry) => entry.kind));
+    expect(kinds).toContain('ObjectRevision');
+    expect(kinds).toContain('ObjectBranch');
+    expect(kinds).toContain('ObjectVersionTag');
+  });
+
   it('listTrustAbout returns trust heads expressed about an actor', async () => {
     const result = await client.listTrustAbout(mockIds.actor);
     expect(result.length).toBeGreaterThan(0);
