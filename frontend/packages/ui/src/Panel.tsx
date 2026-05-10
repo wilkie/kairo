@@ -1,6 +1,14 @@
 // Thin wrapper around MUI Card + CardHeader + CardContent.
 // Preserves our `title / description / actions / children`
 // API so call sites don't compose Card pieces themselves.
+//
+// `titleTypographyProps.component='h3'` is set explicitly:
+// MUI's CardHeader otherwise wraps the title in a `<span>`,
+// even when the typography variant is `'h3'` — that produces
+// the right *style* but the wrong *element*, breaking heading
+// structure for screen readers (and for `getByRole('heading')`
+// tests). The page title stays at h2 (set per route); panel
+// titles sit underneath at h3.
 
 import { type ReactNode } from 'react';
 import Card from '@mui/material/Card';
@@ -29,7 +37,7 @@ export function Panel({ title, description, actions, children }: PanelProps) {
           title={title}
           subheader={description}
           action={actions}
-          titleTypographyProps={{ variant: 'h3' }}
+          titleTypographyProps={{ variant: 'h3', component: 'h3' }}
           subheaderTypographyProps={{ variant: 'body2' }}
         />
       )}

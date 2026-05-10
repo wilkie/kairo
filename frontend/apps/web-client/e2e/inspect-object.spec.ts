@@ -24,14 +24,23 @@ test('renders every panel of the object-detail page for the rich Alpha fixture',
     'Capability heads',
     'Trust opinions',
   ]) {
-    await expect(page.getByRole('heading', { level: 3, name: title })).toBeVisible();
+    // `exact: true` so e.g. the panel header "Genesis" doesn't
+    // collide with the trust-panel empty state's "Waiting for
+    // genesis" placeholder while the chained query resolves.
+    await expect(
+      page.getByRole('heading', { level: 3, name: title, exact: true }),
+    ).toBeVisible();
   }
 
-  // Branch tip + tag rows from the Alpha fixture.
-  await expect(page.getByText('head', { exact: true })).toBeVisible();
-  await expect(page.getByText('experimental', { exact: true })).toBeVisible();
-  await expect(page.getByText('v1.0.0', { exact: true })).toBeVisible();
-  await expect(page.getByText('v1.1.0', { exact: true })).toBeVisible();
+  // Branch tip + tag rows from the Alpha fixture. We query
+  // by table-cell role rather than free text — exercises the
+  // semantic table structure (per `WEB_CLIENT.md` §20
+  // accessibility) and avoids ambiguity when the same string
+  // appears elsewhere on the page.
+  await expect(page.getByRole('cell', { name: 'head', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'experimental', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'v1.0.0', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'v1.1.0', exact: true })).toBeVisible();
 
   // Validation badge — Alpha's verifyObject fixture is
   // `indeterminate` (matches the daemon's behavior on a
