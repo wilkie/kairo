@@ -100,10 +100,7 @@ fn arb_semver() -> impl Strategy<Value = SemverVersion> {
 }
 
 fn arb_trust_decision() -> impl Strategy<Value = TrustDecision> {
-    prop_oneof![
-        Just(TrustDecision::Trusted),
-        Just(TrustDecision::Untrusted),
-    ]
+    prop_oneof![Just(TrustDecision::Trusted), Just(TrustDecision::Untrusted),]
 }
 
 /// Object scope only — Actor scope has no valid statement kinds in v1
@@ -234,10 +231,9 @@ fn arb_actor_key_rotation_body() -> impl Strategy<Value = ActorKeyRotationBody> 
 }
 
 fn arb_actor_key_revocation_body() -> impl Strategy<Value = ActorKeyRevocationBody> {
-    (arb_key_id(), any::<bool>(), arb_reason())
-        .prop_map(|(key, retroactive, reason)| {
-            ActorKeyRevocationBody::new(key, retroactive, reason)
-        })
+    (arb_key_id(), any::<bool>(), arb_reason()).prop_map(|(key, retroactive, reason)| {
+        ActorKeyRevocationBody::new(key, retroactive, reason)
+    })
 }
 
 fn arb_actor_emergency_key_rotation_body() -> impl Strategy<Value = ActorEmergencyKeyRotationBody> {
@@ -245,12 +241,11 @@ fn arb_actor_emergency_key_rotation_body() -> impl Strategy<Value = ActorEmergen
         .prop_map(|(next, supersedes)| ActorEmergencyKeyRotationBody::new(next, supersedes))
 }
 
-fn arb_actor_emergency_key_revocation_body() -> impl Strategy<Value = ActorEmergencyKeyRevocationBody>
-{
-    (arb_key_id(), any::<bool>(), arb_reason())
-        .prop_map(|(key, retroactive, reason)| {
-            ActorEmergencyKeyRevocationBody::new(key, retroactive, reason)
-        })
+fn arb_actor_emergency_key_revocation_body(
+) -> impl Strategy<Value = ActorEmergencyKeyRevocationBody> {
+    (arb_key_id(), any::<bool>(), arb_reason()).prop_map(|(key, retroactive, reason)| {
+        ActorEmergencyKeyRevocationBody::new(key, retroactive, reason)
+    })
 }
 
 fn arb_actor_attestation_key_add_body() -> impl Strategy<Value = ActorAttestationKeyAddBody> {
@@ -282,10 +277,9 @@ fn arb_actor_capability_grant_body() -> impl Strategy<Value = ActorCapabilityGra
 }
 
 fn arb_actor_capability_revocation_body() -> impl Strategy<Value = ActorCapabilityRevocationBody> {
-    (arb_statement_id(), any::<bool>(), arb_reason())
-        .prop_map(|(grant, retroactive, reason)| {
-            ActorCapabilityRevocationBody::new(grant, retroactive, reason)
-        })
+    (arb_statement_id(), any::<bool>(), arb_reason()).prop_map(|(grant, retroactive, reason)| {
+        ActorCapabilityRevocationBody::new(grant, retroactive, reason)
+    })
 }
 
 // ---- Round-trip helper. ----

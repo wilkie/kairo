@@ -222,7 +222,11 @@ impl KeyEventIndexFile {
         created_at: Timestamp,
     ) -> bool {
         let new_id = statement_id.to_string();
-        if self.attestation_adds.iter().any(|e| e.statement_id == new_id) {
+        if self
+            .attestation_adds
+            .iter()
+            .any(|e| e.statement_id == new_id)
+        {
             return false;
         }
         self.attestation_adds.push(AttestationAddEntry {
@@ -249,11 +253,12 @@ impl KeyEventIndexFile {
         {
             return false;
         }
-        self.attestation_revocations.push(AttestationRevocationEntry {
-            statement_id: new_id,
-            revoked_key: revoked_key.to_string(),
-            created_at: created_at.to_string(),
-        });
+        self.attestation_revocations
+            .push(AttestationRevocationEntry {
+                statement_id: new_id,
+                revoked_key: revoked_key.to_string(),
+                created_at: created_at.to_string(),
+            });
         true
     }
 
@@ -300,12 +305,15 @@ impl KeyEventIndexFile {
                     )),
                 })?;
             let created_at: Timestamp =
-                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
-                    id: entry.statement_id.clone(),
-                    reason: CorruptReason::Parse(format!(
-                        "invalid created_at in rotation index: {error}"
-                    )),
-                })?;
+                entry
+                    .created_at
+                    .parse()
+                    .map_err(|error| StoreError::Corrupt {
+                        id: entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid created_at in rotation index: {error}"
+                        )),
+                    })?;
             let surface = parse_surface(&entry.surface, &entry.statement_id)?;
             out.push(KeyRotationEntry {
                 statement_id: entry.statement_id.clone(),
@@ -319,18 +327,19 @@ impl KeyEventIndexFile {
     }
 
     /// Decode the revocation set into the resolver-facing summary.
-    pub(crate) fn decode_revocations(
-        &self,
-    ) -> Result<Vec<KeyRevocationEntry>, StoreError> {
+    pub(crate) fn decode_revocations(&self) -> Result<Vec<KeyRevocationEntry>, StoreError> {
         let mut out = Vec::with_capacity(self.revocations.len());
         for entry in &self.revocations {
             let created_at: Timestamp =
-                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
-                    id: entry.statement_id.clone(),
-                    reason: CorruptReason::Parse(format!(
-                        "invalid created_at in revocation index: {error}"
-                    )),
-                })?;
+                entry
+                    .created_at
+                    .parse()
+                    .map_err(|error| StoreError::Corrupt {
+                        id: entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid created_at in revocation index: {error}"
+                        )),
+                    })?;
             let surface = parse_surface(&entry.surface, &entry.statement_id)?;
             out.push(KeyRevocationEntry {
                 statement_id: entry.statement_id.clone(),
@@ -360,12 +369,15 @@ impl KeyEventIndexFile {
                     )),
                 })?;
             let created_at: Timestamp =
-                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
-                    id: entry.statement_id.clone(),
-                    reason: CorruptReason::Parse(format!(
-                        "invalid created_at in attestation-add index: {error}"
-                    )),
-                })?;
+                entry
+                    .created_at
+                    .parse()
+                    .map_err(|error| StoreError::Corrupt {
+                        id: entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid created_at in attestation-add index: {error}"
+                        )),
+                    })?;
             out.push(AttestationKeyAddEntry {
                 statement_id: entry.statement_id.clone(),
                 new_key,
@@ -383,12 +395,15 @@ impl KeyEventIndexFile {
         let mut out = Vec::with_capacity(self.attestation_revocations.len());
         for entry in &self.attestation_revocations {
             let created_at: Timestamp =
-                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
-                    id: entry.statement_id.clone(),
-                    reason: CorruptReason::Parse(format!(
-                        "invalid created_at in attestation-revocation index: {error}"
-                    )),
-                })?;
+                entry
+                    .created_at
+                    .parse()
+                    .map_err(|error| StoreError::Corrupt {
+                        id: entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid created_at in attestation-revocation index: {error}"
+                        )),
+                    })?;
             out.push(AttestationKeyRevocationEntry {
                 statement_id: entry.statement_id.clone(),
                 revoked_key: KeyId::new(entry.revoked_key.clone()),
@@ -406,12 +421,15 @@ impl KeyEventIndexFile {
         let mut out = Vec::with_capacity(self.attestation_threshold_changes.len());
         for entry in &self.attestation_threshold_changes {
             let created_at: Timestamp =
-                entry.created_at.parse().map_err(|error| StoreError::Corrupt {
-                    id: entry.statement_id.clone(),
-                    reason: CorruptReason::Parse(format!(
-                        "invalid created_at in attestation-threshold-change index: {error}"
-                    )),
-                })?;
+                entry
+                    .created_at
+                    .parse()
+                    .map_err(|error| StoreError::Corrupt {
+                        id: entry.statement_id.clone(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid created_at in attestation-threshold-change index: {error}"
+                        )),
+                    })?;
             out.push(AttestationThresholdChangeEntry {
                 statement_id: entry.statement_id.clone(),
                 new_threshold: entry.new_threshold,
@@ -570,12 +588,12 @@ mod tests {
             KeySurface::Operational,
         );
 
-        let head = rotation_chain_head_at(&index.rotations, timestamp(150))
-            .expect("entry at t=150");
+        let head =
+            rotation_chain_head_at(&index.rotations, timestamp(150)).expect("entry at t=150");
         assert_eq!(head.statement_id, statement_id_one().to_string());
 
-        let head = rotation_chain_head_at(&index.rotations, timestamp(250))
-            .expect("entry at t=250");
+        let head =
+            rotation_chain_head_at(&index.rotations, timestamp(250)).expect("entry at t=250");
         assert_eq!(head.statement_id, statement_id_two().to_string());
     }
 
@@ -618,8 +636,8 @@ mod tests {
         );
         // Both _two and _three supersede _one; tiebreak on lex-greater
         // statement id (_three > _two).
-        let head = rotation_chain_head_at(&index.rotations, timestamp(300))
-            .expect("entry at t=300");
+        let head =
+            rotation_chain_head_at(&index.rotations, timestamp(300)).expect("entry at t=300");
         assert_eq!(head.statement_id, statement_id_three().to_string());
     }
 

@@ -489,10 +489,7 @@ pub trait ActorResolver {
     /// implementation returns an empty list, in which case the
     /// active key collapses to the genesis-initial key for every
     /// timestamp.
-    fn key_rotations(
-        &self,
-        _actor: &ActorId,
-    ) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
+    fn key_rotations(&self, _actor: &ActorId) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
         Ok(Vec::new())
     }
 
@@ -664,12 +661,9 @@ pub trait ActorResolver {
         key_id: &KeyId,
         at: Timestamp,
     ) -> Result<bool, ActorResolveError> {
-        Ok(self
-            .key_revocations(actor)?
-            .into_iter()
-            .any(|entry| {
-                entry.revoked_key == *key_id && (entry.retroactive || entry.created_at <= at)
-            }))
+        Ok(self.key_revocations(actor)?.into_iter().any(|entry| {
+            entry.revoked_key == *key_id && (entry.retroactive || entry.created_at <= at)
+        }))
     }
 }
 
@@ -752,10 +746,7 @@ impl ActorResolver for MemoryActorResolver {
         Ok(self.actors.get(actor).cloned())
     }
 
-    fn key_rotations(
-        &self,
-        actor: &ActorId,
-    ) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
+    fn key_rotations(&self, actor: &ActorId) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
         Ok(self.rotations.get(actor).cloned().unwrap_or_default())
     }
 
@@ -770,7 +761,11 @@ impl ActorResolver for MemoryActorResolver {
         &self,
         actor: &ActorId,
     ) -> Result<Vec<AttestationKeyAddEntry>, ActorResolveError> {
-        Ok(self.attestation_adds.get(actor).cloned().unwrap_or_default())
+        Ok(self
+            .attestation_adds
+            .get(actor)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn attestation_key_revocations(
@@ -878,7 +873,11 @@ mod tests {
     /// (seed [9; 32]) so no test fixture's attestation set collides with
     /// the operational signing surface.
     fn attestation_key() -> PublicKey {
-        PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+        PublicKey::ed25519(
+            SigningKey::from_bytes(&[200; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
     }
 
     fn timestamp() -> Timestamp {
@@ -887,34 +886,89 @@ mod tests {
 
     #[test]
     fn same_actor_genesis_produces_same_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
-        let second = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
+        let second = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
 
         assert_eq!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_nonce_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
-        let second =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [10; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
+        let second = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [10; 32],
+        )
+        .expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_key_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let second_key =
             PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
-        let second = ActorGenesisBody::new(ActorKind::person(), second_key, vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let second = ActorGenesisBody::new(
+            ActorKind::person(),
+            second_key,
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
 
         assert_ne!(first.actor_id(), second.actor_id());
     }
 
     #[test]
     fn actor_genesis_created_at_changes_actor_id() {
-        let first = ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let first = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let second = ActorGenesisBody::new(
             ActorKind::person(),
             public_key(),
@@ -1006,8 +1060,15 @@ mod tests {
 
     #[test]
     fn memory_resolver_finds_actor_genesis_by_derived_actor_id() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -1017,17 +1078,31 @@ mod tests {
     #[test]
     fn memory_resolver_returns_none_for_missing_actor() {
         let resolver = MemoryActorResolver::new();
-        let missing_actor =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed")
-                .actor_id();
+        let missing_actor = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed")
+        .actor_id();
 
         assert_eq!(resolver.actor_genesis(&missing_actor), Ok(None));
     }
 
     #[test]
     fn memory_resolver_resolves_initial_key() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis.clone());
 
@@ -1044,21 +1119,38 @@ mod tests {
 
     #[test]
     fn active_key_falls_back_to_genesis_initial_when_no_rotations() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
 
         let resolved = resolver
-            .active_key_at(&actor_id, Timestamp::from_seconds(timestamp().seconds() + 100))
+            .active_key_at(
+                &actor_id,
+                Timestamp::from_seconds(timestamp().seconds() + 100),
+            )
             .expect("query succeeds");
         assert_eq!(resolved, Some(public_key()));
     }
 
     #[test]
     fn active_key_at_walks_rotation_chain() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
 
@@ -1095,14 +1187,20 @@ mod tests {
         // Between the two rotations: rotation-1's next_key wins.
         assert_eq!(
             resolver
-                .active_key_at(&actor_id, Timestamp::from_seconds(timestamp().seconds() + 15))
+                .active_key_at(
+                    &actor_id,
+                    Timestamp::from_seconds(timestamp().seconds() + 15)
+                )
                 .unwrap(),
             Some(other_public_key())
         );
         // After both rotations: rotation-2's next_key wins.
         assert_eq!(
             resolver
-                .active_key_at(&actor_id, Timestamp::from_seconds(timestamp().seconds() + 25))
+                .active_key_at(
+                    &actor_id,
+                    Timestamp::from_seconds(timestamp().seconds() + 25)
+                )
                 .unwrap(),
             Some(third_public_key())
         );
@@ -1110,8 +1208,15 @@ mod tests {
 
     #[test]
     fn revocation_default_only_invalidates_after_created_at() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -1143,8 +1248,15 @@ mod tests {
 
     #[test]
     fn retroactive_revocation_invalidates_at_every_timestamp() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();
@@ -1169,8 +1281,15 @@ mod tests {
 
     #[test]
     fn most_restrictive_revocation_wins() {
-        let genesis =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [9; 32]).expect("genesis well-formed");
+        let genesis = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [9; 32],
+        )
+        .expect("genesis well-formed");
         let mut resolver = MemoryActorResolver::new();
         let actor_id = resolver.insert(genesis);
         let key_id = public_key().key_id();

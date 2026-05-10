@@ -30,11 +30,10 @@ use kairo_core::{ActorId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_daemon::{serve_with_shutdown, Config, Error};
 use kairo_identity::SecretSigningKey;
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorTrustBody, Capability, CapabilityScope,
-    ObjectVersionTagBody, SemverVersion, Signature, SignedStatement, StatementKind, TrustDecision,
-    UnsignedStatement,
+    ActorCapabilityGrantBody, ActorTrustBody, Capability, CapabilityScope, ObjectVersionTagBody,
+    SemverVersion, Signature, SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
 };
-use kairo_store::{StatementStore, FilesystemStore};
+use kairo_store::{FilesystemStore, StatementStore};
 use kairo_test_support::store::{CreatedActor, CreatedObject, StoreFixture};
 use serde_json::Value;
 use tokio::net::UnixStream;
@@ -194,7 +193,9 @@ fn put_version_tag(
         supersedes,
     )
     .expect("tag body");
-    let subject: KairoRef = format!("object:{}", object.object_id).parse().expect("subject");
+    let subject: KairoRef = format!("object:{}", object.object_id)
+        .parse()
+        .expect("subject");
     let signed = sign(actor, subject, body);
     store
         .put_object_version_tag(&signed)
@@ -207,8 +208,7 @@ fn put_trust(
     of: &ActorId,
     decision: TrustDecision,
 ) -> StatementId {
-    let body = ActorTrustBody::new(of.clone(), Some(decision), None, None)
-        .expect("trust body");
+    let body = ActorTrustBody::new(of.clone(), Some(decision), None, None).expect("trust body");
     let subject: KairoRef = format!("actor:{of}").parse().expect("subject");
     let signed = sign(by, subject, body);
     store.put_actor_trust(&signed).expect("put_actor_trust")
@@ -362,7 +362,10 @@ async fn version_tag_latest_returns_signed_statement() {
     let result = &json["result"];
     assert_eq!(result["type"], "ObjectVersionTag", "result: {result:#}");
     assert_eq!(result["body"]["version"], "1.2.3");
-    assert_eq!(result["body"]["object"].as_str(), Some(object.object_id.as_str()));
+    assert_eq!(
+        result["body"]["object"].as_str(),
+        Some(object.object_id.as_str())
+    );
     assert_eq!(
         result["body"]["target"].as_str(),
         Some(revision.statement_id.as_str())
@@ -602,7 +605,10 @@ async fn version_tags_list_returns_heads_per_actor_version() {
     let json: Value = serde_json::from_slice(&body).expect("parse");
     let arr = json["result"].as_array().expect("array");
     assert_eq!(arr.len(), 2, "two heads, one per version: {arr:#?}");
-    let mut versions: Vec<&str> = arr.iter().map(|e| e["version"].as_str().expect("version")).collect();
+    let mut versions: Vec<&str> = arr
+        .iter()
+        .map(|e| e["version"].as_str().expect("version"))
+        .collect();
     versions.sort();
     assert_eq!(versions, ["1.0.0", "1.1.0"]);
     for entry in arr {
@@ -680,8 +686,14 @@ async fn revisions_list_returns_chronological_history() {
         .iter()
         .map(|e| e["statement_id"].as_str().expect("statement_id"))
         .collect();
-    assert!(ids.contains(&r1.statement_id.as_str()), "missing r1: {arr:#?}");
-    assert!(ids.contains(&r2.statement_id.as_str()), "missing r2: {arr:#?}");
+    assert!(
+        ids.contains(&r1.statement_id.as_str()),
+        "missing r1: {arr:#?}"
+    );
+    assert!(
+        ids.contains(&r2.statement_id.as_str()),
+        "missing r2: {arr:#?}"
+    );
     for entry in arr {
         assert_eq!(entry["actor"].as_str(), Some(actor.actor_id.as_str()));
         assert_eq!(entry["object"].as_str(), Some(object.object_id.as_str()));
@@ -769,7 +781,10 @@ async fn trust_list_about_returns_per_by_actor_heads() {
     let arr = json["result"].as_array().expect("array");
     assert_eq!(arr.len(), 2, "two opinions about carol: {arr:#?}");
     for entry in arr {
-        assert_eq!(entry["trusted_actor"].as_str(), Some(carol.actor_id.as_str()));
+        assert_eq!(
+            entry["trusted_actor"].as_str(),
+            Some(carol.actor_id.as_str())
+        );
         assert!(entry["statement_id"].is_string());
         assert!(entry["created_at"].is_string());
     }

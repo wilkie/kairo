@@ -56,8 +56,12 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
 
     // Build the set of actor ids the bundle promises so we can flag
     // any statement whose signer the bundle didn't ship.
-    let manifest_actor_set: std::collections::BTreeSet<&str> =
-        manifest.contents.actors.iter().map(|s| s.as_str()).collect();
+    let manifest_actor_set: std::collections::BTreeSet<&str> = manifest
+        .contents
+        .actors
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
 
     let mut actors = 0usize;
     let mut objects = 0usize;
@@ -69,13 +73,12 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
     //    may want the blob present so consumers can immediately rerun
     //    `verify object`.
     for blob_id_str in &manifest.contents.blobs {
-        let blob_id = BlobId::new(blob_id_str.clone()).map_err(|source| {
-            BundleError::BadIdFilename {
+        let blob_id =
+            BlobId::new(blob_id_str.clone()).map_err(|source| BundleError::BadIdFilename {
                 path: src.join(dirs::BLOBS).join(blob_id_str),
                 kind: "blob",
                 source,
-            }
-        })?;
+            })?;
         let path = src.join(dirs::BLOBS).join(blob_id.as_str());
         let bytes = fs::read(&path).map_err(|source| match source.kind() {
             io::ErrorKind::NotFound => BundleError::MissingRecord {
@@ -95,7 +98,9 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
                 actual: derived.to_string(),
             });
         }
-        store.put_blob(&blob_id, &bytes).map_err(BundleError::Store)?;
+        store
+            .put_blob(&blob_id, &bytes)
+            .map_err(BundleError::Store)?;
         blobs += 1;
     }
 
@@ -103,13 +108,12 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
     //    signatures via the in-store ActorResolver if a caller chains
     //    a verify pass.
     for actor_id_str in &manifest.contents.actors {
-        let actor_id = ActorId::new(actor_id_str.clone()).map_err(|source| {
-            BundleError::BadIdFilename {
+        let actor_id =
+            ActorId::new(actor_id_str.clone()).map_err(|source| BundleError::BadIdFilename {
                 path: src.join(dirs::ACTORS).join(format!("{actor_id_str}.json")),
                 kind: "actor",
                 source,
-            }
-        })?;
+            })?;
         let path = src.join(dirs::ACTORS).join(format!("{actor_id}.json"));
         let bytes = fs::read(&path).map_err(|source| match source.kind() {
             io::ErrorKind::NotFound => BundleError::MissingRecord {
@@ -144,13 +148,14 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
 
     // 3. Object genesis records.
     for object_id_str in &manifest.contents.objects {
-        let object_id = ObjectId::new(object_id_str.clone()).map_err(|source| {
-            BundleError::BadIdFilename {
-                path: src.join(dirs::OBJECTS).join(format!("{object_id_str}.json")),
+        let object_id =
+            ObjectId::new(object_id_str.clone()).map_err(|source| BundleError::BadIdFilename {
+                path: src
+                    .join(dirs::OBJECTS)
+                    .join(format!("{object_id_str}.json")),
                 kind: "object",
                 source,
-            }
-        })?;
+            })?;
         let path = src.join(dirs::OBJECTS).join(format!("{object_id}.json"));
         let bytes = fs::read(&path).map_err(|source| match source.kind() {
             io::ErrorKind::NotFound => BundleError::MissingRecord {
@@ -167,10 +172,12 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
                 path: path.clone(),
                 source,
             })?;
-        let signed = dto.to_statement().map_err(|error| BundleError::StatementShape {
-            path: path.clone(),
-            message: error.to_string(),
-        })?;
+        let signed = dto
+            .to_statement()
+            .map_err(|error| BundleError::StatementShape {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
         let derived = signed.object_id();
         if derived != object_id {
             return Err(BundleError::FixityMismatch {
@@ -230,45 +237,51 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
         }
         match peek.statement_type.as_str() {
             "ObjectRevision" => {
-                let dto: ObjectRevisionStatementJson = serde_json::from_slice(&bytes)
-                    .map_err(|source| BundleError::RecordParse {
+                let dto: ObjectRevisionStatementJson =
+                    serde_json::from_slice(&bytes).map_err(|source| BundleError::RecordParse {
                         path: path.clone(),
                         source,
                     })?;
-                let signed = dto.to_statement().map_err(|error| BundleError::StatementShape {
-                    path: path.clone(),
-                    message: error.to_string(),
-                })?;
+                let signed = dto
+                    .to_statement()
+                    .map_err(|error| BundleError::StatementShape {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    })?;
                 fixity_check_statement(&path, &statement_id, &signed.statement_id())?;
                 store
                     .put_object_revision(&signed)
                     .map_err(BundleError::Store)?;
             }
             "ObjectBranch" => {
-                let dto: ObjectBranchStatementJson = serde_json::from_slice(&bytes)
-                    .map_err(|source| BundleError::RecordParse {
+                let dto: ObjectBranchStatementJson =
+                    serde_json::from_slice(&bytes).map_err(|source| BundleError::RecordParse {
                         path: path.clone(),
                         source,
                     })?;
-                let signed = dto.to_statement().map_err(|error| BundleError::StatementShape {
-                    path: path.clone(),
-                    message: error.to_string(),
-                })?;
+                let signed = dto
+                    .to_statement()
+                    .map_err(|error| BundleError::StatementShape {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    })?;
                 fixity_check_statement(&path, &statement_id, &signed.statement_id())?;
                 store
                     .put_object_branch(&signed)
                     .map_err(BundleError::Store)?;
             }
             "ObjectVersionTag" => {
-                let dto: ObjectVersionTagStatementJson = serde_json::from_slice(&bytes)
-                    .map_err(|source| BundleError::RecordParse {
+                let dto: ObjectVersionTagStatementJson =
+                    serde_json::from_slice(&bytes).map_err(|source| BundleError::RecordParse {
                         path: path.clone(),
                         source,
                     })?;
-                let signed = dto.to_statement().map_err(|error| BundleError::StatementShape {
-                    path: path.clone(),
-                    message: error.to_string(),
-                })?;
+                let signed = dto
+                    .to_statement()
+                    .map_err(|error| BundleError::StatementShape {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    })?;
                 fixity_check_statement(&path, &statement_id, &signed.statement_id())?;
                 store
                     .put_object_version_tag(&signed)

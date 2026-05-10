@@ -142,10 +142,7 @@ impl SignatureJson {
 fn signatures_to_envelope(
     signatures: &[SignatureJson],
 ) -> Result<Vec<Signature>, StatementJsonError> {
-    signatures
-        .iter()
-        .map(SignatureJson::to_signature)
-        .collect()
+    signatures.iter().map(SignatureJson::to_signature).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -380,8 +377,7 @@ impl ObjectBranchBodyJson {
     pub fn to_body(&self) -> Result<ObjectBranchBody, StatementJsonError> {
         let supersedes = match &self.supersedes {
             Some(value) => Some(
-                StatementId::new(value.clone())
-                    .map_err(StatementJsonError::InvalidStatement)?,
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
             ),
             None => None,
         };
@@ -625,12 +621,12 @@ impl CapabilityConstraintJson {
     fn to_constraint(&self) -> Result<CapabilityConstraint, StatementJsonError> {
         match self {
             Self::ExpiresAt(value) => {
-                let ts: Timestamp = value.parse().map_err(StatementJsonError::InvalidCreatedAt)?;
+                let ts: Timestamp = value
+                    .parse()
+                    .map_err(StatementJsonError::InvalidCreatedAt)?;
                 Ok(CapabilityConstraint::ExpiresAt(ts))
             }
-            Self::MaxDelegationDepth(depth) => {
-                Ok(CapabilityConstraint::MaxDelegationDepth(*depth))
-            }
+            Self::MaxDelegationDepth(depth) => Ok(CapabilityConstraint::MaxDelegationDepth(*depth)),
             Self::KeyPinned(id) => Ok(CapabilityConstraint::KeyPinned(KeyId::new(id.clone()))),
         }
     }
@@ -659,8 +655,7 @@ impl CapabilityJson {
         let mut kinds = Vec::with_capacity(self.statement_kinds.len());
         for kind_str in &self.statement_kinds {
             kinds.push(
-                StatementKind::parse(kind_str)
-                    .map_err(StatementJsonError::InvalidStatementKind)?,
+                StatementKind::parse(kind_str).map_err(StatementJsonError::InvalidStatementKind)?,
             );
         }
         let mut constraints = Vec::with_capacity(self.constraints.len());
@@ -705,7 +700,12 @@ impl ActorCapabilityGrantStatementJson {
     pub fn to_statement(
         &self,
     ) -> Result<SignedStatement<ActorCapabilityGrantBody>, StatementJsonError> {
-        ensure_statement_shape(&self.statement_type, self.version, "ActorCapabilityGrant", 1)?;
+        ensure_statement_shape(
+            &self.statement_type,
+            self.version,
+            "ActorCapabilityGrant",
+            1,
+        )?;
 
         let created_at: Timestamp = self
             .created_at
@@ -759,7 +759,9 @@ impl ActorCapabilityGrantBodyJson {
             ),
             None => None,
         };
-        Ok(ActorCapabilityGrantBody::new(grantee, capability, supersedes))
+        Ok(ActorCapabilityGrantBody::new(
+            grantee, capability, supersedes,
+        ))
     }
 
     pub fn from_body(body: &ActorCapabilityGrantBody) -> Self {
@@ -923,8 +925,7 @@ impl ActorKeyRotationBodyJson {
             .map_err(StatementJsonError::InvalidPublicKey)?;
         let supersedes = match &self.supersedes {
             Some(value) => Some(
-                StatementId::new(value.clone())
-                    .map_err(StatementJsonError::InvalidStatement)?,
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
             ),
             None => None,
         };
@@ -1059,9 +1060,7 @@ impl ActorEmergencyKeyRotationStatementJson {
             .map_err(StatementJsonError::InvalidMultiSignature)
     }
 
-    pub fn from_statement(
-        statement: &MultiSignedStatement<ActorEmergencyKeyRotationBody>,
-    ) -> Self {
+    pub fn from_statement(statement: &MultiSignedStatement<ActorEmergencyKeyRotationBody>) -> Self {
         let unsigned = statement.unsigned();
         Self {
             statement_type: "ActorEmergencyKeyRotation".to_owned(),
@@ -1094,8 +1093,7 @@ impl ActorEmergencyKeyRotationBodyJson {
             .map_err(StatementJsonError::InvalidPublicKey)?;
         let supersedes = match &self.supersedes {
             Some(value) => Some(
-                StatementId::new(value.clone())
-                    .map_err(StatementJsonError::InvalidStatement)?,
+                StatementId::new(value.clone()).map_err(StatementJsonError::InvalidStatement)?,
             ),
             None => None,
         };
@@ -2245,8 +2243,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_trust_round_trips_through_from_statement(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn actor_trust_round_trips_through_from_statement() -> Result<(), Box<dyn std::error::Error>> {
         let grant = parse_actor_trust_json(&actor_trust_grant_json("c2lnbmF0dXJl"))?;
         let dto = ActorTrustStatementJson::from_statement(&grant);
         let round_tripped = dto.to_statement()?;
@@ -2559,8 +2556,7 @@ mod tests {
 
     #[test]
     fn parses_capability_revocation_default_json() {
-        let parsed =
-            parse_capability_revocation_json(&capability_revocation_default_json("c2ln"));
+        let parsed = parse_capability_revocation_json(&capability_revocation_default_json("c2ln"));
         assert!(matches!(
             parsed,
             Ok(signed)
@@ -2773,8 +2769,7 @@ mod tests {
     }
 
     #[test]
-    fn key_rotation_round_trips_through_from_statement(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn key_rotation_round_trips_through_from_statement() -> Result<(), Box<dyn std::error::Error>> {
         let genesis = parse_key_rotation_json(&key_rotation_genesis_json("c2ln"))?;
         let dto = ActorKeyRotationStatementJson::from_statement(&genesis);
         assert_eq!(genesis.statement_id(), dto.to_statement()?.statement_id());
@@ -2784,10 +2779,7 @@ mod tests {
             revision_statement_id().as_str(),
         ))?;
         let dto = ActorKeyRotationStatementJson::from_statement(&successor);
-        assert_eq!(
-            successor.statement_id(),
-            dto.to_statement()?.statement_id()
-        );
+        assert_eq!(successor.statement_id(), dto.to_statement()?.statement_id());
         Ok(())
     }
 
@@ -2907,8 +2899,8 @@ mod tests {
     }
 
     #[test]
-    fn key_revocation_round_trips_through_from_statement(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn key_revocation_round_trips_through_from_statement() -> Result<(), Box<dyn std::error::Error>>
+    {
         let default = parse_key_revocation_json(&key_revocation_default_json(
             "c2ln",
             revision_statement_id().as_str(),

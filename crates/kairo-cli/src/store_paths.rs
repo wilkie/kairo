@@ -17,10 +17,7 @@ pub(crate) struct StorePaths {
 }
 
 impl StorePaths {
-    pub(crate) fn resolve(
-        store: Option<PathBuf>,
-        keys: Option<PathBuf>,
-    ) -> Result<Self, CliError> {
+    pub(crate) fn resolve(store: Option<PathBuf>, keys: Option<PathBuf>) -> Result<Self, CliError> {
         let store = match store {
             Some(path) => path,
             None => default_store_root()?,

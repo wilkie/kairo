@@ -45,11 +45,9 @@ impl fmt::Display for StoreError {
             Self::Corrupt { id, reason } => write!(f, "corrupt record {id}: {reason}"),
             Self::Unavailable(error) => write!(f, "store unavailable: {error}"),
             Self::Rejected { reason } => write!(f, "store rejected statement: {reason}"),
-            Self::LockTimeout { path } => write!(
-                f,
-                "timed out acquiring advisory lock on {}",
-                path.display()
-            ),
+            Self::LockTimeout { path } => {
+                write!(f, "timed out acquiring advisory lock on {}", path.display())
+            }
         }
     }
 }

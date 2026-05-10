@@ -188,9 +188,9 @@ async fn client_handle_is_clone_and_concurrent_safe() {
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let client = client.clone();
-        tasks.push(tokio::spawn(
-            async move { client.version().await.map(|v| v.api_version) },
-        ));
+        tasks.push(tokio::spawn(async move {
+            client.version().await.map(|v| v.api_version)
+        }));
     }
 
     for task in tasks {
@@ -246,16 +246,13 @@ async fn client_actor_method_round_trips() {
 
 #[tokio::test]
 async fn client_actor_method_returns_404_for_missing_id() {
-    let (handle, _dir, _ids) =
-        spawn_daemon_with_fixture(|_| FixtureIds::default()).await;
+    let (handle, _dir, _ids) = spawn_daemon_with_fixture(|_| FixtureIds::default()).await;
     let client = Client::new(handle.socket_path());
     // shape-valid but absent
     let id = kairo_core::ActorId::from_sha256_digest([0xAB; 32]).to_string();
 
     match client.actor(&id).await {
-        Err(ClientError::Http {
-            status, code, ..
-        }) => {
+        Err(ClientError::Http { status, code, .. }) => {
             assert_eq!(status, 404);
             assert_eq!(code, "not_found");
         }
@@ -267,14 +264,11 @@ async fn client_actor_method_returns_404_for_missing_id() {
 
 #[tokio::test]
 async fn client_actor_method_returns_400_for_malformed_id() {
-    let (handle, _dir, _ids) =
-        spawn_daemon_with_fixture(|_| FixtureIds::default()).await;
+    let (handle, _dir, _ids) = spawn_daemon_with_fixture(|_| FixtureIds::default()).await;
     let client = Client::new(handle.socket_path());
 
     match client.actor("not-a-real-id").await {
-        Err(ClientError::Http {
-            status, code, ..
-        }) => {
+        Err(ClientError::Http { status, code, .. }) => {
             assert_eq!(status, 400);
             assert_eq!(code, "bad_request");
         }
@@ -347,8 +341,7 @@ async fn client_statement_method_round_trips() {
 
 #[tokio::test]
 async fn client_statement_method_returns_404_for_missing_id() {
-    let (handle, _dir, _ids) =
-        spawn_daemon_with_fixture(|_| FixtureIds::default()).await;
+    let (handle, _dir, _ids) = spawn_daemon_with_fixture(|_| FixtureIds::default()).await;
     let client = Client::new(handle.socket_path());
     let id = kairo_core::StatementId::from_sha256_digest([0xCD; 32]).to_string();
 
@@ -474,8 +467,13 @@ async fn client_trust_round_trips() {
     let bob = fixture.make_actor();
 
     // Inline trust signing.
-    let body = ActorTrustBody::new(bob.actor_id.clone(), Some(TrustDecision::Trusted), None, None)
-        .expect("trust body");
+    let body = ActorTrustBody::new(
+        bob.actor_id.clone(),
+        Some(TrustDecision::Trusted),
+        None,
+        None,
+    )
+    .expect("trust body");
     let subject: kairo_core::KairoRef = format!("actor:{}", bob.actor_id)
         .parse()
         .expect("subject parse");
@@ -493,7 +491,10 @@ async fn client_trust_round_trips() {
         bytes.bytes().to_vec(),
     );
     let signed = SignedStatement::new(unsigned, signature);
-    fixture.store.put_actor_trust(&signed).expect("put_actor_trust");
+    fixture
+        .store
+        .put_actor_trust(&signed)
+        .expect("put_actor_trust");
 
     let alice_id = alice.actor_id.to_string();
     let bob_id = bob.actor_id.to_string();
@@ -577,7 +578,10 @@ async fn client_blob_round_trips_via_async_read() {
 
     let (dir, fixture) = StoreFixture::temp();
     let blob_id = BlobId::from_bytes(DOMAIN, &payload);
-    fixture.store.put_blob(&blob_id, &payload).expect("put_blob");
+    fixture
+        .store
+        .put_blob(&blob_id, &payload)
+        .expect("put_blob");
     let id_str = blob_id.to_string();
     drop(fixture);
 

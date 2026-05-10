@@ -27,10 +27,7 @@ pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 /// `verify object`'s precedence check) before deciding whether
 /// to invoke `GitCache::open` (which initializes the pool repo if
 /// absent and therefore requires the host's `git` binary).
-pub fn object_repo_path(
-    git_root: &Path,
-    object_id: &str,
-) -> Result<PathBuf, GitError> {
+pub fn object_repo_path(git_root: &Path, object_id: &str) -> Result<PathBuf, GitError> {
     shard::shard_path(git_root, object_id)
 }
 
@@ -271,8 +268,11 @@ mod tests {
         run(&dir, &["add", "kairo.toml"]);
         run(&dir, &["commit", "-m", "first", "--quiet"]);
         let first = rev_parse(&dir, "HEAD");
-        fs::write(dir.path().join("kairo.toml"), "[kairo]\nschema = 1\nname = \"two\"\n")
-            .expect("write kairo.toml");
+        fs::write(
+            dir.path().join("kairo.toml"),
+            "[kairo]\nschema = 1\nname = \"two\"\n",
+        )
+        .expect("write kairo.toml");
         run(&dir, &["add", "kairo.toml"]);
         run(&dir, &["commit", "-m", "second", "--quiet"]);
         let second = rev_parse(&dir, "HEAD");
@@ -295,7 +295,10 @@ mod tests {
             .output()
             .expect("rev-parse");
         assert!(output.status.success(), "rev-parse {rev} failed");
-        String::from_utf8(output.stdout).expect("utf8").trim().to_owned()
+        String::from_utf8(output.stdout)
+            .expect("utf8")
+            .trim()
+            .to_owned()
     }
 
     #[test]
@@ -318,10 +321,7 @@ mod tests {
     fn find_commit_returns_parents() {
         let (dir, first, second) = init_repo();
         let repo = discover(dir.path()).expect("discover");
-        let info = repo
-            .find_commit(&second)
-            .expect("find")
-            .expect("present");
+        let info = repo.find_commit(&second).expect("find").expect("present");
         assert_eq!(info.commit_id, second);
         assert_eq!(info.parent_ids, vec![first]);
     }
@@ -372,10 +372,7 @@ mod tests {
         let (dir, _, _) = init_repo();
         let repo = discover(dir.path()).expect("discover");
         let result = repo
-            .read_blob_at_path(
-                "0123456789abcdef0123456789abcdef01234567",
-                "kairo.toml",
-            )
+            .read_blob_at_path("0123456789abcdef0123456789abcdef01234567", "kairo.toml")
             .expect("call");
         assert!(result.is_none());
     }

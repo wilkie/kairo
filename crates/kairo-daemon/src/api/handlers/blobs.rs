@@ -71,9 +71,10 @@ pub async fn handler(
     // `metadata` lets us emit Content-Length so clients can show
     // progress. tokio::fs::File::metadata is async (uses
     // spawn_blocking under the hood).
-    let metadata = file.metadata().await.map_err(|error| {
-        ApiError::store(format!("blob metadata read failed: {error}"))
-    })?;
+    let metadata = file
+        .metadata()
+        .await
+        .map_err(|error| ApiError::store(format!("blob metadata read failed: {error}")))?;
     let content_length = metadata.len();
 
     let stream = ReaderStream::with_capacity(file, STREAM_CHUNK_BYTES);

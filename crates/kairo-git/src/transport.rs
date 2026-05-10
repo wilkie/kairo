@@ -37,12 +37,7 @@ pub struct FetchedRef {
 /// - Treat `refspec` as a single explicit `<src>:<dst>` pair — no
 ///   glob expansion in v1.
 pub trait GitCacheTransport {
-    fn fetch(
-        &self,
-        target_repo: &Path,
-        url: &str,
-        refspec: &str,
-    ) -> Result<FetchedRef, GitError>;
+    fn fetch(&self, target_repo: &Path, url: &str, refspec: &str) -> Result<FetchedRef, GitError>;
 }
 
 /// Shell-out transport that invokes the host's `git` binary.
@@ -70,12 +65,7 @@ impl GitCli {
 }
 
 impl GitCacheTransport for GitCli {
-    fn fetch(
-        &self,
-        target_repo: &Path,
-        url: &str,
-        refspec: &str,
-    ) -> Result<FetchedRef, GitError> {
+    fn fetch(&self, target_repo: &Path, url: &str, refspec: &str) -> Result<FetchedRef, GitError> {
         let dest = parse_dest_ref(refspec)?;
         run_git(
             target_repo,
@@ -106,14 +96,16 @@ impl GitCacheTransport for GitCli {
 /// resolved OID from the pool's namespaced ref into the per-object
 /// repo's `refs/heads/<branch>`. Public to the crate but not
 /// exposed externally — callers go through the cache.
-pub(crate) fn update_ref(
-    repo_path: &Path,
-    ref_name: &str,
-    oid: &str,
-) -> Result<(), GitError> {
+pub(crate) fn update_ref(repo_path: &Path, ref_name: &str, oid: &str) -> Result<(), GitError> {
     run_git(
         repo_path,
-        &["-C", &repo_path.display().to_string(), "update-ref", ref_name, oid],
+        &[
+            "-C",
+            &repo_path.display().to_string(),
+            "update-ref",
+            ref_name,
+            oid,
+        ],
         &format!("git update-ref {ref_name} {oid}"),
     )
 }
@@ -123,15 +115,19 @@ pub(crate) fn update_ref(
 /// here because v1 transports do not support glob expansion.
 fn parse_dest_ref(refspec: &str) -> Result<String, GitError> {
     let trimmed = refspec.strip_prefix('+').unwrap_or(refspec);
-    let (_, dst) =
-        trimmed
+    let (_, dst) = trimmed
+        .split_once(':')
+        .ok_or_else(|| GitError::CacheGitInvocation {
+            command: format!("parse refspec {refspec:?}"),
+            stderr: "transport requires explicit src:dst refspec".to_owned(),
+            exit_code: None,
+        })?;
+    if dst.contains('*')
+        || trimmed
             .split_once(':')
-            .ok_or_else(|| GitError::CacheGitInvocation {
-                command: format!("parse refspec {refspec:?}"),
-                stderr: "transport requires explicit src:dst refspec".to_owned(),
-                exit_code: None,
-            })?;
-    if dst.contains('*') || trimmed.split_once(':').map(|(s, _)| s.contains('*')).unwrap_or(false) {
+            .map(|(s, _)| s.contains('*'))
+            .unwrap_or(false)
+    {
         return Err(GitError::CacheGitInvocation {
             command: format!("parse refspec {refspec:?}"),
             stderr: "v1 transport does not expand refspec globs".to_owned(),
@@ -166,20 +162,17 @@ fn read_ref_oid(repo_path: &Path, ref_name: &str) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn run_git(
-    cwd_for_io_error: &Path,
-    args: &[&str],
-    label: &str,
-) -> Result<(), GitError> {
-    let output = Command::new("git").args(args).output().map_err(|source| {
-        match source.kind() {
+fn run_git(cwd_for_io_error: &Path, args: &[&str], label: &str) -> Result<(), GitError> {
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|source| match source.kind() {
             std::io::ErrorKind::NotFound => GitError::CacheGitMissing { source },
             _ => GitError::CacheIo {
                 path: cwd_for_io_error.to_path_buf(),
                 source,
             },
-        }
-    })?;
+        })?;
     if !output.status.success() {
         return Err(GitError::CacheGitInvocation {
             command: label.to_owned(),
@@ -219,9 +212,7 @@ mod tests {
         init_bare(&target);
 
         let refspec = format!("refs/heads/{branch}:refs/kairo/test/{branch}");
-        let result = GitCli::new()
-            .fetch(&target, &url, &refspec)
-            .expect("fetch");
+        let result = GitCli::new().fetch(&target, &url, &refspec).expect("fetch");
 
         assert_eq!(result.ref_name, format!("refs/kairo/test/{branch}"));
         assert_eq!(result.oid, head_oid);
@@ -230,7 +221,11 @@ mod tests {
         let output = Command::new("git")
             .args(["-C"])
             .arg(&target)
-            .args(["rev-parse", "--verify", &format!("refs/kairo/test/{branch}")])
+            .args([
+                "rev-parse",
+                "--verify",
+                &format!("refs/kairo/test/{branch}"),
+            ])
             .output()
             .expect("rev-parse");
         assert!(output.status.success());
@@ -273,10 +268,7 @@ mod tests {
         let target = target_dir.path().join("target.git");
         init_bare(&target);
 
-        let bogus_url = format!(
-            "file://{}/does-not-exist",
-            target_dir.path().display()
-        );
+        let bogus_url = format!("file://{}/does-not-exist", target_dir.path().display());
         let err = GitCli::new()
             .fetch(&target, &bogus_url, "refs/heads/main:refs/kairo/test/main")
             .expect_err("fetch must error");

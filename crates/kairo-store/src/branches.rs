@@ -158,14 +158,15 @@ impl BranchIndexFile {
                 let Some(head_entry) = chain_head(entries) else {
                     continue;
                 };
-                let statement_id = StatementId::new(head_entry.statement_id.clone()).map_err(
-                    |error| StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in branch index: {error}"
-                        )),
-                    },
-                )?;
+                let statement_id =
+                    StatementId::new(head_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in branch index: {error}"
+                            )),
+                        }
+                    })?;
                 let created_at: Timestamp =
                     head_entry
                         .created_at
@@ -310,9 +311,7 @@ mod tests {
             timestamp(100),
             Some(&statement_id_two()),
         );
-        let head = index
-            .lookup_head(&actor(), "head")
-            .expect("head present");
+        let head = index.lookup_head(&actor(), "head").expect("head present");
         assert_eq!(head.statement_id.as_str(), statement_id_one().as_str());
     }
 

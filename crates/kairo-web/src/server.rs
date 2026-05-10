@@ -78,7 +78,10 @@ pub fn router(spa_dir: Option<&Path>, daemon_socket: PathBuf) -> Router {
 async fn api_only_fallback() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; charset=utf-8",
+        )],
         concat!(
             "kairo-web is running in API-proxy-only mode (no --spa-dir).\n",
             "\n",
@@ -109,19 +112,16 @@ where
     }
     validate_daemon_socket(&config.daemon_socket)?;
 
-    let listener =
-        TcpListener::bind(&config.bind_addr)
-            .await
-            .map_err(|source| Error::Bind {
-                addr: config.bind_addr,
-                source,
-            })?;
-    let bound = listener
-        .local_addr()
+    let listener = TcpListener::bind(&config.bind_addr)
+        .await
         .map_err(|source| Error::Bind {
             addr: config.bind_addr,
             source,
         })?;
+    let bound = listener.local_addr().map_err(|source| Error::Bind {
+        addr: config.bind_addr,
+        source,
+    })?;
 
     let pid_guard = match config.pid_file.as_deref() {
         Some(path) => Some(PidFile::write(path)?),

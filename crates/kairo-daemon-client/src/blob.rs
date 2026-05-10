@@ -87,9 +87,7 @@ impl Client {
 
         let body = response.into_body();
         let data_stream = BodyStream::new(body)
-            .try_filter_map(|frame: Frame<Bytes>| async move {
-                Ok(frame.into_data().ok())
-            })
+            .try_filter_map(|frame: Frame<Bytes>| async move { Ok(frame.into_data().ok()) })
             .map_err(|error: hyper::Error| std::io::Error::other(error));
 
         // Hold the ownership chain in the reader so the

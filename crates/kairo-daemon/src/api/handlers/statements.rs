@@ -40,9 +40,9 @@ pub async fn handler(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<ApiResult<Value>, ApiError> {
-    let statement_id: StatementId = id.parse().map_err(|error| {
-        ApiError::bad_request(format!("invalid statement id {id:?}: {error}"))
-    })?;
+    let statement_id: StatementId = id
+        .parse()
+        .map_err(|error| ApiError::bad_request(format!("invalid statement id {id:?}: {error}")))?;
 
     let store = state.store.clone();
     let bytes = tokio::task::spawn_blocking(move || store.get_statement_bytes(&statement_id))
@@ -50,9 +50,8 @@ pub async fn handler(
         .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
         .map_err(|error| map_store_error(error, "get_statement_bytes"))?;
 
-    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
-        ApiError::store(format!("statement JSON parse failed: {error}"))
-    })?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| ApiError::store(format!("statement JSON parse failed: {error}")))?;
 
     Ok(ApiResult(value))
 }

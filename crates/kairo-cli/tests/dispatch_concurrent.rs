@@ -95,8 +95,13 @@ fn branch_show_round_trips_in_daemon_and_direct_mode() {
     let (dir, fixture) = StoreFixture::temp();
     let actor = fixture.make_actor();
     let object = fixture.make_object(&actor, "kairo/object");
-    let revision =
-        fixture.make_revision(&actor, &object, RevisionId::new("git:sha256:r1"), MANIFEST, vec![]);
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:r1"),
+        MANIFEST,
+        vec![],
+    );
     fixture.set_branch(&actor, &object, &revision, "head");
     let object_id = object.object_id.to_string();
     let actor_id = actor.actor_id.to_string();
@@ -218,8 +223,13 @@ fn direct_write_succeeds_while_daemon_serves_concurrent_read() {
     let (dir, fixture) = StoreFixture::temp();
     let actor = fixture.make_actor();
     let object = fixture.make_object(&actor, "kairo/object");
-    let r1 =
-        fixture.make_revision(&actor, &object, RevisionId::new("git:sha256:r1"), MANIFEST, vec![]);
+    let r1 = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:r1"),
+        MANIFEST,
+        vec![],
+    );
     let r2 = fixture.make_revision(
         &actor,
         &object,
@@ -385,10 +395,7 @@ fn branch_list_round_trips_in_both_modes() {
 
     let mut daemon = spawn_daemon(&store_path);
 
-    assert_modes_agree(
-        &store_path,
-        &["branch", "list", "--object", &object_id],
-    );
+    assert_modes_agree(&store_path, &["branch", "list", "--object", &object_id]);
 
     let _ = daemon.kill();
     let _ = daemon.wait();
@@ -421,7 +428,13 @@ fn revision_inspect_round_trips_in_both_modes() {
     );
     assert_modes_agree(
         &store_path,
-        &["revision", "inspect", "--statement", &statement_id, "--json"],
+        &[
+            "revision",
+            "inspect",
+            "--statement",
+            &statement_id,
+            "--json",
+        ],
     );
 
     let _ = daemon.kill();
@@ -452,8 +465,7 @@ fn capability_list_grantor_round_trips_in_both_modes() {
     )
     .expect("capability");
     let body = ActorCapabilityGrantBody::new(bob.actor_id.clone(), cap, None);
-    let subject: kairo_core::KairoRef =
-        format!("actor:{}", bob.actor_id).parse().expect("subject");
+    let subject: kairo_core::KairoRef = format!("actor:{}", bob.actor_id).parse().expect("subject");
     let unsigned = UnsignedStatement::new(
         alice.actor_id.clone(),
         subject,
@@ -478,10 +490,7 @@ fn capability_list_grantor_round_trips_in_both_modes() {
 
     let mut daemon = spawn_daemon(&store_path);
 
-    assert_modes_agree(
-        &store_path,
-        &["capability", "list", "--grantor", &alice_id],
-    );
+    assert_modes_agree(&store_path, &["capability", "list", "--grantor", &alice_id]);
 
     let _ = daemon.kill();
     let _ = daemon.wait();

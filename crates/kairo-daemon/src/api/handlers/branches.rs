@@ -100,7 +100,9 @@ pub async fn latest_handler(
         .map_err(|error| map_store_error(error, "latest_branch"))?
         .ok_or_else(|| ApiError::not_found("branch head not found"))?;
 
-    Ok(ApiResult(ObjectBranchStatementJson::from_statement(&signed)))
+    Ok(ApiResult(ObjectBranchStatementJson::from_statement(
+        &signed,
+    )))
 }
 
 /// Resolve the effective actor for branch / version-tag lookup

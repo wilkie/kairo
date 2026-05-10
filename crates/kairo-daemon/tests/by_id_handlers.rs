@@ -8,7 +8,6 @@ use axum as _;
 use kairo_daemon_client as _;
 use kairo_identity as _;
 use kairo_object as _;
-use utoipa as _;
 use kairo_store as _;
 use serde as _;
 use tempfile as _;
@@ -17,6 +16,7 @@ use tower as _;
 use tower_http as _;
 use tracing as _;
 use tracing_subscriber as _;
+use utoipa as _;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -180,8 +180,7 @@ async fn actors_endpoint_returns_404_for_missing_id() {
 
     let handle = spawn_daemon(store_path).await;
     let id = absent_actor_id();
-    let (status, body) =
-        http_get(handle.socket_path(), &format!("/api/v1/actors/{id}")).await;
+    let (status, body) = http_get(handle.socket_path(), &format!("/api/v1/actors/{id}")).await;
     assert_eq!(status, hyper::StatusCode::NOT_FOUND);
 
     let json: Value = serde_json::from_slice(&body).expect("parse");
@@ -199,8 +198,7 @@ async fn actors_endpoint_returns_400_for_malformed_id() {
     drop(_fixture);
 
     let handle = spawn_daemon(store_path).await;
-    let (status, body) =
-        http_get(handle.socket_path(), "/api/v1/actors/not!valid@id").await;
+    let (status, body) = http_get(handle.socket_path(), "/api/v1/actors/not!valid@id").await;
     assert_eq!(status, hyper::StatusCode::BAD_REQUEST);
     let json: Value = serde_json::from_slice(&body).expect("parse");
     assert_eq!(json["error"]["code"], "bad_request");
@@ -248,8 +246,7 @@ async fn objects_endpoint_returns_404_for_missing_id() {
 
     let handle = spawn_daemon(store_path).await;
     let id = absent_object_id();
-    let (status, _) =
-        http_get(handle.socket_path(), &format!("/api/v1/objects/{id}")).await;
+    let (status, _) = http_get(handle.socket_path(), &format!("/api/v1/objects/{id}")).await;
     assert_eq!(status, hyper::StatusCode::NOT_FOUND);
 
     handle.shutdown().await;
@@ -305,8 +302,7 @@ async fn statements_endpoint_returns_404_for_missing_id() {
 
     let handle = spawn_daemon(store_path).await;
     let id = absent_statement_id();
-    let (status, _) =
-        http_get(handle.socket_path(), &format!("/api/v1/statements/{id}")).await;
+    let (status, _) = http_get(handle.socket_path(), &format!("/api/v1/statements/{id}")).await;
     assert_eq!(status, hyper::StatusCode::NOT_FOUND);
 
     handle.shutdown().await;

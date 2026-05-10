@@ -122,11 +122,7 @@ impl VersionTagIndexFile {
     /// with the authority-aware forward walk in
     /// `FilesystemStore::walk_authorized_tag_chain` to honor
     /// cross-actor supersedes per `specs/CAPABILITIES.md` §6.2.
-    pub(crate) fn lookup_head(
-        &self,
-        actor: &ActorId,
-        version: &str,
-    ) -> Option<&VersionTagEntry> {
+    pub(crate) fn lookup_head(&self, actor: &ActorId, version: &str) -> Option<&VersionTagEntry> {
         let entries = self
             .by_actor
             .get(actor.as_str())
@@ -138,10 +134,7 @@ impl VersionTagIndexFile {
     /// pairs are `(actor_id_str, entry)` — used by the cross-actor
     /// walker to find candidate successors that name the current
     /// chain leaf via `supersedes`.
-    pub(crate) fn entries_for_version(
-        &self,
-        version: &str,
-    ) -> Vec<(&str, &VersionTagEntry)> {
+    pub(crate) fn entries_for_version(&self, version: &str) -> Vec<(&str, &VersionTagEntry)> {
         let mut all = Vec::new();
         for (actor_str, by_version) in &self.by_actor {
             if let Some(entries) = by_version.get(version) {
@@ -159,10 +152,7 @@ impl VersionTagIndexFile {
     /// `FilesystemStore::list_version_tags` path; this method is the
     /// raw same-actor projection used directly by tests.
     #[cfg(test)]
-    pub(crate) fn into_heads(
-        self,
-        object: &ObjectId,
-    ) -> Result<Vec<VersionTagHead>, StoreError> {
+    pub(crate) fn into_heads(self, object: &ObjectId) -> Result<Vec<VersionTagHead>, StoreError> {
         let mut heads = Vec::new();
         for (actor_str, by_version) in &self.by_actor {
             let actor = ActorId::new(actor_str.clone()).map_err(|error| StoreError::Corrupt {
@@ -173,22 +163,25 @@ impl VersionTagIndexFile {
                 let Some(head_entry) = chain_head(entries) else {
                     continue;
                 };
-                let statement_id = StatementId::new(head_entry.statement_id.clone()).map_err(
-                    |error| StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in tag index: {error}"
-                        )),
-                    },
-                )?;
-                let created_at: Timestamp = head_entry.created_at.parse().map_err(|error| {
-                    StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid created_at in tag index: {error}"
-                        )),
-                    }
-                })?;
+                let statement_id =
+                    StatementId::new(head_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in tag index: {error}"
+                            )),
+                        }
+                    })?;
+                let created_at: Timestamp =
+                    head_entry
+                        .created_at
+                        .parse()
+                        .map_err(|error| StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in tag index: {error}"
+                            )),
+                        })?;
                 heads.push(VersionTagHead {
                     actor: actor.clone(),
                     object: object.clone(),
@@ -474,7 +467,13 @@ mod tests {
             timestamp(200),
             Some(&statement_id_one()),
         );
-        index.upsert(&other_actor(), "1.2.3", &statement_id_three(), timestamp(50), None);
+        index.upsert(
+            &other_actor(),
+            "1.2.3",
+            &statement_id_three(),
+            timestamp(50),
+            None,
+        );
 
         let heads = index.into_heads(&object())?;
         assert_eq!(heads.len(), 2);

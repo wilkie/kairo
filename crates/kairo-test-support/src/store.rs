@@ -20,8 +20,8 @@ use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey, SecretSigningKey};
 use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::ObjectManifest;
 use kairo_statement::{
-    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
-    ObjectRevisionBody, RevisionId, Signature, SignedStatement, UnsignedStatement,
+    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    RevisionId, Signature, SignedStatement, UnsignedStatement,
 };
 use kairo_store::{ActorStore, BlobStore, FilesystemStore, ObjectStore, StatementStore};
 use tempfile::TempDir;
@@ -142,8 +142,7 @@ impl StoreFixture {
         manifest_text: &str,
         parents: Vec<RevisionId>,
     ) -> CreatedRevision {
-        let manifest =
-            ObjectManifest::parse_toml(manifest_text).expect("manifest parses");
+        let manifest = ObjectManifest::parse_toml(manifest_text).expect("manifest parses");
         let manifest_hash = manifest.manifest_hash();
         let manifest_canonical = manifest.canonical_bytes();
         self.store

@@ -106,8 +106,7 @@ impl Client {
     /// `GET /api/v1/objects/{object_id}` — returns the object's
     /// genesis statement JSON.
     pub async fn object(&self, object_id: &str) -> ClientResult<ObjectGenesisStatementJson> {
-        self.get_json(&format!("/api/v1/objects/{object_id}"))
-            .await
+        self.get_json(&format!("/api/v1/objects/{object_id}")).await
     }
 
     /// `GET /api/v1/statements/{statement_id}` — returns the

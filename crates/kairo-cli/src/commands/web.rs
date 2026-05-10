@@ -32,10 +32,7 @@ const SOCKET_FILE: &str = "daemon.sock";
 const STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Dispatch entry point for `kairo web ...`.
-pub(crate) fn run_web_command(
-    command: WebCommand,
-    paths: &StorePaths,
-) -> Result<String, CliError> {
+pub(crate) fn run_web_command(command: WebCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
         WebCommand::Start { spa_dir, bind } => {
             let bind_addr = parse_bind(bind.as_deref())?;
@@ -110,10 +107,8 @@ fn run_stop(paths: &StorePaths, wait: bool, wait_timeout: Duration) -> Result<St
     let pid_path = paths.store.join(PID_FILE);
     let pid = read_pid(&pid_path)?;
 
-    kill(Pid::from_raw(pid), Signal::SIGTERM).map_err(|error| CliError::DaemonKill {
-        pid,
-        source: error,
-    })?;
+    kill(Pid::from_raw(pid), Signal::SIGTERM)
+        .map_err(|error| CliError::DaemonKill { pid, source: error })?;
 
     if !wait {
         return Ok(format!("kairo-web: SIGTERM sent (pid {pid})\n"));
@@ -191,12 +186,7 @@ async fn probe_version(addr: &SocketAddr) -> Result<VersionPair, ()> {
         .map_err(|_| ())?;
     let resp = sender.send_request(req).await.map_err(|_| ())?;
     let status = resp.status();
-    let body = resp
-        .into_body()
-        .collect()
-        .await
-        .map_err(|_| ())?
-        .to_bytes();
+    let body = resp.into_body().collect().await.map_err(|_| ())?.to_bytes();
     drop(sender);
     let _ = conn_task.await;
 
@@ -210,10 +200,7 @@ async fn probe_version(addr: &SocketAddr) -> Result<VersionPair, ()> {
     }
     let result = &value["result"];
     Ok(VersionPair {
-        daemon_version: result["daemon_version"]
-            .as_str()
-            .ok_or(())?
-            .to_owned(),
+        daemon_version: result["daemon_version"].as_str().ok_or(())?.to_owned(),
         api_version: result["api_version"].as_str().ok_or(())?.to_owned(),
     })
 }

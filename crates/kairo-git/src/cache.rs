@@ -135,11 +135,7 @@ impl GitCache {
     /// alternates, so the pack covers every commit/tree/blob the
     /// per-object refs reach, even though the bytes physically live
     /// in the pool.
-    pub fn pack_for_object_to(
-        &self,
-        object_id: &str,
-        sink: impl Write,
-    ) -> Result<(), GitError> {
+    pub fn pack_for_object_to(&self, object_id: &str, sink: impl Write) -> Result<(), GitError> {
         let repo_path = self.path_for(object_id)?;
         if !repo_path.exists() {
             return Err(GitError::CacheGitInvocation {
@@ -258,7 +254,10 @@ impl GitCache {
         // something is structurally wrong with the impl.
         if pool_fetched.ref_name != pool_dest_ref {
             return Err(GitError::CacheGitInvocation {
-                command: format!("transport returned unexpected ref {:?}", pool_fetched.ref_name),
+                command: format!(
+                    "transport returned unexpected ref {:?}",
+                    pool_fetched.ref_name
+                ),
                 stderr: format!("expected destination {pool_dest_ref}"),
                 exit_code: None,
             });
@@ -423,10 +422,7 @@ fn git_index_pack_stream(pool: &Path, mut source: impl Read) -> Result<(), GitEr
 /// skips the `pack-<sha>.{pack,idx}` filesystem write since callers
 /// consume the bytes directly. Drains stderr in a separate thread
 /// to avoid pipe-buffer deadlock when stdout is large.
-fn git_pack_objects_stream(
-    repo_path: &Path,
-    mut sink: impl Write,
-) -> Result<(), GitError> {
+fn git_pack_objects_stream(repo_path: &Path, mut sink: impl Write) -> Result<(), GitError> {
     use std::process::Stdio;
 
     let mut child = Command::new("git")
@@ -474,10 +470,7 @@ fn git_pack_objects_stream(
     }
     if !status.success() {
         return Err(GitError::CacheGitInvocation {
-            command: format!(
-                "git -C {} pack-objects --all --stdout",
-                repo_path.display()
-            ),
+            command: format!("git -C {} pack-objects --all --stdout", repo_path.display()),
             stderr: stderr_text,
             exit_code: status.code(),
         });
@@ -503,10 +496,7 @@ impl PipeDrain {
 }
 
 fn drain_stderr(child: &mut std::process::Child) -> PipeDrain {
-    let mut handle = child
-        .stderr
-        .take()
-        .expect("stderr was piped at spawn time");
+    let mut handle = child.stderr.take().expect("stderr was piped at spawn time");
     let join = std::thread::spawn(move || {
         use std::io::Read;
         let mut buf = Vec::new();
@@ -517,10 +507,7 @@ fn drain_stderr(child: &mut std::process::Child) -> PipeDrain {
 }
 
 fn drain_stdout(child: &mut std::process::Child) -> PipeDrain {
-    let mut handle = child
-        .stdout
-        .take()
-        .expect("stdout was piped at spawn time");
+    let mut handle = child.stdout.take().expect("stdout was piped at spawn time");
     let join = std::thread::spawn(move || {
         use std::io::Read;
         let mut buf = Vec::new();
@@ -646,10 +633,7 @@ mod tests {
 
         assert!(repo_path.join("HEAD").is_file(), "bare HEAD");
         assert!(repo_path.join("config").is_file(), "config");
-        let alternates_path = repo_path
-            .join("objects")
-            .join("info")
-            .join("alternates");
+        let alternates_path = repo_path.join("objects").join("info").join("alternates");
         assert!(
             alternates_path.is_file(),
             "alternates file should be present"
@@ -663,8 +647,8 @@ mod tests {
         let objects_dir = repo_path.join("objects");
         let resolved = objects_dir.join(content.trim());
         let canonical_resolved = std::fs::canonicalize(&resolved).expect("canon resolved");
-        let canonical_pool = std::fs::canonicalize(cache.root().join("pool").join("objects"))
-            .expect("canon pool");
+        let canonical_pool =
+            std::fs::canonicalize(cache.root().join("pool").join("objects")).expect("canon pool");
         assert_eq!(canonical_resolved, canonical_pool);
 
         // git smoke test: rev-parse against an empty repo with
@@ -939,7 +923,10 @@ mod tests {
         }
         let (src, _url, _branch, head_oid) = init_source_repo();
         let pack = build_pack_from(src.path());
-        assert!(!pack.is_empty(), "pack-objects must produce non-empty output");
+        assert!(
+            !pack.is_empty(),
+            "pack-objects must produce non-empty output"
+        );
 
         let (_dir, cache) = open_temp();
         cache.ingest_pack(&pack).expect("ingest_pack");
@@ -960,9 +947,7 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
         let has_canonical_pack = entries.iter().any(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("pack-")
+            e.file_name().to_string_lossy().starts_with("pack-")
                 && e.file_name().to_string_lossy().ends_with(".pack")
         });
         assert!(
@@ -1034,10 +1019,7 @@ mod tests {
             .output()
             .expect("rev-parse");
         assert!(probe.status.success());
-        assert_eq!(
-            String::from_utf8_lossy(&probe.stdout).trim(),
-            head_oid
-        );
+        assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), head_oid);
     }
 
     #[test]
@@ -1053,13 +1035,19 @@ mod tests {
         // No prior ensure_repo call — set_ref must initialize the
         // per-object repo as part of its operation.
         let repo_path = cache.path_for(OTHER_ID).expect("path_for");
-        assert!(!repo_path.exists(), "precondition: repo should not exist yet");
+        assert!(
+            !repo_path.exists(),
+            "precondition: repo should not exist yet"
+        );
 
         cache
             .set_ref(OTHER_ID, &format!("refs/heads/{branch}"), &head_oid)
             .expect("set_ref");
 
-        assert!(repo_path.join("HEAD").is_file(), "repo should be initialized");
+        assert!(
+            repo_path.join("HEAD").is_file(),
+            "repo should be initialized"
+        );
         assert!(
             repo_path
                 .join("objects")
@@ -1106,7 +1094,10 @@ mod tests {
             .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
             .expect("fetch");
         let pack = cache1.pack_for_object(SAMPLE_ID).expect("pack_for_object");
-        assert!(!pack.is_empty(), "pack must contain at least the head commit");
+        assert!(
+            !pack.is_empty(),
+            "pack must contain at least the head commit"
+        );
 
         let (_dir2, cache2) = open_temp();
         cache2.ingest_pack(&pack).expect("ingest_pack");

@@ -143,7 +143,10 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     }
 
     let bind_addr = bind_addr.unwrap_or_else(|| {
-        SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), DEFAULT_PORT)
+        SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            DEFAULT_PORT,
+        )
     });
     let daemon_socket =
         daemon_socket.ok_or_else(|| "--daemon-socket <path> is required".to_owned())?;
@@ -181,9 +184,15 @@ mod tests {
         ]))
         .expect("parse");
         assert_eq!(parsed.bind_addr.port(), 9000);
-        assert_eq!(parsed.spa_dir.as_deref(), Some(PathBuf::from("/tmp/spa").as_path()));
+        assert_eq!(
+            parsed.spa_dir.as_deref(),
+            Some(PathBuf::from("/tmp/spa").as_path())
+        );
         assert_eq!(parsed.daemon_socket, PathBuf::from("/tmp/daemon.sock"));
-        assert_eq!(parsed.pid_file.as_deref(), Some(PathBuf::from("/tmp/web.pid").as_path()));
+        assert_eq!(
+            parsed.pid_file.as_deref(),
+            Some(PathBuf::from("/tmp/web.pid").as_path())
+        );
     }
 
     #[test]

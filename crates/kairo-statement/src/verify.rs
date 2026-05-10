@@ -264,10 +264,8 @@ pub trait CapabilityResolver {
         grantee: &ActorId,
     ) -> Result<Vec<ActorId>, Self::Error>;
 
-    fn object_root_authority(
-        &self,
-        object: &ObjectId,
-    ) -> Result<Option<Vec<ActorId>>, Self::Error>;
+    fn object_root_authority(&self, object: &ObjectId)
+        -> Result<Option<Vec<ActorId>>, Self::Error>;
 
     /// Whether `(actor, key_id)` is revoked at causal position `at`.
     ///
@@ -371,14 +369,11 @@ fn evaluate_inner<R: CapabilityResolver>(
         }
 
         // Revocation (§6.1 condition 4 + §6.3).
-        if let Some(revocation) =
-            resolver.latest_capability_revocation(&grantor, &grant_id)?
-        {
+        if let Some(revocation) = resolver.latest_capability_revocation(&grantor, &grant_id)? {
             let rev_at = revocation.unsigned().created_at();
             let retroactive = revocation.unsigned().body().retroactive();
             if retroactive || at >= rev_at {
-                best_failure
-                    .get_or_insert(CapabilityEvaluation::Revoked(grant_id.clone()));
+                best_failure.get_or_insert(CapabilityEvaluation::Revoked(grant_id.clone()));
                 continue;
             }
         }
@@ -389,8 +384,7 @@ fn evaluate_inner<R: CapabilityResolver>(
             match constraint {
                 CapabilityConstraint::ExpiresAt(ts) => {
                     if at > *ts {
-                        constraint_failure =
-                            Some(CapabilityEvaluation::Expired(grant_id.clone()));
+                        constraint_failure = Some(CapabilityEvaluation::Expired(grant_id.clone()));
                         break;
                     }
                 }
@@ -406,8 +400,7 @@ fn evaluate_inner<R: CapabilityResolver>(
                     // whether the revocation is retroactive. The
                     // grantor is the authority for the pinned key.
                     if resolver.is_key_revoked_at(&grantor, key_id, at)? {
-                        constraint_failure =
-                            Some(CapabilityEvaluation::Revoked(grant_id.clone()));
+                        constraint_failure = Some(CapabilityEvaluation::Revoked(grant_id.clone()));
                         break;
                     }
                 }
@@ -603,9 +596,7 @@ where
             // Look up the actor's attestation set at `created_at`. The
             // signature's `key_id` must be in this set; the matching
             // public key is then used for byte verification.
-            let attestation_set = match resolver
-                .attestation_keys_at(&envelope_actor, created_at)
-            {
+            let attestation_set = match resolver.attestation_keys_at(&envelope_actor, created_at) {
                 Ok(set) => set,
                 Err(ActorResolveError::Unavailable(reason)) => {
                     return VerificationReport {
@@ -620,8 +611,7 @@ where
             };
 
             let signature_key_id = statement.signature().key_id();
-            let lookup =
-                kairo_identity::KeyId::new(signature_key_id.to_owned());
+            let lookup = kairo_identity::KeyId::new(signature_key_id.to_owned());
             match attestation_set.get(&lookup) {
                 Some(key) => key.clone(),
                 None => {
@@ -655,9 +645,7 @@ where
                 statement_id,
                 envelope_actor,
                 signature_actor,
-                actor: ActorResolution::ResolverUnavailable(
-                    "resolved key is malformed".to_owned(),
-                ),
+                actor: ActorResolution::ResolverUnavailable("resolved key is malformed".to_owned()),
                 signature: SignatureStatus::NotEvaluated,
                 trust: TrustEvaluation::Unevaluated,
             };
@@ -932,7 +920,11 @@ mod tests {
     }
 
     fn attestation_key() -> PublicKey {
-        PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+        PublicKey::ed25519(
+            SigningKey::from_bytes(&[200; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
     }
 
     fn genesis_for(key: &SigningKey) -> ActorGenesisBody {
@@ -1182,7 +1174,10 @@ mod tests {
         let actor_id = genesis.actor_id();
         let unsigned = unsigned_for_actor(actor_id.clone())?;
         let attacker = other_signing_key();
-        let attacker_bytes = attacker.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let attacker_bytes = attacker
+            .sign(&unsigned.canonical_bytes())
+            .to_bytes()
+            .to_vec();
         let signature = Signature::new(
             actor_id,
             public_key_for(&envelope_key).key_id().to_string(),
@@ -1285,8 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_trust_returns_unknown_when_no_opinion()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_trust_returns_unknown_when_no_opinion() -> Result<(), Box<dyn std::error::Error>> {
         let by_actor = fresh_actor(1);
         let of_actor = fresh_actor(2);
         let resolver = MemoryTrustResolver::default();
@@ -1312,8 +1306,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_trust_returns_untrusted_for_block()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_trust_returns_untrusted_for_block() -> Result<(), Box<dyn std::error::Error>> {
         let by_actor = fresh_actor(1);
         let of_actor = fresh_actor(2);
         let mut resolver = MemoryTrustResolver::default();
@@ -1329,24 +1322,13 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_trust_treats_withdrawal_as_unknown()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_trust_treats_withdrawal_as_unknown() -> Result<(), Box<dyn std::error::Error>> {
         // Resolver returns the chain leaf, which here is the
         // withdrawal. evaluate_trust collapses that to Unknown.
         let by_actor = fresh_actor(1);
         let of_actor = fresh_actor(2);
-        let grant = signed_actor_trust(
-            &by_actor,
-            &of_actor,
-            Some(TrustDecision::Trusted),
-            None,
-        )?;
-        let withdraw = signed_actor_trust(
-            &by_actor,
-            &of_actor,
-            None,
-            Some(grant.statement_id()),
-        )?;
+        let grant = signed_actor_trust(&by_actor, &of_actor, Some(TrustDecision::Trusted), None)?;
+        let withdraw = signed_actor_trust(&by_actor, &of_actor, None, Some(grant.statement_id()))?;
         let mut resolver = MemoryTrustResolver::default();
         resolver.insert(withdraw);
         let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
@@ -1379,15 +1361,14 @@ mod tests {
     }
 
     use crate::{
-        ActorCapabilityGrantBody, ActorCapabilityRevocationBody, Capability,
-        CapabilityConstraint, CapabilityScope, StatementKind,
+        ActorCapabilityGrantBody, ActorCapabilityRevocationBody, Capability, CapabilityConstraint,
+        CapabilityScope, StatementKind,
     };
 
     #[derive(Debug, Default)]
     struct MemoryCapabilityResolver {
         grants: HashMap<(String, String, String), SignedStatement<ActorCapabilityGrantBody>>,
-        revocations:
-            HashMap<(String, String), SignedStatement<ActorCapabilityRevocationBody>>,
+        revocations: HashMap<(String, String), SignedStatement<ActorCapabilityRevocationBody>>,
         object_root: HashMap<String, Vec<ActorId>>,
         /// `(actor, key_id) -> (retroactive, created_at)`. Drives
         /// `is_key_revoked_at` for KeyPinned tests.
@@ -1403,10 +1384,7 @@ mod tests {
             self.grants.insert((grantor, grantee, scope_key), signed);
         }
 
-        fn insert_revocation(
-            &mut self,
-            signed: SignedStatement<ActorCapabilityRevocationBody>,
-        ) {
+        fn insert_revocation(&mut self, signed: SignedStatement<ActorCapabilityRevocationBody>) {
             let grantor = signed.unsigned().actor().to_string();
             let revoked = signed.unsigned().body().revoked_grant().to_string();
             self.revocations.insert((grantor, revoked), signed);
@@ -1460,8 +1438,7 @@ mod tests {
             &self,
             grantor: &ActorId,
             revoked_grant: &StatementId,
-        ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, Self::Error>
-        {
+        ) -> Result<Option<SignedStatement<ActorCapabilityRevocationBody>>, Self::Error> {
             Ok(self
                 .revocations
                 .get(&(grantor.to_string(), revoked_grant.to_string()))
@@ -1500,13 +1477,15 @@ mod tests {
             key_id: &kairo_identity::KeyId,
             at: Timestamp,
         ) -> Result<bool, Self::Error> {
-            Ok(match self
-                .revoked_keys
-                .get(&(actor.to_string(), key_id.to_string()))
-            {
-                Some((retroactive, created_at)) => *retroactive || at >= *created_at,
-                None => false,
-            })
+            Ok(
+                match self
+                    .revoked_keys
+                    .get(&(actor.to_string(), key_id.to_string()))
+                {
+                    Some((retroactive, created_at)) => *retroactive || at >= *created_at,
+                    None => false,
+                },
+            )
         }
     }
 
@@ -1540,10 +1519,8 @@ mod tests {
         revoked_grant: StatementId,
         retroactive: bool,
         created_at: Timestamp,
-    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, Box<dyn std::error::Error>>
-    {
-        let body =
-            ActorCapabilityRevocationBody::new(revoked_grant.clone(), retroactive, None);
+    ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, Box<dyn std::error::Error>> {
+        let body = ActorCapabilityRevocationBody::new(revoked_grant.clone(), retroactive, None);
         let subject: kairo_core::KairoRef = format!("statement:{revoked_grant}").parse()?;
         let unsigned = UnsignedStatement::new(grantor.clone(), subject, created_at, body);
         let key = signing_key();
@@ -1569,8 +1546,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_held_for_root_authority_grantor()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_held_for_root_authority_grantor(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1598,8 +1575,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_not_held_when_no_grant()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_not_held_when_no_grant() -> Result<(), Box<dyn std::error::Error>> {
         let bob = fresh_actor(2);
         let object = fresh_object(9);
         let resolver = MemoryCapabilityResolver::default();
@@ -1615,8 +1591,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_not_held_when_kind_not_in_set()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_not_held_when_kind_not_in_set() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1645,8 +1621,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_revoked_default_after_revocation_time()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_revoked_default_after_revocation_time(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1683,8 +1659,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_held_before_default_revocation()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_held_before_default_revocation() -> Result<(), Box<dyn std::error::Error>>
+    {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1721,8 +1697,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_revoked_retroactive_even_before_revocation_time()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_revoked_retroactive_even_before_revocation_time(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1759,8 +1735,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_expired_when_at_after_expires_at()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_expired_when_at_after_expires_at(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1792,8 +1768,8 @@ mod tests {
     }
 
     #[test]
-    fn key_pinned_collapses_to_revoked_when_pinned_key_is_revoked()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn key_pinned_collapses_to_revoked_when_pinned_key_is_revoked(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Root grants Bob a KeyPinned grant. Root then revokes the
         // pinned key. evaluate_capability collapses the grant to
         // Revoked at any time after the revocation, regardless of
@@ -1848,8 +1824,8 @@ mod tests {
     }
 
     #[test]
-    fn key_pinned_retroactive_revocation_invalidates_grant_at_every_timestamp()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn key_pinned_retroactive_revocation_invalidates_grant_at_every_timestamp(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let root = fresh_actor(1);
         let bob = fresh_actor(2);
         let object = fresh_object(9);
@@ -1890,8 +1866,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_held_in_delegated_chain()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_held_in_delegated_chain() -> Result<(), Box<dyn std::error::Error>> {
         // root → A (delegable=true, MDD=2) → B (final user)
         let root = fresh_actor(1);
         let alice = fresh_actor(2);
@@ -1933,8 +1908,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_grantor_lacks_authority_when_chain_grant_not_delegable()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_grantor_lacks_authority_when_chain_grant_not_delegable(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // root → A (delegable=false) → B. A's grant from root cannot
         // be used to re-grant, so B's grant from A is unbacked.
         let root = fresh_actor(1);
@@ -1975,8 +1950,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_delegation_too_deep_propagates_from_chain()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_delegation_too_deep_propagates_from_chain(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // root → A (delegable, MDD=0) → B. A's parent grant says
         // "no further re-grants below me," but A re-granted to B.
         // The recursive evaluator catches MDD violation at depth 1.
@@ -2018,8 +1993,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_grantor_lacks_authority_when_grantor_not_root_and_no_parent()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_grantor_lacks_authority_when_grantor_not_root_and_no_parent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // alice (not root) granted bob, but alice has no parent
         // grant. Resolver returns GrantorLacksAuthority.
         let root = fresh_actor(1);
@@ -2050,8 +2025,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_short_circuits_for_actor_target()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_short_circuits_for_actor_target(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // No statement kinds are valid for actor scope in v1, so
         // an actor target always evaluates to NotHeld regardless
         // of any grants in the resolver.
@@ -2073,8 +2048,8 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_capability_cycle_returns_grantor_lacks_authority()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn evaluate_capability_cycle_returns_grantor_lacks_authority(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // alice ↔ bob: alice granted bob, bob granted alice. Neither
         // is root. evaluate(bob) follows the chain alice → root, but
         // alice's authority comes from bob (cycle) → GrantorLacksAuthority.
@@ -2121,12 +2096,17 @@ mod tests {
         actor: ActorId,
         at: Timestamp,
     ) -> Result<UnsignedStatement<ObjectRevisionBody>, kairo_core::IdError> {
-        Ok(UnsignedStatement::new(actor, object_ref()?, at, revision_body()?))
+        Ok(UnsignedStatement::new(
+            actor,
+            object_ref()?,
+            at,
+            revision_body()?,
+        ))
     }
 
     #[test]
-    fn statement_signed_by_rotated_in_key_after_rotation_is_valid()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn statement_signed_by_rotated_in_key_after_rotation_is_valid(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Genesis declares key A. Actor publishes a rotation to key B
         // at t+10. A statement signed by B with created_at = t+20
         // verifies as Valid.
@@ -2161,8 +2141,8 @@ mod tests {
     }
 
     #[test]
-    fn statement_signed_by_rotated_out_key_after_rotation_is_key_mismatch()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn statement_signed_by_rotated_out_key_after_rotation_is_key_mismatch(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Genesis declares key A. Rotation to key B at t+10. A
         // statement signed by A (the rotated-out key) with
         // created_at = t+20 fails: at t+20 the active key is B, not A.
@@ -2200,8 +2180,7 @@ mod tests {
     }
 
     #[test]
-    fn statement_signed_by_revoked_key_is_key_revoked()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn statement_signed_by_revoked_key_is_key_revoked() -> Result<(), Box<dyn std::error::Error>> {
         // Genesis declares key A. Actor revokes key A at t+50. A
         // statement signed by A with created_at = t+100 fails as
         // KeyRevoked even though A's signature bytes verify.
@@ -2236,8 +2215,8 @@ mod tests {
     }
 
     #[test]
-    fn retroactive_revocation_invalidates_prior_statement()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn retroactive_revocation_invalidates_prior_statement() -> Result<(), Box<dyn std::error::Error>>
+    {
         // Statement signed at t+10 with key A; later (at t+50) the
         // actor publishes a retroactive revocation of key A. The
         // earlier statement now flips to KeyRevoked.
@@ -2283,11 +2262,15 @@ mod tests {
         sig_key: &SigningKey,
         next_key: PublicKey,
         at: Timestamp,
-    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRotationBody>, Box<dyn std::error::Error>> {
+    ) -> Result<MultiSignedStatement<ActorEmergencyKeyRotationBody>, Box<dyn std::error::Error>>
+    {
         let body = ActorEmergencyKeyRotationBody::new(next_key, None);
         let subject: KairoRef = format!("actor:{actor}").parse()?;
         let unsigned = UnsignedStatement::new(actor.clone(), subject, at, body);
-        let bytes = sig_key.sign(&unsigned.canonical_bytes()).to_bytes().to_vec();
+        let bytes = sig_key
+            .sign(&unsigned.canonical_bytes())
+            .to_bytes()
+            .to_vec();
         let signature = Signature::new(
             actor,
             public_key_for(sig_key).key_id().to_string(),
@@ -2321,14 +2304,15 @@ mod tests {
     }
 
     #[test]
-    fn emergency_rotation_signed_by_attestation_key_verifies()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn emergency_rotation_signed_by_attestation_key_verifies(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Genesis declares signing key A (the active key) and
         // attestation key Z. An emergency rotation signed by Z must
         // verify under the attestation surface.
         let signing = SigningKey::from_bytes(&[7; 32]);
         let attestation = SigningKey::from_bytes(&[200; 32]);
-        let next_key = PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        let next_key =
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
         let (resolver, actor_id) = resolver_with_attestation(signing, attestation.clone())?;
 
         let signed = signed_emergency_rotation(
@@ -2344,14 +2328,15 @@ mod tests {
     }
 
     #[test]
-    fn emergency_rotation_signed_by_active_signing_key_is_not_in_attestation_set()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn emergency_rotation_signed_by_active_signing_key_is_not_in_attestation_set(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Same actor as above. An emergency rotation signed by the
         // active *signing* key A (not by the attestation key Z) must
         // be rejected — the surfaces don't overlap.
         let signing = SigningKey::from_bytes(&[7; 32]);
         let attestation = SigningKey::from_bytes(&[200; 32]);
-        let next_key = PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        let next_key =
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
         let (resolver, actor_id) = resolver_with_attestation(signing.clone(), attestation)?;
 
         let signed = signed_emergency_rotation(
@@ -2370,15 +2355,16 @@ mod tests {
     }
 
     #[test]
-    fn routine_rotation_signed_by_attestation_key_is_key_mismatch()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn routine_rotation_signed_by_attestation_key_is_key_mismatch(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // The reverse direction: a routine `ActorKeyRotation` signed
         // by the attestation key (not the active signing key) is
         // rejected as `KeyMismatch` because the active-key chain rule
         // applies and the attestation key is not in that chain.
         let signing = SigningKey::from_bytes(&[7; 32]);
         let attestation = SigningKey::from_bytes(&[200; 32]);
-        let next_key = PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
+        let next_key =
+            PublicKey::ed25519(SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes());
         let (resolver, actor_id) = resolver_with_attestation(signing, attestation.clone())?;
 
         let body = crate::ActorKeyRotationBody::new(next_key, None);

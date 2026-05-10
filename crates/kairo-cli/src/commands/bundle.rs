@@ -43,14 +43,13 @@ pub(crate) fn run_bundle_command(
                 let cache = GitCache::open(paths.git_root())
                     .map_err(|source| CliError::GitOperation { source })?;
                 let pack_path = output.join("git").join(format!("{object_id}.pack"));
-                let mut file = std::fs::File::create(&pack_path).map_err(|source| {
-                    CliError::GitOperation {
+                let mut file =
+                    std::fs::File::create(&pack_path).map_err(|source| CliError::GitOperation {
                         source: kairo_git::GitError::CacheIo {
                             path: pack_path.clone(),
                             source,
                         },
-                    }
-                })?;
+                    })?;
                 cache
                     .pack_for_object_to(object_id.as_str(), &mut file)
                     .map_err(|source| CliError::GitOperation { source })?;
@@ -77,8 +76,7 @@ pub(crate) fn run_bundle_command(
         }
         BundleCommand::Import { input } => {
             let store = open_store(paths)?;
-            let summary: ImportSummary =
-                import_bundle(&input, &store).map_err(CliError::Bundle)?;
+            let summary: ImportSummary = import_bundle(&input, &store).map_err(CliError::Bundle)?;
 
             // If the bundle ships Git packs (`git_history.included`),
             // stream each `<input>/git/<object-id>.pack` into the
@@ -121,8 +119,8 @@ fn ingest_bundle_git_data(
     input: &std::path::Path,
     manifest: &kairo_bundle::BundleManifest,
 ) -> Result<(usize, usize), CliError> {
-    let cache = GitCache::open(paths.git_root())
-        .map_err(|source| CliError::GitOperation { source })?;
+    let cache =
+        GitCache::open(paths.git_root()).map_err(|source| CliError::GitOperation { source })?;
     let git_dir = input.join("git");
 
     let mut pack_object_ids: Vec<String> = Vec::new();

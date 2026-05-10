@@ -9,12 +9,12 @@ use std::fmt;
 use kairo_core::canonical::{
     encode_bytes, encode_i64, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };
-use semver::Version as SemverVersionInner;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_identity::{
     verify_signature as verify_identity_signature, KeyId, PublicKey, SignatureBytes,
     SignatureVerificationError, VerifiedSignature,
 };
+use semver::Version as SemverVersionInner;
 
 /// Canonical ObjectGenesis body v1 encoding is documented at
 /// `schemas/canonical/object-genesis-v1.md`.
@@ -257,10 +257,7 @@ impl<B> MultiSignedStatement<B> {
     /// Refuses duplicate `key_id`s. The signature is inserted in
     /// sorted position so the canonical ordering invariant holds
     /// without resorting.
-    pub fn add_signature(
-        &mut self,
-        signature: Signature,
-    ) -> Result<(), MultiSignedStatementError> {
+    pub fn add_signature(&mut self, signature: Signature) -> Result<(), MultiSignedStatementError> {
         if self
             .signatures
             .iter()
@@ -545,7 +542,11 @@ pub struct SemverParseError {
 
 impl fmt::Display for SemverParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid semver version {:?}: {}", self.input, self.message)
+        write!(
+            f,
+            "invalid semver version {:?}: {}",
+            self.input, self.message
+        )
     }
 }
 
@@ -1047,21 +1048,16 @@ impl CanonicalEncode for Capability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityShapeError {
     EmptyStatementKinds,
-    KindInvalidForScope {
-        scope_tag: u8,
-        kind: StatementKind,
-    },
-    DuplicateConstraintTag {
-        tag: u8,
-    },
+    KindInvalidForScope { scope_tag: u8, kind: StatementKind },
+    DuplicateConstraintTag { tag: u8 },
 }
 
 impl fmt::Display for CapabilityShapeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyStatementKinds => f.write_str(
-                "Capability::statement_kinds must be non-empty",
-            ),
+            Self::EmptyStatementKinds => {
+                f.write_str("Capability::statement_kinds must be non-empty")
+            }
             Self::KindInvalidForScope { scope_tag, kind } => write!(
                 f,
                 "StatementKind {:?} is not valid for scope tag 0x{scope_tag:02x}",
@@ -1097,11 +1093,7 @@ pub struct ActorCapabilityGrantBody {
 }
 
 impl ActorCapabilityGrantBody {
-    pub fn new(
-        grantee: ActorId,
-        capability: Capability,
-        supersedes: Option<StatementId>,
-    ) -> Self {
+    pub fn new(grantee: ActorId, capability: Capability, supersedes: Option<StatementId>) -> Self {
         Self {
             grantee,
             capability,
@@ -1158,11 +1150,7 @@ pub struct ActorCapabilityRevocationBody {
 }
 
 impl ActorCapabilityRevocationBody {
-    pub fn new(
-        revoked_grant: StatementId,
-        retroactive: bool,
-        reason: Option<String>,
-    ) -> Self {
+    pub fn new(revoked_grant: StatementId, retroactive: bool, reason: Option<String>) -> Self {
         Self {
             revoked_grant,
             retroactive,
@@ -1473,9 +1461,9 @@ pub enum ActorAttestationThresholdChangeShapeError {
 impl fmt::Display for ActorAttestationThresholdChangeShapeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ThresholdTooSmall => f.write_str(
-                "ActorAttestationThresholdChange.new_threshold must be >= 1",
-            ),
+            Self::ThresholdTooSmall => {
+                f.write_str("ActorAttestationThresholdChange.new_threshold must be >= 1")
+            }
         }
     }
 }
@@ -2184,12 +2172,8 @@ mod tests {
     fn object_branch_supersedes_changes_statement_id() -> Result<(), kairo_core::IdError> {
         let object = object_id()?;
         let genesis = ObjectBranchBody::new(object.clone(), "head", statement_id_one(), None);
-        let successor = ObjectBranchBody::new(
-            object,
-            "head",
-            statement_id_one(),
-            Some(statement_id_two()),
-        );
+        let successor =
+            ObjectBranchBody::new(object, "head", statement_id_one(), Some(statement_id_two()));
         let first = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), genesis);
         let second = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), successor);
 
@@ -2275,8 +2259,8 @@ mod tests {
     }
 
     #[test]
-    fn version_tag_body_rejects_revoke_without_supersedes(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn version_tag_body_rejects_revoke_without_supersedes() -> Result<(), Box<dyn std::error::Error>>
+    {
         let body =
             ObjectVersionTagBody::new(object_id()?, SemverVersion::parse("1.2.3")?, None, None);
         assert_eq!(
@@ -2313,8 +2297,8 @@ mod tests {
     }
 
     #[test]
-    fn same_version_tag_body_produces_same_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn same_version_tag_body_produces_same_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let first = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
         let second = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
         assert_eq!(first.statement_id(), second.statement_id());
@@ -2339,7 +2323,8 @@ mod tests {
 
     #[test]
     fn version_tag_revoke_differs_from_bind() -> Result<(), Box<dyn std::error::Error>> {
-        let bind = unsigned_version_tag("1.2.3", Some(statement_id_one()), Some(statement_id_two()))?;
+        let bind =
+            unsigned_version_tag("1.2.3", Some(statement_id_one()), Some(statement_id_two()))?;
         let revoke = unsigned_version_tag("1.2.3", None, Some(statement_id_two()))?;
         assert_ne!(bind.statement_id(), revoke.statement_id());
         Ok(())
@@ -2348,19 +2333,20 @@ mod tests {
     #[test]
     fn version_tag_supersedes_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let genesis = unsigned_version_tag("1.2.3", Some(statement_id_one()), None)?;
-        let successor = unsigned_version_tag(
-            "1.2.3",
-            Some(statement_id_one()),
-            Some(statement_id_two()),
-        )?;
+        let successor =
+            unsigned_version_tag("1.2.3", Some(statement_id_one()), Some(statement_id_two()))?;
         assert_ne!(genesis.statement_id(), successor.statement_id());
         Ok(())
     }
 
     #[test]
     fn version_tag_created_at_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
-        let body =
-            ObjectVersionTagBody::new(object_id()?, SemverVersion::parse("1.2.3")?, Some(statement_id_one()), None)?;
+        let body = ObjectVersionTagBody::new(
+            object_id()?,
+            SemverVersion::parse("1.2.3")?,
+            Some(statement_id_one()),
+            None,
+        )?;
         let first = UnsignedStatement::new(actor_id()?, object_ref()?, timestamp(), body.clone());
         let later = UnsignedStatement::new(
             actor_id()?,
@@ -2427,7 +2413,12 @@ mod tests {
             supersedes,
         )?;
         let subject: KairoRef = format!("actor:{trusted}").parse()?;
-        Ok(UnsignedStatement::new(actor_id()?, subject, timestamp(), body))
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            subject,
+            timestamp(),
+            body,
+        ))
     }
 
     #[test]
@@ -2458,30 +2449,23 @@ mod tests {
 
     #[test]
     fn actor_trust_body_genesis_grant_is_valid() -> Result<(), Box<dyn std::error::Error>> {
-        let body = ActorTrustBody::new(
-            trusted_actor()?,
-            Some(TrustDecision::Trusted),
-            None,
-            None,
-        )?;
+        let body = ActorTrustBody::new(trusted_actor()?, Some(TrustDecision::Trusted), None, None)?;
         assert!(body.is_genesis());
         assert!(!body.is_withdrawal());
         Ok(())
     }
 
     #[test]
-    fn actor_trust_body_successor_withdraw_is_valid(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let body =
-            ActorTrustBody::new(trusted_actor()?, None, None, Some(statement_id_one()))?;
+    fn actor_trust_body_successor_withdraw_is_valid() -> Result<(), Box<dyn std::error::Error>> {
+        let body = ActorTrustBody::new(trusted_actor()?, None, None, Some(statement_id_one()))?;
         assert!(!body.is_genesis());
         assert!(body.is_withdrawal());
         Ok(())
     }
 
     #[test]
-    fn same_actor_trust_body_produces_same_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn same_actor_trust_body_produces_same_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let first = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
         let second = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
         assert_eq!(first.statement_id(), second.statement_id());
@@ -2489,8 +2473,7 @@ mod tests {
     }
 
     #[test]
-    fn actor_trust_decision_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn actor_trust_decision_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let trusted = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
         let untrusted = unsigned_actor_trust(Some(TrustDecision::Untrusted), None, None)?;
         assert_ne!(trusted.statement_id(), untrusted.statement_id());
@@ -2498,13 +2481,9 @@ mod tests {
     }
 
     #[test]
-    fn actor_trust_withdraw_differs_from_grant(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let grant = unsigned_actor_trust(
-            Some(TrustDecision::Trusted),
-            None,
-            Some(statement_id_one()),
-        )?;
+    fn actor_trust_withdraw_differs_from_grant() -> Result<(), Box<dyn std::error::Error>> {
+        let grant =
+            unsigned_actor_trust(Some(TrustDecision::Trusted), None, Some(statement_id_one()))?;
         let withdraw = unsigned_actor_trust(None, None, Some(statement_id_one()))?;
         assert_ne!(grant.statement_id(), withdraw.statement_id());
         Ok(())
@@ -2523,21 +2502,17 @@ mod tests {
     }
 
     #[test]
-    fn actor_trust_supersedes_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn actor_trust_supersedes_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let genesis = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
-        let successor = unsigned_actor_trust(
-            Some(TrustDecision::Trusted),
-            None,
-            Some(statement_id_one()),
-        )?;
+        let successor =
+            unsigned_actor_trust(Some(TrustDecision::Trusted), None, Some(statement_id_one()))?;
         assert_ne!(genesis.statement_id(), successor.statement_id());
         Ok(())
     }
 
     #[test]
-    fn actor_trust_signature_does_not_change_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn actor_trust_signature_does_not_change_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let unsigned = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
         let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
         let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
@@ -2558,8 +2533,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_actor_trust_signature_after_body_change(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn rejects_actor_trust_signature_after_body_change() -> Result<(), Box<dyn std::error::Error>> {
         let signed_unsigned = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
         let tampered = unsigned_actor_trust(Some(TrustDecision::Untrusted), None, None)?;
         let sig = ed25519_signature(&signed_unsigned)?;
@@ -2639,7 +2613,9 @@ mod tests {
     #[test]
     fn statement_kind_rejects_unknown_string() {
         let err = StatementKind::parse("WidgetCreated");
-        assert!(matches!(err, Err(StatementKindParseError { ref input }) if input == "WidgetCreated"));
+        assert!(
+            matches!(err, Err(StatementKindParseError { ref input }) if input == "WidgetCreated")
+        );
     }
 
     #[test]
@@ -2667,8 +2643,8 @@ mod tests {
     }
 
     #[test]
-    fn capability_rejects_invalid_kind_for_object_scope(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_rejects_invalid_kind_for_object_scope() -> Result<(), Box<dyn std::error::Error>>
+    {
         let err = Capability::new(
             object_scope()?,
             vec![StatementKind::ActorTrust],
@@ -2677,14 +2653,17 @@ mod tests {
         );
         assert!(matches!(
             err,
-            Err(CapabilityShapeError::KindInvalidForScope { kind: StatementKind::ActorTrust, .. })
+            Err(CapabilityShapeError::KindInvalidForScope {
+                kind: StatementKind::ActorTrust,
+                ..
+            })
         ));
         Ok(())
     }
 
     #[test]
-    fn capability_rejects_any_kind_for_actor_scope_in_v1(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_rejects_any_kind_for_actor_scope_in_v1() -> Result<(), Box<dyn std::error::Error>>
+    {
         // No actor-surface kinds are delegatable in v1.
         let err = Capability::new(
             CapabilityScope::Actor(actor_id()?),
@@ -2700,8 +2679,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_rejects_duplicate_constraint_variant(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_rejects_duplicate_constraint_variant() -> Result<(), Box<dyn std::error::Error>> {
         let err = Capability::new(
             object_scope()?,
             vec![StatementKind::ObjectVersionTag],
@@ -2719,8 +2697,8 @@ mod tests {
     }
 
     #[test]
-    fn capability_sorts_and_deduplicates_statement_kinds(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_sorts_and_deduplicates_statement_kinds() -> Result<(), Box<dyn std::error::Error>>
+    {
         let cap = Capability::new(
             object_scope()?,
             vec![
@@ -2780,16 +2758,14 @@ mod tests {
     }
 
     #[test]
-    fn capability_grant_grantee_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_grant_grantee_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let cap = simple_capability(vec![StatementKind::ObjectVersionTag])?;
         let with_grantee_one = unsigned_capability_grant(cap.clone(), None)?;
         // Build a second statement with a different grantee but same scope/kinds.
         let other_grantee = trusted_actor()?;
         let body = ActorCapabilityGrantBody::new(other_grantee.clone(), cap, None);
         let subject: KairoRef = format!("actor:{other_grantee}").parse()?;
-        let with_grantee_two =
-            UnsignedStatement::new(actor_id()?, subject, timestamp(), body);
+        let with_grantee_two = UnsignedStatement::new(actor_id()?, subject, timestamp(), body);
         assert_ne!(
             with_grantee_one.statement_id(),
             with_grantee_two.statement_id()
@@ -2798,8 +2774,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_grant_kinds_change_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_grant_kinds_change_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let one = unsigned_capability_grant(
             simple_capability(vec![StatementKind::ObjectVersionTag])?,
             None,
@@ -2816,8 +2791,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_grant_delegable_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_grant_delegable_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let kinds = vec![StatementKind::ObjectVersionTag];
         let non_delegable = Capability::new(object_scope()?, kinds.clone(), false, vec![])?;
         let delegable = Capability::new(object_scope()?, kinds, true, vec![])?;
@@ -2828,8 +2802,8 @@ mod tests {
     }
 
     #[test]
-    fn capability_grant_constraint_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_grant_constraint_changes_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let kinds = vec![StatementKind::ObjectVersionTag];
         let unconstrained = Capability::new(object_scope()?, kinds.clone(), false, vec![])?;
         let with_constraint = Capability::new(
@@ -2845,8 +2819,8 @@ mod tests {
     }
 
     #[test]
-    fn capability_grant_supersedes_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_grant_supersedes_changes_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let cap = simple_capability(vec![StatementKind::ObjectVersionTag])?;
         let genesis = unsigned_capability_grant(cap.clone(), None)?;
         let successor = unsigned_capability_grant(cap, Some(statement_id_one()))?;
@@ -2889,10 +2863,8 @@ mod tests {
             simple_capability(vec![StatementKind::ObjectVersionTag])?,
             None,
         )?;
-        let tampered = unsigned_capability_grant(
-            simple_capability(vec![StatementKind::ObjectBranch])?,
-            None,
-        )?;
+        let tampered =
+            unsigned_capability_grant(simple_capability(vec![StatementKind::ObjectBranch])?, None)?;
         let sig = ed25519_signature(&signed_unsigned)?;
         let signed = SignedStatement::new(tampered, sig);
         assert!(matches!(
@@ -2934,8 +2906,8 @@ mod tests {
     }
 
     #[test]
-    fn capability_revocation_reason_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn capability_revocation_reason_changes_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let without = unsigned_capability_revocation(statement_id_one(), false, None)?;
         let with = unsigned_capability_revocation(
             statement_id_one(),
@@ -2957,8 +2929,8 @@ mod tests {
     }
 
     #[test]
-    fn verifies_capability_revocation_ed25519_signature(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn verifies_capability_revocation_ed25519_signature() -> Result<(), Box<dyn std::error::Error>>
+    {
         let unsigned = unsigned_capability_revocation(statement_id_one(), false, None)?;
         let signature = ed25519_signature(&unsigned)?;
         let signed = SignedStatement::new(unsigned, signature);
@@ -2972,8 +2944,7 @@ mod tests {
     #[test]
     fn rejects_capability_revocation_signature_after_body_change(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let signed_unsigned =
-            unsigned_capability_revocation(statement_id_one(), false, None)?;
+        let signed_unsigned = unsigned_capability_revocation(statement_id_one(), false, None)?;
         let tampered = unsigned_capability_revocation(statement_id_one(), true, None)?;
         let sig = ed25519_signature(&signed_unsigned)?;
         let signed = SignedStatement::new(tampered, sig);
@@ -3003,8 +2974,8 @@ mod tests {
     }
 
     #[test]
-    fn same_key_rotation_body_produces_same_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn same_key_rotation_body_produces_same_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
         let first = unsigned_key_rotation(other_public_key(), None)?;
         let second = unsigned_key_rotation(other_public_key(), None)?;
         assert_eq!(first.statement_id(), second.statement_id());
@@ -3056,11 +3027,8 @@ mod tests {
         retroactive: bool,
         reason: Option<&str>,
     ) -> Result<UnsignedStatement<ActorKeyRevocationBody>, Box<dyn std::error::Error>> {
-        let body = ActorKeyRevocationBody::new(
-            revoked_key,
-            retroactive,
-            reason.map(|r| r.to_owned()),
-        );
+        let body =
+            ActorKeyRevocationBody::new(revoked_key, retroactive, reason.map(|r| r.to_owned()));
         let subject: KairoRef = format!("actor:{}", actor_id()?).parse()?;
         Ok(UnsignedStatement::new(
             actor_id()?,
@@ -3080,8 +3048,7 @@ mod tests {
     }
 
     #[test]
-    fn key_revocation_revoked_key_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn key_revocation_revoked_key_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let first = unsigned_key_revocation(public_key().key_id(), false, None)?;
         let second = unsigned_key_revocation(other_public_key().key_id(), false, None)?;
         assert_ne!(first.statement_id(), second.statement_id());
@@ -3089,8 +3056,7 @@ mod tests {
     }
 
     #[test]
-    fn key_revocation_retroactive_changes_statement_id(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn key_revocation_retroactive_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
         let first = unsigned_key_revocation(public_key().key_id(), false, None)?;
         let second = unsigned_key_revocation(public_key().key_id(), true, None)?;
         assert_ne!(first.statement_id(), second.statement_id());
@@ -3197,8 +3163,7 @@ mod tests {
     }
 
     #[test]
-    fn attestation_key_add_body_round_trips_canonical(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn attestation_key_add_body_round_trips_canonical() -> Result<(), Box<dyn std::error::Error>> {
         let body_a = ActorAttestationKeyAddBody::new(other_public_key());
         let body_b = ActorAttestationKeyAddBody::new(other_public_key());
         assert_eq!(body_a.canonical_bytes(), body_b.canonical_bytes());
@@ -3216,16 +3181,15 @@ mod tests {
         // dropping `reason` from the encoder.
         let key_id = other_public_key().key_id();
         let no_reason = ActorAttestationKeyRevocationBody::new(key_id.clone(), None);
-        let with_reason = ActorAttestationKeyRevocationBody::new(
-            key_id.clone(),
-            Some("yubikey lost".to_owned()),
-        );
-        let other_reason = ActorAttestationKeyRevocationBody::new(
-            key_id,
-            Some("rotated".to_owned()),
-        );
+        let with_reason =
+            ActorAttestationKeyRevocationBody::new(key_id.clone(), Some("yubikey lost".to_owned()));
+        let other_reason =
+            ActorAttestationKeyRevocationBody::new(key_id, Some("rotated".to_owned()));
         assert_ne!(no_reason.canonical_bytes(), with_reason.canonical_bytes());
-        assert_ne!(with_reason.canonical_bytes(), other_reason.canonical_bytes());
+        assert_ne!(
+            with_reason.canonical_bytes(),
+            other_reason.canonical_bytes()
+        );
         Ok(())
     }
 
@@ -3238,10 +3202,8 @@ mod tests {
         // attestation variant must produce strictly fewer bytes for an
         // otherwise-equal payload.
         let key_id = other_public_key().key_id();
-        let attestation =
-            ActorAttestationKeyRevocationBody::new(key_id.clone(), None);
-        let emergency =
-            ActorEmergencyKeyRevocationBody::new(key_id, false, None);
+        let attestation = ActorAttestationKeyRevocationBody::new(key_id.clone(), None);
+        let emergency = ActorEmergencyKeyRevocationBody::new(key_id, false, None);
         assert_eq!(
             attestation.canonical_bytes().len() + 1,
             emergency.canonical_bytes().len()

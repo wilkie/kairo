@@ -117,9 +117,9 @@ impl std::error::Error for ProxyError {
 impl IntoResponse for ProxyError {
     fn into_response(self) -> Response<Body> {
         let (status, message) = match &self {
-            Self::Connect { .. }
-            | Self::Handshake { .. }
-            | Self::SendRequest { .. } => (StatusCode::BAD_GATEWAY, self.to_string()),
+            Self::Connect { .. } | Self::Handshake { .. } | Self::SendRequest { .. } => {
+                (StatusCode::BAD_GATEWAY, self.to_string())
+            }
             Self::BrowserBody { .. } | Self::BuildRequest { .. } => {
                 (StatusCode::BAD_REQUEST, self.to_string())
             }
@@ -161,10 +161,7 @@ fn json_string(value: &str) -> String {
     out
 }
 
-async fn forward(
-    socket_path: &Path,
-    request: Request<Body>,
-) -> Result<Response<Body>, ProxyError> {
+async fn forward(socket_path: &Path, request: Request<Body>) -> Result<Response<Body>, ProxyError> {
     let (parts, body) = request.into_parts();
 
     // Drain the browser's body into bytes before opening the

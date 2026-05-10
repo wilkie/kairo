@@ -51,15 +51,14 @@ use kairo_statement::{
     ActorAttestationKeyAddBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
     ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
     Capability, CapabilityConstraint, CapabilityScope, MultiSignedStatement, ObjectBranchBody,
-    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody,
-    RevisionId, SemverVersion, Signature, SignedStatement, StatementKind, TrustDecision,
-    UnsignedStatement,
+    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement, StatementKind,
+    TrustDecision, UnsignedStatement,
 };
 use kairo_store::{
     ActorStore, BlobStore, BranchResolver, CapabilityHead, CapabilityResolver, FilesystemStore,
     ObjectStore, StatementStore, TrustResolver, VersionTagResolver,
 };
-
 
 fn main() -> ExitCode {
     match run(Cli::parse()) {
@@ -126,7 +125,9 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Branch { command }) => run_branch_command(command, &paths, dispatch_opts),
         Some(Command::Tag { command }) => run_tag_command(command, &paths, dispatch_opts),
         Some(Command::Trust { command }) => run_trust_command(command, &paths, dispatch_opts),
-        Some(Command::Capability { command }) => run_capability_command(command, &paths, dispatch_opts),
+        Some(Command::Capability { command }) => {
+            run_capability_command(command, &paths, dispatch_opts)
+        }
         Some(Command::Bundle { command }) => commands::bundle::run_bundle_command(command, &paths),
         Some(Command::Snapshot { command }) => run_snapshot_command(command, &paths),
         Some(Command::Verify { command }) => run_verify_command(command, &paths),
@@ -237,8 +238,7 @@ fn run_actor_create(
             "generated_attestation_keys = {generate_attestation_keys}\n"
         ));
         for index in 0..generate_attestation_keys {
-            let secret =
-                SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
+            let secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
             let public = secret.public_key();
             let seed_b64 = STANDARD.encode(secret.seed_bytes());
             let pubkey_hex = encode_public_key_hex(&public);
@@ -361,8 +361,8 @@ fn run_actor_recover_key_sign(
     actor: String,
     attestation_key_seed: PathBuf,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
 
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
@@ -385,10 +385,12 @@ fn run_actor_recover_key_sign(
     // The attestation key must be in the actor's attestation set at
     // `now`. Genesis-declared + later `ActorAttestationKeyAdd` adds.
     let now = Timestamp::now();
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     if !attestation_set.contains_key(&attestation_key_id) {
         return Err(CliError::AttestationKeyNotInSet {
@@ -408,12 +410,13 @@ fn run_actor_recover_key_sign(
 
     // Build & sign the emergency rotation.
     let body = ActorEmergencyKeyRotationBody::new(new_secret.public_key(), supersedes.clone());
-    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let signature_bytes = attestation_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
@@ -469,8 +472,8 @@ fn run_actor_recover_key_prepare(
     new_key_hex: String,
     output: PathBuf,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
 
     let store = open_store(paths)?;
     let _ = store
@@ -484,12 +487,13 @@ fn run_actor_recover_key_prepare(
     let supersedes = latest_rotation_supersedes(&store, &actor_id)?;
     let now = Timestamp::now();
     let body = ActorEmergencyKeyRotationBody::new(next_key.clone(), supersedes.clone());
-    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let canonical_bytes = unsigned.canonical_bytes();
 
@@ -506,14 +510,12 @@ fn run_actor_recover_key_prepare(
         body: kairo_statement::json::ActorEmergencyKeyRotationBodyJson::from_body(unsigned.body()),
         signatures: Vec::new(),
     };
-    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
-        .map_err(CliError::SerializePreparedEnvelope)?;
+    let envelope_bytes =
+        serde_json::to_vec_pretty(&envelope_json).map_err(CliError::SerializePreparedEnvelope)?;
 
-    std::fs::write(&output, &envelope_bytes).map_err(|source| {
-        CliError::WritePreparedEnvelope {
-            path: output.clone(),
-            source,
-        }
+    std::fs::write(&output, &envelope_bytes).map_err(|source| CliError::WritePreparedEnvelope {
+        path: output.clone(),
+        source,
     })?;
     let payload_path = payload_path_for(&output);
     std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
@@ -523,10 +525,12 @@ fn run_actor_recover_key_prepare(
         }
     })?;
 
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     let mut attestation_lines = String::new();
     for key in attestation_set.keys() {
@@ -560,12 +564,11 @@ fn run_actor_recover_key_submit(
     let mut envelope_json: ActorEmergencyKeyRotationStatementJson =
         serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
 
-    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
-        CliError::ParseActorId {
+    let actor_id =
+        ActorId::new(envelope_json.actor.clone()).map_err(|source| CliError::ParseActorId {
             actor: envelope_json.actor.clone(),
             source,
-        }
-    })?;
+        })?;
     let _ = store
         .get_actor(&actor_id)
         .map_err(|error| CliError::ReadActor {
@@ -577,12 +580,14 @@ fn run_actor_recover_key_submit(
         .body
         .to_body()
         .map_err(CliError::ParseStatement)?;
-    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        envelope_json
+            .subject
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let created_at: Timestamp =
         envelope_json
             .created_at
@@ -696,8 +701,8 @@ fn run_actor_add_attestation_key_sign(
         return Err(CliError::AddAttestationKeyMissingKeySource);
     }
 
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
 
     let store = open_store(paths)?;
 
@@ -736,10 +741,12 @@ fn run_actor_add_attestation_key_sign(
     let signing_key_id = signing_public.key_id();
 
     let now = Timestamp::now();
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     if !attestation_set.contains_key(&signing_key_id) {
         return Err(CliError::AttestationKeyNotInSet {
@@ -787,12 +794,13 @@ fn run_actor_add_attestation_key_sign(
     }
 
     let body = ActorAttestationKeyAddBody::new(new_attestation_public);
-    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let signature_bytes = signing_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
@@ -822,8 +830,8 @@ fn run_actor_add_attestation_key_prepare(
     new_key_hex: String,
     output: PathBuf,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
 
     let store = open_store(paths)?;
     let _ = store
@@ -836,12 +844,13 @@ fn run_actor_add_attestation_key_prepare(
     let new_key = parse_attestation_key_hex(&new_key_hex)?;
     let now = Timestamp::now();
     let body = ActorAttestationKeyAddBody::new(new_key.clone());
-    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let canonical_bytes = unsigned.canonical_bytes();
 
@@ -854,14 +863,12 @@ fn run_actor_add_attestation_key_prepare(
         body: kairo_statement::json::ActorAttestationKeyAddBodyJson::from_body(unsigned.body()),
         signatures: Vec::new(),
     };
-    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
-        .map_err(CliError::SerializePreparedEnvelope)?;
+    let envelope_bytes =
+        serde_json::to_vec_pretty(&envelope_json).map_err(CliError::SerializePreparedEnvelope)?;
 
-    std::fs::write(&output, &envelope_bytes).map_err(|source| {
-        CliError::WritePreparedEnvelope {
-            path: output.clone(),
-            source,
-        }
+    std::fs::write(&output, &envelope_bytes).map_err(|source| CliError::WritePreparedEnvelope {
+        path: output.clone(),
+        source,
     })?;
     let payload_path = payload_path_for(&output);
     std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
@@ -871,10 +878,12 @@ fn run_actor_add_attestation_key_prepare(
         }
     })?;
 
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     let mut attestation_lines = String::new();
     for key in attestation_set.keys() {
@@ -907,12 +916,11 @@ fn run_actor_add_attestation_key_submit(
     let mut envelope_json: ActorAttestationKeyAddStatementJson =
         serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
 
-    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
-        CliError::ParseActorId {
+    let actor_id =
+        ActorId::new(envelope_json.actor.clone()).map_err(|source| CliError::ParseActorId {
             actor: envelope_json.actor.clone(),
             source,
-        }
-    })?;
+        })?;
     let _ = store
         .get_actor(&actor_id)
         .map_err(|error| CliError::ReadActor {
@@ -924,12 +932,14 @@ fn run_actor_add_attestation_key_submit(
         .body
         .to_body()
         .map_err(CliError::ParseStatement)?;
-    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        envelope_json
+            .subject
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let created_at: Timestamp =
         envelope_json
             .created_at
@@ -1042,8 +1052,8 @@ fn run_actor_revoke_attestation_key_sign(
     revoke_key: String,
     reason: Option<String>,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
     let store = open_store(paths)?;
     let _ = store
         .get_actor(&actor_id)
@@ -1053,16 +1063,15 @@ fn run_actor_revoke_attestation_key_sign(
         })?;
 
     let revoked_key_id = kairo_identity::KeyId::new(revoke_key);
-    let body = kairo_statement::ActorAttestationKeyRevocationBody::new(
-        revoked_key_id.clone(),
-        reason,
-    );
-    let subject: KairoRef = format!("actor:{actor_id}")
-        .parse()
-        .map_err(|source| CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        })?;
+    let body =
+        kairo_statement::ActorAttestationKeyRevocationBody::new(revoked_key_id.clone(), reason);
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let now = Timestamp::now();
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
 
@@ -1070,10 +1079,12 @@ fn run_actor_revoke_attestation_key_sign(
     let public = secret.public_key();
     let signing_key_id = public.key_id();
 
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     if !attestation_set.contains_key(&signing_key_id) {
         return Err(CliError::CosignKeyNotInAttestationSet {
@@ -1114,8 +1125,8 @@ fn run_actor_revoke_attestation_key_prepare(
     reason: Option<String>,
     output: PathBuf,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
     let store = open_store(paths)?;
     let _ = store
         .get_actor(&actor_id)
@@ -1125,16 +1136,15 @@ fn run_actor_revoke_attestation_key_prepare(
         })?;
 
     let revoked_key_id = kairo_identity::KeyId::new(revoke_key);
-    let body = kairo_statement::ActorAttestationKeyRevocationBody::new(
-        revoked_key_id.clone(),
-        reason,
-    );
-    let subject: KairoRef = format!("actor:{actor_id}")
-        .parse()
-        .map_err(|source| CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        })?;
+    let body =
+        kairo_statement::ActorAttestationKeyRevocationBody::new(revoked_key_id.clone(), reason);
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let now = Timestamp::now();
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let canonical_bytes = unsigned.canonical_bytes();
@@ -1150,13 +1160,11 @@ fn run_actor_revoke_attestation_key_prepare(
         ),
         signatures: Vec::new(),
     };
-    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
-        .map_err(CliError::SerializePreparedEnvelope)?;
-    std::fs::write(&output, &envelope_bytes).map_err(|source| {
-        CliError::WritePreparedEnvelope {
-            path: output.clone(),
-            source,
-        }
+    let envelope_bytes =
+        serde_json::to_vec_pretty(&envelope_json).map_err(CliError::SerializePreparedEnvelope)?;
+    std::fs::write(&output, &envelope_bytes).map_err(|source| CliError::WritePreparedEnvelope {
+        path: output.clone(),
+        source,
     })?;
     let payload_path = payload_path_for(&output);
     std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
@@ -1166,10 +1174,12 @@ fn run_actor_revoke_attestation_key_prepare(
         }
     })?;
 
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     let mut attestation_lines = String::new();
     for key in attestation_set.keys() {
@@ -1207,12 +1217,11 @@ fn run_actor_revoke_attestation_key_submit(
     let mut envelope_json: kairo_statement::json::ActorAttestationKeyRevocationStatementJson =
         serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
 
-    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
-        CliError::ParseActorId {
+    let actor_id =
+        ActorId::new(envelope_json.actor.clone()).map_err(|source| CliError::ParseActorId {
             actor: envelope_json.actor.clone(),
             source,
-        }
-    })?;
+        })?;
     let _ = store
         .get_actor(&actor_id)
         .map_err(|error| CliError::ReadActor {
@@ -1224,12 +1233,14 @@ fn run_actor_revoke_attestation_key_submit(
         .body
         .to_body()
         .map_err(CliError::ParseStatement)?;
-    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        envelope_json
+            .subject
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let created_at: Timestamp =
         envelope_json
             .created_at
@@ -1324,8 +1335,8 @@ fn run_actor_change_attestation_threshold_sign(
     attestation_key_seed: PathBuf,
     to: u8,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
     let store = open_store(paths)?;
     let _ = store
         .get_actor(&actor_id)
@@ -1359,22 +1370,25 @@ fn run_actor_change_attestation_threshold_sign(
 
     let body = kairo_statement::ActorAttestationThresholdChangeBody::new(to)
         .map_err(CliError::ChangeThresholdShape)?;
-    let subject: KairoRef = format!("actor:{actor_id}")
-        .parse()
-        .map_err(|source| CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
 
     let secret = read_attestation_seed(&attestation_key_seed)?;
     let public = secret.public_key();
     let signing_key_id = public.key_id();
 
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     if !attestation_set.contains_key(&signing_key_id) {
         return Err(CliError::CosignKeyNotInAttestationSet {
@@ -1414,8 +1428,8 @@ fn run_actor_change_attestation_threshold_prepare(
     to: u8,
     output: PathBuf,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
     let store = open_store(paths)?;
     let _ = store
         .get_actor(&actor_id)
@@ -1426,12 +1440,13 @@ fn run_actor_change_attestation_threshold_prepare(
 
     let body = kairo_statement::ActorAttestationThresholdChangeBody::new(to)
         .map_err(CliError::ChangeThresholdShape)?;
-    let subject: KairoRef = format!("actor:{actor_id}")
-        .parse()
-        .map_err(|source| CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let now = Timestamp::now();
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let canonical_bytes = unsigned.canonical_bytes();
@@ -1447,13 +1462,11 @@ fn run_actor_change_attestation_threshold_prepare(
         ),
         signatures: Vec::new(),
     };
-    let envelope_bytes = serde_json::to_vec_pretty(&envelope_json)
-        .map_err(CliError::SerializePreparedEnvelope)?;
-    std::fs::write(&output, &envelope_bytes).map_err(|source| {
-        CliError::WritePreparedEnvelope {
-            path: output.clone(),
-            source,
-        }
+    let envelope_bytes =
+        serde_json::to_vec_pretty(&envelope_json).map_err(CliError::SerializePreparedEnvelope)?;
+    std::fs::write(&output, &envelope_bytes).map_err(|source| CliError::WritePreparedEnvelope {
+        path: output.clone(),
+        source,
     })?;
     let payload_path = payload_path_for(&output);
     std::fs::write(&payload_path, &canonical_bytes).map_err(|source| {
@@ -1474,10 +1487,12 @@ fn run_actor_change_attestation_threshold_prepare(
     } else {
         current_threshold
     };
-    let attestation_set = ActorResolver::attestation_keys_at(&store, &actor_id, now)
-        .map_err(|error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
+    let attestation_set =
+        ActorResolver::attestation_keys_at(&store, &actor_id, now).map_err(|error| {
+            CliError::ReadActiveKey {
+                actor: actor_id.clone(),
+                source: error,
+            }
         })?;
     let mut attestation_lines = String::new();
     for key in attestation_set.keys() {
@@ -1509,12 +1524,11 @@ fn run_actor_change_attestation_threshold_submit(
     let mut envelope_json: kairo_statement::json::ActorAttestationThresholdChangeStatementJson =
         serde_json::from_slice(&envelope_bytes).map_err(CliError::ParseStatementJson)?;
 
-    let actor_id = ActorId::new(envelope_json.actor.clone()).map_err(|source| {
-        CliError::ParseActorId {
+    let actor_id =
+        ActorId::new(envelope_json.actor.clone()).map_err(|source| CliError::ParseActorId {
             actor: envelope_json.actor.clone(),
             source,
-        }
-    })?;
+        })?;
     let _ = store
         .get_actor(&actor_id)
         .map_err(|error| CliError::ReadActor {
@@ -1526,12 +1540,14 @@ fn run_actor_change_attestation_threshold_submit(
         .body
         .to_body()
         .map_err(CliError::ParseStatement)?;
-    let subject: KairoRef = envelope_json.subject.parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        envelope_json
+            .subject
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let created_at: Timestamp =
         envelope_json
             .created_at
@@ -1608,8 +1624,8 @@ fn run_actor_cosign(
     actor: String,
     attestation_key_seed: PathBuf,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
     let store = open_store(paths)?;
 
     let envelope_bytes =
@@ -1655,12 +1671,11 @@ fn run_actor_cosign(
     // submit re-derives canonical bytes from the body and refuses
     // mismatches via `MultiSignedStatement::statement_id()`.
     let payload_path = payload_path_for(&prepared);
-    let canonical = std::fs::read(&payload_path).map_err(|source| {
-        CliError::ReadPreparedEnvelope {
+    let canonical =
+        std::fs::read(&payload_path).map_err(|source| CliError::ReadPreparedEnvelope {
             path: payload_path.clone(),
             source,
-        }
-    })?;
+        })?;
 
     let secret = read_attestation_seed(&attestation_key_seed)?;
     let public = secret.public_key();
@@ -1684,10 +1699,7 @@ fn run_actor_cosign(
         .as_array_mut()
         .ok_or(CliError::CosignEnvelopeShape)?;
     for entry in signatures.iter() {
-        let existing_key_id = entry
-            .get("key_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let existing_key_id = entry.get("key_id").and_then(|v| v.as_str()).unwrap_or("");
         if existing_key_id == signing_key_id.as_str() {
             return Err(CliError::CosignDuplicateKeyId {
                 actor: actor_id.clone(),
@@ -1707,11 +1719,9 @@ fn run_actor_cosign(
     let have = signatures.len();
     let serialized =
         serde_json::to_vec_pretty(&envelope).map_err(CliError::SerializePreparedEnvelope)?;
-    std::fs::write(&prepared, &serialized).map_err(|source| {
-        CliError::WritePreparedEnvelope {
-            path: prepared.clone(),
-            source,
-        }
+    std::fs::write(&prepared, &serialized).map_err(|source| CliError::WritePreparedEnvelope {
+        path: prepared.clone(),
+        source,
     })?;
 
     let need = ActorResolver::attestation_threshold_at(&store, &actor_id, created_at)
@@ -1731,11 +1741,10 @@ fn run_actor_cosign(
 /// `SecretSigningKey` from it. The decoded bytes leave process memory
 /// once the secret is constructed.
 fn read_attestation_seed(path: &Path) -> Result<SecretSigningKey, CliError> {
-    let raw =
-        std::fs::read_to_string(path).map_err(|source| CliError::ReadAttestationSeed {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadAttestationSeed {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let trimmed = raw.trim();
     let decoded = STANDARD
         .decode(trimmed)
@@ -1753,11 +1762,10 @@ fn read_attestation_seed(path: &Path) -> Result<SecretSigningKey, CliError> {
 
 /// Read a base64-encoded ed25519 signature file.
 fn read_signature_bytes(path: &Path) -> Result<[u8; 64], CliError> {
-    let raw =
-        std::fs::read_to_string(path).map_err(|source| CliError::ReadSignatureFile {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let raw = std::fs::read_to_string(path).map_err(|source| CliError::ReadSignatureFile {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let trimmed = raw.trim();
     let decoded = STANDARD
         .decode(trimmed)
@@ -1784,12 +1792,11 @@ fn latest_rotation_supersedes(
     store: &FilesystemStore,
     actor_id: &ActorId,
 ) -> Result<Option<kairo_core::StatementId>, CliError> {
-    let rotations = ActorResolver::key_rotations(store, actor_id).map_err(|error| {
-        CliError::ReadActiveKey {
+    let rotations =
+        ActorResolver::key_rotations(store, actor_id).map_err(|error| CliError::ReadActiveKey {
             actor: actor_id.clone(),
             source: error,
-        }
-    })?;
+        })?;
     let leaf = rotations.into_iter().max_by(|a, b| {
         a.created_at
             .seconds()
@@ -1810,8 +1817,8 @@ fn latest_rotation_supersedes(
 }
 
 fn run_actor_rotate_key(paths: &StorePaths, actor: String) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
 
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
@@ -1873,12 +1880,13 @@ fn run_actor_rotate_key(paths: &StorePaths, actor: String) -> Result<String, Cli
 
     let new_secret = SecretSigningKey::generate_ed25519().map_err(CliError::GenerateKey)?;
     let body = ActorKeyRotationBody::new(new_secret.public_key(), supersedes.clone());
-    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let signature_bytes = prior_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
@@ -1923,8 +1931,8 @@ fn run_actor_revoke_key(
     reason: Option<String>,
     brick_actor: bool,
 ) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
     let revoked_key = KeyId::new(key_id);
 
     let store = open_store(paths)?;
@@ -1966,23 +1974,25 @@ fn run_actor_revoke_key(
         });
     }
 
-    let signing_secret = keystore
-        .get_signing_key(&actor_id)
-        .map_err(|error| CliError::ReadKey {
-            actor: actor_id.clone(),
-            source: error,
-        })?;
+    let signing_secret =
+        keystore
+            .get_signing_key(&actor_id)
+            .map_err(|error| CliError::ReadKey {
+                actor: actor_id.clone(),
+                source: error,
+            })?;
     if signing_secret.public_key() != active_key {
         return Err(CliError::KeyDoesNotMatchActor { actor: actor_id });
     }
 
     let body = ActorKeyRevocationBody::new(revoked_key.clone(), retroactive, reason);
-    let subject: KairoRef = format!("actor:{actor_id}").parse().map_err(|source| {
-        CliError::BuildActorSubjectRef {
-            actor: actor_id.clone(),
-            source,
-        }
-    })?;
+    let subject: KairoRef =
+        format!("actor:{actor_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: actor_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
     let signature_bytes = signing_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
@@ -2010,9 +2020,13 @@ fn run_actor_revoke_key(
     ))
 }
 
-fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Result<String, CliError> {
-    let actor_id = ActorId::new(actor.clone())
-        .map_err(|source| CliError::ParseActorId { actor, source })?;
+fn run_actor_key_history(
+    paths: &StorePaths,
+    actor: String,
+    json: bool,
+) -> Result<String, CliError> {
+    let actor_id =
+        ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })?;
 
     let store = open_store(paths)?;
     let actor_body = store
@@ -2033,18 +2047,17 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
             source: error,
         }
     })?;
-    let attestation_adds = ActorResolver::attestation_key_adds(&store, &actor_id).map_err(
-        |error| CliError::ReadActiveKey {
-            actor: actor_id.clone(),
-            source: error,
-        },
-    )?;
-    let attestation_revocations =
-        ActorResolver::attestation_key_revocations(&store, &actor_id).map_err(|error| {
+    let attestation_adds =
+        ActorResolver::attestation_key_adds(&store, &actor_id).map_err(|error| {
             CliError::ReadActiveKey {
                 actor: actor_id.clone(),
                 source: error,
             }
+        })?;
+    let attestation_revocations = ActorResolver::attestation_key_revocations(&store, &actor_id)
+        .map_err(|error| CliError::ReadActiveKey {
+            actor: actor_id.clone(),
+            source: error,
         })?;
     let mut threshold_changes = ActorResolver::attestation_threshold_changes(&store, &actor_id)
         .map_err(|error| CliError::ReadActiveKey {
@@ -2066,23 +2079,20 @@ fn run_actor_key_history(paths: &StorePaths, actor: String, json: bool) -> Resul
     // forward without re-deriving it themselves.
     let genesis_threshold = actor_body.attestation_threshold();
     let mut current_threshold = genesis_threshold;
-    let trajectory: Vec<(
-        &kairo_identity::AttestationThresholdChangeEntry,
-        u8,
-        u8,
-    )> = threshold_changes
-        .iter()
-        .map(|entry| {
-            let from = current_threshold;
-            let quorum = if entry.new_threshold > from {
-                entry.new_threshold
-            } else {
-                from
-            };
-            current_threshold = entry.new_threshold;
-            (entry, from, quorum)
-        })
-        .collect();
+    let trajectory: Vec<(&kairo_identity::AttestationThresholdChangeEntry, u8, u8)> =
+        threshold_changes
+            .iter()
+            .map(|entry| {
+                let from = current_threshold;
+                let quorum = if entry.new_threshold > from {
+                    entry.new_threshold
+                } else {
+                    from
+                };
+                current_threshold = entry.new_threshold;
+                (entry, from, quorum)
+            })
+            .collect();
 
     if json {
         let value = serde_json::json!({
@@ -2296,7 +2306,6 @@ fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<S
         }
     }
 }
-
 
 fn run_revision_command(
     command: RevisionCommand,
@@ -2669,11 +2678,7 @@ fn run_branch_show(
                 Some(actor_id.as_str()),
             ));
             match result {
-                Ok(json_form) => Some(
-                    json_form
-                        .to_statement()
-                        .map_err(CliError::ParseStatement)?,
-                ),
+                Ok(json_form) => Some(json_form.to_statement().map_err(CliError::ParseStatement)?),
                 Err(kairo_daemon_client::ClientError::Http { status: 404, .. }) => None,
                 Err(error) => return Err(CliError::DaemonRequestFailed(error)),
             }
@@ -2708,17 +2713,17 @@ fn resolve_actor_for_object(
     object_id: &ObjectId,
 ) -> Result<ActorId, CliError> {
     match actor {
-        Some(actor) => ActorId::new(actor.clone())
-            .map_err(|source| CliError::ParseActorId { actor, source }),
+        Some(actor) => {
+            ActorId::new(actor.clone()).map_err(|source| CliError::ParseActorId { actor, source })
+        }
         None => {
             let store = open_store(paths)?;
-            let genesis =
-                store
-                    .get_object_genesis(object_id)
-                    .map_err(|error| CliError::ReadObjectGenesis {
-                        object: object_id.clone(),
-                        source: error,
-                    })?;
+            let genesis = store.get_object_genesis(object_id).map_err(|error| {
+                CliError::ReadObjectGenesis {
+                    object: object_id.clone(),
+                    source: error,
+                }
+            })?;
             Ok(genesis.body().created_by().clone())
         }
     }
@@ -2984,9 +2989,19 @@ fn run_tag_command(
 
             let chain = walk_tag_chain(&store, head)?;
             if json {
-                Ok(format_tag_history_json(&actor_id, &object_id, semver.as_str(), &chain))
+                Ok(format_tag_history_json(
+                    &actor_id,
+                    &object_id,
+                    semver.as_str(),
+                    &chain,
+                ))
             } else {
-                Ok(format_tag_history(&actor_id, &object_id, semver.as_str(), &chain))
+                Ok(format_tag_history(
+                    &actor_id,
+                    &object_id,
+                    semver.as_str(),
+                    &chain,
+                ))
             }
         }
     }
@@ -3047,11 +3062,7 @@ fn run_tag_show(
                 Some(actor_id.as_str()),
             ));
             match result {
-                Ok(json_form) => Some(
-                    json_form
-                        .to_statement()
-                        .map_err(CliError::ParseStatement)?,
-                ),
+                Ok(json_form) => Some(json_form.to_statement().map_err(CliError::ParseStatement)?),
                 Err(kairo_daemon_client::ClientError::Http { status: 404, .. }) => None,
                 Err(error) => return Err(CliError::DaemonRequestFailed(error)),
             }
@@ -3146,7 +3157,11 @@ fn format_tag_history(
         match link {
             TagChainLink::Statement(signed) => {
                 let body = signed.unsigned().body();
-                let kind = if body.is_revocation() { "revoke" } else { "bind" };
+                let kind = if body.is_revocation() {
+                    "revoke"
+                } else {
+                    "bind"
+                };
                 let target = match body.target() {
                     Some(id) => format!(" target={id}"),
                     None => String::new(),
@@ -3216,15 +3231,18 @@ fn run_trust_command(
         TrustCommand::Grant { by, of, reason } => {
             run_trust_decide(paths, by, of, reason, Some(TrustDecision::Trusted), "grant")
         }
-        TrustCommand::Block { by, of, reason } => {
-            run_trust_decide(paths, by, of, reason, Some(TrustDecision::Untrusted), "block")
-        }
+        TrustCommand::Block { by, of, reason } => run_trust_decide(
+            paths,
+            by,
+            of,
+            reason,
+            Some(TrustDecision::Untrusted),
+            "block",
+        ),
         TrustCommand::Withdraw { by, of, reason } => {
             run_trust_decide(paths, by, of, reason, None, "withdraw")
         }
-        TrustCommand::Show { by, of, json } => {
-            run_trust_show(paths, dispatch_opts, by, of, json)
-        }
+        TrustCommand::Show { by, of, json } => run_trust_show(paths, dispatch_opts, by, of, json),
         TrustCommand::List { by } => {
             let by_actor = ActorId::new(by.clone())
                 .map_err(|source| CliError::ParseActorId { actor: by, source })?;
@@ -3264,10 +3282,10 @@ fn run_trust_decide(
     decision: Option<TrustDecision>,
     label: &str,
 ) -> Result<String, CliError> {
-    let by_actor = ActorId::new(by.clone())
-        .map_err(|source| CliError::ParseActorId { actor: by, source })?;
-    let trusted_actor = ActorId::new(of.clone())
-        .map_err(|source| CliError::ParseActorId { actor: of, source })?;
+    let by_actor =
+        ActorId::new(by.clone()).map_err(|source| CliError::ParseActorId { actor: by, source })?;
+    let trusted_actor =
+        ActorId::new(of.clone()).map_err(|source| CliError::ParseActorId { actor: of, source })?;
 
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
@@ -3380,14 +3398,9 @@ fn run_trust_show(
     let mode = dispatch::resolve(paths, dispatch_opts)?;
     let resolved = match mode {
         dispatch::Mode::Daemon { runtime, client } => {
-            let result =
-                runtime.block_on(client.trust(by_actor.as_str(), trusted_actor.as_str()));
+            let result = runtime.block_on(client.trust(by_actor.as_str(), trusted_actor.as_str()));
             match result {
-                Ok(json_form) => Some(
-                    json_form
-                        .to_statement()
-                        .map_err(CliError::ParseStatement)?,
-                ),
+                Ok(json_form) => Some(json_form.to_statement().map_err(CliError::ParseStatement)?),
                 // 404 means "no opinion" — same as direct's None.
                 Err(kairo_daemon_client::ClientError::Http { status: 404, .. }) => None,
                 Err(error) => return Err(CliError::DaemonRequestFailed(error)),
@@ -3422,9 +3435,9 @@ fn format_trust_show(
     resolved: Option<&SignedStatement<ActorTrustBody>>,
 ) -> String {
     match resolved {
-        None => format!(
-            "by_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = unknown\n"
-        ),
+        None => {
+            format!("by_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = unknown\n")
+        }
         Some(signed) => {
             let body = signed.unsigned().body();
             let decision = match body.decision() {
@@ -3501,7 +3514,10 @@ fn format_trust_history(
     let mut output = String::new();
     output.push_str(&format!("by_actor = {by_actor}\n"));
     output.push_str(&format!("trusted_actor = {trusted_actor}\n"));
-    output.push_str(&format!("history (newest -> oldest, {} entries):\n", chain.len()));
+    output.push_str(&format!(
+        "history (newest -> oldest, {} entries):\n",
+        chain.len()
+    ));
     for (idx, link) in chain.iter().enumerate() {
         let n = idx + 1;
         match link {
@@ -3622,10 +3638,14 @@ fn run_capability_grant(
     max_delegation_depth: Option<u8>,
     key_pinned: Option<String>,
 ) -> Result<String, CliError> {
-    let grantor_id = ActorId::new(grantor.clone())
-        .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
-    let grantee_id = ActorId::new(grantee.clone())
-        .map_err(|source| CliError::ParseActorId { actor: grantee, source })?;
+    let grantor_id = ActorId::new(grantor.clone()).map_err(|source| CliError::ParseActorId {
+        actor: grantor,
+        source,
+    })?;
+    let grantee_id = ActorId::new(grantee.clone()).map_err(|source| CliError::ParseActorId {
+        actor: grantee,
+        source,
+    })?;
     let object_id = ObjectId::new(object.clone())
         .map_err(|source| CliError::ParseObjectId { object, source })?;
 
@@ -3634,8 +3654,10 @@ fn run_capability_grant(
     }
     let mut parsed_kinds: Vec<StatementKind> = Vec::with_capacity(kinds.len());
     for kind in &kinds {
-        let parsed = StatementKind::parse(kind)
-            .map_err(|source| CliError::ParseStatementKind { kind: kind.clone(), source })?;
+        let parsed = StatementKind::parse(kind).map_err(|source| CliError::ParseStatementKind {
+            kind: kind.clone(),
+            source,
+        })?;
         parsed_kinds.push(parsed);
     }
 
@@ -3643,7 +3665,10 @@ fn run_capability_grant(
     if let Some(expires_at) = expires_at {
         let ts: Timestamp = expires_at
             .parse()
-            .map_err(|source| CliError::ParseTimestamp { value: expires_at, source })?;
+            .map_err(|source| CliError::ParseTimestamp {
+                value: expires_at,
+                source,
+            })?;
         constraints.push(CapabilityConstraint::ExpiresAt(ts));
     }
     if let Some(depth) = max_delegation_depth {
@@ -3678,12 +3703,13 @@ fn run_capability_grant(
     let supersedes = prior.as_ref().map(|signed| signed.statement_id());
 
     let body = ActorCapabilityGrantBody::new(grantee_id.clone(), capability, supersedes.clone());
-    let subject: KairoRef = format!("actor:{grantee_id}")
-        .parse()
-        .map_err(|source| CliError::BuildActorSubjectRef {
-            actor: grantee_id.clone(),
-            source,
-        })?;
+    let subject: KairoRef =
+        format!("actor:{grantee_id}")
+            .parse()
+            .map_err(|source| CliError::BuildActorSubjectRef {
+                actor: grantee_id.clone(),
+                source,
+            })?;
     let unsigned = UnsignedStatement::new(grantor_id.clone(), subject, Timestamp::now(), body);
     let signature_bytes = secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
@@ -3727,10 +3753,16 @@ fn run_capability_revoke(
     retroactive: bool,
     reason: Option<String>,
 ) -> Result<String, CliError> {
-    let grantor_id = ActorId::new(grantor.clone())
-        .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
-    let grant_id = kairo_core::StatementId::new(grant.clone())
-        .map_err(|source| CliError::ParseStatementId { statement: grant, source })?;
+    let grantor_id = ActorId::new(grantor.clone()).map_err(|source| CliError::ParseActorId {
+        actor: grantor,
+        source,
+    })?;
+    let grant_id = kairo_core::StatementId::new(grant.clone()).map_err(|source| {
+        CliError::ParseStatementId {
+            statement: grant,
+            source,
+        }
+    })?;
 
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
@@ -3760,12 +3792,12 @@ fn run_capability_revoke(
     let secret = require_active_signing_key(&store, &keystore, &grantor_id)?;
 
     let body = ActorCapabilityRevocationBody::new(grant_id.clone(), retroactive, reason);
-    let subject: KairoRef = format!("statement:{grant_id}")
-        .parse()
-        .map_err(|source| CliError::BuildStatementSubjectRef {
+    let subject: KairoRef = format!("statement:{grant_id}").parse().map_err(|source| {
+        CliError::BuildStatementSubjectRef {
             statement: grant_id.clone(),
             source,
-        })?;
+        }
+    })?;
     let unsigned = UnsignedStatement::new(grantor_id.clone(), subject, Timestamp::now(), body);
     let signature_bytes = secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
@@ -3798,8 +3830,11 @@ fn run_capability_list(
     match (grantor, object) {
         (Some(_), Some(_)) | (None, None) => Err(CliError::CapabilityListExclusive),
         (Some(grantor), None) => {
-            let grantor_id = ActorId::new(grantor.clone())
-                .map_err(|source| CliError::ParseActorId { actor: grantor, source })?;
+            let grantor_id =
+                ActorId::new(grantor.clone()).map_err(|source| CliError::ParseActorId {
+                    actor: grantor,
+                    source,
+                })?;
 
             let mode = dispatch::resolve(paths, dispatch_opts)?;
             let heads = match mode {
@@ -3839,36 +3874,31 @@ fn run_capability_list(
 fn capability_head_dto_to_head(
     dto: kairo_daemon_client::dto::CapabilityHeadDto,
 ) -> Result<kairo_store::CapabilityHead, CliError> {
-    let grantor =
-        ActorId::new(dto.grantor.clone()).map_err(|source| CliError::ParseActorId {
-            actor: dto.grantor,
-            source,
-        })?;
-    let grantee =
-        ActorId::new(dto.grantee.clone()).map_err(|source| CliError::ParseActorId {
-            actor: dto.grantee,
-            source,
-        })?;
+    let grantor = ActorId::new(dto.grantor.clone()).map_err(|source| CliError::ParseActorId {
+        actor: dto.grantor,
+        source,
+    })?;
+    let grantee = ActorId::new(dto.grantee.clone()).map_err(|source| CliError::ParseActorId {
+        actor: dto.grantee,
+        source,
+    })?;
     let scope = match dto.scope {
         kairo_statement::json::CapabilityScopeJson::Object(id) => CapabilityScope::Object(
-            ObjectId::new(id.clone()).map_err(|source| CliError::ParseObjectId {
-                object: id,
-                source,
-            })?,
+            ObjectId::new(id.clone())
+                .map_err(|source| CliError::ParseObjectId { object: id, source })?,
         ),
         kairo_statement::json::CapabilityScopeJson::Actor(id) => CapabilityScope::Actor(
-            ActorId::new(id.clone()).map_err(|source| CliError::ParseActorId {
-                actor: id,
-                source,
-            })?,
+            ActorId::new(id.clone())
+                .map_err(|source| CliError::ParseActorId { actor: id, source })?,
         ),
     };
-    let statement_id = kairo_core::StatementId::new(dto.statement_id.clone()).map_err(|source| {
-        CliError::ParseStatementId {
-            statement: dto.statement_id,
-            source,
-        }
-    })?;
+    let statement_id =
+        kairo_core::StatementId::new(dto.statement_id.clone()).map_err(|source| {
+            CliError::ParseStatementId {
+                statement: dto.statement_id,
+                source,
+            }
+        })?;
     let created_at = dto
         .created_at
         .parse()
@@ -3920,7 +3950,6 @@ fn format_capability_list_by_object(
     }
     output
 }
-
 
 fn run_snapshot_command(command: SnapshotCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
@@ -4129,13 +4158,12 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
             let store = open_store(paths)?;
 
-            let genesis_statement =
-                store
-                    .get_object_genesis(&object_id)
-                    .map_err(|error| CliError::ReadObjectGenesis {
-                        object: object_id.clone(),
-                        source: error,
-                    })?;
+            let genesis_statement = store.get_object_genesis(&object_id).map_err(|error| {
+                CliError::ReadObjectGenesis {
+                    object: object_id.clone(),
+                    source: error,
+                }
+            })?;
             let genesis = GenesisCheck {
                 derived_object: genesis_statement.object_id(),
             };
@@ -4173,12 +4201,13 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                             name: name.clone(),
                         })?;
                     let revision_statement_id = branch.unsigned().body().revision().clone();
-                    let revision = store.get_object_revision(&revision_statement_id).map_err(
-                        |error| CliError::ReadRevision {
-                            statement: revision_statement_id.clone(),
-                            source: error,
-                        },
-                    )?;
+                    let revision =
+                        store
+                            .get_object_revision(&revision_statement_id)
+                            .map_err(|error| CliError::ReadRevision {
+                                statement: revision_statement_id.clone(),
+                                source: error,
+                            })?;
                     (
                         revision,
                         FrontierResolution::BranchTip {
@@ -4362,12 +4391,22 @@ fn resolve_repo_for_verify(
             path: path.to_path_buf(),
             source,
         })?;
-        return Ok((Some(repo), RepoSource::Filesystem { path: path.to_path_buf() }));
+        return Ok((
+            Some(repo),
+            RepoSource::Filesystem {
+                path: path.to_path_buf(),
+            },
+        ));
     }
 
     if !no_cache {
         if let Some(repo) = try_cache_repo_for_revision(paths, object_id.as_str(), revision)? {
-            return Ok((Some(repo), RepoSource::Cache { object: object_id.clone() }));
+            return Ok((
+                Some(repo),
+                RepoSource::Cache {
+                    object: object_id.clone(),
+                },
+            ));
         }
     }
 
@@ -4531,7 +4570,10 @@ fn aggregate_overall_status(
 fn fold_status(items: &[OverallStatus]) -> OverallStatus {
     if items.iter().any(|s| matches!(s, OverallStatus::Invalid)) {
         OverallStatus::Invalid
-    } else if items.iter().any(|s| matches!(s, OverallStatus::Indeterminate)) {
+    } else if items
+        .iter()
+        .any(|s| matches!(s, OverallStatus::Indeterminate))
+    {
         OverallStatus::Indeterminate
     } else {
         OverallStatus::Valid
@@ -4542,7 +4584,10 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
     let mut out = String::new();
     out.push_str(&format!("verify object: {}\n", report.overall.label()));
     out.push_str(&format!("object = {}\n", report.object));
-    out.push_str(&format!("commit lookup: {}\n", format_repo_source(&report.repo_source)));
+    out.push_str(&format!(
+        "commit lookup: {}\n",
+        format_repo_source(&report.repo_source)
+    ));
     out.push_str(&format!(
         "genesis: derived_object = {}\n",
         report.genesis.derived_object
@@ -4569,10 +4614,7 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
         "  revision = {}\n",
         report.revision.revision.as_str()
     ));
-    out.push_str(&format!(
-        "  object = {}\n",
-        report.revision.revision_object
-    ));
+    out.push_str(&format!("  object = {}\n", report.revision.revision_object));
     out.push_str(&format!(
         "  signature = {}\n",
         format_signature_status(&report.revision.signature.signature)
@@ -4622,13 +4664,11 @@ fn format_repo_source(source: &RepoSource) -> String {
 fn format_content_layer(check: &ContentLayerCheck) -> String {
     match check {
         ContentLayerCheck::Verified => "VALID (commit found, parents agree)".to_owned(),
-        ContentLayerCheck::ParentMismatch { expected, actual } => format!(
-            "INVALID (parent mismatch; expected {expected:?}, actual {actual:?})"
-        ),
-        ContentLayerCheck::CommitNotFound => "INVALID (commit not in repo)".to_owned(),
-        ContentLayerCheck::Indeterminate => {
-            "INDETERMINATE (no Git lookup performed)".to_owned()
+        ContentLayerCheck::ParentMismatch { expected, actual } => {
+            format!("INVALID (parent mismatch; expected {expected:?}, actual {actual:?})")
         }
+        ContentLayerCheck::CommitNotFound => "INVALID (commit not in repo)".to_owned(),
+        ContentLayerCheck::Indeterminate => "INDETERMINATE (no Git lookup performed)".to_owned(),
     }
 }
 
@@ -4728,9 +4768,7 @@ fn format_manifest_binding(check: &ManifestBindingCheck) -> &'static str {
     match check {
         ManifestBindingCheck::Bound => "VALID (bound)",
         ManifestBindingCheck::HashMismatch { .. } => "INVALID (hash mismatch)",
-        ManifestBindingCheck::DeclaredObjectMismatch { .. } => {
-            "INVALID (declared object mismatch)"
-        }
+        ManifestBindingCheck::DeclaredObjectMismatch { .. } => "INVALID (declared object mismatch)",
         ManifestBindingCheck::ManifestNotProvided => "INDETERMINATE (no manifest provided)",
     }
 }
@@ -4754,7 +4792,6 @@ fn content_layer_json(check: &ContentLayerCheck) -> serde_json::Value {
         ContentLayerCheck::Indeterminate => serde_json::json!({ "status": "indeterminate" }),
     }
 }
-
 
 fn read_object_revision_statement(
     path: PathBuf,
@@ -4819,7 +4856,6 @@ fn read_public_key(
     Ok(PublicKey::ed25519(bytes))
 }
 
-
 fn format_revision_manifest_valid(
     revision: &ObjectRevisionBody,
     manifest: &ObjectManifest,
@@ -4882,12 +4918,12 @@ fn run_revision_inspect(
         }
         dispatch::Mode::Direct => {
             let store = open_store(paths)?;
-            store.get_object_revision(&statement_id).map_err(|error| {
-                CliError::ReadRevision {
+            store
+                .get_object_revision(&statement_id)
+                .map_err(|error| CliError::ReadRevision {
                     statement: statement_id.clone(),
                     source: error,
-                }
-            })?
+                })?
         }
     };
 
@@ -4970,13 +5006,9 @@ fn format_revision_list(
     output
 }
 
-
-
 fn help_text() -> String {
     "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor revoke-attestation-key sign --actor <id> --signing-attestation-key-seed <path> --revoke-key <key-id> [--reason <text>]\n  kairo actor revoke-attestation-key prepare --actor <id> --revoke-key <key-id> [--reason <text>] --output <path>\n  kairo actor revoke-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir> [--include-git]\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--no-cache] [--no-cwd-repo] [--manifest <path>] [--json]\n  kairo git fetch --object <id> --remote <url> [--branch <name>]\n  kairo git cache status\n  kairo web start [--spa-dir <path>] [--bind <addr>]\n  kairo web status [--bind <addr>]\n  kairo web stop [--wait] [--wait-timeout <secs>]\n".to_owned()
 }
-
-
 
 #[cfg(test)]
 #[allow(clippy::expect_used)]

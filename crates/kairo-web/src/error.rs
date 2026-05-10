@@ -49,11 +49,9 @@ impl fmt::Display for Error {
                 f,
                 "kairo-web v1 binds loopback addresses only; refusing to bind {addr}",
             ),
-            Self::SpaDirInvalid { path, reason } => write!(
-                f,
-                "--spa-dir {} is not usable: {reason}",
-                path.display()
-            ),
+            Self::SpaDirInvalid { path, reason } => {
+                write!(f, "--spa-dir {} is not usable: {reason}", path.display())
+            }
             Self::DaemonSocketMissing { path } => write!(
                 f,
                 "daemon socket {} does not exist; start `kairo daemon` first",

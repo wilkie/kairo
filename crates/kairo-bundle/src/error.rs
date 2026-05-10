@@ -9,7 +9,10 @@ pub enum BundleError {
     /// `manifest.json` could not be parsed.
     ManifestParse(serde_json::Error),
     /// `manifest.schema` is not the supported version.
-    UnsupportedSchema { found: String, expected: &'static str },
+    UnsupportedSchema {
+        found: String,
+        expected: &'static str,
+    },
     /// A record file could not be JSON-parsed.
     RecordParse {
         path: PathBuf,
@@ -22,10 +25,7 @@ pub enum BundleError {
         statement_type: String,
     },
     /// A typed payload could not be reconstructed from JSON.
-    StatementShape {
-        path: PathBuf,
-        message: String,
-    },
+    StatementShape { path: PathBuf, message: String },
     /// A record's filename did not parse as the expected id type.
     BadIdFilename {
         path: PathBuf,
@@ -48,10 +48,7 @@ pub enum BundleError {
     },
     /// The manifest's `contents` listed an id that no file in the
     /// bundle actually backs.
-    MissingRecord {
-        kind: &'static str,
-        id: String,
-    },
+    MissingRecord { kind: &'static str, id: String },
     /// A statement in the bundle references an actor that the bundle
     /// itself does not include. Bundles must be self-contained for the
     /// signing actors of the statements they carry.

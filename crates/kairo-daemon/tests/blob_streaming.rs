@@ -129,7 +129,10 @@ async fn blob_round_trips_for_small_payload() {
     let (dir, fixture) = StoreFixture::temp();
     let payload = b"hello, blobs".repeat(100);
     let blob_id = BlobId::from_bytes(STREAM_DOMAIN, &payload);
-    fixture.store.put_blob(&blob_id, &payload).expect("put_blob");
+    fixture
+        .store
+        .put_blob(&blob_id, &payload)
+        .expect("put_blob");
     let store_path = dir.path().to_path_buf();
     drop(fixture);
 
@@ -174,7 +177,10 @@ async fn blob_round_trips_for_multi_mb_payload() {
 
     let (dir, fixture) = StoreFixture::temp();
     let blob_id = BlobId::from_bytes(STREAM_DOMAIN, &payload);
-    fixture.store.put_blob(&blob_id, &payload).expect("put_blob");
+    fixture
+        .store
+        .put_blob(&blob_id, &payload)
+        .expect("put_blob");
     let store_path = dir.path().to_path_buf();
     drop(fixture);
 

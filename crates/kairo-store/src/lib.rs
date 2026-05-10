@@ -386,10 +386,7 @@ pub trait TrustResolver {
     /// who has expressed an opinion. O(1) given the sharding choice;
     /// useful for federation aggregation and for surfacing peer
     /// opinions in UIs.
-    fn list_opinions_about(
-        &self,
-        trusted_actor: &ActorId,
-    ) -> Result<Vec<TrustHead>, StoreError>;
+    fn list_opinions_about(&self, trusted_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError>;
 }
 
 /// Resolver for the current `(grantor, grantee, scope)`
@@ -443,8 +440,7 @@ pub trait CapabilityResolver {
     /// All known `(grantee, scope)` chain heads issued by `grantor`.
     /// One head per triple. Drives the §7.1 audit query (enumerate a
     /// grantor's outstanding grants for key-compromise cleanup).
-    fn list_capabilities_from(&self, grantor: &ActorId)
-        -> Result<Vec<CapabilityHead>, StoreError>;
+    fn list_capabilities_from(&self, grantor: &ActorId) -> Result<Vec<CapabilityHead>, StoreError>;
 
     /// All known `(grantor, grantee)` chain heads on `object` —
     /// across every grantor that has issued an object-scoped grant
@@ -587,8 +583,10 @@ impl FilesystemStore {
                         // belong to "list revisions for object".
                         Err(_) => continue,
                     };
-                    let statement_id =
-                        path.file_stem().and_then(|s| s.to_str()).unwrap_or_default();
+                    let statement_id = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default();
                     let signed = dto.to_statement().map_err(|reason| StoreError::Corrupt {
                         id: statement_id.to_owned(),
                         reason: CorruptReason::Parse(reason.to_string()),
@@ -603,7 +601,11 @@ impl FilesystemStore {
             a.unsigned()
                 .created_at()
                 .cmp(&b.unsigned().created_at())
-                .then_with(|| a.unsigned().statement_id().cmp(&b.unsigned().statement_id()))
+                .then_with(|| {
+                    a.unsigned()
+                        .statement_id()
+                        .cmp(&b.unsigned().statement_id())
+                })
         });
         Ok(found)
     }
@@ -909,9 +911,7 @@ impl StatementStore for FilesystemStore {
         let scope = body.capability().scope();
         let created_at = statement.unsigned().created_at();
         let supersedes = body.supersedes();
-        self.upsert_capability_grant_index(
-            grantor, grantee, scope, &id, created_at, supersedes,
-        )?;
+        self.upsert_capability_grant_index(grantor, grantee, scope, &id, created_at, supersedes)?;
         // Object-scoped grants also land in the cross-cutting reverse
         // index. Actor-scoped grants are skipped — see
         // `capabilities_by_object.rs` doc and `specs/CAPABILITIES.md`
@@ -1550,18 +1550,19 @@ impl FilesystemStore {
     ) -> Result<(), StoreError> {
         let path = self.shard_path(TRUST_DIR, trusted_actor.as_str(), JSON_SUFFIX)?;
         lock::with_index_lock(&path, || {
-            let mut index = match fs::read(&path) {
-                Ok(bytes) => serde_json::from_slice::<trust::TrustIndexFile>(&bytes).map_err(
-                    |error| StoreError::Corrupt {
-                        id: trusted_actor.to_string(),
-                        reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
-                    },
-                )?,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    trust::TrustIndexFile::default()
-                }
-                Err(error) => return Err(StoreError::Unavailable(error)),
-            };
+            let mut index =
+                match fs::read(&path) {
+                    Ok(bytes) => serde_json::from_slice::<trust::TrustIndexFile>(&bytes).map_err(
+                        |error| StoreError::Corrupt {
+                            id: trusted_actor.to_string(),
+                            reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
+                        },
+                    )?,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        trust::TrustIndexFile::default()
+                    }
+                    Err(error) => return Err(StoreError::Unavailable(error)),
+                };
 
             let updated = index.upsert(by_actor, statement_id, created_at, decision, supersedes);
             if updated {
@@ -1690,11 +1691,8 @@ impl FilesystemStore {
         let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
         lock::with_index_lock(&path, || {
             let mut index = self.read_key_index_or_default(actor)?;
-            let updated = index.upsert_attestation_threshold_change(
-                statement_id,
-                new_threshold,
-                created_at,
-            );
+            let updated =
+                index.upsert_attestation_threshold_change(statement_id, new_threshold, created_at);
             if updated {
                 let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
                 atomic_write(&path, &bytes)?;
@@ -1774,12 +1772,14 @@ impl FilesystemStore {
     ) -> Result<keys::KeyEventIndexFile, StoreError> {
         let path = self.shard_path(ACTOR_KEYS_DIR, actor.as_str(), JSON_SUFFIX)?;
         match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice::<keys::KeyEventIndexFile>(&bytes).map_err(
-                |error| StoreError::Corrupt {
-                    id: actor.to_string(),
-                    reason: CorruptReason::Parse(format!("invalid key event index: {error}")),
-                },
-            ),
+            Ok(bytes) => {
+                serde_json::from_slice::<keys::KeyEventIndexFile>(&bytes).map_err(|error| {
+                    StoreError::Corrupt {
+                        id: actor.to_string(),
+                        reason: CorruptReason::Parse(format!("invalid key event index: {error}")),
+                    }
+                })
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 Ok(keys::KeyEventIndexFile::default())
             }
@@ -1799,8 +1799,7 @@ impl FilesystemStore {
         let path = self.shard_path(ACTOR_CAPABILITY_DIR, grantor.as_str(), JSON_SUFFIX)?;
         lock::with_index_lock(&path, || {
             let mut index = self.read_capability_index_or_default(grantor)?;
-            let updated =
-                index.upsert_grant(grantee, scope, statement_id, created_at, supersedes);
+            let updated = index.upsert_grant(grantee, scope, statement_id, created_at, supersedes);
             if updated {
                 let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(grantor))?;
                 atomic_write(&path, &bytes)?;
@@ -1834,9 +1833,7 @@ impl FilesystemStore {
         &self,
         grantor: &ActorId,
     ) -> Result<capabilities::CapabilityIndexFile, StoreError> {
-        Ok(self
-            .read_capability_index(grantor)?
-            .unwrap_or_default())
+        Ok(self.read_capability_index(grantor)?.unwrap_or_default())
     }
 
     fn read_capability_index(
@@ -1849,9 +1846,7 @@ impl FilesystemStore {
                 let index: capabilities::CapabilityIndexFile = serde_json::from_slice(&bytes)
                     .map_err(|error| StoreError::Corrupt {
                         id: grantor.to_string(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid capability index: {error}"
-                        )),
+                        reason: CorruptReason::Parse(format!("invalid capability index: {error}")),
                     })?;
                 Ok(Some(index))
             }
@@ -1869,8 +1864,7 @@ impl FilesystemStore {
         created_at: kairo_core::Timestamp,
         supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
-        let path =
-            self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
+        let path = self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
         lock::with_index_lock(&path, || {
             let mut index = match fs::read(&path) {
                 Ok(bytes) => serde_json::from_slice::<
@@ -1901,8 +1895,7 @@ impl FilesystemStore {
         &self,
         object: &ObjectId,
     ) -> Result<Option<capabilities_by_object::CapabilityByObjectIndexFile>, StoreError> {
-        let path =
-            self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
+        let path = self.shard_path(ACTOR_CAPABILITY_BY_OBJECT_DIR, object.as_str(), JSON_SUFFIX)?;
         match fs::read(&path) {
             Ok(bytes) => {
                 let index: capabilities_by_object::CapabilityByObjectIndexFile =
@@ -1952,12 +1945,10 @@ impl FilesystemStore {
                         continue;
                     }
                     let bytes = fs::read(&path)?;
-                    let index: trust::TrustIndexFile = serde_json::from_slice(&bytes)
-                        .map_err(|error| StoreError::Corrupt {
+                    let index: trust::TrustIndexFile =
+                        serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
                             id: stem.to_string(),
-                            reason: CorruptReason::Parse(format!(
-                                "invalid trust index: {error}"
-                            )),
+                            reason: CorruptReason::Parse(format!("invalid trust index: {error}")),
                         })?;
                     let trusted_actor =
                         ActorId::new(stem.to_string()).map_err(|error| StoreError::Corrupt {
@@ -1994,28 +1985,25 @@ impl BranchResolver for FilesystemStore {
         // honored iff the successor's signer holds an `ObjectBranch`
         // capability on this object at the successor's `created_at`.
         let final_entry = self.walk_authorized_branch_chain(object, name, entry, &index)?;
-        let statement_id = StatementId::new(final_entry.statement_id.clone()).map_err(
-            |error| StoreError::Corrupt {
+        let statement_id = StatementId::new(final_entry.statement_id.clone()).map_err(|error| {
+            StoreError::Corrupt {
                 id: final_entry.statement_id.clone(),
                 reason: CorruptReason::Parse(format!(
                     "invalid statement id in branch index: {error}"
                 )),
-            },
-        )?;
+            }
+        })?;
         let signed = self.get_object_branch(&statement_id)?;
 
         // The walk may legitimately leave us pointing at a statement
         // signed by a different actor than the query — that's the
         // whole point of §6.2. Object and name must still match,
         // since they're the resolution key.
-        if signed.unsigned().body().object() != object
-            || signed.unsigned().body().name() != name
-        {
+        if signed.unsigned().body().object() != object || signed.unsigned().body().name() != name {
             return Err(StoreError::Corrupt {
                 id: statement_id.to_string(),
                 reason: CorruptReason::Parse(
-                    "branch index points at a statement with mismatched (object, name)"
-                        .to_owned(),
+                    "branch index points at a statement with mismatched (object, name)".to_owned(),
                 ),
             });
         }
@@ -2036,32 +2024,32 @@ impl BranchResolver for FilesystemStore {
         for (actor_str, by_name) in &index.by_actor {
             let actor = ActorId::new(actor_str.clone()).map_err(|error| StoreError::Corrupt {
                 id: actor_str.clone(),
-                reason: CorruptReason::Parse(format!(
-                    "invalid actor id in branch index: {error}"
-                )),
+                reason: CorruptReason::Parse(format!("invalid actor id in branch index: {error}")),
             })?;
             for name in by_name.keys() {
                 let Some(entry) = index.lookup_head(&actor, name) else {
                     continue;
                 };
-                let final_entry =
-                    self.walk_authorized_branch_chain(object, name, entry, &index)?;
-                let statement_id = StatementId::new(final_entry.statement_id.clone())
-                    .map_err(|error| StoreError::Corrupt {
-                        id: final_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in branch index: {error}"
-                        )),
+                let final_entry = self.walk_authorized_branch_chain(object, name, entry, &index)?;
+                let statement_id =
+                    StatementId::new(final_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: final_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in branch index: {error}"
+                            )),
+                        }
                     })?;
                 let created_at: Timestamp =
-                    final_entry.created_at.parse().map_err(|error| {
-                        StoreError::Corrupt {
+                    final_entry
+                        .created_at
+                        .parse()
+                        .map_err(|error| StoreError::Corrupt {
                             id: final_entry.statement_id.clone(),
                             reason: CorruptReason::Parse(format!(
                                 "invalid created_at in branch index: {error}"
                             )),
-                        }
-                    })?;
+                        })?;
                 tips.push(BranchTip {
                     actor: actor.clone(),
                     object: object.clone(),
@@ -2112,23 +2100,24 @@ impl FilesystemStore {
                 let authorized = if is_same_actor {
                     true
                 } else {
-                    let signer =
-                        ActorId::new(actor_str.to_string()).map_err(|error| {
-                            StoreError::Corrupt {
-                                id: actor_str.to_string(),
-                                reason: CorruptReason::Parse(format!(
-                                    "invalid actor id in branch index: {error}"
-                                )),
-                            }
-                        })?;
-                    let entry_at: Timestamp = entry.created_at.parse().map_err(|error| {
+                    let signer = ActorId::new(actor_str.to_string()).map_err(|error| {
                         StoreError::Corrupt {
-                            id: entry.statement_id.clone(),
+                            id: actor_str.to_string(),
                             reason: CorruptReason::Parse(format!(
-                                "invalid created_at in branch index: {error}"
+                                "invalid actor id in branch index: {error}"
                             )),
                         }
                     })?;
+                    let entry_at: Timestamp =
+                        entry
+                            .created_at
+                            .parse()
+                            .map_err(|error| StoreError::Corrupt {
+                                id: entry.statement_id.clone(),
+                                reason: CorruptReason::Parse(format!(
+                                    "invalid created_at in branch index: {error}"
+                                )),
+                            })?;
                     let evaluation = kairo_statement::verify::evaluate_capability(
                         &signer,
                         &kairo_statement::verify::ResolutionTarget::Object {
@@ -2149,9 +2138,7 @@ impl FilesystemStore {
                 let candidate = ((*actor_str).to_string(), *entry);
                 match best {
                     None => best = Some(candidate),
-                    Some((_, existing))
-                        if branch_entry_greater_than_for_walk(entry, existing) =>
-                    {
+                    Some((_, existing)) if branch_entry_greater_than_for_walk(entry, existing) => {
                         best = Some(candidate);
                     }
                     _ => {}
@@ -2211,14 +2198,14 @@ impl VersionTagResolver for FilesystemStore {
         // ObjectVersionTag capability on this object at the
         // successor's `created_at`.
         let final_entry = self.walk_authorized_tag_chain(object, version, entry, &index)?;
-        let statement_id = StatementId::new(final_entry.statement_id.clone()).map_err(
-            |error| StoreError::Corrupt {
+        let statement_id = StatementId::new(final_entry.statement_id.clone()).map_err(|error| {
+            StoreError::Corrupt {
                 id: final_entry.statement_id.clone(),
                 reason: CorruptReason::Parse(format!(
                     "invalid statement id in version tag index: {error}"
                 )),
-            },
-        )?;
+            }
+        })?;
         let signed = self.get_object_version_tag(&statement_id)?;
 
         // The walk may legitimately leave us pointing at a statement
@@ -2261,24 +2248,26 @@ impl VersionTagResolver for FilesystemStore {
                 let Some(entry) = index.lookup_head(&actor, version) else {
                     continue;
                 };
-                let final_entry =
-                    self.walk_authorized_tag_chain(object, version, entry, &index)?;
-                let statement_id = StatementId::new(final_entry.statement_id.clone())
-                    .map_err(|error| StoreError::Corrupt {
-                        id: final_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in version tag index: {error}"
-                        )),
+                let final_entry = self.walk_authorized_tag_chain(object, version, entry, &index)?;
+                let statement_id =
+                    StatementId::new(final_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: final_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in version tag index: {error}"
+                            )),
+                        }
                     })?;
                 let created_at: Timestamp =
-                    final_entry.created_at.parse().map_err(|error| {
-                        StoreError::Corrupt {
+                    final_entry
+                        .created_at
+                        .parse()
+                        .map_err(|error| StoreError::Corrupt {
                             id: final_entry.statement_id.clone(),
                             reason: CorruptReason::Parse(format!(
                                 "invalid created_at in version tag index: {error}"
                             )),
-                        }
-                    })?;
+                        })?;
                 heads.push(VersionTagHead {
                     actor: actor.clone(),
                     object: object.clone(),
@@ -2330,23 +2319,24 @@ impl FilesystemStore {
                 let authorized = if is_same_actor {
                     true
                 } else {
-                    let signer =
-                        ActorId::new(actor_str.to_string()).map_err(|error| {
-                            StoreError::Corrupt {
-                                id: actor_str.to_string(),
-                                reason: CorruptReason::Parse(format!(
-                                    "invalid actor id in version tag index: {error}"
-                                )),
-                            }
-                        })?;
-                    let entry_at: Timestamp = entry.created_at.parse().map_err(|error| {
+                    let signer = ActorId::new(actor_str.to_string()).map_err(|error| {
                         StoreError::Corrupt {
-                            id: entry.statement_id.clone(),
+                            id: actor_str.to_string(),
                             reason: CorruptReason::Parse(format!(
-                                "invalid created_at in version tag index: {error}"
+                                "invalid actor id in version tag index: {error}"
                             )),
                         }
                     })?;
+                    let entry_at: Timestamp =
+                        entry
+                            .created_at
+                            .parse()
+                            .map_err(|error| StoreError::Corrupt {
+                                id: entry.statement_id.clone(),
+                                reason: CorruptReason::Parse(format!(
+                                    "invalid created_at in version tag index: {error}"
+                                )),
+                            })?;
                     let evaluation = kairo_statement::verify::evaluate_capability(
                         &signer,
                         &kairo_statement::verify::ResolutionTarget::Object {
@@ -2455,10 +2445,7 @@ impl TrustResolver for FilesystemStore {
         Ok(heads)
     }
 
-    fn list_opinions_about(
-        &self,
-        trusted_actor: &ActorId,
-    ) -> Result<Vec<TrustHead>, StoreError> {
+    fn list_opinions_about(&self, trusted_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError> {
         let Some(index) = self.read_trust_index(trusted_actor)? else {
             return Ok(Vec::new());
         };
@@ -2539,10 +2526,7 @@ impl CapabilityResolver for FilesystemStore {
         Ok(Some(signed))
     }
 
-    fn list_capabilities_from(
-        &self,
-        grantor: &ActorId,
-    ) -> Result<Vec<CapabilityHead>, StoreError> {
+    fn list_capabilities_from(&self, grantor: &ActorId) -> Result<Vec<CapabilityHead>, StoreError> {
         let Some(index) = self.read_capability_index(grantor)? else {
             return Ok(Vec::new());
         };
@@ -2585,10 +2569,7 @@ impl ActorResolver for FilesystemStore {
         }
     }
 
-    fn key_rotations(
-        &self,
-        actor: &ActorId,
-    ) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
+    fn key_rotations(&self, actor: &ActorId) -> Result<Vec<KeyRotationEntry>, ActorResolveError> {
         let index = self
             .read_key_index_or_default(actor)
             .map_err(|error| ActorResolveError::Unavailable(error.to_string()))?;
@@ -2765,9 +2746,9 @@ mod tests {
     };
     use kairo_statement::{
         ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, Capability,
-        CapabilityScope, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
-        ObjectRevisionBody, ObjectVersionTagBody, RevisionId, SemverVersion, Signature,
-        SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
+        CapabilityScope, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+        ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement, StatementKind,
+        TrustDecision, UnsignedStatement,
     };
     use tempfile::TempDir;
 
@@ -2787,7 +2768,11 @@ mod tests {
     }
 
     fn attestation_key() -> PublicKey {
-        PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+        PublicKey::ed25519(
+            SigningKey::from_bytes(&[200; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
     }
 
     fn timestamp() -> Timestamp {
@@ -2912,8 +2897,15 @@ mod tests {
             .map_err(|error| error.to_string())?;
         // Replace the file with a different valid actor genesis JSON whose
         // derived ActorId will not match the filename.
-        let different =
-            ActorGenesisBody::new(ActorKind::person(), public_key(), vec![attestation_key()], 1, timestamp(), [10; 32]).expect("genesis well-formed");
+        let different = ActorGenesisBody::new(
+            ActorKind::person(),
+            public_key(),
+            vec![attestation_key()],
+            1,
+            timestamp(),
+            [10; 32],
+        )
+        .expect("genesis well-formed");
         let json = ActorGenesisJson::from_body(&different);
         fs::write(&path, serde_json::to_vec_pretty(&json)?)?;
 
@@ -3299,8 +3291,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_actor_branch_supersedes_without_grant_does_not_replace_per_actor_head()
-    -> TestResult {
+    fn cross_actor_branch_supersedes_without_grant_does_not_replace_per_actor_head() -> TestResult {
         // Actor B signs a branch advance whose supersedes points at
         // actor A's branch advance, but A has not granted B any
         // ObjectBranch capability on the object. evaluate_capability(B,
@@ -3371,13 +3362,8 @@ mod tests {
         .actor_id();
 
         let scope = CapabilityScope::Object(object.clone());
-        let grant = signed_capability_grant(
-            actor_a.clone(),
-            actor_b.clone(),
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant =
+            signed_capability_grant(actor_a.clone(), actor_b.clone(), scope, None, timestamp())?;
         store.put_actor_capability_grant(&grant)?;
 
         let a_branch = signed_branch(
@@ -3432,13 +3418,8 @@ mod tests {
         .actor_id();
 
         let scope = CapabilityScope::Object(object.clone());
-        let grant = signed_capability_grant(
-            actor_a.clone(),
-            actor_b.clone(),
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant =
+            signed_capability_grant(actor_a.clone(), actor_b.clone(), scope, None, timestamp())?;
         let grant_id = store.put_actor_capability_grant(&grant)?;
         let revocation = signed_capability_revocation(
             actor_a.clone(),
@@ -3701,7 +3682,10 @@ mod tests {
             .join(shard1)
             .join(shard2)
             .join(format!("{object}.json"));
-        assert!(expected.exists(), "expected version tag index at {expected:?}");
+        assert!(
+            expected.exists(),
+            "expected version tag index at {expected:?}"
+        );
         Ok(())
     }
 
@@ -3830,13 +3814,8 @@ mod tests {
 
         // A → B: capability covering ObjectVersionTag on this object.
         let scope = CapabilityScope::Object(object.clone());
-        let grant = signed_capability_grant(
-            actor_a.clone(),
-            actor_b.clone(),
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant =
+            signed_capability_grant(actor_a.clone(), actor_b.clone(), scope, None, timestamp())?;
         store.put_actor_capability_grant(&grant)?;
 
         // A's tag, then B's tag superseding A's.
@@ -3894,13 +3873,8 @@ mod tests {
         .actor_id();
 
         let scope = CapabilityScope::Object(object.clone());
-        let grant = signed_capability_grant(
-            actor_a.clone(),
-            actor_b.clone(),
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant =
+            signed_capability_grant(actor_a.clone(), actor_b.clone(), scope, None, timestamp())?;
         let grant_id = store.put_actor_capability_grant(&grant)?;
         // Revocation at t+1; B's tag at t+2. evaluate_capability at
         // t+2 sees the grant as revoked.
@@ -4416,8 +4390,7 @@ mod tests {
         retroactive: bool,
         created_at: Timestamp,
     ) -> Result<SignedStatement<ActorCapabilityRevocationBody>, Box<dyn std::error::Error>> {
-        let body =
-            ActorCapabilityRevocationBody::new(revoked_grant.clone(), retroactive, None);
+        let body = ActorCapabilityRevocationBody::new(revoked_grant.clone(), retroactive, None);
         let subject: KairoRef = format!("statement:{revoked_grant}").parse()?;
         let unsigned = UnsignedStatement::new(grantor.clone(), subject, created_at, body);
         let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
@@ -4449,13 +4422,7 @@ mod tests {
         let grantor = fresh_genesis().actor_id();
         let grantee = grantee_actor();
         let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
-        let grant = signed_capability_grant(
-            grantor.clone(),
-            grantee,
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant = signed_capability_grant(grantor.clone(), grantee, scope, None, timestamp())?;
         let grant_id = store.put_actor_capability_grant(&grant)?;
         let revocation = signed_capability_revocation(
             grantor,
@@ -4545,10 +4512,7 @@ mod tests {
         let successor_id = store.put_actor_capability_grant(&successor)?;
 
         let resolved = store.latest_capability(&grantor, &grantee, &scope)?;
-        assert_eq!(
-            resolved.map(|s| s.statement_id()),
-            Some(successor_id),
-        );
+        assert_eq!(resolved.map(|s| s.statement_id()), Some(successor_id),);
         Ok(())
     }
 
@@ -4618,8 +4582,7 @@ mod tests {
         let head = store.latest_capability(&grantor, &grantee, &scope)?;
         assert_eq!(head, Some(grant));
         // But the revocation is reachable via the dedicated lookup.
-        let resolved_revocation =
-            store.latest_capability_revocation(&grantor, &grant_id)?;
+        let resolved_revocation = store.latest_capability_revocation(&grantor, &grant_id)?;
         assert_eq!(resolved_revocation, Some(revocation));
         Ok(())
     }
@@ -4630,13 +4593,7 @@ mod tests {
         let grantor = fresh_genesis().actor_id();
         let grantee = grantee_actor();
         let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
-        let grant = signed_capability_grant(
-            grantor.clone(),
-            grantee,
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant = signed_capability_grant(grantor.clone(), grantee, scope, None, timestamp())?;
         let grant_id = store.put_actor_capability_grant(&grant)?;
         let non_retroactive = signed_capability_revocation(
             grantor.clone(),
@@ -4708,13 +4665,7 @@ mod tests {
         let grantor = fresh_genesis().actor_id();
         let grantee = grantee_actor();
         let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
-        let signed = signed_capability_grant(
-            grantor.clone(),
-            grantee,
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let signed = signed_capability_grant(grantor.clone(), grantee, scope, None, timestamp())?;
         store.put_actor_capability_grant(&signed)?;
 
         let shard1 = &grantor.as_str()[3..5];
@@ -4738,13 +4689,7 @@ mod tests {
         let grantor = fresh_genesis().actor_id();
         let grantee = grantee_actor();
         let scope = CapabilityScope::Object(ObjectId::new(OBJECT_ID)?);
-        let signed = signed_capability_grant(
-            grantor,
-            grantee,
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let signed = signed_capability_grant(grantor, grantee, scope, None, timestamp())?;
         let id = store.put_actor_capability_grant(&signed)?;
 
         let shard1 = &id.as_str()[3..5];
@@ -4917,13 +4862,7 @@ mod tests {
         // Replace the file with a different valid grant whose derived
         // StatementId will not match the original filename.
         let other_scope = CapabilityScope::Object(ObjectId::from_sha256_digest([99; 32]));
-        let other = signed_capability_grant(
-            grantor,
-            grantee,
-            other_scope,
-            None,
-            timestamp(),
-        )?;
+        let other = signed_capability_grant(grantor, grantee, other_scope, None, timestamp())?;
         let path = shard::shard_path(dir.path(), STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)
             .map_err(|error| error.to_string())?;
         let json = ActorCapabilityGrantStatementJson::from_statement(&other);
@@ -4955,13 +4894,8 @@ mod tests {
 
         let bob = grantee_actor();
         let scope = CapabilityScope::Object(object_id.clone());
-        let grant = signed_capability_grant(
-            root_actor.clone(),
-            bob.clone(),
-            scope,
-            None,
-            timestamp(),
-        )?;
+        let grant =
+            signed_capability_grant(root_actor.clone(), bob.clone(), scope, None, timestamp())?;
         store.put_actor_capability_grant(&grant)?;
 
         let evaluation = evaluate_capability(
@@ -5040,12 +4974,7 @@ mod tests {
     fn round_trips_actor_key_revocation() -> TestResult {
         let (_dir, store) = open_temp_store()?;
         let actor = fresh_genesis().actor_id();
-        let signed = signed_key_revocation(
-            actor,
-            other_public_key().key_id(),
-            true,
-            timestamp(),
-        )?;
+        let signed = signed_key_revocation(actor, other_public_key().key_id(), true, timestamp())?;
         let id = store.put_actor_key_revocation(&signed)?;
         let loaded = store.get_actor_key_revocation(&id)?;
         assert_eq!(loaded, signed);
@@ -5151,7 +5080,10 @@ mod tests {
         store.put_actor_key_revocation(&revocation)?;
 
         assert!(!ActorResolver::is_key_revoked_at(
-            &store, &actor, &key_id, timestamp()
+            &store,
+            &actor,
+            &key_id,
+            timestamp()
         )?);
         assert!(ActorResolver::is_key_revoked_at(
             &store,
@@ -5180,7 +5112,10 @@ mod tests {
         // Even before created_at, retroactive=true treats the key as
         // revoked.
         assert!(ActorResolver::is_key_revoked_at(
-            &store, &actor, &key_id, timestamp()
+            &store,
+            &actor,
+            &key_id,
+            timestamp()
         )?);
         Ok(())
     }
@@ -5212,7 +5147,10 @@ mod tests {
         // Querying at t (before either revocation): the retroactive
         // one applies and wins.
         assert!(ActorResolver::is_key_revoked_at(
-            &store, &actor, &key_id, timestamp()
+            &store,
+            &actor,
+            &key_id,
+            timestamp()
         )?);
         Ok(())
     }

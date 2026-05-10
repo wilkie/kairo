@@ -90,12 +90,11 @@ pub async fn handler(
         .map_err(|error| ApiError::bad_request(format!("invalid of-actor id {of:?}: {error}")))?;
 
     let store = state.store.clone();
-    let signed =
-        tokio::task::spawn_blocking(move || store.latest_trust(&by_actor, &trusted_actor))
-            .await
-            .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
-            .map_err(|error| map_store_error(error, "latest_trust"))?
-            .ok_or_else(|| ApiError::not_found("trust opinion not found"))?;
+    let signed = tokio::task::spawn_blocking(move || store.latest_trust(&by_actor, &trusted_actor))
+        .await
+        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+        .map_err(|error| map_store_error(error, "latest_trust"))?
+        .ok_or_else(|| ApiError::not_found("trust opinion not found"))?;
 
     Ok(ApiResult(ActorTrustStatementJson::from_statement(&signed)))
 }

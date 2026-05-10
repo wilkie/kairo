@@ -16,10 +16,7 @@ use crate::cli::{GitCacheCommand, GitCommand};
 use crate::error::CliError;
 use crate::store_paths::StorePaths;
 
-pub(crate) fn run_git_command(
-    command: GitCommand,
-    paths: &StorePaths,
-) -> Result<String, CliError> {
+pub(crate) fn run_git_command(command: GitCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
         GitCommand::Fetch {
             object,
@@ -39,7 +36,8 @@ fn run_fetch(
     branch: &str,
 ) -> Result<String, CliError> {
     let branch = strip_refs_heads_prefix(branch);
-    let cache = GitCache::open(paths.git_root()).map_err(|source| CliError::GitOperation { source })?;
+    let cache =
+        GitCache::open(paths.git_root()).map_err(|source| CliError::GitOperation { source })?;
     let fetched = cache
         .fetch(object, remote, branch, &GitCli::new())
         .map_err(|source| CliError::GitOperation { source })?;
@@ -117,8 +115,8 @@ fn walk_per_object_repos(git_root: &Path) -> Result<Vec<(String, PathBuf)>, CliE
         if entry.file_name() == "pool" {
             continue;
         }
-        for level2 in
-            std::fs::read_dir(entry.path()).map_err(|source| cache_io_error(&entry.path(), source))?
+        for level2 in std::fs::read_dir(entry.path())
+            .map_err(|source| cache_io_error(&entry.path(), source))?
         {
             let level2 = level2.map_err(|source| cache_io_error(&entry.path(), source))?;
             if !level2
@@ -128,8 +126,8 @@ fn walk_per_object_repos(git_root: &Path) -> Result<Vec<(String, PathBuf)>, CliE
             {
                 continue;
             }
-            for level3 in
-                std::fs::read_dir(level2.path()).map_err(|source| cache_io_error(&level2.path(), source))?
+            for level3 in std::fs::read_dir(level2.path())
+                .map_err(|source| cache_io_error(&level2.path(), source))?
             {
                 let level3 = level3.map_err(|source| cache_io_error(&level2.path(), source))?;
                 let path = level3.path();
@@ -156,11 +154,7 @@ fn read_object_refs(repo_path: &Path) -> Result<Vec<(String, String)>, CliError>
     let output = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args([
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/",
-        ])
+        .args(["for-each-ref", "--format=%(refname) %(objectname)", "refs/"])
         .output()
         .map_err(|source| match source.kind() {
             std::io::ErrorKind::NotFound => CliError::GitOperation {
@@ -171,10 +165,7 @@ fn read_object_refs(repo_path: &Path) -> Result<Vec<(String, String)>, CliError>
     if !output.status.success() {
         return Err(CliError::GitOperation {
             source: kairo_git::GitError::CacheGitInvocation {
-                command: format!(
-                    "git -C {} for-each-ref refs/heads/",
-                    repo_path.display()
-                ),
+                command: format!("git -C {} for-each-ref refs/heads/", repo_path.display()),
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
                 exit_code: output.status.code(),
             },

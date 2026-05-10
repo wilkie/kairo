@@ -131,10 +131,7 @@ impl TrustIndexFile {
     /// Resolve all `(by_actor, head)` pairs known about
     /// `trusted_actor`. The `trusted_actor` is the file context — it's
     /// passed in so the returned heads can name it.
-    pub(crate) fn into_heads(
-        self,
-        trusted_actor: &ActorId,
-    ) -> Result<Vec<TrustHead>, StoreError> {
+    pub(crate) fn into_heads(self, trusted_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError> {
         let mut heads = Vec::new();
         for (truster_str, entries) in &self.by_truster {
             let by_actor =
@@ -460,9 +457,13 @@ mod tests {
         let heads = index.into_heads(&trusted_target())?;
         assert_eq!(heads.len(), 2);
         let a_head = heads.iter().find(|h| h.by_actor == truster_a());
-        assert!(matches!(a_head, Some(h) if h.statement_id == statement_id_two() && h.decision.is_none()));
+        assert!(
+            matches!(a_head, Some(h) if h.statement_id == statement_id_two() && h.decision.is_none())
+        );
         let b_head = heads.iter().find(|h| h.by_actor == truster_b());
-        assert!(matches!(b_head, Some(h) if h.statement_id == statement_id_three() && h.decision.as_deref() == Some("untrusted")));
+        assert!(
+            matches!(b_head, Some(h) if h.statement_id == statement_id_three() && h.decision.as_deref() == Some("untrusted"))
+        );
         Ok(())
     }
 }

@@ -227,10 +227,7 @@ impl CapabilityIndexFile {
     /// Resolve all `(grantee, scope, head)` triples known about
     /// `grantor`. The `grantor` is the file context — it's passed in
     /// so the returned heads can name it.
-    pub(crate) fn into_heads(
-        self,
-        grantor: &ActorId,
-    ) -> Result<Vec<CapabilityHead>, StoreError> {
+    pub(crate) fn into_heads(self, grantor: &ActorId) -> Result<Vec<CapabilityHead>, StoreError> {
         let mut heads = Vec::new();
         for (grantee_str, by_scope) in &self.grants {
             let grantee =
@@ -248,22 +245,25 @@ impl CapabilityIndexFile {
                     id: head_entry.statement_id.clone(),
                     reason: CorruptReason::Parse(reason),
                 })?;
-                let statement_id = StatementId::new(head_entry.statement_id.clone()).map_err(
-                    |error| StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in capability index: {error}"
-                        )),
-                    },
-                )?;
-                let created_at: Timestamp = head_entry.created_at.parse().map_err(|error| {
-                    StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid created_at in capability index: {error}"
-                        )),
-                    }
-                })?;
+                let statement_id =
+                    StatementId::new(head_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in capability index: {error}"
+                            )),
+                        }
+                    })?;
+                let created_at: Timestamp =
+                    head_entry
+                        .created_at
+                        .parse()
+                        .map_err(|error| StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in capability index: {error}"
+                            )),
+                        })?;
                 heads.push(CapabilityHead {
                     grantor: grantor.clone(),
                     grantee: grantee.clone(),

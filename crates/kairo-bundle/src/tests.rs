@@ -45,7 +45,11 @@ fn timestamp() -> Timestamp {
 }
 
 fn attestation_key() -> PublicKey {
-    PublicKey::ed25519(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes())
+    PublicKey::ed25519(
+        SigningKey::from_bytes(&[200; 32])
+            .verifying_key()
+            .to_bytes(),
+    )
 }
 
 fn actor_genesis() -> ActorGenesisBody {
@@ -242,13 +246,25 @@ fn round_trips_through_export_and_import() -> TestResult {
 
     // Sanity: every advertised file is on disk.
     for actor in &manifest.contents.actors {
-        assert!(bundle_dir.path().join("actors").join(format!("{actor}.json")).exists());
+        assert!(bundle_dir
+            .path()
+            .join("actors")
+            .join(format!("{actor}.json"))
+            .exists());
     }
     for object in &manifest.contents.objects {
-        assert!(bundle_dir.path().join("objects").join(format!("{object}.json")).exists());
+        assert!(bundle_dir
+            .path()
+            .join("objects")
+            .join(format!("{object}.json"))
+            .exists());
     }
     for stmt in &manifest.contents.statements {
-        assert!(bundle_dir.path().join("statements").join(format!("{stmt}.json")).exists());
+        assert!(bundle_dir
+            .path()
+            .join("statements")
+            .join(format!("{stmt}.json"))
+            .exists());
     }
     for blob in &manifest.contents.blobs {
         assert!(bundle_dir.path().join("blobs").join(blob).exists());
@@ -292,7 +308,14 @@ fn round_trips_through_export_and_import() -> TestResult {
 fn import_is_idempotent() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
 
     let dest_dir = TempDir::new()?;
     let dest_store = FilesystemStore::open(dest_dir.path())?;
@@ -307,8 +330,18 @@ fn write_refuses_non_empty_destination() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
     fs::write(bundle_dir.path().join("squatter"), b"hi")?;
-    let result = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[]);
-    assert!(matches!(result, Err(BundleError::DestinationNotEmpty { .. })));
+    let result = write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    );
+    assert!(matches!(
+        result,
+        Err(BundleError::DestinationNotEmpty { .. })
+    ));
     Ok(())
 }
 
@@ -319,7 +352,10 @@ fn write_errors_when_root_object_missing() -> TestResult {
     let bundle_dir = TempDir::new()?;
     let unknown = signed_object_genesis(&actor_genesis().actor_id()).object_id();
     let result = write_bundle(&store, &unknown, bundle_dir.path(), "ts", "0.1.0", &[]);
-    assert!(matches!(result, Err(BundleError::RootObjectNotFound { .. })));
+    assert!(matches!(
+        result,
+        Err(BundleError::RootObjectNotFound { .. })
+    ));
     Ok(())
 }
 
@@ -327,7 +363,14 @@ fn write_errors_when_root_object_missing() -> TestResult {
 fn import_rejects_tampered_blob() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    let manifest = write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
 
     // Overwrite the blob's bytes — its derived BlobId no longer
     // matches the filename.
@@ -346,7 +389,14 @@ fn import_rejects_tampered_blob() -> TestResult {
 fn import_rejects_missing_blob_file() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    let manifest = write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
 
     let blob_id = manifest.contents.blobs.first().expect("one blob");
     fs::remove_file(bundle_dir.path().join("blobs").join(blob_id))?;
@@ -354,7 +404,10 @@ fn import_rejects_missing_blob_file() -> TestResult {
     let dest_dir = TempDir::new()?;
     let dest_store = FilesystemStore::open(dest_dir.path())?;
     let result = import_bundle(bundle_dir.path(), &dest_store);
-    assert!(matches!(result, Err(BundleError::MissingRecord { kind: "blob", .. })));
+    assert!(matches!(
+        result,
+        Err(BundleError::MissingRecord { kind: "blob", .. })
+    ));
     Ok(())
 }
 
@@ -362,7 +415,14 @@ fn import_rejects_missing_blob_file() -> TestResult {
 fn import_rejects_unsupported_schema() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
 
     let manifest_path = bundle_dir.path().join(MANIFEST_FILENAME);
     let bytes = fs::read(&manifest_path)?;
@@ -381,7 +441,14 @@ fn import_rejects_unsupported_schema() -> TestResult {
 fn import_rejects_dangling_actor_reference() -> TestResult {
     let src = build_fixture()?;
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    let manifest = write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
 
     // Strip the actor list; the statements still reference an actor
     // the manifest no longer advertises.
@@ -391,13 +458,13 @@ fn import_rejects_dangling_actor_reference() -> TestResult {
     fs::write(&manifest_path, serde_json::to_vec_pretty(&value)?)?;
     // Also drop the actor file so it can't accidentally be picked up
     // by a future codepath.
-    let actor_id = manifest
-        .contents
-        .actors
-        .first()
-        .expect("one actor")
-        .clone();
-    fs::remove_file(bundle_dir.path().join("actors").join(format!("{actor_id}.json")))?;
+    let actor_id = manifest.contents.actors.first().expect("one actor").clone();
+    fs::remove_file(
+        bundle_dir
+            .path()
+            .join("actors")
+            .join(format!("{actor_id}.json")),
+    )?;
 
     let dest_dir = TempDir::new()?;
     let dest_store = FilesystemStore::open(dest_dir.path())?;
@@ -442,7 +509,14 @@ fn export_excludes_actor_trust_statements() -> TestResult {
     let trust_statement_id = src.store.put_actor_trust(&trust_statement)?;
 
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    let manifest = write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
     assert!(
         !manifest
             .contents
@@ -484,12 +558,8 @@ fn export_excludes_actor_capability_statements() -> TestResult {
     )?;
     let grant_body = ActorCapabilityGrantBody::new(grantee_id.clone(), capability, None);
     let grant_subject: KairoRef = format!("actor:{grantee_id}").parse()?;
-    let grant_unsigned = UnsignedStatement::new(
-        src.actor_id.clone(),
-        grant_subject,
-        timestamp(),
-        grant_body,
-    );
+    let grant_unsigned =
+        UnsignedStatement::new(src.actor_id.clone(), grant_subject, timestamp(), grant_body);
     let grant_sig_bytes = signing_key()
         .sign(&grant_unsigned.canonical_bytes())
         .to_bytes();
@@ -526,12 +596,16 @@ fn export_excludes_actor_capability_statements() -> TestResult {
         .put_actor_capability_revocation(&revoke_statement)?;
 
     let bundle_dir = TempDir::new()?;
-    let manifest = write_bundle(&src.store, &src.object_id, bundle_dir.path(), "ts", "0.1.0", &[])?;
+    let manifest = write_bundle(
+        &src.store,
+        &src.object_id,
+        bundle_dir.path(),
+        "ts",
+        "0.1.0",
+        &[],
+    )?;
     assert!(
-        !manifest
-            .contents
-            .statements
-            .contains(&grant_id.to_string()),
+        !manifest.contents.statements.contains(&grant_id.to_string()),
         "ActorCapabilityGrant must not be carried in an object bundle"
     );
     assert!(

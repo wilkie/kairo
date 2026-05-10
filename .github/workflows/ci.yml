@@ -42,22 +42,20 @@ env:
 
 jobs:
   rust:
-    name: Rust (test --workspace)
+    name: Rust (fmt + test --workspace)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Install rust toolchain (stable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
       - name: cargo test --workspace
         run: cargo test --workspace --locked
-      # `cargo fmt --check` is intentionally not wired up here.
-      # The repo currently has long-standing rustfmt drift
-      # (~500 diff regions); turning the check on as part of
-      # slice 10 would block every PR until a separate
-      # workspace-wide `cargo fmt --all` cleanup lands. Add the
-      # check back once that cleanup is committed.
 
   frontend:
     name: Frontend pipeline (typecheck/lint/test/build)

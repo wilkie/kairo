@@ -13,8 +13,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
-use kairo_identity::ActorResolver;
 use kairo_identity::json::ActorGenesisJson;
+use kairo_identity::ActorResolver;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::json::{
     ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
@@ -137,9 +137,11 @@ pub fn write_bundle(
     let mut actor_id_strings = Vec::new();
     for actor_id in &actor_ids {
         let body = ActorResolver::actor_genesis(store, actor_id)
-            .map_err(|error| BundleError::Store(kairo_store::StoreError::Unavailable(
-                io::Error::other(error.to_string()),
-            )))?
+            .map_err(|error| {
+                BundleError::Store(kairo_store::StoreError::Unavailable(io::Error::other(
+                    error.to_string(),
+                )))
+            })?
             .ok_or_else(|| BundleError::DanglingActor {
                 statement: "<bundle>".to_owned(),
                 actor: actor_id.to_string(),
@@ -154,38 +156,29 @@ pub fn write_bundle(
     let object_json = ObjectGenesisStatementJson::from_statement(&genesis);
     let object_bytes =
         serde_json::to_vec_pretty(&object_json).map_err(serde_to_io(objects_dir.clone()))?;
-    write_file(
-        &objects_dir.join(format!("{object}.json")),
-        &object_bytes,
-    )?;
+    write_file(&objects_dir.join(format!("{object}.json")), &object_bytes)?;
 
     // Statements.
     let mut statement_id_strings = Vec::new();
     for (statement_id, signed) in &collected.revisions {
         let json = ObjectRevisionStatementJson::from_statement(signed);
-        let bytes = serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
-        write_file(
-            &statements_dir.join(format!("{statement_id}.json")),
-            &bytes,
-        )?;
+        let bytes =
+            serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
+        write_file(&statements_dir.join(format!("{statement_id}.json")), &bytes)?;
         statement_id_strings.push(statement_id.to_string());
     }
     for (statement_id, signed) in &collected.branches {
         let json = ObjectBranchStatementJson::from_statement(signed);
-        let bytes = serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
-        write_file(
-            &statements_dir.join(format!("{statement_id}.json")),
-            &bytes,
-        )?;
+        let bytes =
+            serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
+        write_file(&statements_dir.join(format!("{statement_id}.json")), &bytes)?;
         statement_id_strings.push(statement_id.to_string());
     }
     for (statement_id, signed) in &collected.version_tags {
         let json = ObjectVersionTagStatementJson::from_statement(signed);
-        let bytes = serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
-        write_file(
-            &statements_dir.join(format!("{statement_id}.json")),
-            &bytes,
-        )?;
+        let bytes =
+            serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
+        write_file(&statements_dir.join(format!("{statement_id}.json")), &bytes)?;
         statement_id_strings.push(statement_id.to_string());
     }
 
@@ -315,55 +308,49 @@ fn collect_statements(
                     })?;
                 match peek.statement_type.as_str() {
                     "ObjectRevision" => {
-                        let dto: ObjectRevisionStatementJson =
-                            serde_json::from_slice(&bytes).map_err(|source| {
-                                BundleError::RecordParse {
-                                    path: path.clone(),
-                                    source,
-                                }
-                            })?;
-                        let signed = dto.to_statement().map_err(|error| {
-                            BundleError::StatementShape {
+                        let dto: ObjectRevisionStatementJson = serde_json::from_slice(&bytes)
+                            .map_err(|source| BundleError::RecordParse {
                                 path: path.clone(),
-                                message: error.to_string(),
-                            }
-                        })?;
+                                source,
+                            })?;
+                        let signed =
+                            dto.to_statement()
+                                .map_err(|error| BundleError::StatementShape {
+                                    path: path.clone(),
+                                    message: error.to_string(),
+                                })?;
                         if signed.unsigned().body().object() == target {
                             out.revisions.insert(signed.statement_id(), signed);
                         }
                     }
                     "ObjectBranch" => {
-                        let dto: ObjectBranchStatementJson =
-                            serde_json::from_slice(&bytes).map_err(|source| {
-                                BundleError::RecordParse {
-                                    path: path.clone(),
-                                    source,
-                                }
-                            })?;
-                        let signed = dto.to_statement().map_err(|error| {
-                            BundleError::StatementShape {
+                        let dto: ObjectBranchStatementJson = serde_json::from_slice(&bytes)
+                            .map_err(|source| BundleError::RecordParse {
                                 path: path.clone(),
-                                message: error.to_string(),
-                            }
-                        })?;
+                                source,
+                            })?;
+                        let signed =
+                            dto.to_statement()
+                                .map_err(|error| BundleError::StatementShape {
+                                    path: path.clone(),
+                                    message: error.to_string(),
+                                })?;
                         if signed.unsigned().body().object() == target {
                             out.branches.insert(signed.statement_id(), signed);
                         }
                     }
                     "ObjectVersionTag" => {
-                        let dto: ObjectVersionTagStatementJson =
-                            serde_json::from_slice(&bytes).map_err(|source| {
-                                BundleError::RecordParse {
-                                    path: path.clone(),
-                                    source,
-                                }
-                            })?;
-                        let signed = dto.to_statement().map_err(|error| {
-                            BundleError::StatementShape {
+                        let dto: ObjectVersionTagStatementJson = serde_json::from_slice(&bytes)
+                            .map_err(|source| BundleError::RecordParse {
                                 path: path.clone(),
-                                message: error.to_string(),
-                            }
-                        })?;
+                                source,
+                            })?;
+                        let signed =
+                            dto.to_statement()
+                                .map_err(|error| BundleError::StatementShape {
+                                    path: path.clone(),
+                                    message: error.to_string(),
+                                })?;
                         if signed.unsigned().body().object() == target {
                             out.version_tags.insert(signed.statement_id(), signed);
                         }

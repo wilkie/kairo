@@ -31,8 +31,11 @@ pub fn init_source_repo() -> (TempDir, String, String, String) {
     fs::write(path.join("kairo.toml"), "[kairo]\nschema = 1\n").expect("write kairo.toml");
     run(path, &["add", "kairo.toml"]);
     run(path, &["commit", "-m", "first", "--quiet"]);
-    fs::write(path.join("kairo.toml"), "[kairo]\nschema = 1\nname = \"two\"\n")
-        .expect("write kairo.toml");
+    fs::write(
+        path.join("kairo.toml"),
+        "[kairo]\nschema = 1\nname = \"two\"\n",
+    )
+    .expect("write kairo.toml");
     run(path, &["add", "kairo.toml"]);
     run(path, &["commit", "-m", "second", "--quiet"]);
     let head = rev_parse(path, "HEAD");

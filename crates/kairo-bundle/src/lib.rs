@@ -56,9 +56,7 @@ mod tests;
 pub use error::BundleError;
 pub use export::write_bundle;
 pub use import::{import_bundle, ImportSummary};
-pub use manifest::{
-    BundleContents, BundleCreator, BundleGitHistory, BundleManifest, BundleRoots,
-};
+pub use manifest::{BundleContents, BundleCreator, BundleGitHistory, BundleManifest, BundleRoots};
 
 /// Constant value of the `manifest.schema` field.
 pub const BUNDLE_SCHEMA: &str = "kairo.bundle.v1";

@@ -272,8 +272,11 @@ mod tests {
             },
             attestation_keys: vec![PublicKeyJson {
                 algorithm: "ed25519".to_owned(),
-                bytes: STANDARD
-                    .encode(SigningKey::from_bytes(&[200; 32]).verifying_key().to_bytes()),
+                bytes: STANDARD.encode(
+                    SigningKey::from_bytes(&[200; 32])
+                        .verifying_key()
+                        .to_bytes(),
+                ),
             }],
             attestation_threshold: 1,
             created_at: "2026-05-01T14:32:07Z".to_owned(),

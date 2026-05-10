@@ -1532,12 +1532,8 @@ mod tests {
             let lookup = CommitLookup::Found {
                 parent_oids: vec!["aaa".to_owned()],
             };
-            let report = validate_object_revision(
-                &signed,
-                Some(&genesis),
-                Some(&manifest),
-                Some(&lookup),
-            );
+            let report =
+                validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
             assert_eq!(report.content, ContentLayerCheck::Verified);
             Ok(())
         }
@@ -1555,12 +1551,8 @@ mod tests {
             let lookup = CommitLookup::Found {
                 parent_oids: vec!["bbb".to_owned()],
             };
-            let report = validate_object_revision(
-                &signed,
-                Some(&genesis),
-                Some(&manifest),
-                Some(&lookup),
-            );
+            let report =
+                validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
             assert!(matches!(
                 report.content,
                 ContentLayerCheck::ParentMismatch { .. }
@@ -1586,33 +1578,20 @@ mod tests {
             let lookup = CommitLookup::Found {
                 parent_oids: vec!["bbb".to_owned(), "aaa".to_owned()],
             };
-            let report = validate_object_revision(
-                &signed,
-                Some(&genesis),
-                Some(&manifest),
-                Some(&lookup),
-            );
+            let report =
+                validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
             assert_eq!(report.content, ContentLayerCheck::Verified);
             Ok(())
         }
 
         #[test]
-        fn content_layer_commit_not_found(
-        ) -> Result<(), Box<dyn std::error::Error>> {
+        fn content_layer_commit_not_found() -> Result<(), Box<dyn std::error::Error>> {
             let genesis = genesis_for_object([42; 32])?;
             let manifest = manifest_with_object(None)?;
-            let signed = signed_revision(
-                genesis.object_id(),
-                vec![],
-                manifest.manifest_hash(),
-            )?;
+            let signed = signed_revision(genesis.object_id(), vec![], manifest.manifest_hash())?;
             let lookup = CommitLookup::NotFound;
-            let report = validate_object_revision(
-                &signed,
-                Some(&genesis),
-                Some(&manifest),
-                Some(&lookup),
-            );
+            let report =
+                validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
             assert_eq!(report.content, ContentLayerCheck::CommitNotFound);
             Ok(())
         }
@@ -1632,12 +1611,8 @@ mod tests {
             let lookup = CommitLookup::Found {
                 parent_oids: vec!["abc".to_owned()],
             };
-            let report = validate_object_revision(
-                &signed,
-                Some(&genesis),
-                Some(&manifest),
-                Some(&lookup),
-            );
+            let report =
+                validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
             assert_eq!(report.content, ContentLayerCheck::Indeterminate);
             Ok(())
         }

@@ -143,7 +143,10 @@ async fn wait_for_tcp(addr: &SocketAddr, max: Duration) {
         if TcpStream::connect(addr).await.is_ok() {
             return;
         }
-        assert!(start.elapsed() <= max, "web port {addr} not bound in {max:?}");
+        assert!(
+            start.elapsed() <= max,
+            "web port {addr} not bound in {max:?}"
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
@@ -178,8 +181,11 @@ async fn http_get_tcp(addr: &SocketAddr, path: &str) -> (hyper::StatusCode, Byte
 
 fn write_spa_dir() -> TempDir {
     let dir = TempDir::new().expect("tempdir");
-    std::fs::write(dir.path().join("index.html"), "<!doctype html><title>spa</title>")
-        .expect("write index.html");
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<!doctype html><title>spa</title>",
+    )
+    .expect("write index.html");
     std::fs::write(dir.path().join("app.js"), "// hello").expect("write app.js");
     dir
 }
@@ -209,7 +215,9 @@ async fn proxies_api_v1_version_through_to_daemon() {
     let result = &envelope["result"];
     assert_eq!(result["api_version"], "v1");
     assert!(
-        result["daemon_version"].as_str().is_some_and(|s| !s.is_empty()),
+        result["daemon_version"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
         "daemon_version: {result}"
     );
 

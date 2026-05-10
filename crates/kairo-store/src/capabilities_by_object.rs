@@ -172,22 +172,25 @@ impl CapabilityByObjectIndexFile {
                 let Some(head_entry) = chain_head(entries) else {
                     continue;
                 };
-                let statement_id = StatementId::new(head_entry.statement_id.clone()).map_err(
-                    |error| StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in capabilities-by-object index: {error}"
-                        )),
-                    },
-                )?;
-                let created_at: Timestamp = head_entry.created_at.parse().map_err(|error| {
-                    StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid created_at in capabilities-by-object index: {error}"
-                        )),
-                    }
-                })?;
+                let statement_id =
+                    StatementId::new(head_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in capabilities-by-object index: {error}"
+                            )),
+                        }
+                    })?;
+                let created_at: Timestamp =
+                    head_entry
+                        .created_at
+                        .parse()
+                        .map_err(|error| StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in capabilities-by-object index: {error}"
+                            )),
+                        })?;
                 heads.push(CapabilityByObjectHead {
                     grantor,
                     grantee: grantee.clone(),

@@ -193,10 +193,11 @@ impl Keystore for FilesystemKeystore {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            let actor_id = ActorId::new(stem.to_owned()).map_err(|error| KeystoreError::Corrupt {
-                id: stem.to_owned(),
-                reason: CorruptReason::Parse(format!("invalid actor id in keystore: {error}")),
-            })?;
+            let actor_id =
+                ActorId::new(stem.to_owned()).map_err(|error| KeystoreError::Corrupt {
+                    id: stem.to_owned(),
+                    reason: CorruptReason::Parse(format!("invalid actor id in keystore: {error}")),
+                })?;
             actors.push(actor_id);
         }
         Ok(actors)

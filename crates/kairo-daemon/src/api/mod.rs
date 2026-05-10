@@ -29,10 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/status", get(handlers::status::handler))
         .route("/api/v1/actors/:id", get(handlers::actors::handler))
         .route("/api/v1/objects/:id", get(handlers::objects::handler))
-        .route(
-            "/api/v1/statements/:id",
-            get(handlers::statements::handler),
-        )
+        .route("/api/v1/statements/:id", get(handlers::statements::handler))
         .route(
             "/api/v1/branches/:object",
             get(handlers::branches::list_handler),
@@ -53,10 +50,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/revisions/:object",
             get(handlers::revisions::list_handler),
         )
-        .route(
-            "/api/v1/trust/:by/:of",
-            get(handlers::trust::handler),
-        )
+        .route("/api/v1/trust/:by/:of", get(handlers::trust::handler))
         .route(
             "/api/v1/trust/about/:of",
             get(handlers::trust::list_about_handler),

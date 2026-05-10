@@ -115,10 +115,8 @@ fn run_stop(paths: &StorePaths, wait: bool, wait_timeout: Duration) -> Result<St
 
     let pid = read_pid(&pid_path)?;
 
-    kill(Pid::from_raw(pid), Signal::SIGTERM).map_err(|error| CliError::DaemonKill {
-        pid,
-        source: error,
-    })?;
+    kill(Pid::from_raw(pid), Signal::SIGTERM)
+        .map_err(|error| CliError::DaemonKill { pid, source: error })?;
 
     if !wait {
         return Ok(format!("kairo-daemon: SIGTERM sent (pid {pid})\n"));
