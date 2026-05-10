@@ -24,7 +24,7 @@ use tokio::time::timeout;
 use crate::dto::{
     ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
     ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
-    StatementValue, StatusInfo, ValidationResult, VersionInfo,
+    StatementByActorDto, StatementValue, StatusInfo, ValidationResult, VersionInfo,
 };
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};
@@ -101,6 +101,19 @@ impl Client {
     /// (`not_found`) when the actor is absent from the store.
     pub async fn actor(&self, actor_id: &str) -> ClientResult<ActorGenesisJson> {
         self.get_json(&format!("/api/v1/actors/{actor_id}")).await
+    }
+
+    /// `GET /api/v1/actors/{actor_id}/statements` — every signed
+    /// statement authored by the actor, sorted by `(created_at,
+    /// statement_id)` ascending. `ObjectGenesis` is excluded
+    /// server-side (it carries `created_by`, not the envelope
+    /// `actor` field every other statement type uses).
+    pub async fn list_statements_by_actor(
+        &self,
+        actor_id: &str,
+    ) -> ClientResult<Vec<StatementByActorDto>> {
+        self.get_json(&format!("/api/v1/actors/{actor_id}/statements"))
+            .await
     }
 
     /// `GET /api/v1/objects/{object_id}` — returns the object's

@@ -826,6 +826,104 @@ async fn trust_list_about_returns_empty_for_unknown_actor() {
 }
 
 #[tokio::test]
+async fn actors_list_statements_returns_authored_envelopes() {
+    // Alice signs a branch on her object and a trust statement
+    // about Bob. Both should appear under her actor; Bob's list
+    // is empty because he hasn't signed anything yet.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        kairo_statement::RevisionId::new("git:sha256:r1"),
+        SAMPLE_MANIFEST,
+        Vec::new(),
+    );
+    let branch_id = fixture.set_branch(&alice, &object, &revision, "head");
+    let trust_id = put_trust(
+        &fixture.store,
+        &alice,
+        &bob.actor_id,
+        TrustDecision::Trusted,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+
+    let (status, body) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/actors/{}/statements", alice.actor_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let json: Value = serde_json::from_slice(&body).expect("parse");
+    let arr = json["result"].as_array().expect("array");
+    // Branch + trust + the revision Alice signed via make_revision.
+    // Genesis is intentionally not indexed here, so we expect
+    // exactly the three signed envelopes.
+    let by_kind: std::collections::HashMap<&str, &str> = arr
+        .iter()
+        .map(|e| {
+            (
+                e["statement_id"].as_str().expect("statement_id"),
+                e["kind"].as_str().expect("kind"),
+            )
+        })
+        .collect();
+    assert!(
+        by_kind.contains_key(branch_id.statement_id.as_str()),
+        "branch should be indexed under alice: {arr:#?}",
+    );
+    assert!(
+        by_kind.contains_key(trust_id.as_str()),
+        "trust should be indexed under alice: {arr:#?}",
+    );
+    assert_eq!(by_kind.get(branch_id.statement_id.as_str()), Some(&"ObjectBranch"));
+    assert_eq!(by_kind.get(trust_id.as_str()), Some(&"ActorTrust"));
+    for entry in arr {
+        assert_eq!(entry["actor"].as_str(), Some(alice.actor_id.as_str()));
+        assert!(entry["created_at"].is_string());
+    }
+
+    let (status, body) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/actors/{}/statements", bob.actor_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let json: Value = serde_json::from_slice(&body).expect("parse");
+    assert_eq!(
+        json["result"],
+        Value::Array(Vec::new()),
+        "bob has authored nothing yet"
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn actors_list_statements_rejects_malformed_id() {
+    let (dir, _fixture) = StoreFixture::temp();
+    let store_path = dir.path().to_path_buf();
+    drop(_fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let (status, body) =
+        http_get(handle.socket_path(), "/api/v1/actors/not-a-real-id/statements").await;
+    assert_eq!(status, hyper::StatusCode::BAD_REQUEST);
+    let json: Value = serde_json::from_slice(&body).expect("parse");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "bad_request");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
 async fn capabilities_list_for_object_returns_hydrated_heads() {
     // Alice grants Bob an ObjectVersionTag capability scoped to
     // object O. The for-object endpoint must return one entry

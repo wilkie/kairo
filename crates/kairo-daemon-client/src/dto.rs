@@ -100,6 +100,28 @@ pub struct RevisionHeadDto {
     pub created_at: String,
 }
 
+/// One signed statement authored by an actor, returned by
+/// `GET /api/v1/actors/{id}/statements`. Backed by the per-actor
+/// materialized index in the store
+/// (`statements_by_actor/<XX>/<YY>/<actor-id>.json`), so the call is
+/// O(entries) — no statement-tree scan even on large stores.
+///
+/// `kind` is the `StatementKind::as_str()` discriminator (e.g.
+/// `"ObjectBranch"`, `"ActorTrust"`); callers either branch on it
+/// directly or follow up with `GET /api/v1/statements/{statement_id}`
+/// for the full envelope. `ObjectGenesis` is intentionally absent —
+/// genesis carries `created_by` rather than the envelope `actor` field
+/// every other statement type uses; the inspector folds it in
+/// client-side via the actor's owned-objects view if needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct StatementByActorDto {
+    pub actor: String,
+    pub statement_id: String,
+    pub kind: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+}
+
 /// Trust head summary returned by
 /// `GET /api/v1/trust/about/{actor}`. One entry per `by_actor`
 /// chain leaf — callers who want the signed `ActorTrust` body

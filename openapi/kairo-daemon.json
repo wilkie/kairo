@@ -47,6 +47,44 @@
         }
       }
     },
+    "/api/v1/actors/{id}/statements": {
+      "get": {
+        "tags": [
+          "actors"
+        ],
+        "summary": "`GET /api/v1/actors/{id}/statements`",
+        "operationId": "listStatementsByActor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Actor id (kairo:actor:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed statements authored by the actor, sorted by (created_at, statement_id) ascending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StatementByActorDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed actor id"
+          }
+        }
+      }
+    },
     "/api/v1/blobs/{id}": {
       "get": {
         "tags": [
@@ -1212,6 +1250,31 @@
             "type": "string"
           },
           "key_id": {
+            "type": "string"
+          }
+        }
+      },
+      "StatementByActorDto": {
+        "type": "object",
+        "description": "One signed statement authored by an actor, returned by\n`GET /api/v1/actors/{id}/statements`. Backed by the per-actor\nmaterialized index in the store\n(`statements_by_actor/<XX>/<YY>/<actor-id>.json`), so the call is\nO(entries) — no statement-tree scan even on large stores.\n\n`kind` is the `StatementKind::as_str()` discriminator (e.g.\n`\"ObjectBranch\"`, `\"ActorTrust\"`); callers either branch on it\ndirectly or follow up with `GET /api/v1/statements/{statement_id}`\nfor the full envelope. `ObjectGenesis` is intentionally absent —\ngenesis carries `created_by` rather than the envelope `actor` field\nevery other statement type uses; the inspector folds it in\nclient-side via the actor's owned-objects view if needed.",
+        "required": [
+          "actor",
+          "statement_id",
+          "kind",
+          "created_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "kind": {
+            "type": "string"
+          },
+          "statement_id": {
             "type": "string"
           }
         }
