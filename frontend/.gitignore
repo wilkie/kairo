@@ -7,6 +7,11 @@ build
 .cache
 storybook-static
 
+# Playwright output (per-test artifacts + HTML report)
+test-results
+playwright-report
+playwright/.cache
+
 # Local environment overrides (never commit)
 .env
 .env.*

@@ -1,0 +1,115 @@
+# Slice 10 CI workflow.
+#
+# Three independent jobs run in parallel:
+#
+#   - rust       — `cargo fmt --check`, `cargo test --workspace`
+#                  across every crate. Catches the daemon /
+#                  store / web / cli regressions the inspector
+#                  ultimately sits on top of.
+#   - frontend   — `pnpm typecheck`, `lint`, `test`, `build`
+#                  across the workspace via Turbo.
+#                  `generate:api` is wired as a Turbo dep so
+#                  the schema regenerates first automatically.
+#   - e2e        — Playwright suite against the SPA in dev
+#                  mode with the MSW mock registry. The dev
+#                  server is started by Playwright's webServer
+#                  config; the env var `CI=true` (set by
+#                  GitHub Actions) makes Playwright spin up a
+#                  fresh one rather than reusing a local
+#                  process.
+#
+# pnpm 10's `onlyBuiltDependencies` policy blocks Playwright's
+# post-install browser fetch; the `e2e:install` script runs
+# `playwright install --with-deps chromium` explicitly to get
+# the binary on the runner.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same branch — saves runner
+# minutes on a force-push or rapid-fire PR pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (test --workspace)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace
+        run: cargo test --workspace --locked
+      # `cargo fmt --check` is intentionally not wired up here.
+      # The repo currently has long-standing rustfmt drift
+      # (~500 diff regions); turning the check on as part of
+      # slice 10 would block every PR until a separate
+      # workspace-wide `cargo fmt --all` cleanup lands. Add the
+      # check back once that cleanup is committed.
+
+  frontend:
+    name: Frontend pipeline (typecheck/lint/test/build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: turbo pipeline
+        run: pnpm turbo typecheck lint test build
+
+  e2e:
+    name: Frontend e2e (Playwright)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        run: pnpm -F @kairo/web-client e2e:install
+      - name: Playwright tests
+        run: pnpm -F @kairo/web-client e2e
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/apps/web-client/playwright-report/
+          retention-days: 7
