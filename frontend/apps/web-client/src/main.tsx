@@ -47,7 +47,15 @@ async function bootstrap() {
     throw new Error('missing #root element in index.html');
   }
 
-  const kairoClient = createKairoClient({ baseUrl: '' });
+  // Use the page origin as the api-client base URL so requests
+  // resolve to absolute `/api/v1/...` paths regardless of which
+  // route the SPA is currently rendering. (Without an absolute
+  // base, ky's relative-path resolution would interpret a call
+  // from `/objects/zXyz` as `/objects/api/v1/...`, which the
+  // proxy doesn't match — the SPA fallback would then return
+  // index.html and the api-client would surface "<!doctype …
+  // is not valid JSON".)
+  const kairoClient = createKairoClient({ baseUrl: window.location.origin });
 
   createRoot(root).render(
     <StrictMode>
