@@ -49,6 +49,7 @@ pub mod error;
 mod keys;
 mod lock;
 mod shard;
+mod statements_by_actor;
 mod tags;
 mod trust;
 
@@ -76,12 +77,14 @@ use kairo_statement::{
     ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
     ActorKeyRotationBody, ActorTrustBody, CapabilityScope, MultiSignedStatement, ObjectBranchBody,
     ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
+    StatementKind,
 };
 
 pub use branches::BranchTip;
 pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
+pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
 
@@ -106,6 +109,7 @@ const TRUST_DIR: &str = "trust";
 const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
 const ACTOR_CAPABILITY_BY_OBJECT_DIR: &str = "actor_capability_by_object";
 const ACTOR_KEYS_DIR: &str = "actor_keys";
+const STATEMENTS_BY_ACTOR_DIR: &str = "statements_by_actor";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -458,6 +462,31 @@ pub trait CapabilityResolver {
     ) -> Result<Vec<CapabilityByObjectHead>, StoreError>;
 }
 
+/// Resolver for the per-actor signed-statement audit list.
+///
+/// Backed by the per-actor materialized index in
+/// `<root>/statements_by_actor/<XX>/<YY>/<actor-id>.json`. Every
+/// `put_*` for a signed envelope (single- or multi-signer) appends one
+/// entry under the envelope's `actor`; `ObjectGenesis` is intentionally
+/// excluded because it carries `created_by` instead of the envelope
+/// `actor` field every other statement type uses, and the `objects/`
+/// directory already provides the per-creator scan path (see
+/// `statements_by_actor.rs` doc comment for the full rationale).
+///
+/// This resolver answers the inspector's "what has this actor signed?"
+/// query in O(entries-for-this-actor) — no full statement-tree scan
+/// per page load, even on large stores.
+pub trait StatementByActorResolver {
+    /// Every signed statement authored by `actor`, sorted by
+    /// `(created_at, statement_id)` ascending. Returns an empty vector
+    /// if `actor` has never been the envelope signer for a stored
+    /// statement.
+    fn list_statements_by_actor(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<StatementByActor>, StoreError>;
+}
+
 /// Persistence interface for raw byte blobs.
 ///
 /// `BlobId` is domain-prefixed (`sha256(domain || bytes)`), so the store
@@ -722,6 +751,11 @@ impl StatementStore for FilesystemStore {
         let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         atomic_write(&path, &bytes)?;
+
+        let actor = statement.unsigned().actor();
+        let created_at = statement.unsigned().created_at();
+        self.upsert_statement_by_actor_index(actor, &id, StatementKind::ObjectRevision, created_at)?;
+
         Ok(id)
     }
 
@@ -767,6 +801,7 @@ impl StatementStore for FilesystemStore {
         let created_at = statement.unsigned().created_at();
         let supersedes = body.supersedes();
         self.upsert_branch_index(object, actor, name, &id, created_at, supersedes)?;
+        self.upsert_statement_by_actor_index(actor, &id, StatementKind::ObjectBranch, created_at)?;
 
         Ok(id)
     }
@@ -813,6 +848,12 @@ impl StatementStore for FilesystemStore {
         let created_at = statement.unsigned().created_at();
         let supersedes = body.supersedes();
         self.upsert_version_tag_index(object, actor, version, &id, created_at, supersedes)?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ObjectVersionTag,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -866,6 +907,7 @@ impl StatementStore for FilesystemStore {
             decision,
             supersedes,
         )?;
+        self.upsert_statement_by_actor_index(by_actor, &id, StatementKind::ActorTrust, created_at)?;
 
         Ok(id)
     }
@@ -921,6 +963,12 @@ impl StatementStore for FilesystemStore {
                 object, grantee, grantor, &id, created_at, supersedes,
             )?;
         }
+        self.upsert_statement_by_actor_index(
+            grantor,
+            &id,
+            StatementKind::ActorCapabilityGrant,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -972,6 +1020,12 @@ impl StatementStore for FilesystemStore {
             created_at,
             retroactive,
         )?;
+        self.upsert_statement_by_actor_index(
+            grantor,
+            &id,
+            StatementKind::ActorCapabilityRevocation,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -1021,6 +1075,12 @@ impl StatementStore for FilesystemStore {
             created_at,
             body.supersedes(),
             KeySurface::Operational,
+        )?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorKeyRotation,
+            created_at,
         )?;
 
         Ok(id)
@@ -1072,6 +1132,12 @@ impl StatementStore for FilesystemStore {
             created_at,
             KeySurface::Operational,
         )?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorKeyRevocation,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -1121,6 +1187,12 @@ impl StatementStore for FilesystemStore {
             created_at,
             body.supersedes(),
             KeySurface::Attestation,
+        )?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorEmergencyKeyRotation,
+            created_at,
         )?;
 
         Ok(id)
@@ -1172,6 +1244,12 @@ impl StatementStore for FilesystemStore {
             created_at,
             KeySurface::Attestation,
         )?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorEmergencyKeyRevocation,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -1215,6 +1293,12 @@ impl StatementStore for FilesystemStore {
         let body = statement.unsigned().body();
         let created_at = statement.unsigned().created_at();
         self.upsert_attestation_add_index(actor, &id, body.new_key(), created_at)?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorAttestationKeyAdd,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -1307,6 +1391,12 @@ impl StatementStore for FilesystemStore {
         atomic_write(&path, &bytes)?;
 
         self.upsert_attestation_revocation_index(actor, &id, body.revoked_key(), created_at)?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorAttestationKeyRevocation,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -1408,6 +1498,12 @@ impl StatementStore for FilesystemStore {
         atomic_write(&path, &bytes)?;
 
         self.upsert_attestation_threshold_change_index(actor, &id, new_threshold, created_at)?;
+        self.upsert_statement_by_actor_index(
+            actor,
+            &id,
+            StatementKind::ActorAttestationThresholdChange,
+            created_at,
+        )?;
 
         Ok(id)
     }
@@ -1535,6 +1631,61 @@ impl FilesystemStore {
                     serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
                         id: object.to_string(),
                         reason: CorruptReason::Parse(format!("invalid version tag index: {error}")),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
+    fn upsert_statement_by_actor_index(
+        &self,
+        actor: &ActorId,
+        statement_id: &StatementId,
+        kind: StatementKind,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let path = self.shard_path(STATEMENTS_BY_ACTOR_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<
+                    statements_by_actor::StatementByActorIndexFile,
+                >(&bytes)
+                .map_err(|error| StoreError::Corrupt {
+                    id: actor.to_string(),
+                    reason: CorruptReason::Parse(format!(
+                        "invalid statements_by_actor index: {error}"
+                    )),
+                })?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    statements_by_actor::StatementByActorIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
+
+            let updated = index.upsert(statement_id, kind, created_at);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn read_statement_by_actor_index(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Option<statements_by_actor::StatementByActorIndexFile>, StoreError> {
+        let path = self.shard_path(STATEMENTS_BY_ACTOR_DIR, actor.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: statements_by_actor::StatementByActorIndexFile =
+                    serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                        id: actor.to_string(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid statements_by_actor index: {error}"
+                        )),
                     })?;
                 Ok(Some(index))
             }
@@ -2545,6 +2696,18 @@ impl CapabilityResolver for FilesystemStore {
             return Ok(Vec::new());
         };
         index.into_heads(object)
+    }
+}
+
+impl StatementByActorResolver for FilesystemStore {
+    fn list_statements_by_actor(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Vec<StatementByActor>, StoreError> {
+        let Some(index) = self.read_statement_by_actor_index(actor)? else {
+            return Ok(Vec::new());
+        };
+        index.into_summaries(actor)
     }
 }
 
@@ -5469,6 +5632,119 @@ mod tests {
                 "branch-{index} should be in index"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn list_statements_by_actor_unknown_actor_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        assert!(store.list_statements_by_actor(&actor)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn list_statements_by_actor_aggregates_kinds_in_chronological_order() -> TestResult {
+        // One actor signs three different envelope kinds at different
+        // timestamps. The per-actor index should pick all three up and
+        // return them sorted by (created_at, statement_id) ascending.
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+
+        let revision = signed_revision(actor.clone())?;
+        let revision_id = store.put_object_revision(&revision)?;
+
+        let branch = signed_branch(
+            actor.clone(),
+            object,
+            "head",
+            StatementId::from_sha256_digest([0xAA; 32]),
+            None,
+            Timestamp::from_seconds(timestamp().seconds() + 1),
+        )?;
+        let branch_id = store.put_object_branch(&branch)?;
+
+        let trusted = trusted_actor_id();
+        let trust = signed_actor_trust(
+            actor.clone(),
+            trusted,
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            Timestamp::from_seconds(timestamp().seconds() + 2),
+        )?;
+        let trust_id = store.put_actor_trust(&trust)?;
+
+        let summaries = store.list_statements_by_actor(&actor)?;
+        assert_eq!(summaries.len(), 3);
+        assert_eq!(summaries[0].statement_id, revision_id);
+        assert_eq!(summaries[0].kind, StatementKind::ObjectRevision);
+        assert_eq!(summaries[1].statement_id, branch_id);
+        assert_eq!(summaries[1].kind, StatementKind::ObjectBranch);
+        assert_eq!(summaries[2].statement_id, trust_id);
+        assert_eq!(summaries[2].kind, StatementKind::ActorTrust);
+        Ok(())
+    }
+
+    #[test]
+    fn list_statements_by_actor_isolates_per_actor() -> TestResult {
+        // Two distinct actors each sign one statement; each actor's
+        // index returns only their own.
+        let (_dir, store) = open_temp_store()?;
+        let actor_a = fresh_genesis().actor_id();
+        let actor_b = trusted_actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+
+        let a_branch = signed_branch(
+            actor_a.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([0x01; 32]),
+            None,
+            timestamp(),
+        )?;
+        let a_branch_id = store.put_object_branch(&a_branch)?;
+
+        let b_trust = signed_actor_trust(
+            actor_b.clone(),
+            actor_a.clone(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+            timestamp(),
+        )?;
+        let b_trust_id = store.put_actor_trust(&b_trust)?;
+
+        let a_list = store.list_statements_by_actor(&actor_a)?;
+        assert_eq!(a_list.len(), 1);
+        assert_eq!(a_list[0].statement_id, a_branch_id);
+
+        let b_list = store.list_statements_by_actor(&actor_b)?;
+        assert_eq!(b_list.len(), 1);
+        assert_eq!(b_list[0].statement_id, b_trust_id);
+        Ok(())
+    }
+
+    #[test]
+    fn list_statements_by_actor_index_path_is_sharded_on_actor() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let signed = signed_revision(actor.clone())?;
+        store.put_object_revision(&signed)?;
+
+        let shard1 = &actor.as_str()[3..5];
+        let shard2 = &actor.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(STATEMENTS_BY_ACTOR_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{actor}.json"));
+        assert!(
+            expected.exists(),
+            "expected statements_by_actor index at {expected:?}"
+        );
         Ok(())
     }
 }
