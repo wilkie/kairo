@@ -26,6 +26,7 @@ import {
   statementType,
 } from '@kairo/object-model';
 import { LocalityBadge, Panel, StatusBadge } from '@kairo/ui';
+import { ValidationBadge } from '@kairo/validation-viewer';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -67,10 +68,18 @@ function StatementBody({ value }: { value: StatementValue }) {
     <>
       <Panel
         title={kindLabel}
-        description="Typed summary derived from the body's kind discriminator."
+        description={
+          <>
+            Typed summary derived from the body&rsquo;s kind discriminator. This page does not
+            run verification &mdash; navigate to the owning object to see the daemon&rsquo;s
+            validation status (per <code>WEB_CLIENT.md</code> &sect;10, raw statement views must
+            never imply validity).
+          </>
+        }
         actions={
           <Stack direction="row" spacing={1}>
             <StatusBadge tone="info">{kind ?? 'unknown'}</StatusBadge>
+            <ValidationBadge status="unverified" />
             <LocalityBadge state="local" />
           </Stack>
         }

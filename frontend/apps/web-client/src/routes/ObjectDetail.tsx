@@ -20,15 +20,17 @@ import {
   useObject,
   useRevisions,
   useTrustAbout,
+  useVerifyObject,
   useVersionTags,
   type BranchTipDto,
   type CapabilityHeadDto,
   type ObjectGenesisStatementJson,
   type RevisionHeadDto,
   type TrustHeadDto,
+  type ValidationResult,
   type VersionTagHeadDto,
 } from '@kairo/api-client';
-import { canonicalizeId, truncateId } from '@kairo/object-model';
+import { canonicalizeId, truncateId, validationStatusDescription } from '@kairo/object-model';
 import {
   EmptyState,
   LocalityBadge,
@@ -37,6 +39,7 @@ import {
   Table,
   type TableColumn,
 } from '@kairo/ui';
+import { ValidationBadge, ValidationIssueList } from '@kairo/validation-viewer';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -56,6 +59,7 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
   // passing to the api-client hooks.
   const objectId = canonicalizeId('object', id);
   const objectQ = useObject(objectId);
+  const verifyQ = useVerifyObject(objectId);
   const branchesQ = useBranches(objectId);
   const tagsQ = useVersionTags(objectId);
   const revisionsQ = useRevisions(objectId);
@@ -76,6 +80,25 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
       <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
         {objectId}
       </Box>
+
+      <Panel
+        title="Validation"
+        description="Live read of /api/v1/verify-object."
+        actions={
+          <Stack direction="row" spacing={1}>
+            {verifyQ.data !== undefined ? (
+              <ValidationBadge status={verifyQ.data.status} />
+            ) : (
+              <ValidationBadge status="unverified" />
+            )}
+            <LocalityBadge state="local" />
+          </Stack>
+        }
+      >
+        <QueryStatusBoundary query={verifyQ}>
+          {(data) => <ValidationContent data={data} />}
+        </QueryStatusBoundary>
+      </Panel>
 
       <Panel
         title="Genesis"
@@ -150,6 +173,39 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
 
 // ---------------------------------------------------------------------------
 // Per-section views
+
+function ValidationContent({ data }: { data: ValidationResult }) {
+  const headRefs: ReactNode[] = [];
+  if (data.revision_statement_id !== undefined && data.revision_statement_id !== null) {
+    headRefs.push(
+      <KeyValue
+        key="revision"
+        label="Resolved revision"
+        value={<IdLink kind="statement" id={data.revision_statement_id} />}
+      />,
+    );
+  }
+  if (data.branch_name !== undefined && data.branch_name !== null) {
+    headRefs.push(<KeyValue key="branch" label="Resolved branch" value={data.branch_name} />);
+  }
+  return (
+    <Stack spacing={2}>
+      <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+        {validationStatusDescription(data.status)}
+      </Typography>
+      {headRefs}
+      <Box>
+        <Typography variant="body2" sx={{ color: 'text.secondary', mb: 1 }}>
+          {data.issues.length} issue{data.issues.length === 1 ? '' : 's'}
+        </Typography>
+        <ValidationIssueList
+          issues={data.issues}
+          renderRef={(kind, id) => <IdLink kind={kind} id={id} />}
+        />
+      </Box>
+    </Stack>
+  );
+}
 
 function GenesisFields({ data }: { data: ObjectGenesisStatementJson }) {
   const body = data.body;

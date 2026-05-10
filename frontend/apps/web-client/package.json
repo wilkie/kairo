@@ -17,6 +17,7 @@
     "@kairo/api-client": "workspace:*",
     "@kairo/object-model": "workspace:*",
     "@kairo/ui": "workspace:*",
+    "@kairo/validation-viewer": "workspace:*",
     "@mui/icons-material": "^6.3.0",
     "@mui/material": "^6.3.0",
     "@tanstack/react-query": "^5.66.0",
