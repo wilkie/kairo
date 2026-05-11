@@ -180,6 +180,14 @@ pub struct VersionInfo {
 /// V1 fields only: federation, runtime, and task counts are
 /// omitted because those subsystems are post-v1 (see
 /// `specs/API.md` §11.2 v1 surface note).
+///
+/// `write_surface` lists the statement kinds the daemon's
+/// `POST /api/v1/statements` dispatcher will accept. Added in
+/// Slice 5 of `PHASE_2_DAEMON_WRITES.md` to surface Phase A's
+/// expansion to write-mode without changing `daemon_running`
+/// semantics. `#[serde(default)]` keeps older client builds
+/// compatible with newer daemons (the field decodes as an empty
+/// list); newer clients reading older daemons see the same.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct StatusInfo {
     pub daemon_running: bool,
@@ -187,6 +195,8 @@ pub struct StatusInfo {
     pub store_schema_version: String,
     pub pid: u32,
     pub daemon_version: String,
+    #[serde(default)]
+    pub write_surface: Vec<String>,
 }
 
 /// Validation status summarizing a `verify-object` result.

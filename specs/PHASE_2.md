@@ -1095,31 +1095,41 @@ Shape is locked in `DECISIONS.md` §13; slice plan in
 
 Bullets, by slice (see `PHASE_2_DAEMON_WRITES.md` §3):
 
-- [ ] Slice 1 — `kairo-web` POST-block guard. Proxy filters
+- [x] Slice 1 — `kairo-web` POST-block guard. Proxy filters
       methods to `[GET, HEAD]`; everything else returns 405 with
       `Allow: GET, HEAD`. Security commitment that lands *before*
       the daemon accepts writes, so there's no window where the
       browser proxy passes POST through to an unauthenticated
       daemon write surface.
-- [ ] Slice 2 — Trust grant end-to-end. `POST /api/v1/statements`
+- [x] Slice 2 — Trust grant end-to-end. `POST /api/v1/statements`
       accepts `ActorTrust` only; daemon-client gains
       `put_statement`; `kairo trust grant | block | withdraw`
       route through `cli::dispatch` (probe-and-fall-back).
-- [ ] Slice 3 — Object revisions, branches, version-tags. Open
+- [x] Slice 3 — Object revisions, branches, version-tags. Open
       the dispatcher to `ObjectRevision`, `ObjectBranch`,
       `ObjectVersionTag`; CLI dispatch wired for `revision create`,
       `branch set`, `tag bind`.
-- [ ] Slice 4 — Object genesis + capabilities. Dispatcher opens
+- [x] Slice 4 — Object genesis + capabilities. Dispatcher opens
       to `ObjectGenesis`, `ActorCapabilityGrant`,
       `ActorCapabilityRevocation`; CLI dispatch wired for
       `object create`, `capability grant`, `capability revoke`.
       `actor create` stays direct (keystore-generation is not a
       daemon concern).
-- [ ] Slice 5 — CLI dispatch cutover + integration polish.
+- [x] Slice 5 — CLI dispatch cutover + integration polish.
       `CLI.md §3.3` flipped from "writes always direct" to
-      per-command table; every write command gets both `--direct`
+      per-command table; every write command has both `--direct`
       and `--daemon` integration coverage; `kairo daemon status`
-      reports the new write surface.
+      reports the live write surface (`write_surface` field).
+
+**Status: shipped.** Phase A's five slices have landed. The new
+surface is `POST /api/v1/statements` (single generic write
+endpoint, polymorphic on `body.type`); the dispatcher's accepted-
+kind allowlist is `SUPPORTED_WRITE_KINDS` in
+`kairo_daemon::api::handlers::statements`, surfaced live through
+`GET /api/v1/status`'s `write_surface` field. Phase B (signed-
+request auth + capability enforcement + `kairo-web` POST
+pass-through) is a separate follow-up; its wire format is locked
+when that work begins.
 
 **Out of Phase A (deferred to Phase B):** per-request auth,
 capability enforcement on writes, `kairo-web` POST pass-through,

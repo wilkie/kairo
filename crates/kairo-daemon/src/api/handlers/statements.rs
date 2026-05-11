@@ -39,6 +39,21 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
+/// Statement kinds the `POST /api/v1/statements` dispatcher
+/// currently accepts (Phase A; see `PHASE_2_DAEMON_WRITES.md`).
+/// Single-source-of-truth for the kind list — `GET /status`
+/// reads this directly, and adding a kind to the dispatcher
+/// match below means adding it here too.
+pub const SUPPORTED_WRITE_KINDS: &[&str] = &[
+    "ActorTrust",
+    "ObjectRevision",
+    "ObjectBranch",
+    "ObjectVersionTag",
+    "ObjectGenesis",
+    "ActorCapabilityGrant",
+    "ActorCapabilityRevocation",
+];
+
 #[utoipa::path(
     get,
     path = "/api/v1/statements/{id}",
@@ -80,8 +95,11 @@ pub async fn handler(
 /// `POST /api/v1/statements` — Phase A's generic write endpoint.
 ///
 /// Accepts a `SignedStatement<*>` JSON envelope and routes on the
-/// `type` discriminator. Slice 2 dispatches `ActorTrust` only;
-/// every other kind returns 415 `unsupported_statement_kind`.
+/// `type` discriminator. The current allowlist lives in
+/// `SUPPORTED_WRITE_KINDS`; everything else returns 415
+/// `unsupported_statement_kind`. `GET /api/v1/status` reads from
+/// the same const so the inspector / operator can see the live
+/// surface without parsing the dispatcher source.
 ///
 /// The handler runs the same verification the direct-mode CLI
 /// runs (`verify_envelope_statement` against the daemon's
@@ -96,10 +114,12 @@ pub async fn handler(
     tag = "statements",
     operation_id = "putStatement",
     request_body(
-        description = "Signed statement envelope. Phase A currently accepts ActorTrust, \
-            ObjectRevision, ObjectBranch, and ObjectVersionTag. The schema annotation \
-            shows one example (ActorTrust); the daemon dispatches on the `type` \
-            discriminator inside the body. Polymorphic-body schema is post-Phase A.",
+        description = "Signed statement envelope. Phase A accepts the kinds listed in \
+            `GET /api/v1/status`'s `write_surface` field (ActorTrust, ObjectRevision, \
+            ObjectBranch, ObjectVersionTag, ObjectGenesis, ActorCapabilityGrant, \
+            ActorCapabilityRevocation). The schema annotation shows one example \
+            (ActorTrust); the daemon dispatches on the `type` discriminator inside \
+            the body. Polymorphic-body schema is post-Phase A.",
         content_type = "application/json",
         content = ActorTrustStatementJson,
     ),

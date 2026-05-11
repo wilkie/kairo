@@ -86,14 +86,22 @@ fn run_status(paths: &StorePaths, require_daemon: bool) -> Result<String, CliErr
     });
 
     match probe_result {
-        Some(status) => Ok(format!(
-            "kairo-daemon: running\nsocket  = {}\npid     = {}\nstore   = {}\nschema  = {}\nversion = {}\n",
-            socket_path.display(),
-            status.pid,
-            status.store_path,
-            status.store_schema_version,
-            status.daemon_version,
-        )),
+        Some(status) => {
+            let write_surface = if status.write_surface.is_empty() {
+                "(read-only)".to_owned()
+            } else {
+                status.write_surface.join(",")
+            };
+            Ok(format!(
+                "kairo-daemon: running\nsocket  = {}\npid     = {}\nstore   = {}\nschema  = {}\nversion = {}\nwrites  = {}\n",
+                socket_path.display(),
+                status.pid,
+                status.store_path,
+                status.store_schema_version,
+                status.daemon_version,
+                write_surface,
+            ))
+        }
         None => {
             if require_daemon {
                 Err(CliError::DaemonUnavailable {

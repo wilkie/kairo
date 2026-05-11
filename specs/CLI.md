@@ -115,7 +115,8 @@ The CLI should support:
 ```
 
 **[v1]** behavior — locked in `DECISIONS.md` §10.6 (probe-and-
-fall-back):
+fall-back) and extended by `DECISIONS.md` §13 (Phase A daemon
+writes):
 
 1. **Default (no mode flag).** The CLI probes the Unix socket at
    `<store>/daemon.sock`, sends `GET /api/v1/status`, and uses
@@ -125,11 +126,30 @@ fall-back):
    `connect(2)` error returns exit 9 (`daemon unavailable`).
 3. **`--direct` / `--offline`** force direct mode and never touch
    the socket.
-4. **Writes always stay direct.** Signing/persisting commands
-   (`actor create`, `object create`, `revision create`, `branch
-   set`, `tag bind`, `trust grant`, `capability grant`, etc.)
-   ignore the daemon entirely in v1 — there are no write
-   endpoints. The daemon is read-only (DECISIONS.md §10.4).
+4. **Daemon write surface (Phase A).** Phase A of the daemon
+   write-path (`PHASE_2_DAEMON_WRITES.md`) opens the dispatcher
+   for the kinds listed in `GET /api/v1/status`'s
+   `write_surface` field. CLI commands that produce those kinds
+   follow the same probe-and-fall-back rules as reads:
+
+   | CLI verb                  | Statement kind          | Dispatch path                |
+   |---------------------------|-------------------------|------------------------------|
+   | `trust grant/block/withdraw`           | `ActorTrust`               | probe → daemon, else direct |
+   | `revision create`                      | `ObjectRevision`           | probe → daemon, else direct |
+   | `branch set`                           | `ObjectBranch`             | probe → daemon, else direct |
+   | `tag bind/revoke`                      | `ObjectVersionTag`         | probe → daemon, else direct |
+   | `object create`                        | `ObjectGenesis`            | probe → daemon, else direct |
+   | `capability grant/revoke`              | `ActorCapability*`         | probe → daemon, else direct |
+   | `actor create`                         | `ActorGenesis` (unsigned)  | **direct only** — keystore-generation step bundled into the verb is not a daemon concern. Phase A-permanent exception. |
+   | `actor rotate-key`, `revoke-key`, attestation flows | key-surface kinds | **direct only** in Phase A; a later slice opens the dispatcher to those kinds. |
+   | `revision import`, `object import`     | (replays a pre-signed envelope; no new statement) | **direct only**; matches the v1 trust model that side-loading goes straight to the store. |
+
+   The local keystore is the only signing surface in either
+   mode. Even in daemon mode the CLI opens the keystore, builds
+   and signs the envelope locally, then ships the signed
+   statement to the daemon (`DECISIONS.md §13` sub-decision 3).
+   Per-request auth on the daemon side is Phase B work.
+
 5. **Federation, build, run, reproduce, task, sync, fetch.** Not
    shipped in v1 in either mode; they exit 13 (`unsupported
    feature`) until the relevant phases land.

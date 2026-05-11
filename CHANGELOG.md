@@ -18,6 +18,52 @@ rather than per-commit.
 
 ### Added
 
+- **Daemon write-path Phase A (`PHASE_2.md` §15,
+  `PHASE_2_DAEMON_WRITES.md`).** The Phase 2 §2 read-only daemon
+  gains a single generic write endpoint, `POST /api/v1/statements`,
+  that accepts a `SignedStatement<*>` JSON envelope and dispatches
+  on the `type` discriminator. The Phase A allowlist covers seven
+  kinds: `ActorTrust`, `ObjectRevision`, `ObjectBranch`,
+  `ObjectVersionTag`, `ObjectGenesis`, `ActorCapabilityGrant`,
+  `ActorCapabilityRevocation`. Other kinds (attestation-key
+  surfaces, key rotation/revocation) stay direct-only in Phase A.
+  Verification re-runs the same `verify_envelope_statement`
+  (and `verify_signature` for genesis) the direct-mode CLI uses;
+  the store-side `put_*` paths are unchanged.
+- **CLI dispatch for write commands (`CLI.md` §3.3).** `kairo
+  trust grant/block/withdraw`, `revision create`, `branch set`,
+  `tag bind/revoke`, `object create`, `capability grant/revoke`
+  now route through `cli::dispatch::resolve` — probe the
+  `<store>/daemon.sock` socket and post the locally-signed
+  envelope through the daemon if reachable, else fall through to
+  the existing direct path. Output text is byte-identical across
+  modes. The keystore stays the local signing surface either
+  way; signed envelopes go over the wire, never private keys.
+  `kairo actor create` remains direct-only by design (Phase
+  A-permanent exception — keystore-generation is not a daemon
+  concern).
+- **`kairo daemon status` reports the live write surface.** The
+  `StatusInfo` DTO grows a `write_surface: Vec<String>` field
+  (single-sourced from the daemon's dispatcher allowlist); the
+  CLI prints `writes  = <kinds joined by ,>` so operators and
+  the inspector can tell which kinds the daemon currently
+  accepts POSTs for. `#[serde(default)]` keeps older clients
+  forward-compatible.
+- **`kairo-web` proxy POST-block during Phase A
+  (`DECISIONS.md §13` sub-decision 5).** The TCP front-end
+  filters request methods to `[GET, HEAD]` and returns `405
+  Method Not Allowed` with `Allow: GET, HEAD` for everything
+  else, before opening a connection to the daemon. Prevents
+  browser-side XSS or DNS-rebinding from tunnelling a write
+  through to the daemon's unauthenticated write surface during
+  Phase A; lifted when Phase B's signed-request envelope lands.
+- **`DECISIONS.md §13` — daemon write-path MVP shape locked.**
+  Eight sub-decisions, mirroring §10's daemon-MVP pattern:
+  two-phase split (writes-first under filesystem-perms, signed-
+  request auth later), single generic POST endpoint, signing
+  stays client-side, data-model-only validation in Phase A,
+  kairo-web POST-block, dispatch parity with reads, no wire-
+  format pre-commits for Phase B, out-of-scope list.
 - **Cold-storage attestation keys (`ACTORS.md` §5.5).** New per-actor
   attestation key set declared in `ActorGenesis.attestation_keys`,
   used to sign emergency key events without touching the operational

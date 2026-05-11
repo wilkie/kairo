@@ -1129,3 +1129,87 @@ fn smoke_seed_two_hop_delegation_round_trips_through_daemon() {
     let _ = daemon.wait();
     drop(dir);
 }
+
+// Slice 5 audit: `tag revoke` is a separate dispatcher arm from
+// `tag bind`. The Slice 3 test only exercised bind; this test
+// covers the revoke arm end-to-end through `--daemon`. `trust
+// withdraw` is intentionally not given a dedicated test —
+// withdraw shares `run_trust_decide` with grant/block, which
+// Slice 2 already exercises in daemon mode.
+
+#[test]
+fn tag_revoke_daemon_mode_chains_on_prior_bind() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:slice5-tag-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let actor_id = actor.actor_id.to_string();
+    let object_id = object.object_id.to_string();
+    let revision_id = revision.statement_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    // Bind first so revoke has something to chain off of.
+    let bind = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "tag",
+        "bind",
+        "--actor",
+        &actor_id,
+        "--object",
+        &object_id,
+        "--version",
+        "1.0.0",
+        "--revision",
+        &revision_id,
+    ]);
+    assert!(
+        bind.status.success(),
+        "tag bind failed: stderr = {}",
+        String::from_utf8_lossy(&bind.stderr)
+    );
+
+    let revoke = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "tag",
+        "revoke",
+        "--actor",
+        &actor_id,
+        "--object",
+        &object_id,
+        "--version",
+        "1.0.0",
+    ]);
+    assert!(
+        revoke.status.success(),
+        "tag revoke --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&revoke.stderr)
+    );
+    let revoke_out = String::from_utf8(revoke.stdout).expect("utf-8");
+    assert!(
+        revoke_out.contains("revoke tag"),
+        "revoke: {revoke_out}"
+    );
+    assert!(
+        revoke_out.contains("target = (revoked)"),
+        "revoke: {revoke_out}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}

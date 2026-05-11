@@ -98,6 +98,15 @@ fn daemon_start_status_stop_round_trip() {
     let out = String::from_utf8_lossy(&status.stdout);
     assert!(out.contains("running"), "status stdout: {out}");
     assert!(out.contains("schema  = 1"), "status stdout: {out}");
+    // Slice 5 (Phase A): status reports the live write surface.
+    // ActorTrust is the smallest kind in the allowlist; pinning
+    // the full list would force this test to track each future
+    // dispatcher expansion, so we just confirm the field is
+    // populated.
+    assert!(
+        out.contains("writes  = ") && out.contains("ActorTrust"),
+        "status stdout missing write surface: {out}"
+    );
 
     // stop --wait: should drain in well under 10s
     let stop = run_kairo(&[

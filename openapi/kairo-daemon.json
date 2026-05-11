@@ -415,10 +415,10 @@
           "statements"
         ],
         "summary": "`POST /api/v1/statements` — Phase A's generic write endpoint.",
-        "description": "Accepts a `SignedStatement<*>` JSON envelope and routes on the\n`type` discriminator. Slice 2 dispatches `ActorTrust` only;\nevery other kind returns 415 `unsupported_statement_kind`.\n\nThe handler runs the same verification the direct-mode CLI\nruns (`verify_envelope_statement` against the daemon's\nresolver), then persists via the store's typed `put_*`. No\nper-request auth: Phase A's trust model is the Unix socket's\nfilesystem permissions, identical to the v1 read endpoints.\nSigned-request auth is locked for Phase B (`DECISIONS.md §13`\nsub-decision 7).",
+        "description": "Accepts a `SignedStatement<*>` JSON envelope and routes on the\n`type` discriminator. The current allowlist lives in\n`SUPPORTED_WRITE_KINDS`; everything else returns 415\n`unsupported_statement_kind`. `GET /api/v1/status` reads from\nthe same const so the inspector / operator can see the live\nsurface without parsing the dispatcher source.\n\nThe handler runs the same verification the direct-mode CLI\nruns (`verify_envelope_statement` against the daemon's\nresolver), then persists via the store's typed `put_*`. No\nper-request auth: Phase A's trust model is the Unix socket's\nfilesystem permissions, identical to the v1 read endpoints.\nSigned-request auth is locked for Phase B (`DECISIONS.md §13`\nsub-decision 7).",
         "operationId": "putStatement",
         "requestBody": {
-          "description": "Signed statement envelope. Phase A currently accepts ActorTrust, ObjectRevision, ObjectBranch, and ObjectVersionTag. The schema annotation shows one example (ActorTrust); the daemon dispatches on the `type` discriminator inside the body. Polymorphic-body schema is post-Phase A.",
+          "description": "Signed statement envelope. Phase A accepts the kinds listed in `GET /api/v1/status`'s `write_surface` field (ActorTrust, ObjectRevision, ObjectBranch, ObjectVersionTag, ObjectGenesis, ActorCapabilityGrant, ActorCapabilityRevocation). The schema annotation shows one example (ActorTrust); the daemon dispatches on the `type` discriminator inside the body. Polymorphic-body schema is post-Phase A.",
           "content": {
             "application/json": {
               "schema": {
@@ -1405,7 +1405,7 @@
       },
       "StatusInfo": {
         "type": "object",
-        "description": "Response body for `GET /api/v1/status`.\n\nV1 fields only: federation, runtime, and task counts are\nomitted because those subsystems are post-v1 (see\n`specs/API.md` §11.2 v1 surface note).",
+        "description": "Response body for `GET /api/v1/status`.\n\nV1 fields only: federation, runtime, and task counts are\nomitted because those subsystems are post-v1 (see\n`specs/API.md` §11.2 v1 surface note).\n\n`write_surface` lists the statement kinds the daemon's\n`POST /api/v1/statements` dispatcher will accept. Added in\nSlice 5 of `PHASE_2_DAEMON_WRITES.md` to surface Phase A's\nexpansion to write-mode without changing `daemon_running`\nsemantics. `#[serde(default)]` keeps older client builds\ncompatible with newer daemons (the field decodes as an empty\nlist); newer clients reading older daemons see the same.",
         "required": [
           "daemon_running",
           "store_path",
@@ -1430,6 +1430,12 @@
           },
           "store_schema_version": {
             "type": "string"
+          },
+          "write_surface": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
