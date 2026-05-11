@@ -791,3 +791,164 @@ Affected specs:
   exists for the command."
 - `WEB_CLIENT.md` — the read-only-inspector framing stays; the
   POST-block in `kairo-web` is documented as a Phase A invariant.
+
+---
+
+## 14. Daemon Write-Path Phase B Auth Shape
+
+Decision: Phase B of the daemon write-path (`DAEMON.md §18.1`,
+`API.md §9.4`) layers two mechanisms on top of Phase A's
+existing `POST /api/v1/statements` surface:
+
+1. **Authentication** — every write request carries a signed
+   envelope; the daemon resolves the actor and verifies the
+   signature against the actor's active signing key, the same
+   identity primitive `kairo-statement::verify` already uses.
+2. **Authorization** — for kinds whose semantics require
+   cross-actor authority (`ObjectRevision`, `ObjectBranch`,
+   `ObjectVersionTag`, `ActorCapabilityGrant`), the daemon runs
+   `evaluate_capability` at request time to confirm the signer
+   either is the object's root authority or holds a covering
+   grant. Kinds whose authority is inherent in the signer
+   identity (`ActorTrust`, `ObjectGenesis`,
+   `ActorCapabilityRevocation`) skip the capability lookup but
+   still enforce their built-in identity invariants.
+
+Phase A's filesystem-perms-only trust model goes away on the
+write surface once Phase B ships. The read surface stays
+unauthenticated — its trust model is unchanged (loopback Unix
+socket + filesystem permissions).
+
+Eight sub-decisions for Phase B, locked together:
+
+1. **Two-mechanism split (authn + authz).** Authentication is
+   ed25519-signed-request envelope verification; authorization
+   is capability-statement lookup. Both run server-side in the
+   write dispatcher *before* the existing `verify_envelope_statement`
+   + `put_*` pipeline. Failure on either layer returns a typed
+   error envelope (`401 unauthorized` for authn, `403 forbidden`
+   for authz) — the write never reaches the store.
+
+2. **Wire format: `Authorization: KairoActor1` header with
+   structured params.** The CLI emits:
+
+   ```http
+   Authorization: KairoActor1 actor=<actor-id>, key_id=<key-id>,
+     timestamp=<i64>, nonce=<32-hex>, signature=<base64>
+   ```
+
+   `actor` and `key_id` are wire-stable identifiers; `timestamp`
+   is i64 epoch seconds (matches `ActorTrust.created_at` and the
+   rest of the protocol's binary canonical form); `nonce` is 16
+   random bytes hex-encoded; `signature` is the raw 64-byte
+   ed25519 signature, base64-encoded. The scheme name carries a
+   version tag (`KairoActor1`) so the wire format can evolve
+   without colliding with the post-Phase B successor.
+
+   Per-field separate headers (`X-Kairo-Actor`, etc.) and
+   single-base64-envelope alternatives were rejected: the
+   `Authorization` form is industry-standard and works with off-
+   the-shelf HTTP debugging tools; the structured-params layout
+   is straightforward to parse and human-readable.
+
+3. **Signing string: domain-prefixed canonical concatenation.**
+   The client constructs:
+
+   ```text
+   kairo-daemon-write-v1\n
+   <method>\n
+   <path-and-query>\n
+   <body-hash-hex>\n
+   <timestamp>\n
+   <nonce>\n
+   ```
+
+   The domain prefix (`kairo-daemon-write-v1`) prevents a
+   signature captured from this protocol from being replayed in
+   any future Kairo signing context. The trailing newline on
+   every field eliminates concatenation ambiguity. The
+   `path-and-query` is the request's `:path` exactly as it
+   appears on the wire (no normalization), so percent-encoding
+   and query-string ordering are pinned client-side.
+
+4. **Body hash: SHA-256 of the raw request body, hex-encoded.**
+   Always present in the signing string, including for empty
+   bodies (the SHA-256 of zero bytes — a fixed constant). No
+   per-method special-casing. Hex output matches the
+   canonical-bytes "hash of N bytes" rendering used elsewhere
+   in the protocol.
+
+5. **Replay defense: timestamp-only window of ±60 seconds.**
+   The daemon rejects requests whose `timestamp` is more than
+   60 seconds away from `now()`. No server-side nonce cache in
+   Phase B — the nonce is in the signed input so a stateful
+   replay cache can be added later without a wire-format
+   change. Phase B's threat model is the same loopback Unix
+   socket the v1 reads already trust; a 60s capture-and-replay
+   window is acceptable. A stateful cache is forward-compatible
+   future work.
+
+6. **Authorization scope.** Per-kind enforcement, summarized:
+
+   | Kind                          | Server-side check                                                         |
+   |-------------------------------|---------------------------------------------------------------------------|
+   | `ActorTrust`                  | signer == `body.actor` (trust is first-person)                            |
+   | `ObjectGenesis`               | signer == `body.created_by` (genesis = self-attesting authority)          |
+   | `ObjectRevision`              | `evaluate_capability(grantee=signer, scope=Object(body.object), kind=ObjectRevision, at=now)` returns `Held`, *or* signer is the object's `created_by` root authority |
+   | `ObjectBranch`                | as `ObjectRevision`, with `kind=ObjectBranch`                             |
+   | `ObjectVersionTag`            | as `ObjectRevision`, with `kind=ObjectVersionTag`                         |
+   | `ActorCapabilityGrant`        | recursive: signer (the grantor) must hold the granted capability *with* `delegable=true`, *or* be the object's root authority |
+   | `ActorCapabilityRevocation`   | signer == grantor of the original grant (already enforced by the direct-mode CLI; the daemon mirrors it) |
+
+   Root-authority match short-circuits the capability lookup —
+   the same-actor-write case is the common path and shouldn't
+   need to walk the chain.
+
+7. **`kairo-web` POST-block stays.** Phase B does not lift the
+   proxy's method filter. The web inspector is anonymous-public-
+   viewer per `DECISIONS.md §12` sub-decision 2 — there is no
+   UI for browser writes, and designing web-server identity
+   (operator-configured actor key, delegated capability,
+   forwarded user signatures) is its own design-and-slice unit.
+   Future "web inspector login + browser writes" lifts the
+   POST-block as part of that work, not as a side effect of
+   Phase B. This decision keeps Phase B's blast radius to one
+   crate boundary (the CLI ↔ daemon channel).
+
+8. **Out of scope for Phase B.** Web auth (per (7)); federation
+   peer auth (Phase 2 §4 work; uses the same actor-signing
+   primitive but the framing is federation-shaped); mutual TLS;
+   per-actor rate limiting; nonce cache (deferred future work
+   per (5)); attestation-surface request signing (the four
+   emergency body kinds stay direct-only in Phase A and Phase
+   B — operator-presented keys per `ACTORS.md §5.5.2`); browser-
+   side keystore; signing-key delegation to short-lived session
+   tokens.
+
+Rationale: same shape as §13 — narrow Phase B to "make the write
+surface auth-protected" without entangling other identity surfaces.
+Sub-decisions (2)–(5) lock the wire format precisely so the slice
+plan can build against concrete bytes; sub-decisions (6)–(8)
+fence the work so Phase B doesn't grow tendrils into web auth,
+federation, or attestation flows. Forward-compatibility comes
+from the `KairoActor1` scheme tag, the in-signing-string nonce
+(for future stateful caches), and the per-kind enforcement
+matrix (new kinds slot in without changing the wire format).
+
+Affected specs:
+
+- `PHASE_2.md` §15 — Phase B sub-section added under the
+  existing Phase A bullets.
+- `PHASE_2_DAEMON_AUTH.md` — new slice-plan doc paralleling
+  `PHASE_2_DAEMON_WRITES.md`.
+- `API.md` — §9.4 ("Post-v1 authentication direction") flips
+  from forward-pointer to current-implementation; §10's
+  endpoint-group table notes that `/statements` POST requires
+  the `Authorization: KairoActor1` envelope.
+- `DAEMON.md` §18.1 — the "[post-v1]" tag on signed-request
+  auth becomes "[Phase B]", with the wire format pinned to §14.
+- `CLI.md` §3.3 — daemon-mode write commands document that they
+  build the signed envelope from the local keystore; nothing
+  about the user-facing command shape changes.
+- `WEB_CLIENT.md` — the POST-block remains; cross-link to the
+  future "web inspector login" decision.

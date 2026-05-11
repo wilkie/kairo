@@ -1126,14 +1126,63 @@ surface is `POST /api/v1/statements` (single generic write
 endpoint, polymorphic on `body.type`); the dispatcher's accepted-
 kind allowlist is `SUPPORTED_WRITE_KINDS` in
 `kairo_daemon::api::handlers::statements`, surfaced live through
-`GET /api/v1/status`'s `write_surface` field. Phase B (signed-
-request auth + capability enforcement + `kairo-web` POST
-pass-through) is a separate follow-up; its wire format is locked
-when that work begins.
+`GET /api/v1/status`'s `write_surface` field.
 
-**Out of Phase A (deferred to Phase B):** per-request auth,
-capability enforcement on writes, `kairo-web` POST pass-through,
-mutation policy, batch writes.
+**Out of Phase A (now Phase B work):** per-request auth and
+capability enforcement on writes — both tracked in the Phase B
+sub-section below. `kairo-web` POST pass-through, mutation
+policy, and batch writes remain deferred beyond Phase B per
+`DECISIONS.md §14` sub-decision 7–8.
+
+#### 15.1 Phase B — signed-request auth + capability enforcement
+
+Phase A made writes work over the daemon's Unix socket under
+filesystem-perms-only trust. Phase B adds the locked-direction
+auth surface (`DAEMON.md §18.1`, `API.md §9.4`):
+
+- ed25519-signed request envelopes — the daemon resolves the
+  actor and verifies the signature against the active signing
+  key at the request's timestamp, the same primitive
+  `kairo-statement::verify` already uses.
+- Capability-statement enforcement on write kinds whose
+  semantics require cross-actor authority — `ObjectRevision`,
+  `ObjectBranch`, `ObjectVersionTag`, `ActorCapabilityGrant`.
+
+The read surface stays unauthenticated (loopback Unix socket +
+filesystem perms is unchanged for reads). `kairo-web`'s
+POST-block stays in place for the duration of Phase B; lifting
+it is a separate decision-and-slice unit tied to the web
+inspector's login design.
+
+Shape is locked in `DECISIONS.md` §14; slice plan in
+`specs/PHASE_2_DAEMON_AUTH.md`.
+
+Bullets, by slice (see `PHASE_2_DAEMON_AUTH.md` §3):
+
+- [ ] Slice 1 — Wire-format primitives. Pure module in
+      `kairo-daemon-client::auth` for signing-string assembly +
+      `Authorization` header build/parse. Fixed-fixture tests
+      pin the byte output; no daemon changes.
+- [ ] Slice 2 — Daemon-side authentication enforcement. Tower
+      layer parses + validates the `Authorization` header on
+      `POST /api/v1/statements`; CLI passes the local signing
+      key into the client so every daemon-mode write builds the
+      signed envelope. Authorization checks not yet enforced —
+      every authenticated request still passes through.
+- [ ] Slice 3 — Capability enforcement on object writes.
+      `evaluate_capability` runs server-side for
+      `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`.
+      Root-authority match short-circuits the chain walk.
+- [ ] Slice 4 — Capability enforcement on grant + revocation.
+      Recursive delegation check for `ActorCapabilityGrant`;
+      grantor-identity check for `ActorCapabilityRevocation`.
+- [ ] Slice 5 — Polish: status field, spec sweeps, smoke-seed
+      verification, CHANGELOG entry.
+
+**Out of Phase B (per `DECISIONS.md §14` sub-decision 8):** web
+auth, federation peer auth, mutual TLS, server-side nonce cache,
+per-actor rate limiting, attestation-surface request signing,
+browser-side keystore.
 
 **Why it matters:** every downstream surface that needs a single
 coordination layer for writes (federation, multi-actor workflows,
