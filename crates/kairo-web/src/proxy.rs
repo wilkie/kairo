@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{HeaderValue, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
@@ -50,12 +50,55 @@ impl ProxyState {
 /// Proxy handler. Mounted under `/api/v1/*path`. Forwards the
 /// browser's request to the daemon's Unix socket and streams the
 /// response back.
+///
+/// During the daemon write-path Phase A (DECISIONS.md §13), this
+/// proxy refuses every method other than `GET` and `HEAD` with a
+/// `405 Method Not Allowed`. The short-circuit happens before any
+/// daemon connection is opened, so an XSS or DNS-rebind that
+/// reaches the loopback port cannot tunnel a write through to the
+/// daemon's unauthenticated Phase A write surface.
 pub(crate) async fn handler(
     State(state): State<ProxyState>,
     request: Request<Body>,
 ) -> Result<Response<Body>, ProxyError> {
+    if !is_phase_a_allowed_method(request.method()) {
+        return Ok(method_not_allowed_response());
+    }
     let socket_path = Arc::clone(&state.daemon_socket);
     forward(socket_path.as_path(), request).await
+}
+
+/// Phase A method allowlist. Exactly `GET` and `HEAD`. Pinned to
+/// these two by `DECISIONS.md §13` sub-decision 5; widening this
+/// set lifts the POST-block invariant.
+fn is_phase_a_allowed_method(method: &Method) -> bool {
+    method == Method::GET || method == Method::HEAD
+}
+
+/// Build the `405 Method Not Allowed` response returned for any
+/// non-`GET`/`HEAD` method during Phase A.
+fn method_not_allowed_response() -> Response<Body> {
+    let body = concat!(
+        "kairo-web rejects this method during the daemon write-path Phase A.\n",
+        "\n",
+        "The browser proxy forwards GET and HEAD only. The daemon's write\n",
+        "surface is reachable over the local Unix socket; signed-request\n",
+        "auth (Phase B) is the prerequisite for any browser write path.\n",
+        "\n",
+        "For local writes, use the CLI: e.g., `kairo trust grant`, `kairo\n",
+        "revision create`, `kairo capability grant`.\n",
+    );
+    let mut resp = Response::new(Body::from(body));
+    *resp.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+    resp.headers_mut().insert(
+        axum::http::header::ALLOW,
+        HeaderValue::from_static("GET, HEAD"),
+    );
+    resp.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+    resp
 }
 
 /// Errors produced by the proxy handler. Mapped to HTTP
@@ -165,10 +208,10 @@ async fn forward(socket_path: &Path, request: Request<Body>) -> Result<Response<
     let (parts, body) = request.into_parts();
 
     // Drain the browser's body into bytes before opening the
-    // daemon connection. v1 endpoints are GET-only so this is
-    // typically empty; future write paths would benefit from
-    // stream-through, but the current daemon doesn't accept
-    // bodies anyway.
+    // daemon connection. The Phase A allowlist (GET, HEAD) means
+    // this is empty in practice; the buffer lives here so the
+    // forwarder stays method-agnostic when Phase B widens the
+    // allowlist.
     let body_bytes = body
         .collect()
         .await
@@ -275,4 +318,113 @@ fn is_hop_by_hop(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod tests {
+    //! Phase A POST-block invariant.
+    //!
+    //! These tests drive `handler` directly with a deliberately
+    //! invalid daemon-socket path. A 405 short-circuit means the
+    //! handler never tries to `connect(2)`; if the filter
+    //! regressed, the bogus path would surface as a `Connect`
+    //! error and the assertion below would fail loudly.
+    //!
+    //! When Phase B lifts the POST-block, the allowlist will
+    //! widen — this test fixture pins `[GET, HEAD]` exactly so any
+    //! widening must update the test.
+    use super::*;
+    use axum::extract::State;
+    use http_body_util::BodyExt;
+    use std::path::PathBuf;
+
+    fn state() -> State<ProxyState> {
+        State(ProxyState::new(PathBuf::from(
+            "/nonexistent/phase-a-post-block.sock",
+        )))
+    }
+
+    fn req(method: Method, path: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())
+            .expect("build req")
+    }
+
+    #[tokio::test]
+    async fn allows_get() {
+        // GET passes the filter and proceeds to `forward`, which
+        // fails to connect to the bogus socket. That's the
+        // happy-path signal: the filter did *not* short-circuit.
+        let response = handler(state(), req(Method::GET, "/api/v1/version")).await;
+        let err = response.expect_err("expected Connect error past the filter");
+        assert!(matches!(err, ProxyError::Connect { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn allows_head() {
+        let response = handler(state(), req(Method::HEAD, "/api/v1/version")).await;
+        let err = response.expect_err("expected Connect error past the filter");
+        assert!(matches!(err, ProxyError::Connect { .. }), "got {err:?}");
+    }
+
+    async fn assert_method_not_allowed(method: Method) {
+        let response = handler(state(), req(method.clone(), "/api/v1/anything"))
+            .await
+            .unwrap_or_else(|err| panic!("{method} unexpectedly produced ProxyError: {err:?}"));
+
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{method}");
+        assert_eq!(
+            response.headers().get(axum::http::header::ALLOW).map(|v| v.to_str().unwrap_or("")),
+            Some("GET, HEAD"),
+            "{method}",
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .map(|v| v.to_str().unwrap_or("")),
+            Some("text/plain; charset=utf-8"),
+            "{method}",
+        );
+
+        let body_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body_text = std::str::from_utf8(&body_bytes).expect("utf-8 body");
+        assert!(
+            body_text.contains("Phase A"),
+            "{method} body missing Phase A explanation: {body_text}",
+        );
+    }
+
+    #[tokio::test]
+    async fn blocks_post() {
+        assert_method_not_allowed(Method::POST).await;
+    }
+
+    #[tokio::test]
+    async fn blocks_put() {
+        assert_method_not_allowed(Method::PUT).await;
+    }
+
+    #[tokio::test]
+    async fn blocks_patch() {
+        assert_method_not_allowed(Method::PATCH).await;
+    }
+
+    #[tokio::test]
+    async fn blocks_delete() {
+        assert_method_not_allowed(Method::DELETE).await;
+    }
+
+    #[tokio::test]
+    async fn blocks_options() {
+        assert_method_not_allowed(Method::OPTIONS).await;
+    }
 }

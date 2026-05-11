@@ -152,6 +152,15 @@ async fn wait_for_tcp(addr: &SocketAddr, max: Duration) {
 }
 
 async fn http_get_tcp(addr: &SocketAddr, path: &str) -> (hyper::StatusCode, Bytes) {
+    let (status, _, body) = http_request_tcp(addr, "GET", path).await;
+    (status, body)
+}
+
+async fn http_request_tcp(
+    addr: &SocketAddr,
+    method: &str,
+    path: &str,
+) -> (hyper::StatusCode, hyper::HeaderMap, Bytes) {
     let stream = TcpStream::connect(addr).await.expect("connect");
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
@@ -161,13 +170,14 @@ async fn http_get_tcp(addr: &SocketAddr, path: &str) -> (hyper::StatusCode, Byte
         let _ = conn.await;
     });
     let req = Request::builder()
-        .method("GET")
+        .method(method)
         .uri(path)
         .header("host", "test")
         .body(Empty::<Bytes>::new())
         .expect("build req");
     let resp = sender.send_request(req).await.expect("send");
     let status = resp.status();
+    let headers = resp.headers().clone();
     let body = resp
         .into_body()
         .collect()
@@ -176,7 +186,7 @@ async fn http_get_tcp(addr: &SocketAddr, path: &str) -> (hyper::StatusCode, Byte
         .to_bytes();
     drop(sender);
     let _ = conn_task.await;
-    (status, body)
+    (status, headers, body)
 }
 
 fn write_spa_dir() -> TempDir {
@@ -348,6 +358,62 @@ async fn refuses_non_loopback_bind() {
         "expected NonLoopbackBind, got {error:?}"
     );
 
+    daemon_handle.shutdown().await;
+    drop(spa_dir);
+    drop(store_dir);
+}
+
+#[tokio::test]
+async fn rejects_post_with_405_during_phase_a() {
+    // Phase A POST-block invariant (DECISIONS.md §13 sub-decision 5):
+    // the proxy refuses every method other than GET/HEAD with a 405,
+    // so an XSS or DNS-rebind can't tunnel a write through to the
+    // daemon's filesystem-perms-only Phase A write surface.
+    let (store_dir, _fixture) = StoreFixture::temp();
+    let store_path = store_dir.path().to_path_buf();
+    drop(_fixture);
+
+    let daemon_handle = spawn_daemon(store_path.clone()).await;
+    let spa_dir = write_spa_dir();
+
+    let (web_addr, web_handle) = spawn_web(WebConfig {
+        bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        spa_dir: Some(spa_dir.path().to_path_buf()),
+        daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
+    })
+    .await;
+
+    for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
+        let (status, headers, body) =
+            http_request_tcp(&web_addr, method, "/api/v1/statements").await;
+        assert_eq!(
+            status,
+            hyper::StatusCode::METHOD_NOT_ALLOWED,
+            "{method} should be 405"
+        );
+        assert_eq!(
+            headers
+                .get("allow")
+                .and_then(|v| v.to_str().ok()),
+            Some("GET, HEAD"),
+            "{method} Allow header"
+        );
+        let body_text = std::str::from_utf8(&body).expect("utf-8 body");
+        assert!(
+            body_text.contains("Phase A"),
+            "{method} body missing Phase A explanation: {body_text}"
+        );
+    }
+
+    // GET still works — the proxy is alive, the filter is method-
+    // scoped, and a real daemon read passes through unchanged.
+    let (status, body) = http_get_tcp(&web_addr, "/api/v1/version").await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("parse JSON");
+    assert_eq!(envelope["ok"], true, "envelope: {envelope}");
+
+    web_handle.shutdown().await;
     daemon_handle.shutdown().await;
     drop(spa_dir);
     drop(store_dir);
