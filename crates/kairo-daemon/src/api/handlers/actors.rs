@@ -7,6 +7,11 @@
 //!   envelope; `ObjectGenesis` is intentionally absent (it uses
 //!   `created_by`, not the envelope `actor` field every other
 //!   statement type uses).
+//! - `/actors/{id}/objects` — the per-actor owned-objects audit
+//!   list, backed by the store's `objects_by_actor` index. One
+//!   entry per `ObjectGenesis` whose `created_by` is this actor.
+//!   The complement to `/statements`: together they answer "what
+//!   is this actor responsible for in the store?".
 //!
 //! Path ids are parsed into `ActorId` (400 `bad_request` on shape
 //! failure). Store reads run on `spawn_blocking` since
@@ -14,9 +19,9 @@
 
 use axum::extract::{Path, State};
 use kairo_core::ActorId;
-use kairo_daemon_client::dto::StatementByActorDto;
+use kairo_daemon_client::dto::{ObjectByActorDto, StatementByActorDto};
 use kairo_identity::json::ActorGenesisJson;
-use kairo_store::{ActorStore, StatementByActorResolver};
+use kairo_store::{ActorStore, ObjectsByActorResolver, StatementByActorResolver};
 
 use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
@@ -87,6 +92,47 @@ pub async fn list_statements_handler(
             actor: s.actor.to_string(),
             statement_id: s.statement_id.to_string(),
             kind: s.kind.as_str().to_owned(),
+            created_at: s.created_at.to_string(),
+        })
+        .collect();
+
+    Ok(ApiResult(dtos))
+}
+
+/// `GET /api/v1/actors/{id}/objects`
+#[utoipa::path(
+    get,
+    path = "/api/v1/actors/{id}/objects",
+    tag = "actors",
+    operation_id = "listObjectsByActor",
+    params(
+        ("id" = String, Path, description = "Actor id (kairo:actor:...)"),
+    ),
+    responses(
+        (status = 200, description = "Objects created by the actor (one entry per ObjectGenesis whose created_by is this actor), sorted by (created_at, object_id) ascending", body = [ObjectByActorDto]),
+        (status = 400, description = "Malformed actor id"),
+    ),
+)]
+pub async fn list_objects_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<ApiResult<Vec<ObjectByActorDto>>, ApiError> {
+    let actor_id: ActorId = id
+        .parse()
+        .map_err(|error| ApiError::bad_request(format!("invalid actor id {id:?}: {error}")))?;
+
+    let store = state.store.clone();
+    let summaries = tokio::task::spawn_blocking(move || store.list_objects_by_actor(&actor_id))
+        .await
+        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+        .map_err(|error| map_store_error(error, "list_objects_by_actor"))?;
+
+    let dtos = summaries
+        .into_iter()
+        .map(|s| ObjectByActorDto {
+            actor: s.actor.to_string(),
+            object_id: s.object_id.to_string(),
+            object_kind: s.object_kind,
             created_at: s.created_at.to_string(),
         })
         .collect();

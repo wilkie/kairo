@@ -100,6 +100,26 @@ pub struct RevisionHeadDto {
     pub created_at: String,
 }
 
+/// One object created by an actor, returned by
+/// `GET /api/v1/actors/{id}/objects`. Backed by the per-actor
+/// materialized index in the store
+/// (`objects_by_actor/<XX>/<YY>/<actor-id>.json`), so the call is
+/// O(entries) — no full objects-tree scan even on large stores.
+///
+/// `object_kind` is the genesis body's `ObjectKind::as_str()`
+/// discriminator (e.g. `"kairo/object"`, `"software"`),
+/// denormalized into the index at write time so the inspector
+/// can render the kind tag without a per-row genesis fetch. The
+/// kind is fixed at genesis time, so denormalization is safe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ObjectByActorDto {
+    pub actor: String,
+    pub object_id: String,
+    pub object_kind: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+}
+
 /// One signed statement authored by an actor, returned by
 /// `GET /api/v1/actors/{id}/statements`. Backed by the per-actor
 /// materialized index in the store

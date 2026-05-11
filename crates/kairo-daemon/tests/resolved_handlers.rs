@@ -930,6 +930,76 @@ async fn actors_list_statements_rejects_malformed_id() {
 }
 
 #[tokio::test]
+async fn actors_list_objects_returns_owned_objects() {
+    // Alice creates two objects; Bob creates none.
+    // Alice's /objects lists both genesis entries; Bob's is empty.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let alpha = fixture.make_object(&alice, "kairo/object");
+    let beta = fixture.make_object(&alice, "kairo/object");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+
+    let (status, body) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/actors/{}/objects", alice.actor_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let json: Value = serde_json::from_slice(&body).expect("parse");
+    let arr = json["result"].as_array().expect("array");
+    assert_eq!(arr.len(), 2);
+    let object_ids: std::collections::HashSet<&str> = arr
+        .iter()
+        .map(|e| e["object_id"].as_str().expect("object_id"))
+        .collect();
+    assert!(object_ids.contains(alpha.object_id.as_str()));
+    assert!(object_ids.contains(beta.object_id.as_str()));
+    for entry in arr {
+        assert_eq!(entry["actor"].as_str(), Some(alice.actor_id.as_str()));
+        assert_eq!(entry["object_kind"].as_str(), Some("kairo/object"));
+        assert!(entry["created_at"].is_string());
+    }
+
+    let (status, body) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/actors/{}/objects", bob.actor_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let json: Value = serde_json::from_slice(&body).expect("parse");
+    assert_eq!(
+        json["result"],
+        Value::Array(Vec::new()),
+        "bob has created nothing yet"
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn actors_list_objects_rejects_malformed_id() {
+    let (dir, _fixture) = StoreFixture::temp();
+    let store_path = dir.path().to_path_buf();
+    drop(_fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let (status, body) =
+        http_get(handle.socket_path(), "/api/v1/actors/not-a-real-id/objects").await;
+    assert_eq!(status, hyper::StatusCode::BAD_REQUEST);
+    let json: Value = serde_json::from_slice(&body).expect("parse");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], "bad_request");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
 async fn capabilities_list_for_object_returns_hydrated_heads() {
     // Alice grants Bob an ObjectVersionTag capability scoped to
     // object O. The for-object endpoint must return one entry

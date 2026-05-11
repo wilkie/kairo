@@ -47,6 +47,44 @@
         }
       }
     },
+    "/api/v1/actors/{id}/objects": {
+      "get": {
+        "tags": [
+          "actors"
+        ],
+        "summary": "`GET /api/v1/actors/{id}/objects`",
+        "operationId": "listObjectsByActor",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Actor id (kairo:actor:...)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Objects created by the actor (one entry per ObjectGenesis whose created_by is this actor), sorted by (created_at, object_id) ascending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ObjectByActorDto"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed actor id"
+          }
+        }
+      }
+    },
     "/api/v1/actors/{id}/statements": {
       "get": {
         "tags": [
@@ -988,6 +1026,31 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "ObjectByActorDto": {
+        "type": "object",
+        "description": "One object created by an actor, returned by\n`GET /api/v1/actors/{id}/objects`. Backed by the per-actor\nmaterialized index in the store\n(`objects_by_actor/<XX>/<YY>/<actor-id>.json`), so the call is\nO(entries) — no full objects-tree scan even on large stores.\n\n`object_kind` is the genesis body's `ObjectKind::as_str()`\ndiscriminator (e.g. `\"kairo/object\"`, `\"software\"`),\ndenormalized into the index at write time so the inspector\ncan render the kind tag without a per-row genesis fetch. The\nkind is fixed at genesis time, so denormalization is safe.",
+        "required": [
+          "actor",
+          "object_id",
+          "object_kind",
+          "created_at"
+        ],
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "object_id": {
+            "type": "string"
+          },
+          "object_kind": {
+            "type": "string"
           }
         }
       },

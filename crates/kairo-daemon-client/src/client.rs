@@ -22,7 +22,7 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::dto::{
-    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
+    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto, ObjectByActorDto,
     ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
     StatementByActorDto, StatementValue, StatusInfo, ValidationResult, VersionInfo,
 };
@@ -113,6 +113,19 @@ impl Client {
         actor_id: &str,
     ) -> ClientResult<Vec<StatementByActorDto>> {
         self.get_json(&format!("/api/v1/actors/{actor_id}/statements"))
+            .await
+    }
+
+    /// `GET /api/v1/actors/{actor_id}/objects` — every object
+    /// whose `ObjectGenesis.created_by` is `actor_id`, sorted by
+    /// `(created_at, object_id)` ascending. The complement to
+    /// [`Self::list_statements_by_actor`] — together they answer
+    /// "what is this actor responsible for in the store?".
+    pub async fn list_objects_by_actor(
+        &self,
+        actor_id: &str,
+    ) -> ClientResult<Vec<ObjectByActorDto>> {
+        self.get_json(&format!("/api/v1/actors/{actor_id}/objects"))
             .await
     }
 
