@@ -399,8 +399,19 @@ per-actor materialized index, the daemon exposes
 the full audit table (`StatementByActorDto` rows: kind,
 statement id, created_at). `ObjectGenesis` is excluded
 server-side (it carries `created_by`, not the envelope `actor`
-field every other statement type uses); the owned-objects view
-is a separate cut.
+field every other statement type uses).
+
+**Update — `/actors/$id` created-objects list:** the complement
+to the signed-statements table landed in a follow-up pass.
+`kairo-store` keeps a parallel per-actor index keyed off
+`ObjectGenesis.created_by` (`objects_by_actor`); the daemon
+exposes `GET /api/v1/actors/{id}/objects`; `ActorDetail` renders
+a Created Objects panel above the Signed Statements panel
+(`ObjectByActorDto` rows: object link, object kind, created_at).
+The two tables together answer "what is this actor responsible
+for in the store?". `kairo store rebuild-indexes` now walks
+`objects/` in addition to `statements/` to backfill this index
+on existing stores.
 
 **Deferred:** snapshot detail, build/run plan UI, runtime sessions.
 

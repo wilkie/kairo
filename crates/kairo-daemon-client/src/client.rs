@@ -22,9 +22,10 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::dto::{
-    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto, ObjectByActorDto,
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
-    StatementByActorDto, StatementValue, StatusInfo, ValidationResult, VersionInfo,
+    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
+    ObjectBranchStatementJson, ObjectByActorDto, ObjectGenesisStatementJson,
+    ObjectVersionTagStatementJson, StatementByActorDto, StatementValue, StatusInfo,
+    ValidationResult, VersionInfo,
 };
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};

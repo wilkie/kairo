@@ -607,13 +607,28 @@ Hardening what Phase 1 shipped.
       `put_*` for a signed envelope appends to it, and
       `StatementByActorResolver::list_statements_by_actor` is wired
       through `GET /api/v1/actors/{id}/statements`
-      (`StatementByActorDto`). `ObjectGenesis` is intentionally
-      excluded — it carries `created_by` rather than the envelope
-      `actor` field every other statement type uses; the
-      owned-objects view is a separate cut. The
-      `statements-of-kind-T` dimension is still deferred until §4
-      federation (replicate-by-kind) needs it, matching the
-      no-index-without-a-consumer rule.
+      (`StatementByActorDto`). `ObjectGenesis` is excluded from
+      this index — it carries `created_by` rather than the
+      envelope `actor` field every other statement type uses, so it
+      gets a parallel per-actor index at
+      `<store>/objects_by_actor/<XX>/<YY>/<actor-id>.json` keyed
+      off the genesis body's `created_by`, surfaced as
+      `ObjectsByActorResolver::list_objects_by_actor` and
+      `GET /api/v1/actors/{id}/objects` (`ObjectByActorDto`). The
+      two indices answer the complementary "what did this actor
+      sign?" and "what did this actor create?" questions on the
+      inspector's actor page. Keeping them separate keeps each
+      put-time call site shape-uniform, with one entry-extraction
+      shape per index. The `statements-of-kind-T` dimension is
+      still deferred until §4 federation (replicate-by-kind) needs
+      it, matching the no-index-without-a-consumer rule.
+
+      Recovery / backfill is handled by
+      `FilesystemStore::rebuild_indexes()`
+      (`kairo store rebuild-indexes`): wipes both indexes, then
+      replays every signed envelope under `statements/` and every
+      genesis under `objects/` through the same `index_*` helpers
+      `put_*` uses, so rebuild and put can never drift.
 - [x] **Store fixtures crate.** Carry-over from Phase 1 §2.
       `kairo-test-support` collects shared test setup: git-repo
       fixtures (`init_source_repo`, `build_pack_from`,
