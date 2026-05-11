@@ -257,3 +257,18 @@ pub struct ValidationResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<String>,
 }
+
+/// Response payload returned by `POST /api/v1/statements`.
+///
+/// Echoes the persisted statement back to the caller so write
+/// flows don't need a follow-up read to discover the canonical
+/// `statement_id` or to confirm the daemon stored the body
+/// byte-for-byte. The `statement` field carries the same
+/// polymorphic JSON shape the daemon's read endpoints return —
+/// callers decode it against the typed `*StatementJson` of the
+/// kind they sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PutStatementResult {
+    pub statement_id: String,
+    pub statement: StatementValue,
+}

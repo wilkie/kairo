@@ -639,3 +639,136 @@ async fn client_blob_returns_400_for_malformed_id() {
 
     handle.shutdown().await;
 }
+
+// Slice 2 (daemon writes): `POST /api/v1/statements` for
+// ActorTrust round-trips through `Client::put_actor_trust`. The
+// daemon's own handler tests (see `kairo-daemon/tests/
+// post_statements.rs`) cover the full matrix of failure modes;
+// these two tests pin the *client* surface — DTO encoding,
+// success envelope decode, and error-envelope → `ClientError`
+// translation for the canonical write-path failure mode.
+
+#[tokio::test]
+async fn put_actor_trust_round_trips_through_client() {
+    use kairo_core::canonical::CanonicalEncode;
+    use kairo_core::{KairoRef, Timestamp};
+    use kairo_statement::{
+        ActorTrustBody, Signature, SignedStatement, TrustDecision, UnsignedStatement,
+    };
+
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let body = ActorTrustBody::new(
+        bob.actor_id.clone(),
+        Some(TrustDecision::Trusted),
+        Some("client round-trip".to_owned()),
+        None,
+    )
+    .expect("trust body shape");
+    let subject: KairoRef = format!("actor:{}", bob.actor_id)
+        .parse()
+        .expect("subject ref");
+    let unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(1_700_000_200),
+        body,
+    );
+    let signature_bytes = alice.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let expected_id = signed.statement_id();
+
+    let result = client
+        .put_actor_trust(&signed)
+        .await
+        .expect("put_actor_trust");
+
+    assert_eq!(result.statement_id, expected_id.to_string());
+    assert_eq!(result.statement["type"], "ActorTrust");
+    assert_eq!(
+        result.statement["actor"].as_str(),
+        Some(alice.actor_id.as_str())
+    );
+
+    // Confirm persistence end-to-end by reading the same head
+    // back through the typed `trust` method — doesn't poke the
+    // store directly.
+    let head = client
+        .trust(alice.actor_id.as_str(), bob.actor_id.as_str())
+        .await
+        .expect("trust read");
+    assert_eq!(head.actor, alice.actor_id.to_string());
+    assert_eq!(head.body.trusted_actor, bob.actor_id.to_string());
+    assert_eq!(head.body.decision.as_deref(), Some("trusted"));
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn put_actor_trust_surfaces_daemon_bad_signature() {
+    use kairo_core::canonical::CanonicalEncode;
+    use kairo_core::{KairoRef, Timestamp};
+    use kairo_statement::{
+        ActorTrustBody, Signature, SignedStatement, TrustDecision, UnsignedStatement,
+    };
+
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    drop(fixture);
+
+    let (handle, _dir) = spawn_daemon_at(dir).await;
+    let client = Client::new(handle.socket_path());
+
+    let body = ActorTrustBody::new(
+        bob.actor_id.clone(),
+        Some(TrustDecision::Trusted),
+        None,
+        None,
+    )
+    .expect("trust body shape");
+    let subject: KairoRef = format!("actor:{}", bob.actor_id)
+        .parse()
+        .expect("subject ref");
+    let unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(1_700_000_201),
+        body,
+    );
+    let mut bad_bytes = alice
+        .signing
+        .sign(&unsigned.canonical_bytes())
+        .bytes()
+        .to_vec();
+    bad_bytes[0] ^= 0x01;
+    let signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bad_bytes,
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+
+    match client.put_actor_trust(&signed).await {
+        Err(ClientError::Http { status, code, .. }) => {
+            assert_eq!(status, 422);
+            assert_eq!(code, "bad_signature");
+        }
+        other => panic!("expected 422 bad_signature, got {other:?}"),
+    }
+
+    handle.shutdown().await;
+}

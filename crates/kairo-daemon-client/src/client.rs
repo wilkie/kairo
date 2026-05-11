@@ -13,10 +13,12 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
+use kairo_statement::json::ActorTrustStatementJson as KsActorTrustStatementJson;
+use kairo_statement::{ActorTrustBody, SignedStatement};
 use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
@@ -24,8 +26,8 @@ use tokio::time::timeout;
 use crate::dto::{
     ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
     ObjectBranchStatementJson, ObjectByActorDto, ObjectGenesisStatementJson,
-    ObjectVersionTagStatementJson, StatementByActorDto, StatementValue, StatusInfo,
-    ValidationResult, VersionInfo,
+    ObjectVersionTagStatementJson, PutStatementResult, StatementByActorDto, StatementValue,
+    StatusInfo, ValidationResult, VersionInfo,
 };
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};
@@ -225,6 +227,97 @@ impl Client {
     pub async fn verify_object(&self, object_id: &str) -> ClientResult<ValidationResult> {
         self.get_json(&format!("/api/v1/verify-object/{object_id}"))
             .await
+    }
+
+    /// `POST /api/v1/statements` — persist an `ActorTrust`
+    /// statement through the daemon's Phase A write surface
+    /// (`DECISIONS.md §13`).
+    ///
+    /// The caller signs the statement client-side; the daemon
+    /// re-verifies the signature against the actor's pinned
+    /// signing key on receipt, then writes through
+    /// `FilesystemStore::put_actor_trust`. Returns the persisted
+    /// `statement_id` and the echoed body so callers don't need a
+    /// follow-up read.
+    ///
+    /// Later slices in Phase A widen the daemon dispatcher to
+    /// other statement kinds; this client gains a typed method
+    /// per kind as that happens.
+    pub async fn put_actor_trust(
+        &self,
+        signed: &SignedStatement<ActorTrustBody>,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsActorTrustStatementJson::from_statement(signed);
+        let body = serde_json::to_vec(&dto)
+            .map_err(|error| ClientError::Decode(format!("serialize ActorTrust body: {error}")))?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    async fn post_json<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+    ) -> ClientResult<T> {
+        let path = path.to_owned();
+        let work = async move {
+            let (status, bytes) = self.send_post(&path, body).await?;
+            if (200..300).contains(&status) {
+                decode_success(&bytes)
+            } else {
+                Err(decode_error(status, &bytes))
+            }
+        };
+
+        match timeout(REQUEST_DEADLINE, work).await {
+            Ok(result) => result,
+            Err(_) => Err(ClientError::Timeout(REQUEST_DEADLINE)),
+        }
+    }
+
+    async fn send_post(&self, path: &str, body: Vec<u8>) -> ClientResult<(u16, Bytes)> {
+        let stream = match timeout(
+            REQUEST_CONNECT_TIMEOUT,
+            UnixStream::connect(&self.socket_path),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => return Err(ClientError::Connect(error)),
+            Err(_) => return Err(ClientError::Timeout(REQUEST_CONNECT_TIMEOUT)),
+        };
+        let io = TokioIo::new(stream);
+
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+            .await
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+        let conn_task = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("host", "daemon")
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+
+        let response = sender
+            .send_request(req)
+            .await
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+        let status = response.status().as_u16();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|error| ClientError::Transport(Box::new(error)))?
+            .to_bytes();
+
+        drop(sender);
+        let _ = conn_task.await;
+
+        Ok((status, body))
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> ClientResult<T> {

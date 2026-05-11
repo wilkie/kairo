@@ -496,3 +496,139 @@ fn capability_list_grantor_round_trips_in_both_modes() {
     let _ = daemon.wait();
     drop(dir);
 }
+
+// Slice 2 (daemon writes): `kairo trust grant` is the first
+// write command routed through `cli::dispatch`. Daemon-mode
+// posts the signed envelope through `POST /api/v1/statements`;
+// direct-mode hits `FilesystemStore::put_actor_trust` as before.
+// Both paths must produce byte-identical stdout and identical
+// on-disk state — that's how the slice's "output text unchanged"
+// promise is enforced.
+
+#[test]
+fn trust_grant_daemon_mode_matches_direct_output_and_persists() {
+    let (dir, fixture) = StoreFixture::temp();
+    let truster = fixture.make_actor();
+    let trusted = fixture.make_actor();
+    let truster_id = truster.actor_id.to_string();
+    let trusted_id = trusted.actor_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    // Issue the grant via the daemon. The format!() in
+    // run_trust_decide is mode-agnostic, so the stdout shape must
+    // match the existing direct-mode test fixture exactly.
+    let grant = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "trust",
+        "grant",
+        "--by",
+        &truster_id,
+        "--of",
+        &trusted_id,
+        "--reason",
+        "daemon round-trip",
+    ]);
+    assert!(
+        grant.status.success(),
+        "trust grant --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&grant.stderr)
+    );
+    let grant_out = String::from_utf8(grant.stdout).expect("utf-8");
+    assert!(grant_out.contains("grant trust"), "grant: {grant_out}");
+    assert!(
+        grant_out.contains("decision = trusted"),
+        "grant: {grant_out}"
+    );
+    assert!(
+        grant_out.contains("supersedes = (genesis)"),
+        "grant: {grant_out}"
+    );
+
+    // Read it back through the daemon: `trust show` already
+    // dispatches via cli::dispatch (Slice 8) — confirm the head
+    // we just POSTed is what comes back.
+    assert_modes_agree(
+        &store_path,
+        &["trust", "show", "--by", &truster_id, "--of", &trusted_id],
+    );
+
+    // The block path should chain on top of the grant — proves
+    // the daemon-side write didn't drop the prior head from the
+    // store's audit chain.
+    let block = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "trust",
+        "block",
+        "--by",
+        &truster_id,
+        "--of",
+        &trusted_id,
+        "--reason",
+        "revoke for ci",
+    ]);
+    assert!(
+        block.status.success(),
+        "trust block --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&block.stderr)
+    );
+    let block_out = String::from_utf8(block.stdout).expect("utf-8");
+    assert!(
+        block_out.contains("decision = untrusted"),
+        "block: {block_out}"
+    );
+    assert!(
+        !block_out.contains("supersedes = (genesis)"),
+        "block did not chain on prior grant: {block_out}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn trust_grant_falls_back_to_direct_when_daemon_absent() {
+    // Default mode (no --daemon, no --direct) with the daemon
+    // not running: `cli::dispatch::resolve` returns `Mode::Direct`
+    // silently. The CLI write should succeed against the local
+    // store with no socket present.
+    let (dir, fixture) = StoreFixture::temp();
+    let truster = fixture.make_actor();
+    let trusted = fixture.make_actor();
+    let truster_id = truster.actor_id.to_string();
+    let trusted_id = trusted.actor_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    assert!(!store_path.join("daemon.sock").exists());
+
+    let grant = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "trust",
+        "grant",
+        "--by",
+        &truster_id,
+        "--of",
+        &trusted_id,
+    ]);
+    assert!(
+        grant.status.success(),
+        "trust grant (default mode, no daemon) failed: stderr = {}",
+        String::from_utf8_lossy(&grant.stderr)
+    );
+    let grant_out = String::from_utf8(grant.stdout).expect("utf-8");
+    assert!(
+        grant_out.contains("decision = trusted"),
+        "grant: {grant_out}"
+    );
+
+    drop(dir);
+}

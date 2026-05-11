@@ -98,6 +98,56 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// Statement signature did not verify against the actor's
+    /// active signing key at the statement's `created_at`. See
+    /// `kairo_statement::verify::SignatureStatus` for the full
+    /// set of underlying causes the daemon collapses into this
+    /// single wire code.
+    pub fn bad_signature(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: ApiErrorCode::BadSignature,
+            message: message.into(),
+        }
+    }
+
+    /// The envelope's `actor` field references an actor whose
+    /// `ActorGenesis` is not present in the store. Distinct from
+    /// `not_found` (404): the verification call surfaces an actor
+    /// gap as a *body-level* defect, not a resource-not-found on
+    /// the request URL.
+    pub fn actor_not_found(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: ApiErrorCode::ActorNotFound,
+            message: message.into(),
+        }
+    }
+
+    /// The envelope's `actor` field and the signature's `actor`
+    /// field disagree. The signature is not evaluated in this
+    /// case; the body is rejected on shape grounds.
+    pub fn signature_actor_mismatch(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            code: ApiErrorCode::SignatureActorMismatch,
+            message: message.into(),
+        }
+    }
+
+    /// Phase A's write dispatcher does not accept this statement
+    /// kind yet. Returned for every body type other than the ones
+    /// the current slice has opened up (`ActorTrust` only in
+    /// Slice 2). 415 keeps the wire code aligned with the
+    /// content-negotiation family without reusing 400 / 422.
+    pub fn unsupported_statement_kind(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            code: ApiErrorCode::UnsupportedStatementKind,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -137,6 +187,10 @@ pub enum ApiErrorCode {
     NotFound,
     StoreError,
     InternalError,
+    BadSignature,
+    ActorNotFound,
+    SignatureActorMismatch,
+    UnsupportedStatementKind,
 }
 
 impl ApiErrorCode {
@@ -146,6 +200,10 @@ impl ApiErrorCode {
             Self::NotFound => "not_found",
             Self::StoreError => "store_error",
             Self::InternalError => "internal_error",
+            Self::BadSignature => "bad_signature",
+            Self::ActorNotFound => "actor_not_found",
+            Self::SignatureActorMismatch => "signature_actor_mismatch",
+            Self::UnsupportedStatementKind => "unsupported_statement_kind",
         }
     }
 }

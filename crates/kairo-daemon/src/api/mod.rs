@@ -5,7 +5,7 @@
 //! impl) can mount it on any transport without going through the
 //! socket-bound `serve` path.
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
@@ -38,6 +38,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/objects/:id", get(handlers::objects::handler))
         .route("/api/v1/statements/:id", get(handlers::statements::handler))
+        .route("/api/v1/statements", post(handlers::statements::put_handler))
         .route(
             "/api/v1/branches/:object",
             get(handlers::branches::list_handler),

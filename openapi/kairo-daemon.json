@@ -409,6 +409,51 @@
         }
       }
     },
+    "/api/v1/statements": {
+      "post": {
+        "tags": [
+          "statements"
+        ],
+        "summary": "`POST /api/v1/statements` — Phase A's generic write endpoint.",
+        "description": "Accepts a `SignedStatement<*>` JSON envelope and routes on the\n`type` discriminator. Slice 2 dispatches `ActorTrust` only;\nevery other kind returns 415 `unsupported_statement_kind`.\n\nThe handler runs the same verification the direct-mode CLI\nruns (`verify_envelope_statement` against the daemon's\nresolver), then persists via the store's typed `put_*`. No\nper-request auth: Phase A's trust model is the Unix socket's\nfilesystem permissions, identical to the v1 read endpoints.\nSigned-request auth is locked for Phase B (`DECISIONS.md §13`\nsub-decision 7).",
+        "operationId": "putStatement",
+        "requestBody": {
+          "description": "Signed statement envelope. Phase A accepts ActorTrust only.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorTrustStatementJson"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Persisted statement; `statement` echoes the body the daemon stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutStatementResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body (decode failure, missing `type` discriminator, …)"
+          },
+          "415": {
+            "description": "Statement kind not yet accepted by Phase A's dispatcher"
+          },
+          "422": {
+            "description": "Signature did not verify, or actor/signature shape rejected"
+          },
+          "500": {
+            "description": "Store I/O or fixity failure"
+          }
+        }
+      }
+    },
     "/api/v1/statements/{id}": {
       "get": {
         "tags": [
@@ -1254,6 +1299,22 @@
           }
         }
       },
+      "PutStatementResult": {
+        "type": "object",
+        "description": "Response payload returned by `POST /api/v1/statements`.\n\nEchoes the persisted statement back to the caller so write\nflows don't need a follow-up read to discover the canonical\n`statement_id` or to confirm the daemon stored the body\nbyte-for-byte. The `statement` field carries the same\npolymorphic JSON shape the daemon's read endpoints return —\ncallers decode it against the typed `*StatementJson` of the\nkind they sent.",
+        "required": [
+          "statement_id",
+          "statement"
+        ],
+        "properties": {
+          "statement": {
+            "$ref": "#/components/schemas/Value"
+          },
+          "statement_id": {
+            "type": "string"
+          }
+        }
+      },
       "RevisionHeadDto": {
         "type": "object",
         "description": "Revision head summary returned by\n`GET /api/v1/revisions/{object}`. Light shape, one entry\nper `ObjectRevision` statement targeting the object —\ncallers who want the signed envelope follow up with\n`GET /api/v1/statements/{statement_id}`.\n\n`parents` carries the revision-id parent set (zero for\ninitial revisions, one for linear history, multiple for\nmerges); `manifest_hash` is the canonical blob id of the\nrevision's manifest.",
@@ -1493,6 +1554,7 @@
           "unverified"
         ]
       },
+      "Value": {},
       "VersionInfo": {
         "type": "object",
         "description": "Response body for `GET /api/v1/version`.\n\nAll four fields are crate-version strings (semver), drawn\nfrom the corresponding `Cargo.toml` package versions at\nbuild time. `api_version` is the URL-prefix version, not a\ncrate version.",

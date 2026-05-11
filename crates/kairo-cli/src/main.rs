@@ -3229,11 +3229,18 @@ fn run_trust_command(
     dispatch_opts: dispatch::DispatchOptions,
 ) -> Result<String, CliError> {
     match command {
-        TrustCommand::Grant { by, of, reason } => {
-            run_trust_decide(paths, by, of, reason, Some(TrustDecision::Trusted), "grant")
-        }
+        TrustCommand::Grant { by, of, reason } => run_trust_decide(
+            paths,
+            dispatch_opts,
+            by,
+            of,
+            reason,
+            Some(TrustDecision::Trusted),
+            "grant",
+        ),
         TrustCommand::Block { by, of, reason } => run_trust_decide(
             paths,
+            dispatch_opts,
             by,
             of,
             reason,
@@ -3241,7 +3248,7 @@ fn run_trust_command(
             "block",
         ),
         TrustCommand::Withdraw { by, of, reason } => {
-            run_trust_decide(paths, by, of, reason, None, "withdraw")
+            run_trust_decide(paths, dispatch_opts, by, of, reason, None, "withdraw")
         }
         TrustCommand::Show { by, of, json } => run_trust_show(paths, dispatch_opts, by, of, json),
         TrustCommand::List { by } => {
@@ -3277,6 +3284,7 @@ fn run_trust_command(
 
 fn run_trust_decide(
     paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
     by: String,
     of: String,
     reason: Option<String>,
@@ -3288,6 +3296,10 @@ fn run_trust_decide(
     let trusted_actor =
         ActorId::new(of.clone()).map_err(|source| CliError::ParseActorId { actor: of, source })?;
 
+    // Read/sign half runs locally either way. Per `DECISIONS.md
+    // §13` sub-decision 3, signing stays client-side — the daemon
+    // never holds private keys. Per §6 advisory locks, opening
+    // the store directly is safe even while a daemon is running.
     let store = open_store(paths)?;
     let keystore = open_keystore(paths)?;
 
@@ -3332,12 +3344,25 @@ fn run_trust_decide(
     let signed = SignedStatement::new(unsigned, signature);
     let statement_id = signed.statement_id();
 
-    store
-        .put_actor_trust(&signed)
-        .map_err(|error| CliError::WriteActorTrust {
-            statement: statement_id.clone(),
-            source: error,
-        })?;
+    // Persist: dispatch on socket reachability. The output text
+    // is mode-agnostic (every field reads off the signed
+    // statement we just built), so existing scripts/tests parse
+    // both paths identically.
+    match dispatch::resolve(paths, dispatch_opts)? {
+        dispatch::Mode::Daemon { runtime, client } => {
+            runtime
+                .block_on(client.put_actor_trust(&signed))
+                .map_err(CliError::DaemonRequestFailed)?;
+        }
+        dispatch::Mode::Direct => {
+            store
+                .put_actor_trust(&signed)
+                .map_err(|error| CliError::WriteActorTrust {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+        }
+    }
 
     let supersedes_line = match supersedes {
         Some(id) => format!("supersedes = {id}\n"),
