@@ -9,3 +9,17 @@ export {
   ValidationIssueList,
   type ValidationIssueListProps,
 } from './ValidationIssueList';
+export {
+  StatementGraphView,
+  type StatementGraphViewProps,
+  type StatementGraphViewRevision,
+} from './StatementGraphView';
+export {
+  computeLayout,
+  DEFAULT_LAYOUT_DIMS,
+  type GraphInputRevision,
+  type Layout,
+  type LayoutDims,
+  type LayoutEdge,
+  type LayoutNode,
+} from './statementGraphLayout';

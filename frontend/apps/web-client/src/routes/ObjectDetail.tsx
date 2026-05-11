@@ -39,7 +39,11 @@ import {
   Table,
   type TableColumn,
 } from '@kairo/ui';
-import { ValidationBadge, ValidationIssueList } from '@kairo/validation-viewer';
+import {
+  StatementGraphView,
+  ValidationBadge,
+  ValidationIssueList,
+} from '@kairo/validation-viewer';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
@@ -137,6 +141,29 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
       >
         <QueryStatusBoundary query={revisionsQ}>
           {(rows) => <RevisionsTable rows={rows} />}
+        </QueryStatusBoundary>
+      </Panel>
+
+      <Panel
+        title="Revision graph"
+        description="Visual parent-relationships for the same revisions, oldest at top. Long-distance edges pass behind intermediate nodes."
+        actions={<LocalityBadge state="local" />}
+      >
+        <QueryStatusBoundary query={revisionsQ}>
+          {(rows) => (
+            <StatementGraphView
+              revisions={rows}
+              renderLabel={(rev) => (
+                <Stack direction="row" spacing={1} alignItems="baseline">
+                  <IdLink kind="statement" id={rev.statement_id} />
+                  <Typography variant="caption" sx={{ color: 'text.secondary' }}>
+                    {rev.created_at}
+                  </Typography>
+                </Stack>
+              )}
+              emptyMessage="No revisions to graph."
+            />
+          )}
         </QueryStatusBoundary>
       </Panel>
 

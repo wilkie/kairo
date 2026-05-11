@@ -439,31 +439,34 @@ on existing stores.
 - The browser never displays a "valid" badge for data that came
   from a non-verify source per `WEB_CLIENT.md` §10.
 
+**Update — `StatementGraphView` shipped.** The graph view
+landed in `@kairo/validation-viewer` as a follow-up: a vertical-
+timeline SVG over `useRevisions(object)` data, oldest at top,
+child→parent edges drawn as straight vertical lines (long edges
+pass behind intermediate nodes via SVG z-order). Out-of-window
+parents render as dashed stub edges so a partial-history view
+shows where the slice was cut. The layout (`computeLayout`) is a
+pure function in `statementGraphLayout.ts` with 8 unit tests; the
+component itself is router-agnostic via a `renderLabel` render-
+prop, with `role="figure"` + `aria-label` plus an HTML label
+column so screen readers don't depend on the SVG. Mounted on
+`/objects/$id` as a "Revision graph" panel below the Revisions
+table — the table is the source-of-truth tabular surface, the
+graph is a visual aid for the parent relationships.
+
 **Deferred:**
 
-- `StatementGraphView` and `AuthorityChainView` — pulled out of
-  slice 9 as a follow-up. Pass A's `ValidationBadge` +
-  `ValidationIssueList` + object-detail integration meets every
-  slice 9 exit-criteria item, and the graph views are
-  *visualizations* of data the inspector already exposes via
-  tables (revisions with parents on the object page, capability
-  heads + trust opinions panels). The inspector stays usable
-  without them; revisit when user feedback prioritizes a
-  visual DAG over the existing tabular surface, or when slice
-  10 finds Playwright would benefit from a graph snapshot.
-  Implementation guidance for the follow-up:
-  - `StatementGraphView`: minimal SVG over the
-    `useRevisions(object)` data; nodes per revision, edges per
-    `parents` entry. No `dagre` dep for v1 — vertical timeline
-    with parent arrows is enough for the linear/near-linear
-    histories the daemon emits today.
-  - `AuthorityChainView`: capability + trust path summary; can
-    reuse `useCapabilitiesForObject` / `useTrustAbout` data
-    that already drive the object detail page.
+- `AuthorityChainView` — capability + trust path summary; reuses
+  `useCapabilitiesForObject` / `useTrustAbout` data that already
+  drive the object detail page. Revisit when the trust + capability
+  panels grow past a tabular surface, or when a real federation
+  scenario needs the path-length argument made visually.
 - Federation-preview labels — post-v1, no federation endpoints
   yet.
-- Deep statement graph performance work — out of scope until
-  the basic graph views actually ship.
+- Deep statement graph performance work — `StatementGraphView`'s
+  single-column layout is enough for the linear/near-linear
+  histories the daemon emits today; swim-lane routing or a
+  `dagre`-style auto-layout lands when real graphs need it.
 
 ---
 
