@@ -205,7 +205,10 @@ the `daemon` verb tree, the `--daemon` / `--direct` /
 `--offline` global flags, and the `cli::dispatch` module.
 Mutation, execution, federation, policy, GC, and OpenAPI are
 explicitly out of v1 scope and gated on later phases (§4 / §5
-/ §7) or their own `DECISIONS.md` follow-ups.
+/ §7) or their own `DECISIONS.md` follow-ups. The write path's
+Phase A (filesystem-perms sliver) is tracked under §15 below;
+Phase B (signed-request auth + capability enforcement) is a
+separate follow-up locked when §15 ships.
 
 **Why it matters:** every downstream surface (web client,
 federation-as-service, daemon-mode CLI, multi-actor workflows)
@@ -1075,6 +1078,59 @@ detection comes too late.
       trajectory (genesis threshold + every change event) and a
       per-event `quorum_at_event` annotation. Both text and
       `--json` modes.
+
+### 15. Daemon Write-Path (Phase A)
+
+§2 closed with a read-only daemon and the explicit punt that
+"mutation [...] is out of v1 scope and gated on later phases or
+its own `DECISIONS.md` follow-ups." This section is that
+follow-up's first half: the **filesystem-perms-only sliver** of
+the daemon's write path. Phase B (actor signing-key request auth +
+capability enforcement + `kairo-web` POST pass-through) is a
+separate slice plan that lands once Phase A is stable and the
+signed-envelope wire format has its own decision lock.
+
+Shape is locked in `DECISIONS.md` §13; slice plan in
+`specs/PHASE_2_DAEMON_WRITES.md`.
+
+Bullets, by slice (see `PHASE_2_DAEMON_WRITES.md` §3):
+
+- [ ] Slice 1 — `kairo-web` POST-block guard. Proxy filters
+      methods to `[GET, HEAD]`; everything else returns 405 with
+      `Allow: GET, HEAD`. Security commitment that lands *before*
+      the daemon accepts writes, so there's no window where the
+      browser proxy passes POST through to an unauthenticated
+      daemon write surface.
+- [ ] Slice 2 — Trust grant end-to-end. `POST /api/v1/statements`
+      accepts `ActorTrust` only; daemon-client gains
+      `put_statement`; `kairo trust grant | block | withdraw`
+      route through `cli::dispatch` (probe-and-fall-back).
+- [ ] Slice 3 — Object revisions, branches, version-tags. Open
+      the dispatcher to `ObjectRevision`, `ObjectBranch`,
+      `ObjectVersionTag`; CLI dispatch wired for `revision create`,
+      `branch set`, `tag bind`.
+- [ ] Slice 4 — Object genesis + capabilities. Dispatcher opens
+      to `ObjectGenesis`, `ActorCapabilityGrant`,
+      `ActorCapabilityRevocation`; CLI dispatch wired for
+      `object create`, `capability grant`, `capability revoke`.
+      `actor create` stays direct (keystore-generation is not a
+      daemon concern).
+- [ ] Slice 5 — CLI dispatch cutover + integration polish.
+      `CLI.md §3.3` flipped from "writes always direct" to
+      per-command table; every write command gets both `--direct`
+      and `--daemon` integration coverage; `kairo daemon status`
+      reports the new write surface.
+
+**Out of Phase A (deferred to Phase B):** per-request auth,
+capability enforcement on writes, `kairo-web` POST pass-through,
+mutation policy, batch writes.
+
+**Why it matters:** every downstream surface that needs a single
+coordination layer for writes (federation, multi-actor workflows,
+the eventual browser-side write surface) wants the daemon to be
+the write authority — not parallel direct-mode CLIs racing each
+other through filesystem advisory locks. Phase A proves the
+data-plane sliver; Phase B layers trust on after.
 
 ## After Phase 2
 

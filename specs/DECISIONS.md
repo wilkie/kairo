@@ -672,3 +672,122 @@ Affected specs:
 - `DAEMON.md` — note the `verify-object` addition; web-server
   trust model carries forward from §11.
 - `CLI.md` §3 / §10 — `kairo web` verbs documented in detail.
+
+---
+
+## 13. Daemon Write-Path MVP Shape
+
+Decision: the daemon's write-path lands in **two phases**. Phase A
+adds write endpoints over the existing Unix socket under the
+**filesystem-perms-only trust model** that v1 reads already use.
+Phase B adds the locked-direction **actor signing-key request auth
++ capability statements** (`DAEMON.md` §18.1, `API.md` §9.4) and
+becomes the prerequisite for any TCP/browser exposure of writes.
+Phase A is the focus of this decision; Phase B's wire format is
+left to its own follow-up decision when that work begins.
+
+Eight sub-decisions for Phase A, locked together:
+
+1. **Two-phase split.** Phase A is "writes over the Unix socket
+   with the v1 read trust model" — daemon trusts every
+   `connect(2)` caller, same as today. Phase B layers signed-
+   request auth and capability enforcement on top, and is what
+   unblocks the `kairo-web` POST-pass-through. No write endpoint
+   becomes reachable from outside the daemon process's socket
+   permissions during Phase A.
+
+2. **Endpoint shape: single generic `POST /api/v1/statements`.**
+   The request body is a `SignedStatement<*>` JSON envelope — the
+   same polymorphic shape statements carry on disk. The daemon
+   dispatches on `body.type` to the matching `kairo-store::Store`
+   `put_*` method (`put_actor_trust`, `put_object_revision`,
+   `put_object_branch`, `put_object_version_tag`,
+   `put_object_genesis`, plus the two capability statement types).
+   Per-kind endpoints (`POST /api/v1/trust`, `POST
+   /api/v1/branches/...`) were rejected: writes are uniform at the
+   data-model layer (every write is "persist a signed statement"),
+   and a generic surface absorbs new statement kinds without new
+   routes.
+
+3. **Signing stays client-side.** The daemon never holds private
+   keys. `kairo-cli` (and any future Rust web-server impl) reads
+   the local `kairo-keystore`, builds the `UnsignedStatement`,
+   signs the canonical bytes, and ships the resulting
+   `SignedStatement<*>` to the daemon. The daemon re-verifies the
+   signature on receipt against the actor's pinned attestation
+   key — the same path `kairo-statement::verify` uses — and
+   refuses the write if verification fails. Keeps the daemon
+   stateless w.r.t. key material; mirrors how federation peers
+   will sign in Phase B.
+
+4. **Validation: re-run the data-model invariants the store
+   already enforces.** Phase A's write handler runs the same
+   verification the direct-mode CLI runs: signature validity,
+   body shape, supersedes/parent invariants, head-line
+   consistency. No new mutation policy in Phase A — the daemon
+   gates writes on data-model correctness only. Cross-actor
+   capability enforcement on writes (the authorization half) is
+   Phase B work because authn must land first.
+
+5. **`kairo-web` POST-block during Phase A.** `kairo-web`'s
+   `/api/v1/*` proxy explicitly rejects `POST`, `PUT`, `PATCH`,
+   and `DELETE` with `405 Method Not Allowed` for the duration of
+   Phase A. Lifts in Phase B when the signed-request envelope is
+   in place. Without this guard, a browser-side XSS or DNS-rebind
+   could reach the daemon's write surface through the loopback
+   TCP proxy.
+
+6. **CLI dispatch: writes follow the same probe-and-fall-back
+   rules as reads.** Once a write endpoint exists for a given
+   command, that command's default behavior becomes "probe the
+   socket; route through the daemon if reachable, else direct."
+   `--daemon` requires the daemon; `--direct` / `--offline` force
+   direct. The v1 special case ("writes always direct") goes
+   away one command at a time as slices land — commands without
+   daemon-side support continue to ignore the socket.
+
+7. **Wire format for Phase B is forward-pointer only.** The
+   request-signing envelope (header names, hash algorithm, nonce
+   semantics, timestamp window) is locked in a separate decision
+   when Phase B begins. Phase A code must not pre-commit to a
+   specific header layout, route prefix, or middleware shape that
+   would constrain Phase B's design — the simplest way to preserve
+   that freedom is to put zero auth concerns in Phase A's
+   handler. Filesystem-perms is the only trust surface.
+
+8. **Out of scope for Phase A.** Mutation policy (`DAEMON.md`
+   §12), task framework, federation push/pull, GC, attestation-
+   key rotation flows, batch writes, transactional multi-statement
+   submission. Each is gated on later phases or its own follow-up.
+
+Rationale: this is the same pattern §10 used for daemon reads —
+narrow the v1 sliver, then layer trust on after the data-plane
+sliver is proven. The Unix socket already inherits the filesystem-
+perms trust boundary; writes-over-trusted-socket have exactly the
+same trust model as today's reads. The two-phase split lets the
+signed-envelope decision crystallize against working endpoints
+instead of in the abstract. The §11 two-process split protects us
+on the public-facing side: the `kairo-web` POST-block makes the
+"writes have no auth yet" window invisible to anything reachable
+from a browser.
+
+Affected specs:
+
+- `PHASE_2.md` — new §15 (this work) added after the existing
+  §14; §2 cross-links to §15 in its "deferred mutation" note.
+- `PHASE_2_DAEMON_WRITES.md` — new slice-plan doc paralleling
+  `PHASE_2_DAEMON.md` (`DECISIONS.md` §13 is the locked shape;
+  the slice plan is the build decomposition).
+- `API.md` — §10's endpoint-group table flips `/objects`,
+  `/branches`, `/version-tags`, `/trust`, `/capabilities`,
+  `/statements` to "write paths land in Phase A" with a §15
+  cross-reference; §9.3 clarifies that Phase A writes have no
+  per-request auth.
+- `DAEMON.md` — §13's "[v1] read-only" tag becomes
+  "[v1 reads + Phase A writes]"; §18 retains its post-v1
+  signed-request direction unchanged.
+- `CLI.md` §3.3 — drop the "writes always direct" line; replace
+  with "writes follow probe-and-fall-back once a daemon endpoint
+  exists for the command."
+- `WEB_CLIENT.md` — the read-only-inspector framing stays; the
+  POST-block in `kairo-web` is documented as a Phase A invariant.
