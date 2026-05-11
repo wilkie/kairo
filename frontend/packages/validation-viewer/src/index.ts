@@ -23,3 +23,13 @@ export {
   type LayoutEdge,
   type LayoutNode,
 } from './statementGraphLayout';
+export {
+  AuthorityChainView,
+  type AuthorityChainViewProps,
+} from './AuthorityChainView';
+export {
+  buildAuthorityChains,
+  type AuthorityChain,
+  type AuthorityChainInputCapability,
+  type AuthorityChainStep,
+} from './authorityChainLayout';

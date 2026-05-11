@@ -40,6 +40,7 @@ import {
   type TableColumn,
 } from '@kairo/ui';
 import {
+  AuthorityChainView,
   StatementGraphView,
   ValidationBadge,
   ValidationIssueList,
@@ -175,6 +176,37 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
         <QueryStatusBoundary query={capsQ}>
           {(rows) => <CapabilitiesTable rows={rows} />}
         </QueryStatusBoundary>
+      </Panel>
+
+      <Panel
+        title="Authority chains"
+        description={
+          createdBy === undefined
+            ? 'Loaded after the genesis resolves.'
+            : "How each grantee's authority traces back to the object's creator. Source-of-truth is the table above; this view shows the delegation paths."
+        }
+        actions={<LocalityBadge state="local" />}
+      >
+        {createdBy === undefined ? (
+          <EmptyState
+            title="Waiting for genesis"
+            description="Authority chains render once the object's creator is known."
+          />
+        ) : (
+          <QueryStatusBoundary query={capsQ}>
+            {(rows) => (
+              <AuthorityChainView
+                rootActor={createdBy}
+                capabilities={rows}
+                renderActorLabel={(actorId) => <IdLink kind="actor" id={actorId} />}
+                renderGrantEdge={(statementId) => (
+                  <IdLink kind="statement" id={statementId} />
+                )}
+                emptyMessage="No grants on this object."
+              />
+            )}
+          </QueryStatusBoundary>
+        )}
       </Panel>
 
       <Panel

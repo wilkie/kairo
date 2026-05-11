@@ -454,19 +454,40 @@ column so screen readers don't depend on the SVG. Mounted on
 table — the table is the source-of-truth tabular surface, the
 graph is a visual aid for the parent relationships.
 
+**Update — `AuthorityChainView` shipped.** The chain view also
+landed in `@kairo/validation-viewer`. For each capability head
+on an object it walks back through upstream grants (where
+`grantee == this.grantor`) until reaching the object's
+`created_by` actor or running out of candidates. Renders one
+horizontal chain per head: rounded actor boxes connected by
+arrows, each arrow labeled with the grant statement. Chains
+that don't reach the root carry a visible warning rather than
+silent truncation; cycles are detected and broken. The layout
+(`buildAuthorityChains`) is a pure function with 8 unit tests
+covering empty input, direct grants, multi-hop delegation,
+broken chains, multiple-upstream tiebreak rules, cycles, and
+one-chain-per-head invariants. Mounted on `/objects/$id`
+between the Capability heads table and the Trust opinions
+panel. Trust isn't overlaid in v1 — it's first-person and
+doesn't compose, and the trust panel already covers
+opinion-rendering. V1 caveats: alternate paths aren't surfaced
+when multiple upstreams qualify (most-recent wins); the view
+*displays* delegation relationships without re-validating
+`is_delegable` or kind matches (the daemon's
+`evaluate_capability` is the source of truth for validity).
+
 **Deferred:**
 
-- `AuthorityChainView` — capability + trust path summary; reuses
-  `useCapabilitiesForObject` / `useTrustAbout` data that already
-  drive the object detail page. Revisit when the trust + capability
-  panels grow past a tabular surface, or when a real federation
-  scenario needs the path-length argument made visually.
 - Federation-preview labels — post-v1, no federation endpoints
   yet.
 - Deep statement graph performance work — `StatementGraphView`'s
   single-column layout is enough for the linear/near-linear
   histories the daemon emits today; swim-lane routing or a
   `dagre`-style auto-layout lands when real graphs need it.
+- Alternate-path surfacing in `AuthorityChainView` — when
+  multiple upstream grants qualify for the same grantor, only
+  the most recent is rendered. Lands when a real federation
+  scenario needs the alternate-path argument.
 
 ---
 
