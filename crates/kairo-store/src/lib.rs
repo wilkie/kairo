@@ -49,6 +49,7 @@ mod chain;
 pub mod error;
 mod keys;
 mod lock;
+mod objects_by_actor;
 mod shard;
 mod statements_by_actor;
 mod tags;
@@ -86,6 +87,7 @@ pub use branches::BranchTip;
 pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
+pub use objects_by_actor::ObjectByActor;
 pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
@@ -112,6 +114,7 @@ const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
 const ACTOR_CAPABILITY_BY_OBJECT_DIR: &str = "actor_capability_by_object";
 const ACTOR_KEYS_DIR: &str = "actor_keys";
 const STATEMENTS_BY_ACTOR_DIR: &str = "statements_by_actor";
+const OBJECTS_BY_ACTOR_DIR: &str = "objects_by_actor";
 const BLOBS_DIR: &str = "blobs";
 
 const JSON_SUFFIX: &str = ".json";
@@ -489,24 +492,44 @@ pub trait StatementByActorResolver {
     ) -> Result<Vec<StatementByActor>, StoreError>;
 }
 
+/// Resolver for the per-actor owned-objects audit list.
+///
+/// Backed by the per-actor materialized index in
+/// `<root>/objects_by_actor/<XX>/<YY>/<actor-id>.json`. Every
+/// `put_object_genesis` appends one entry under the genesis body's
+/// `created_by`. The two resolvers
+/// [`StatementByActorResolver`] and [`ObjectsByActorResolver`]
+/// together answer "what is this actor responsible for in the
+/// store?" — the former via envelope-signing, the latter via
+/// object creation. See `objects_by_actor.rs` for why these need
+/// to be separate indices.
+pub trait ObjectsByActorResolver {
+    /// Every object whose `ObjectGenesis.created_by` is `actor`,
+    /// sorted by `(created_at, object_id)` ascending. Returns an
+    /// empty vector if `actor` has never created an object.
+    fn list_objects_by_actor(&self, actor: &ActorId) -> Result<Vec<ObjectByActor>, StoreError>;
+}
+
 /// Summary of a [`FilesystemStore::rebuild_indexes`] run.
 ///
-/// `statements_scanned` counts every JSON file under
-/// `statements/` that the rebuild successfully replayed; `by_kind`
-/// breaks that count down by `StatementKind`. The two are kept
-/// separate so a caller can sanity-check both the total work
-/// done (e.g. compare to a known fixture's size) and the kind
-/// distribution (e.g. assert that a store thought to contain
-/// only object-revisions doesn't surprise with capability
+/// The rebuild walks two top-level directories — `statements/`
+/// for envelope-signed kinds and `objects/` for `ObjectGenesis`
+/// — so the per-tree counts are kept separate; `by_kind` is the
+/// per-`StatementKind` breakdown across both walks. A caller
+/// can sanity-check both the total work done (e.g. compare each
+/// counter to a known fixture's size) and the kind distribution
+/// (e.g. assert that a store thought to contain only
+/// object-revisions doesn't surprise with capability
 /// statements).
 ///
-/// `ObjectGenesis` never appears in `by_kind` — genesis is
-/// stored under `objects/`, not `statements/`, and the rebuild
-/// rejects (rather than silently absorbs) any genesis it finds
-/// misplaced.
+/// Misplaced statements are rejected, not absorbed: an
+/// `ObjectGenesis` found under `statements/` (or any other
+/// statement found under `objects/`) raises `StoreError::Corrupt`
+/// from the rebuild rather than silently moving on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RebuildReport {
     pub statements_scanned: usize,
+    pub objects_scanned: usize,
     pub by_kind: BTreeMap<StatementKind, usize>,
 }
 
@@ -716,6 +739,7 @@ impl FilesystemStore {
             ACTOR_CAPABILITY_BY_OBJECT_DIR,
             ACTOR_KEYS_DIR,
             STATEMENTS_BY_ACTOR_DIR,
+            OBJECTS_BY_ACTOR_DIR,
         ] {
             let path = self.root.join(dir);
             match fs::remove_dir_all(&path) {
@@ -726,10 +750,34 @@ impl FilesystemStore {
         }
 
         let mut report = RebuildReport::default();
-        let statements_dir = self.root.join(STATEMENTS_DIR);
-        let level1 = match fs::read_dir(&statements_dir) {
+        // Pass 1: walk statements/ for envelope-signed kinds.
+        self.rebuild_walk_dir(STATEMENTS_DIR, &mut report, |store, path, report| {
+            store.rebuild_one_statement(path, report)
+        })?;
+        // Pass 2: walk objects/ for ObjectGenesis. Genesis lives in
+        // its own directory because it's identity-deriving (the body
+        // derives the ObjectId), so the statements/ walk
+        // intentionally rejects any genesis it finds misplaced
+        // there.
+        self.rebuild_walk_dir(OBJECTS_DIR, &mut report, |store, path, report| {
+            store.rebuild_one_object(path, report)
+        })?;
+        Ok(report)
+    }
+
+    fn rebuild_walk_dir<F>(
+        &self,
+        dir_name: &str,
+        report: &mut RebuildReport,
+        mut handle_one: F,
+    ) -> Result<(), StoreError>
+    where
+        F: FnMut(&FilesystemStore, &Path, &mut RebuildReport) -> Result<(), StoreError>,
+    {
+        let dir = self.root.join(dir_name);
+        let level1 = match fs::read_dir(&dir) {
             Ok(level1) => level1,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(report),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(StoreError::Unavailable(error)),
         };
         for shard1 in level1 {
@@ -748,11 +796,41 @@ impl FilesystemStore {
                     if path.extension().and_then(|s| s.to_str()) != Some("json") {
                         continue;
                     }
-                    self.rebuild_one_statement(&path, &mut report)?;
+                    handle_one(self, &path, report)?;
                 }
             }
         }
-        Ok(report)
+        Ok(())
+    }
+
+    fn rebuild_one_object(
+        &self,
+        path: &Path,
+        report: &mut RebuildReport,
+    ) -> Result<(), StoreError> {
+        let bytes = fs::read(path)?;
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        let json: ObjectGenesisStatementJson =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                id: file_stem.clone(),
+                reason: CorruptReason::Parse(error.to_string()),
+            })?;
+        let statement = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: file_stem.clone(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let id = statement.object_id();
+        self.index_object_genesis(&statement, &id)?;
+        report.objects_scanned += 1;
+        *report
+            .by_kind
+            .entry(StatementKind::ObjectGenesis)
+            .or_insert(0) += 1;
+        Ok(())
     }
 
     fn rebuild_one_statement(
@@ -967,6 +1045,9 @@ impl ObjectStore for FilesystemStore {
         let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
         let path = self.shard_path(OBJECTS_DIR, id.as_str(), JSON_SUFFIX)?;
         atomic_write(&path, &bytes)?;
+
+        self.index_object_genesis(statement, &id)?;
+
         Ok(id)
     }
 
@@ -1647,6 +1728,20 @@ impl FilesystemStore {
     // on rebuild (e.g. a future schema-version migration), add a
     // separate replay validator rather than wiring it through here.
 
+    fn index_object_genesis(
+        &self,
+        statement: &ObjectGenesisStatement,
+        id: &ObjectId,
+    ) -> Result<(), StoreError> {
+        let body = statement.body();
+        self.upsert_object_by_actor_index(
+            body.created_by(),
+            id,
+            body.object_kind().as_str(),
+            body.created_at(),
+        )
+    }
+
     fn index_object_revision(
         &self,
         statement: &SignedStatement<ObjectRevisionBody>,
@@ -2063,6 +2158,61 @@ impl FilesystemStore {
                         id: actor.to_string(),
                         reason: CorruptReason::Parse(format!(
                             "invalid statements_by_actor index: {error}"
+                        )),
+                    })?;
+                Ok(Some(index))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+
+    fn upsert_object_by_actor_index(
+        &self,
+        actor: &ActorId,
+        object_id: &ObjectId,
+        object_kind: &str,
+        created_at: kairo_core::Timestamp,
+    ) -> Result<(), StoreError> {
+        let path = self.shard_path(OBJECTS_BY_ACTOR_DIR, actor.as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
+                Ok(bytes) => {
+                    serde_json::from_slice::<objects_by_actor::ObjectByActorIndexFile>(&bytes)
+                        .map_err(|error| StoreError::Corrupt {
+                            id: actor.to_string(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid objects_by_actor index: {error}"
+                            )),
+                        })?
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    objects_by_actor::ObjectByActorIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
+
+            let updated = index.upsert(object_id, object_kind, created_at);
+            if updated {
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(actor))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn read_object_by_actor_index(
+        &self,
+        actor: &ActorId,
+    ) -> Result<Option<objects_by_actor::ObjectByActorIndexFile>, StoreError> {
+        let path = self.shard_path(OBJECTS_BY_ACTOR_DIR, actor.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: objects_by_actor::ObjectByActorIndexFile =
+                    serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                        id: actor.to_string(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid objects_by_actor index: {error}"
                         )),
                     })?;
                 Ok(Some(index))
@@ -3041,6 +3191,15 @@ impl StatementByActorResolver for FilesystemStore {
         actor: &ActorId,
     ) -> Result<Vec<StatementByActor>, StoreError> {
         let Some(index) = self.read_statement_by_actor_index(actor)? else {
+            return Ok(Vec::new());
+        };
+        index.into_summaries(actor)
+    }
+}
+
+impl ObjectsByActorResolver for FilesystemStore {
+    fn list_objects_by_actor(&self, actor: &ActorId) -> Result<Vec<ObjectByActor>, StoreError> {
+        let Some(index) = self.read_object_by_actor_index(actor)? else {
             return Ok(Vec::new());
         };
         index.into_summaries(actor)
@@ -6320,6 +6479,79 @@ mod tests {
             ),
             "unexpected error: {err:?}",
         );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // objects_by_actor
+
+    #[test]
+    fn list_objects_by_actor_unknown_actor_is_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        assert!(store.list_objects_by_actor(&actor)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn list_objects_by_actor_returns_genesis_creator() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let genesis = signed_object_genesis(actor.clone());
+        let object_id = store.put_object_genesis(&genesis)?;
+
+        let summaries = store.list_objects_by_actor(&actor)?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].object_id, object_id);
+        assert_eq!(summaries[0].object_kind, "software");
+        assert_eq!(summaries[0].actor, actor);
+        Ok(())
+    }
+
+    #[test]
+    fn list_objects_by_actor_index_path_is_sharded_on_actor() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let genesis = signed_object_genesis(actor.clone());
+        store.put_object_genesis(&genesis)?;
+
+        let shard1 = &actor.as_str()[3..5];
+        let shard2 = &actor.as_str()[5..7];
+        let expected = dir
+            .path()
+            .join(OBJECTS_BY_ACTOR_DIR)
+            .join(shard1)
+            .join(shard2)
+            .join(format!("{actor}.json"));
+        assert!(
+            expected.exists(),
+            "expected objects_by_actor index at {expected:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_indexes_replays_object_genesis() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let genesis = signed_object_genesis(actor.clone());
+        let object_id = store.put_object_genesis(&genesis)?;
+
+        // Wipe just the objects_by_actor index — the genesis file
+        // under objects/ remains as the source of truth.
+        let index_dir = dir.path().join(OBJECTS_BY_ACTOR_DIR);
+        if index_dir.exists() {
+            fs::remove_dir_all(&index_dir)?;
+        }
+        assert!(store.list_objects_by_actor(&actor)?.is_empty());
+
+        let report = store.rebuild_indexes()?;
+        assert_eq!(report.objects_scanned, 1);
+        assert_eq!(report.by_kind.get(&StatementKind::ObjectGenesis), Some(&1));
+
+        let summaries = store.list_objects_by_actor(&actor)?;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].object_id, object_id);
         Ok(())
     }
 }

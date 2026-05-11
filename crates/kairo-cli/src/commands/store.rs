@@ -32,6 +32,7 @@ fn format_report(paths: &StorePaths, report: &RebuildReport) -> String {
         "statements_scanned = {}\n",
         report.statements_scanned
     ));
+    out.push_str(&format!("objects_scanned = {}\n", report.objects_scanned));
     if report.by_kind.is_empty() {
         out.push_str("by_kind = (none)\n");
     } else {
