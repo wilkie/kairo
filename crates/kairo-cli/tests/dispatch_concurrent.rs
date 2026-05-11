@@ -632,3 +632,217 @@ fn trust_grant_falls_back_to_direct_when_daemon_absent() {
 
     drop(dir);
 }
+
+// Slice 3: revision create / branch set / tag bind route through
+// `cli::dispatch`. Daemon-mode posts the signed envelope via
+// `POST /api/v1/statements`; direct-mode hits the matching
+// `put_*` on `FilesystemStore`. The tests bootstrap the store
+// fixture with whatever the operation depends on (actor +
+// object for revisions, actor + object + revision for branches
+// and tags), then assert daemon-mode succeeds and the post-
+// condition reads back identically to a direct read.
+
+fn write_manifest_file(dir: &Path) -> std::path::PathBuf {
+    let path = dir.join("manifest.toml");
+    std::fs::write(&path, FIXTURE_MANIFEST).expect("write manifest");
+    path
+}
+
+#[test]
+fn revision_create_daemon_mode_persists_through_dispatch() {
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let actor_id = actor.actor_id.to_string();
+    let object_id = object.object_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let manifest_path = write_manifest_file(&store_path);
+
+    let mut daemon = spawn_daemon(&store_path);
+    let create = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "revision",
+        "create",
+        "--actor",
+        &actor_id,
+        "--object",
+        &object_id,
+        "--revision",
+        "git:sha256:slice3-cli-r1",
+        "--manifest",
+        manifest_path.to_str().unwrap(),
+    ]);
+    assert!(
+        create.status.success(),
+        "revision create --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let create_out = String::from_utf8(create.stdout).expect("utf-8");
+    assert!(
+        create_out.contains("created revision"),
+        "create: {create_out}"
+    );
+    let statement_id =
+        create_out.lines().find_map(|l| l.strip_prefix("statement = ")).expect("statement id");
+
+    // Read back through direct mode — daemon and direct must
+    // converge on the same persisted revision.
+    let list = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--direct",
+        "revision",
+        "list",
+        "--object",
+        &object_id,
+    ]);
+    assert!(list.status.success(), "revision list: {list:?}");
+    let list_out = String::from_utf8(list.stdout).expect("utf-8");
+    assert!(
+        list_out.contains(statement_id),
+        "revision not visible to direct read after daemon write: {list_out}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn branch_set_daemon_mode_advances_head_through_dispatch() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:slice3-cli-branch-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let actor_id = actor.actor_id.to_string();
+    let object_id = object.object_id.to_string();
+    let revision_id = revision.statement_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+    let set = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "branch",
+        "set",
+        "--actor",
+        &actor_id,
+        "--object",
+        &object_id,
+        "--revision",
+        &revision_id,
+        "--name",
+        "head",
+    ]);
+    assert!(
+        set.status.success(),
+        "branch set --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&set.stderr)
+    );
+    let set_out = String::from_utf8(set.stdout).expect("utf-8");
+    assert!(set_out.contains("set branch"), "set: {set_out}");
+    assert!(
+        set_out.contains("supersedes = (genesis)"),
+        "set: {set_out}"
+    );
+
+    // Both modes should resolve to the same head.
+    assert_modes_agree(
+        &store_path,
+        &[
+            "branch",
+            "show",
+            "--object",
+            &object_id,
+            "--actor",
+            &actor_id,
+            "--name",
+            "head",
+        ],
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn tag_bind_daemon_mode_persists_head_through_dispatch() {
+    use kairo_statement::RevisionId;
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        RevisionId::new("git:sha256:slice3-cli-tag-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let actor_id = actor.actor_id.to_string();
+    let object_id = object.object_id.to_string();
+    let revision_id = revision.statement_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+    let bind = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "tag",
+        "bind",
+        "--actor",
+        &actor_id,
+        "--object",
+        &object_id,
+        "--version",
+        "1.0.0",
+        "--revision",
+        &revision_id,
+    ]);
+    assert!(
+        bind.status.success(),
+        "tag bind --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&bind.stderr)
+    );
+    let bind_out = String::from_utf8(bind.stdout).expect("utf-8");
+    assert!(bind_out.contains("bind tag"), "bind: {bind_out}");
+    assert!(
+        bind_out.contains("version = 1.0.0"),
+        "bind: {bind_out}"
+    );
+
+    assert_modes_agree(
+        &store_path,
+        &[
+            "tag",
+            "show",
+            "--object",
+            &object_id,
+            "--actor",
+            &actor_id,
+            "--version",
+            "1.0.0",
+        ],
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}

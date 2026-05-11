@@ -2444,12 +2444,25 @@ fn run_revision_command(
             let signed = SignedStatement::new(unsigned, signature);
             let statement_id = signed.statement_id();
 
-            store
-                .put_object_revision(&signed)
-                .map_err(|error| CliError::WriteRevision {
-                    statement: statement_id.clone(),
-                    source: error,
-                })?;
+            // Persist: dispatch on socket reachability per
+            // `DECISIONS.md §13`. Read/sign + manifest put stay
+            // direct (the keystore is local-only); only the
+            // revision-statement write itself branches.
+            match dispatch::resolve(paths, dispatch_opts)? {
+                dispatch::Mode::Daemon { runtime, client } => {
+                    runtime
+                        .block_on(client.put_object_revision(&signed))
+                        .map_err(CliError::DaemonRequestFailed)?;
+                }
+                dispatch::Mode::Direct => {
+                    store
+                        .put_object_revision(&signed)
+                        .map_err(|error| CliError::WriteRevision {
+                            statement: statement_id.clone(),
+                            source: error,
+                        })?;
+                }
+            }
 
             Ok(format!(
                 "created revision\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\n"
@@ -2566,12 +2579,21 @@ fn run_branch_command(
             let signed = SignedStatement::new(unsigned, signature);
             let statement_id = signed.statement_id();
 
-            store
-                .put_object_branch(&signed)
-                .map_err(|error| CliError::WriteBranch {
-                    statement: statement_id.clone(),
-                    source: error,
-                })?;
+            match dispatch::resolve(paths, dispatch_opts)? {
+                dispatch::Mode::Daemon { runtime, client } => {
+                    runtime
+                        .block_on(client.put_object_branch(&signed))
+                        .map_err(CliError::DaemonRequestFailed)?;
+                }
+                dispatch::Mode::Direct => {
+                    store
+                        .put_object_branch(&signed)
+                        .map_err(|error| CliError::WriteBranch {
+                            statement: statement_id.clone(),
+                            source: error,
+                        })?;
+                }
+            }
 
             let supersedes_line = match supersedes {
                 Some(id) => format!("supersedes = {id}\n"),
@@ -2853,12 +2875,21 @@ fn run_tag_command(
             let signed = SignedStatement::new(unsigned, signature);
             let statement_id = signed.statement_id();
 
-            store
-                .put_object_version_tag(&signed)
-                .map_err(|error| CliError::WriteVersionTag {
-                    statement: statement_id.clone(),
-                    source: error,
-                })?;
+            match dispatch::resolve(paths, dispatch_opts)? {
+                dispatch::Mode::Daemon { runtime, client } => {
+                    runtime
+                        .block_on(client.put_object_version_tag(&signed))
+                        .map_err(CliError::DaemonRequestFailed)?;
+                }
+                dispatch::Mode::Direct => {
+                    store
+                        .put_object_version_tag(&signed)
+                        .map_err(|error| CliError::WriteVersionTag {
+                            statement: statement_id.clone(),
+                            source: error,
+                        })?;
+                }
+            }
 
             let supersedes_line = match supersedes {
                 Some(id) => format!("supersedes = {id}\n"),
@@ -2927,12 +2958,21 @@ fn run_tag_command(
             let signed = SignedStatement::new(unsigned, signature);
             let statement_id = signed.statement_id();
 
-            store
-                .put_object_version_tag(&signed)
-                .map_err(|error| CliError::WriteVersionTag {
-                    statement: statement_id.clone(),
-                    source: error,
-                })?;
+            match dispatch::resolve(paths, dispatch_opts)? {
+                dispatch::Mode::Daemon { runtime, client } => {
+                    runtime
+                        .block_on(client.put_object_version_tag(&signed))
+                        .map_err(CliError::DaemonRequestFailed)?;
+                }
+                dispatch::Mode::Direct => {
+                    store
+                        .put_object_version_tag(&signed)
+                        .map_err(|error| CliError::WriteVersionTag {
+                            statement: statement_id.clone(),
+                            source: error,
+                        })?;
+                }
+            }
 
             Ok(format!(
                 "revoke tag\nstatement = {statement_id}\nobject = {object_id}\nactor = {actor_id}\nversion = {}\ntarget = (revoked)\nsupersedes = {supersedes_id}\n",

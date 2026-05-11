@@ -64,10 +64,17 @@ use hyper_util::rt::TokioIo;
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{KairoRef, Timestamp};
 use kairo_daemon::{serve_with_shutdown, Config, Error};
-use kairo_statement::json::ActorTrustStatementJson;
-use kairo_statement::{ActorTrustBody, Signature, SignedStatement, TrustDecision, UnsignedStatement};
-use kairo_store::TrustResolver;
-use kairo_test_support::store::{CreatedActor, StoreFixture};
+use kairo_statement::json::{
+    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
+};
+use kairo_statement::{
+    ActorTrustBody, ObjectBranchBody, ObjectRevisionBody, ObjectVersionTagBody, RevisionId,
+    SemverVersion, Signature, SignedStatement, TrustDecision, UnsignedStatement,
+};
+use kairo_object::ObjectManifest;
+use kairo_store::{BlobStore, BranchResolver, TrustResolver, VersionTagResolver};
+use kairo_test_support::store::{CreatedActor, CreatedObject, CreatedRevision, StoreFixture};
 use serde_json::{json, Value};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -188,6 +195,131 @@ fn find_in_tree(root: &Path, filename: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+const FIXTURE_MANIFEST: &str = r#"
+    [kairo]
+    schema = 1
+    kind = "kairo/object"
+    name = "post-statements-fixture"
+
+    [content]
+    kind = "tree"
+"#;
+
+/// Build a signature-valid `ObjectRevision` for `object` signed
+/// by `actor`. The manifest hash is computed locally; the test
+/// is responsible for putting the manifest blob into the store
+/// before posting (otherwise `verify_envelope_statement` would
+/// still succeed — the store doesn't enforce manifest-blob
+/// reachability at write time — but the daemon's followup read
+/// path would surface a missing blob).
+fn sign_revision(
+    actor: &CreatedActor,
+    object: &CreatedObject,
+    revision_id: RevisionId,
+    parents: Vec<RevisionId>,
+    manifest_hash: kairo_core::BlobId,
+    created_at_seconds: i64,
+) -> SignedStatement<ObjectRevisionBody> {
+    let body = ObjectRevisionBody::new(
+        object.object_id.clone(),
+        revision_id,
+        parents,
+        manifest_hash,
+        true,
+    );
+    let subject: KairoRef = format!("object:{}", object.object_id)
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        actor.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(created_at_seconds),
+        body,
+    );
+    let signature_bytes = actor.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor.actor_id.clone(),
+        actor.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    SignedStatement::new(unsigned, signature)
+}
+
+/// Build a signature-valid `ObjectBranch` head pointing `name`
+/// at `revision.statement_id`, signed by `actor`. `supersedes` is
+/// `None` for a genesis branch set; supply a prior head's
+/// statement_id to chain.
+fn sign_branch(
+    actor: &CreatedActor,
+    object: &CreatedObject,
+    revision: &CreatedRevision,
+    name: &str,
+    supersedes: Option<kairo_core::StatementId>,
+    created_at_seconds: i64,
+) -> SignedStatement<ObjectBranchBody> {
+    let body = ObjectBranchBody::new(
+        object.object_id.clone(),
+        name,
+        revision.statement_id.clone(),
+        supersedes,
+    );
+    let subject: KairoRef = format!("object:{}", object.object_id)
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        actor.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(created_at_seconds),
+        body,
+    );
+    let signature_bytes = actor.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor.actor_id.clone(),
+        actor.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    SignedStatement::new(unsigned, signature)
+}
+
+/// Build a signature-valid `ObjectVersionTag` bind pointing
+/// `version` at `revision.statement_id`, signed by `actor`.
+fn sign_version_tag(
+    actor: &CreatedActor,
+    object: &CreatedObject,
+    revision: &CreatedRevision,
+    version: &str,
+    supersedes: Option<kairo_core::StatementId>,
+    created_at_seconds: i64,
+) -> SignedStatement<ObjectVersionTagBody> {
+    let semver = SemverVersion::parse(version).expect("semver");
+    let body = ObjectVersionTagBody::new(
+        object.object_id.clone(),
+        semver,
+        Some(revision.statement_id.clone()),
+        supersedes,
+    )
+    .expect("tag body shape");
+    let subject: KairoRef = format!("object:{}", object.object_id)
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        actor.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(created_at_seconds),
+        body,
+    );
+    let signature_bytes = actor.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor.actor_id.clone(),
+        actor.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    SignedStatement::new(unsigned, signature)
 }
 
 /// Build a signature-valid `ActorTrust` statement (genesis
@@ -391,17 +523,17 @@ async fn rejects_envelope_signature_actor_mismatch() {
 
 #[tokio::test]
 async fn rejects_unsupported_statement_kind_with_415() {
-    // POST a body whose `type` is not in Phase A's dispatcher
-    // allowlist (Slice 2: only ActorTrust). The handler short-
-    // circuits with 415 before touching the store or trying to
-    // decode the body into a typed shape.
+    // POST a body whose `type` is not yet in Phase A's
+    // dispatcher allowlist (Slice 4 opens up capability + genesis
+    // kinds). The handler short-circuits with 415 before touching
+    // the store or trying to decode the body into a typed shape.
     let (dir, _fixture) = StoreFixture::temp();
     let store_path = dir.path().to_path_buf();
     drop(_fixture);
 
     let handle = spawn_daemon(store_path).await;
     let body = json!({
-        "type": "ObjectRevision",
+        "type": "ActorCapabilityGrant",
         "version": 1,
         // Other fields intentionally absent — the handler must
         // reject on `type` alone, before attempting body decode.
@@ -472,6 +604,270 @@ async fn byte_identical_redelivery_is_idempotent() {
     let id2 = env2["result"]["statement_id"].as_str().expect("id2").to_owned();
 
     assert_eq!(id1, id2, "byte-identical re-delivery must yield the same id");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+// --- Slice 3: ObjectRevision -------------------------------------------------
+
+#[tokio::test]
+async fn accepts_object_revision_and_persists_it() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+
+    // Manifest blob lives in the store before the revision so
+    // the daemon's followup read path can resolve it. Mirrors
+    // what `kairo revision create` does direct.
+    let manifest = ObjectManifest::parse_toml(FIXTURE_MANIFEST).expect("manifest");
+    let manifest_hash = manifest.manifest_hash();
+    fixture
+        .store
+        .put_blob(&manifest_hash, &manifest.canonical_bytes())
+        .expect("put_blob");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let signed = sign_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3r1"),
+        vec![],
+        manifest_hash.clone(),
+        1_700_001_000,
+    );
+    let body =
+        serde_json::to_value(ObjectRevisionStatementJson::from_statement(&signed)).expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["ok"], Value::Bool(true));
+    assert_eq!(
+        envelope["result"]["statement_id"].as_str(),
+        Some(signed.statement_id().to_string().as_str())
+    );
+    assert_eq!(envelope["result"]["statement"]["type"], "ObjectRevision");
+
+    handle.shutdown().await;
+    let store_reread =
+        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let persisted: SignedStatement<ObjectRevisionBody> = kairo_store::StatementStore::get_object_revision(
+        &store_reread,
+        &signed.statement_id(),
+    )
+    .expect("get_object_revision");
+    assert_eq!(persisted.statement_id(), signed.statement_id());
+
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_object_revision_with_bad_signature() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let manifest = ObjectManifest::parse_toml(FIXTURE_MANIFEST).expect("manifest");
+    let manifest_hash = manifest.manifest_hash();
+    fixture
+        .store
+        .put_blob(&manifest_hash, &manifest.canonical_bytes())
+        .expect("put_blob");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3r2"),
+        vec![],
+        manifest_hash,
+        1_700_001_001,
+    );
+    let mut bad_bytes = signed.signature().bytes().to_vec();
+    bad_bytes[0] ^= 0x01;
+    let bad_signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bad_bytes,
+    );
+    let bad_signed = SignedStatement::new(signed.unsigned().clone(), bad_signature);
+    let body =
+        serde_json::to_value(ObjectRevisionStatementJson::from_statement(&bad_signed)).expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["error"]["code"], "bad_signature");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+// --- Slice 3: ObjectBranch ---------------------------------------------------
+
+#[tokio::test]
+async fn accepts_object_branch_set_and_persists_head() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-branch-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let signed = sign_branch(&alice, &object, &revision, "head", None, 1_700_001_100);
+    let body =
+        serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed)).expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["result"]["statement"]["type"], "ObjectBranch");
+
+    handle.shutdown().await;
+    let store_reread =
+        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let head = store_reread
+        .latest_branch(&alice.actor_id, &object.object_id, "head")
+        .expect("latest_branch")
+        .expect("head present");
+    assert_eq!(head.statement_id(), signed.statement_id());
+
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_object_branch_with_bad_signature() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-branch-r2"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_branch(&alice, &object, &revision, "head", None, 1_700_001_101);
+    let mut bad_bytes = signed.signature().bytes().to_vec();
+    bad_bytes[0] ^= 0x01;
+    let bad_signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bad_bytes,
+    );
+    let bad_signed = SignedStatement::new(signed.unsigned().clone(), bad_signature);
+    let body =
+        serde_json::to_value(ObjectBranchStatementJson::from_statement(&bad_signed)).expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["error"]["code"], "bad_signature");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+// --- Slice 3: ObjectVersionTag -----------------------------------------------
+
+#[tokio::test]
+async fn accepts_version_tag_bind_and_persists_head() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-tag-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let signed = sign_version_tag(&alice, &object, &revision, "1.0.0", None, 1_700_001_200);
+    let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["result"]["statement"]["type"], "ObjectVersionTag");
+
+    handle.shutdown().await;
+    let store_reread =
+        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let head = store_reread
+        .latest_version_tag(&alice.actor_id, &object.object_id, "1.0.0")
+        .expect("latest_version_tag")
+        .expect("head present");
+    assert_eq!(head.statement_id(), signed.statement_id());
+
+    drop(dir);
+}
+
+#[tokio::test]
+async fn version_tag_byte_identical_redelivery_is_idempotent() {
+    // One re-delivery test per kind would be redundant — the
+    // idempotency machinery lives in the shared `persist_signed`
+    // helper, and Slice 2's ActorTrust covers the contract. The
+    // VersionTag case exists here as a smoke check that the
+    // store-side `atomic_write` overwrite still produces a
+    // matching statement_id when re-POSTed.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-tag-r2"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_version_tag(&alice, &object, &revision, "1.1.0", None, 1_700_001_201);
+    let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (s1, b1) = http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    let (s2, b2) = http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(s1, hyper::StatusCode::OK);
+    assert_eq!(s2, hyper::StatusCode::OK);
+    let env1: Value = serde_json::from_slice(&b1).expect("parse");
+    let env2: Value = serde_json::from_slice(&b2).expect("parse");
+    assert_eq!(
+        env1["result"]["statement_id"], env2["result"]["statement_id"],
+        "byte-identical re-delivery must yield the same id across kinds"
+    );
 
     handle.shutdown().await;
     drop(dir);

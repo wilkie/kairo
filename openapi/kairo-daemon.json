@@ -418,7 +418,7 @@
         "description": "Accepts a `SignedStatement<*>` JSON envelope and routes on the\n`type` discriminator. Slice 2 dispatches `ActorTrust` only;\nevery other kind returns 415 `unsupported_statement_kind`.\n\nThe handler runs the same verification the direct-mode CLI\nruns (`verify_envelope_statement` against the daemon's\nresolver), then persists via the store's typed `put_*`. No\nper-request auth: Phase A's trust model is the Unix socket's\nfilesystem permissions, identical to the v1 read endpoints.\nSigned-request auth is locked for Phase B (`DECISIONS.md §13`\nsub-decision 7).",
         "operationId": "putStatement",
         "requestBody": {
-          "description": "Signed statement envelope. Phase A accepts ActorTrust only.",
+          "description": "Signed statement envelope. Phase A currently accepts ActorTrust, ObjectRevision, ObjectBranch, and ObjectVersionTag. The schema annotation shows one example (ActorTrust); the daemon dispatches on the `type` discriminator inside the body. Polymorphic-body schema is post-Phase A.",
           "content": {
             "application/json": {
               "schema": {

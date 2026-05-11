@@ -21,12 +21,16 @@ use axum::extract::{Path, State};
 use axum::Json;
 use kairo_core::StatementId;
 use kairo_daemon_client::dto::PutStatementResult;
-use kairo_statement::json::ActorTrustStatementJson;
+use kairo_statement::json::{
+    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
+};
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, VerificationReport,
 };
-use kairo_statement::{ActorTrustBody, SignedStatement};
-use kairo_store::StatementStore;
+use kairo_statement::{SignedStatement, StatementBody};
+use kairo_store::{FilesystemStore, StatementStore, StoreError};
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::api::envelope::{ApiError, ApiResult};
@@ -90,7 +94,10 @@ pub async fn handler(
     tag = "statements",
     operation_id = "putStatement",
     request_body(
-        description = "Signed statement envelope. Phase A accepts ActorTrust only.",
+        description = "Signed statement envelope. Phase A currently accepts ActorTrust, \
+            ObjectRevision, ObjectBranch, and ObjectVersionTag. The schema annotation \
+            shows one example (ActorTrust); the daemon dispatches on the `type` \
+            discriminator inside the body. Polymorphic-body schema is post-Phase A.",
         content_type = "application/json",
         content = ActorTrustStatementJson,
     ),
@@ -121,36 +128,110 @@ pub async fn put_handler(
         .to_owned();
 
     match kind.as_str() {
-        "ActorTrust" => put_actor_trust(state, body).await,
+        "ActorTrust" => {
+            let signed = decode_signed_body(body, &kind, ActorTrustStatementJson::to_statement)?;
+            persist_signed(
+                state,
+                signed,
+                FilesystemStore::put_actor_trust,
+                "put_actor_trust",
+                ActorTrustStatementJson::from_statement,
+            )
+            .await
+        }
+        "ObjectRevision" => {
+            let signed =
+                decode_signed_body(body, &kind, ObjectRevisionStatementJson::to_statement)?;
+            persist_signed(
+                state,
+                signed,
+                FilesystemStore::put_object_revision,
+                "put_object_revision",
+                ObjectRevisionStatementJson::from_statement,
+            )
+            .await
+        }
+        "ObjectBranch" => {
+            let signed = decode_signed_body(body, &kind, ObjectBranchStatementJson::to_statement)?;
+            persist_signed(
+                state,
+                signed,
+                FilesystemStore::put_object_branch,
+                "put_object_branch",
+                ObjectBranchStatementJson::from_statement,
+            )
+            .await
+        }
+        "ObjectVersionTag" => {
+            let signed =
+                decode_signed_body(body, &kind, ObjectVersionTagStatementJson::to_statement)?;
+            persist_signed(
+                state,
+                signed,
+                FilesystemStore::put_object_version_tag,
+                "put_object_version_tag",
+                ObjectVersionTagStatementJson::from_statement,
+            )
+            .await
+        }
         other => Err(ApiError::unsupported_statement_kind(format!(
-            "statement kind {other:?} is not accepted by Phase A; \
-             Slice 2 supports `ActorTrust` only — additional kinds \
-             land in later slices (see PHASE_2_DAEMON_WRITES.md)"
+            "statement kind {other:?} is not accepted by Phase A's current dispatcher; \
+             see PHASE_2_DAEMON_WRITES.md for the slice that opens up the remaining kinds",
         ))),
     }
 }
 
-async fn put_actor_trust(
-    state: AppState,
+/// Deserialize a JSON request body into a typed `*StatementJson`
+/// DTO, then convert it into the matching `SignedStatement<B>`.
+/// Both failure paths produce 400 `bad_request` — JSON-shape
+/// rejection and StatementJson-domain rejection are user errors,
+/// not server errors.
+fn decode_signed_body<TDto, B, Err>(
     body: Value,
-) -> Result<ApiResult<PutStatementResult>, ApiError> {
-    let dto: ActorTrustStatementJson = serde_json::from_value(body).map_err(|error| {
-        ApiError::bad_request(format!("invalid ActorTrust body shape: {error}"))
+    kind: &str,
+    to_statement: fn(&TDto) -> Result<SignedStatement<B>, Err>,
+) -> Result<SignedStatement<B>, ApiError>
+where
+    TDto: serde::de::DeserializeOwned,
+    B: StatementBody,
+    Err: std::fmt::Display,
+{
+    let dto: TDto = serde_json::from_value(body).map_err(|error| {
+        ApiError::bad_request(format!("invalid {kind} body shape: {error}"))
     })?;
-    let signed = dto
-        .to_statement()
-        .map_err(|error| ApiError::bad_request(format!("invalid ActorTrust body: {error}")))?;
+    to_statement(&dto)
+        .map_err(|error| ApiError::bad_request(format!("invalid {kind} body: {error}")))
+}
 
+/// Run the verify + persist + echo pipeline that every Phase A
+/// write kind shares. The caller supplies the store's typed
+/// `put_*` and the matching JSON `from_statement` — everything
+/// else (spawn_blocking, error mapping, response shaping) is
+/// uniform across kinds.
+async fn persist_signed<B, TDto, FromFn, PutFn>(
+    state: AppState,
+    signed: SignedStatement<B>,
+    put_fn: PutFn,
+    put_context: &'static str,
+    from_statement: FromFn,
+) -> Result<ApiResult<PutStatementResult>, ApiError>
+where
+    B: StatementBody + Send + 'static,
+    SignedStatement<B>: Clone + Send,
+    TDto: Serialize,
+    FromFn: FnOnce(&SignedStatement<B>) -> TDto,
+    PutFn: Send + 'static + FnOnce(&FilesystemStore, &SignedStatement<B>) -> Result<StatementId, StoreError>,
+{
     verify_signed_against_store(&state, &signed).await?;
 
     let store = state.store.clone();
     let signed_for_put = signed.clone();
-    let statement_id = tokio::task::spawn_blocking(move || store.put_actor_trust(&signed_for_put))
+    let statement_id = tokio::task::spawn_blocking(move || put_fn(store.as_ref(), &signed_for_put))
         .await
         .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
-        .map_err(|error| map_store_error(error, "put_actor_trust"))?;
+        .map_err(|error| map_store_error(error, put_context))?;
 
-    let echo = ActorTrustStatementJson::from_statement(&signed);
+    let echo = from_statement(&signed);
     let statement = serde_json::to_value(&echo).map_err(|error| {
         ApiError::internal(format!("failed to serialize stored statement: {error}"))
     })?;
@@ -180,10 +261,14 @@ async fn put_actor_trust(
 /// Trust evaluation is intentionally ignored: trust is
 /// informational and never makes a cryptographically valid
 /// statement invalid (`verify.rs` §"Trust evaluation").
-async fn verify_signed_against_store(
+async fn verify_signed_against_store<B>(
     state: &AppState,
-    signed: &SignedStatement<ActorTrustBody>,
-) -> Result<(), ApiError> {
+    signed: &SignedStatement<B>,
+) -> Result<(), ApiError>
+where
+    B: StatementBody + Send + 'static,
+    SignedStatement<B>: Clone + Send,
+{
     let resolver = state.store.clone();
     let signed_for_verify = signed.clone();
     let report: VerificationReport = tokio::task::spawn_blocking(move || {

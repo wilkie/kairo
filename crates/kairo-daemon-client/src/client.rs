@@ -17,8 +17,15 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
-use kairo_statement::json::ActorTrustStatementJson as KsActorTrustStatementJson;
-use kairo_statement::{ActorTrustBody, SignedStatement};
+use kairo_statement::json::{
+    ActorTrustStatementJson as KsActorTrustStatementJson,
+    ObjectBranchStatementJson as KsObjectBranchStatementJson,
+    ObjectRevisionStatementJson as KsObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson as KsObjectVersionTagStatementJson,
+};
+use kairo_statement::{
+    ActorTrustBody, ObjectBranchBody, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
+};
 use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
@@ -250,6 +257,46 @@ impl Client {
         let dto = KsActorTrustStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto)
             .map_err(|error| ClientError::Decode(format!("serialize ActorTrust body: {error}")))?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    /// `POST /api/v1/statements` for an `ObjectRevision`. The
+    /// signed envelope is generated client-side from the local
+    /// keystore; the daemon re-verifies and persists.
+    pub async fn put_object_revision(
+        &self,
+        signed: &SignedStatement<ObjectRevisionBody>,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsObjectRevisionStatementJson::from_statement(signed);
+        let body = serde_json::to_vec(&dto).map_err(|error| {
+            ClientError::Decode(format!("serialize ObjectRevision body: {error}"))
+        })?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    /// `POST /api/v1/statements` for an `ObjectBranch`. Used by
+    /// `kairo branch set` when dispatch routes through the daemon.
+    pub async fn put_object_branch(
+        &self,
+        signed: &SignedStatement<ObjectBranchBody>,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsObjectBranchStatementJson::from_statement(signed);
+        let body = serde_json::to_vec(&dto)
+            .map_err(|error| ClientError::Decode(format!("serialize ObjectBranch body: {error}")))?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    /// `POST /api/v1/statements` for an `ObjectVersionTag`. Used
+    /// by `kairo tag bind` when dispatch routes through the
+    /// daemon.
+    pub async fn put_object_version_tag(
+        &self,
+        signed: &SignedStatement<ObjectVersionTagBody>,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsObjectVersionTagStatementJson::from_statement(signed);
+        let body = serde_json::to_vec(&dto).map_err(|error| {
+            ClientError::Decode(format!("serialize ObjectVersionTag body: {error}"))
+        })?;
         self.post_json("/api/v1/statements", body).await
     }
 
