@@ -17,9 +17,8 @@
 //! the outer key because the resolver navigates "for this grantee,
 //! enumerate grantors who have issued a covering grant." Within each
 //! `(grantor, grantee, object)` triple the chain head is computed on
-//! read — the same chain-precedence rule used everywhere else
-//! (`supersedes`-leaf wins; fork tiebreak on greatest `(created_at,
-//! statement_id)`).
+//! read using the shared supersedes-chain rule in
+//! [`crate::chain::chain_head`].
 //!
 //! Actor-scoped grants are intentionally **not** mirrored here. In
 //! v1 no statement kind is valid for `CapabilityScope::Actor` (see
@@ -261,30 +260,11 @@ mod tests {
         Timestamp::from_seconds(seconds)
     }
 
-    #[test]
-    fn empty_index_has_no_head() {
-        let index = CapabilityByObjectIndexFile::default();
-        assert!(index.lookup_head(&grantee_a(), &grantor_a()).is_none());
-    }
-
-    #[test]
-    fn single_entry_is_head() {
-        let mut index = CapabilityByObjectIndexFile::default();
-        let added = index.upsert(
-            &grantee_a(),
-            &grantor_a(),
-            &statement_id_one(),
-            timestamp(100),
-            None,
-        );
-        assert!(added);
-        assert_eq!(
-            index
-                .lookup_head(&grantee_a(), &grantor_a())
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
-        );
-    }
+    // The chain-head algorithm itself (empty / single-leaf /
+    // supersedes-leaf) is exercised in `crate::chain::tests`. The
+    // tests below cover concerns specific to this index's on-disk
+    // shape: upsert idempotency, per-(grantee, grantor) isolation
+    // in the nested map, and the JSON-to-public-summary decoder.
 
     #[test]
     fn duplicate_put_is_noop() {
@@ -304,29 +284,6 @@ mod tests {
             None,
         );
         assert!(!added);
-    }
-
-    #[test]
-    fn supersedes_chain_picks_leaf() {
-        let mut index = CapabilityByObjectIndexFile::default();
-        index.upsert(
-            &grantee_a(),
-            &grantor_a(),
-            &statement_id_two(),
-            timestamp(100),
-            None,
-        );
-        index.upsert(
-            &grantee_a(),
-            &grantor_a(),
-            &statement_id_one(),
-            timestamp(100),
-            Some(&statement_id_two()),
-        );
-        let head = index
-            .lookup_head(&grantee_a(), &grantor_a())
-            .expect("head present");
-        assert_eq!(head.statement_id.as_str(), statement_id_one().as_str());
     }
 
     #[test]

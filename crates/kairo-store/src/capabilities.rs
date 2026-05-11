@@ -7,10 +7,8 @@
 //! `(grantee, scope)` because the dominant query is "for this
 //! `(grantor, grantee, scope)` triple, what is in effect?" Resolution
 //! computes the current head per `(grantee, scope)` from these entries
-//! on read; the index does not pre-pick a winner because chain-
-//! precedence (a statement that names another via `supersedes`)
-//! overrides timestamp-only ordering, so the head can change as new
-//! entries arrive. See `specs/CAPABILITIES.md` §5.1.1.
+//! on read using the shared supersedes-chain rule in
+//! [`crate::chain::chain_head`]. See `specs/CAPABILITIES.md` §5.1.1.
 //!
 //! Sharding is on `grantor` (the signer) rather than on the grantee
 //! or the scope, because the grantor is the one *responsible* for
@@ -423,32 +421,13 @@ mod tests {
         Timestamp::from_seconds(seconds)
     }
 
-    #[test]
-    fn empty_index_has_no_head() {
-        let index = CapabilityIndexFile::default();
-        let scope = CapabilityScope::Object(object());
-        assert!(index.lookup_grant_head(&grantee_a(), &scope).is_none());
-    }
-
-    #[test]
-    fn single_grant_is_head() {
-        let mut index = CapabilityIndexFile::default();
-        let scope = CapabilityScope::Object(object());
-        let added = index.upsert_grant(
-            &grantee_a(),
-            &scope,
-            &statement_id_one(),
-            timestamp(100),
-            None,
-        );
-        assert!(added);
-        assert_eq!(
-            index
-                .lookup_grant_head(&grantee_a(), &scope)
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
-        );
-    }
+    // The chain-head algorithm itself (empty / single-leaf /
+    // supersedes-leaf / fork tiebreak) is exercised in
+    // `crate::chain::tests`. The grant tests below cover concerns
+    // specific to this index's on-disk shape: upsert idempotency,
+    // per-(grantee, scope) isolation in the nested map, the
+    // revocation-resolver rule (most-restrictive wins), and the
+    // scope-key wire form.
 
     #[test]
     fn duplicate_grant_put_is_noop() {
@@ -469,69 +448,6 @@ mod tests {
             None,
         );
         assert!(!added);
-    }
-
-    #[test]
-    fn supersedes_chain_picks_leaf_regardless_of_timestamp_tiebreak() {
-        // Genesis grant signed first, then a successor that supersedes
-        // it at the same created_at. Chain-precedence picks the
-        // successor regardless of statement-id ordering.
-        let mut index = CapabilityIndexFile::default();
-        let scope = CapabilityScope::Object(object());
-        index.upsert_grant(
-            &grantee_a(),
-            &scope,
-            &statement_id_two(),
-            timestamp(100),
-            None,
-        );
-        index.upsert_grant(
-            &grantee_a(),
-            &scope,
-            &statement_id_one(),
-            timestamp(100),
-            Some(&statement_id_two()),
-        );
-        let head = index
-            .lookup_grant_head(&grantee_a(), &scope)
-            .expect("head present");
-        assert_eq!(head.statement_id.as_str(), statement_id_one().as_str());
-    }
-
-    #[test]
-    fn fork_tiebreaks_on_created_at_then_statement_id() {
-        let mut index = CapabilityIndexFile::default();
-        let scope = CapabilityScope::Object(object());
-        index.upsert_grant(
-            &grantee_a(),
-            &scope,
-            &statement_id_one(),
-            timestamp(100),
-            None,
-        );
-        index.upsert_grant(
-            &grantee_a(),
-            &scope,
-            &statement_id_two(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        index.upsert_grant(
-            &grantee_a(),
-            &scope,
-            &statement_id_three(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        // Both _two and _three supersede _one; both are leaves at the
-        // same created_at. Tiebreak prefers the lex-greater statement
-        // id (_three > _two).
-        assert_eq!(
-            index
-                .lookup_grant_head(&grantee_a(), &scope)
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_three().as_str())
-        );
     }
 
     #[test]

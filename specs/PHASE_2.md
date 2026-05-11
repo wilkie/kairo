@@ -660,28 +660,26 @@ Hardening what Phase 1 shipped.
       §3.3) are tracked under PHASE_2 §6. Plaintext-at-rest is
       explicitly out-of-MVP-scope; passphrase encryption is the
       documented post-MVP work.
-- [ ] **Accumulated doc / UX cleanup.** Small items that have piled
-      up across the indexing-strategy passes (§13 by-actor, the
-      `rebuild_indexes` command, the `chain_head` extraction).
-      None blocks anything; collect into one batch when convenient.
-        - Per-index modules (`branches.rs`, `tags.rs`, `trust.rs`,
-          `capabilities.rs`, `capabilities_by_object.rs`,
-          `statements_by_actor.rs`) each duplicate the
-          supersedes-chain explanation in their module doc; the
-          canonical version now lives in `chain.rs`. Trim each
-          per-module doc to one sentence + a pointer.
-        - `kairo --help` lists the `store` namespace inline with
-          every other command. As more `kairo store ...` verbs land
-          (e.g. a future `gc`, `compact`, `verify-indexes`), the
-          flat list will get unwieldy. Reorganize the help text
-          into category headings — or migrate to clap's grouped
-          help — when the second `store` verb arrives.
-        - `chain.rs` doc-tests every algorithm branch through a
-          local `Entry` struct; the per-module test suites still
-          re-test the same branches against their own entry types.
-          Most of those duplicates are now redundant. Audit and
-          delete the ones that only exercise the shared algorithm
-          (keep the ones that cover index-file-shape concerns).
+- [x] **Accumulated doc / test cleanup.** Two of three items from
+      the indexing-strategy passes landed; the third stays
+      deferred behind a trigger condition.
+        - [x] Per-index module docs (`branches.rs`, `tags.rs`,
+              `trust.rs`, `capabilities.rs`,
+              `capabilities_by_object.rs`) trimmed to one sentence
+              + a pointer to `chain::chain_head` instead of
+              restating the algorithm.
+        - [x] Per-module chain tests audited and reduced. 22
+              algorithm restatements deleted across the 5 modules;
+              one unique edge case (`supersedes` pointing at a
+              missing predecessor) promoted to a property test in
+              `chain.rs`. What survives in each module covers
+              index-file-shape concerns: upsert idempotency,
+              per-key isolation in the nested map, the
+              JSON-to-public-summary decoder, and (where present)
+              cross-actor / per-resolver structural rules.
+        - [ ] `kairo --help` flat-list reorganization stays
+              deferred behind its trigger condition: act when the
+              second `kairo store ...` verb arrives.
 
 **Why it matters:** the MVP works but is unhardened. Polish here makes
 every later Phase 2 / Phase 3 item cheaper and safer to land.

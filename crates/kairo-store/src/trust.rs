@@ -4,11 +4,9 @@
 //! every known `ActorTrust` statement *about* that trusted actor — one
 //! entry per `(by_actor, statement_id)` — materialized from the
 //! underlying signed statements stored in `statements/`. Resolution
-//! computes the current head per `by_actor` from these entries on read;
-//! the index does not pre-pick a winner because chain-precedence (a
-//! statement that names another via `supersedes`) overrides
-//! timestamp-only ordering, so the head can change as new entries
-//! arrive.
+//! computes the current head per `by_actor` from these entries on read
+//! using the shared supersedes-chain rule in
+//! [`crate::chain::chain_head`].
 //!
 //! Sharding is on `trusted_actor` (the subject) rather than on the
 //! truster, because aggregation queries — "what does the world say
@@ -224,30 +222,12 @@ mod tests {
         Timestamp::from_seconds(seconds)
     }
 
-    #[test]
-    fn empty_index_returns_no_head() {
-        let index = TrustIndexFile::default();
-        assert!(index.lookup_head(&truster_a()).is_none());
-    }
-
-    #[test]
-    fn single_entry_is_head() {
-        let mut index = TrustIndexFile::default();
-        let added = index.upsert(
-            &truster_a(),
-            &statement_id_one(),
-            timestamp(100),
-            Some("trusted"),
-            None,
-        );
-        assert!(added);
-        assert_eq!(
-            index
-                .lookup_head(&truster_a())
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
-        );
-    }
+    // The chain-head algorithm itself (empty / single-leaf /
+    // supersedes-leaf / fork tiebreak) is exercised in
+    // `crate::chain::tests`. The tests below cover concerns
+    // specific to this index's on-disk shape: upsert idempotency,
+    // per-truster isolation in the keyed map, and the
+    // JSON-to-public-summary decoder.
 
     #[test]
     fn duplicate_put_is_noop() {
@@ -267,98 +247,6 @@ mod tests {
             None,
         );
         assert!(!added);
-    }
-
-    #[test]
-    fn supersedes_chain_picks_leaf_regardless_of_timestamp_tiebreak() {
-        // Grant (statement_id_two, lex-greater) signed first; withdraw
-        // (statement_id_one, lex-smaller) signed second and explicitly
-        // supersedes the grant. Chain-precedence picks the withdrawal.
-        let mut index = TrustIndexFile::default();
-        index.upsert(
-            &truster_a(),
-            &statement_id_two(),
-            timestamp(100),
-            Some("trusted"),
-            None,
-        );
-        index.upsert(
-            &truster_a(),
-            &statement_id_one(),
-            timestamp(100),
-            None,
-            Some(&statement_id_two()),
-        );
-        let head = index.lookup_head(&truster_a()).expect("head present");
-        assert_eq!(head.statement_id.as_str(), statement_id_one().as_str());
-        assert_eq!(head.decision, None);
-    }
-
-    #[test]
-    fn fork_tiebreaks_on_created_at_then_statement_id() {
-        let mut index = TrustIndexFile::default();
-        index.upsert(
-            &truster_a(),
-            &statement_id_one(),
-            timestamp(100),
-            Some("trusted"),
-            None,
-        );
-        index.upsert(
-            &truster_a(),
-            &statement_id_two(),
-            timestamp(200),
-            Some("untrusted"),
-            Some(&statement_id_one()),
-        );
-        index.upsert(
-            &truster_a(),
-            &statement_id_three(),
-            timestamp(200),
-            None,
-            Some(&statement_id_one()),
-        );
-        // Both _two and _three supersede _one; both are leaves at the
-        // same created_at. Tiebreak prefers the lex-greater statement
-        // id (statement_id_three > statement_id_two).
-        assert_eq!(
-            index
-                .lookup_head(&truster_a())
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_three().as_str())
-        );
-    }
-
-    #[test]
-    fn fork_later_timestamp_wins_over_earlier() {
-        let mut index = TrustIndexFile::default();
-        index.upsert(
-            &truster_a(),
-            &statement_id_one(),
-            timestamp(100),
-            Some("trusted"),
-            None,
-        );
-        index.upsert(
-            &truster_a(),
-            &statement_id_two(),
-            timestamp(300),
-            Some("untrusted"),
-            Some(&statement_id_one()),
-        );
-        index.upsert(
-            &truster_a(),
-            &statement_id_three(),
-            timestamp(200),
-            None,
-            Some(&statement_id_one()),
-        );
-        assert_eq!(
-            index
-                .lookup_head(&truster_a())
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_two().as_str())
-        );
     }
 
     #[test]

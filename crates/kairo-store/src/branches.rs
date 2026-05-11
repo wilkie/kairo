@@ -4,9 +4,8 @@
 //! known `ObjectBranch` for that object — one entry per
 //! `(actor, name, statement_id)` — materialized from the underlying signed
 //! statements stored in `statements/`. Resolution computes the current
-//! head per `(actor, name)` from these entries on read; the index does
-//! not pre-pick a winner because chain-precedence (a statement that names
-//! another via `supersedes`) overrides timestamp-only ordering.
+//! head per `(actor, name)` from these entries on read using the shared
+//! supersedes-chain rule in [`crate::chain::chain_head`].
 //!
 //! Cross-actor `supersedes` references are recorded on each entry but
 //! the chain-head computation in this module only walks **same-actor**
@@ -227,32 +226,16 @@ mod tests {
         StatementId::from_sha256_digest([0xBB; 32])
     }
 
-    fn statement_id_three() -> StatementId {
-        StatementId::from_sha256_digest([0xCC; 32])
-    }
-
     fn timestamp(seconds: i64) -> Timestamp {
         Timestamp::from_seconds(seconds)
     }
 
-    #[test]
-    fn empty_index_returns_no_head() {
-        let index = BranchIndexFile::default();
-        assert!(index.lookup_head(&actor(), "head").is_none());
-    }
-
-    #[test]
-    fn single_entry_is_head() {
-        let mut index = BranchIndexFile::default();
-        let added = index.upsert(&actor(), "head", &statement_id_one(), timestamp(100), None);
-        assert!(added);
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "head")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
-        );
-    }
+    // The chain-head algorithm itself (empty / single-leaf /
+    // supersedes-leaf / fork tiebreak) is exercised in
+    // `crate::chain::tests`. The tests below cover concerns
+    // specific to this index's on-disk shape: upsert idempotency,
+    // per-key isolation in the nested map, and the JSON-to-public-
+    // summary decoder.
 
     #[test]
     fn duplicate_put_is_noop() {
@@ -260,54 +243,6 @@ mod tests {
         index.upsert(&actor(), "head", &statement_id_one(), timestamp(100), None);
         let added = index.upsert(&actor(), "head", &statement_id_one(), timestamp(100), None);
         assert!(!added);
-    }
-
-    #[test]
-    fn supersedes_chain_picks_leaf_regardless_of_timestamp_tiebreak() {
-        // Genesis advance signed first (statement_id_two, lex-greater);
-        // successor at the same created_at supersedes it
-        // (statement_id_one, lex-smaller). Chain-precedence picks the
-        // successor.
-        let mut index = BranchIndexFile::default();
-        index.upsert(&actor(), "head", &statement_id_two(), timestamp(100), None);
-        index.upsert(
-            &actor(),
-            "head",
-            &statement_id_one(),
-            timestamp(100),
-            Some(&statement_id_two()),
-        );
-        let head = index.lookup_head(&actor(), "head").expect("head present");
-        assert_eq!(head.statement_id.as_str(), statement_id_one().as_str());
-    }
-
-    #[test]
-    fn fork_tiebreaks_on_created_at_then_statement_id() {
-        let mut index = BranchIndexFile::default();
-        index.upsert(&actor(), "head", &statement_id_one(), timestamp(100), None);
-        index.upsert(
-            &actor(),
-            "head",
-            &statement_id_two(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        index.upsert(
-            &actor(),
-            "head",
-            &statement_id_three(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        // Both _two and _three supersede _one; both are leaves at the
-        // same created_at. Tiebreak prefers the lex-greater statement
-        // id (_three > _two).
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "head")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_three().as_str())
-        );
     }
 
     #[test]

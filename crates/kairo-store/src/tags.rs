@@ -4,11 +4,8 @@
 //! every known `ObjectVersionTag` for that object — one entry per
 //! `(actor, version, statement_id)` — materialized from the underlying
 //! signed statements stored in `statements/`. Resolution computes the
-//! current head per `(actor, version)` from these entries on read; the
-//! index does not pre-pick a winner because chain-precedence (a
-//! statement that names another via `supersedes`) overrides
-//! timestamp-only ordering, so the head can change as new entries
-//! arrive.
+//! current head per `(actor, version)` from these entries on read using
+//! the shared supersedes-chain rule in [`crate::chain::chain_head`].
 //!
 //! Cross-actor `supersedes` references are recorded on each entry but
 //! the chain-head computation in this module only walks **same-actor**
@@ -243,24 +240,14 @@ mod tests {
         Timestamp::from_seconds(seconds)
     }
 
-    #[test]
-    fn empty_index_returns_no_head() {
-        let index = VersionTagIndexFile::default();
-        assert!(index.lookup_head(&actor(), "1.2.3").is_none());
-    }
-
-    #[test]
-    fn single_entry_is_head() {
-        let mut index = VersionTagIndexFile::default();
-        let added = index.upsert(&actor(), "1.2.3", &statement_id_one(), timestamp(100), None);
-        assert!(added);
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "1.2.3")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
-        );
-    }
+    // The chain-head algorithm itself (empty / single-leaf /
+    // supersedes-leaf / fork tiebreak / missing predecessor) is
+    // exercised in `crate::chain::tests`. The tests below cover
+    // concerns specific to this index's on-disk shape: upsert
+    // idempotency, per-key isolation in the nested map, the
+    // resolver's per-actor segregation (cross-actor supersedes
+    // can't bridge actors here), and the JSON-to-public-summary
+    // decoder.
 
     #[test]
     fn duplicate_put_is_noop() {
@@ -268,87 +255,6 @@ mod tests {
         index.upsert(&actor(), "1.2.3", &statement_id_one(), timestamp(100), None);
         let added = index.upsert(&actor(), "1.2.3", &statement_id_one(), timestamp(100), None);
         assert!(!added);
-    }
-
-    #[test]
-    fn supersedes_chain_picks_leaf_regardless_of_timestamp_tiebreak() {
-        // Bind (statement_id_two, lex-greater) signed first;
-        // revoke (statement_id_one, lex-smaller) signed second and
-        // explicitly supersedes the bind. With pure timestamp+id
-        // tiebreak, statement_id_two would win on lex order; with
-        // chain-precedence, statement_id_one wins because it's the
-        // chain leaf.
-        let mut index = VersionTagIndexFile::default();
-        index.upsert(&actor(), "1.2.3", &statement_id_two(), timestamp(100), None);
-        index.upsert(
-            &actor(),
-            "1.2.3",
-            &statement_id_one(),
-            timestamp(100),
-            Some(&statement_id_two()),
-        );
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "1.2.3")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
-        );
-    }
-
-    #[test]
-    fn fork_tiebreaks_on_created_at_then_statement_id() {
-        // Two successor tags, both supersede the genesis (a fork). Both
-        // are leaves. Pick by (created_at, statement_id) — the later
-        // timestamp wins; here both at t=200, so lex compare resolves:
-        // statement_id_three > statement_id_two.
-        let mut index = VersionTagIndexFile::default();
-        index.upsert(&actor(), "1.2.3", &statement_id_one(), timestamp(100), None);
-        index.upsert(
-            &actor(),
-            "1.2.3",
-            &statement_id_two(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        index.upsert(
-            &actor(),
-            "1.2.3",
-            &statement_id_three(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "1.2.3")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_three().as_str())
-        );
-    }
-
-    #[test]
-    fn fork_later_timestamp_wins_over_earlier() {
-        let mut index = VersionTagIndexFile::default();
-        index.upsert(&actor(), "1.2.3", &statement_id_one(), timestamp(100), None);
-        index.upsert(
-            &actor(),
-            "1.2.3",
-            &statement_id_two(),
-            timestamp(300),
-            Some(&statement_id_one()),
-        );
-        index.upsert(
-            &actor(),
-            "1.2.3",
-            &statement_id_three(),
-            timestamp(200),
-            Some(&statement_id_one()),
-        );
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "1.2.3")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_two().as_str())
-        );
     }
 
     #[test]
@@ -376,28 +282,6 @@ mod tests {
                 .lookup_head(&other_actor(), "1.2.3")
                 .map(|e| e.statement_id.as_str()),
             Some(statement_id_two().as_str())
-        );
-    }
-
-    #[test]
-    fn missing_predecessor_does_not_break_leaf_computation() {
-        // Successor's supersedes references a statement_id not present
-        // in the index (predecessor not yet imported, or signed by a
-        // different actor). The successor is still a leaf; nothing
-        // else exists to suppress it.
-        let mut index = VersionTagIndexFile::default();
-        index.upsert(
-            &actor(),
-            "1.2.3",
-            &statement_id_one(),
-            timestamp(100),
-            Some(&statement_id_three()),
-        );
-        assert_eq!(
-            index
-                .lookup_head(&actor(), "1.2.3")
-                .map(|e| e.statement_id.as_str()),
-            Some(statement_id_one().as_str())
         );
     }
 

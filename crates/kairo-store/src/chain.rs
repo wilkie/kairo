@@ -228,6 +228,24 @@ mod tests {
     }
 
     #[test]
+    fn supersedes_pointing_at_missing_predecessor_does_not_break_leaf() {
+        // The successor names a `supersedes` id that isn't in the
+        // entry slice (predecessor not yet imported, or signed by
+        // a different actor and stored under a different key). The
+        // successor is still a leaf — nothing in the slice
+        // supersedes it — so it wins.
+        let entries = vec![Entry::new(
+            "successor",
+            &ts(100),
+            Some("missing-predecessor"),
+        )];
+        assert_eq!(
+            chain_head(&entries).map(|e| e.statement_id.as_str()),
+            Some("successor")
+        );
+    }
+
+    #[test]
     fn entry_greater_than_matches_chain_head_tiebreak() {
         let a = Entry::new("a", &ts(100), None);
         let b = Entry::new("b", &ts(200), None);
