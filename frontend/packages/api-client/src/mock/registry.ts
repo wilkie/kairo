@@ -75,8 +75,9 @@ export const mockIds = {
   bobTrustsAliceStmt: 'zMockTrustStmt000000000000000000000000000000',
   carolTrustsAliceStmt: 'zMockTrustStmtCarolAlice00000000000000000',
 
-  // Capability grant (Alice → Bob, scope=Alpha)
+  // Capability grants (delegation chain Alice → Bob → Carol on Alpha)
   aliceGrantsBobStmt: 'zMockGrantStmt000000000000000000000000000000',
+  bobGrantsCarolStmt: 'zMockGrantStmtBobCarol000000000000000000000',
 
   // Blobs
   // - alphaManifestBlob: binary fixture; what revisions point at.
@@ -423,7 +424,12 @@ const alphaVersionTagHeads: Schemas['VersionTagHeadDto'][] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Capability heads (Alice → Bob, scope=Alpha, ObjectVersionTag)
+// Capability heads — delegation chain Alice → Bob → Carol on
+// Alpha, scoped to ObjectVersionTag. Alice's grant to Bob is
+// delegable; Bob re-grants the same kind to Carol. The
+// inspector's Authority chains panel renders this as a two-hop
+// chain (Alice → Bob → Carol) plus the single-hop head
+// (Alice → Bob).
 
 const aliceGrantsBobStmt: unknown = {
   type: 'ActorCapabilityGrant',
@@ -436,11 +442,32 @@ const aliceGrantsBobStmt: unknown = {
     capability: {
       scope: { object: mockIds.alpha },
       kinds: ['ObjectVersionTag'],
-      delegable: false,
+      delegable: true,
       constraints: [],
     },
   },
   signature: signatureFor(mockIds.alice),
+};
+
+const bobGrantsCarolStmt: unknown = {
+  type: 'ActorCapabilityGrant',
+  version: 1,
+  actor: mockIds.bob,
+  subject: `actor:${mockIds.carol}`,
+  // Slightly later than Alice's grant so the chain-extraction
+  // tiebreak deterministically prefers this as the most recent
+  // upstream where applicable.
+  created_at: '2026-01-02T00:00:00Z',
+  body: {
+    grantee: mockIds.carol,
+    capability: {
+      scope: { object: mockIds.alpha },
+      kinds: ['ObjectVersionTag'],
+      delegable: false,
+      constraints: [],
+    },
+  },
+  signature: signatureFor(mockIds.bob),
 };
 
 const aliceCapabilityHead: Schemas['CapabilityHeadDto'] = {
@@ -449,6 +476,14 @@ const aliceCapabilityHead: Schemas['CapabilityHeadDto'] = {
   scope: { object: mockIds.alpha },
   statement_id: mockIds.aliceGrantsBobStmt,
   created_at: T,
+};
+
+const bobCapabilityHead: Schemas['CapabilityHeadDto'] = {
+  grantor: mockIds.bob,
+  grantee: mockIds.carol,
+  scope: { object: mockIds.alpha },
+  statement_id: mockIds.bobGrantsCarolStmt,
+  created_at: '2026-01-02T00:00:00Z',
 };
 
 // ---------------------------------------------------------------------------
@@ -571,6 +606,12 @@ const bobStatementsByActor: Schemas['StatementByActorDto'][] = [
     actor: mockIds.bob,
     statement_id: mockIds.alphaExperimentalBranchStmt,
     kind: 'ObjectBranch',
+    created_at: '2026-01-02T00:00:00Z',
+  },
+  {
+    actor: mockIds.bob,
+    statement_id: mockIds.bobGrantsCarolStmt,
+    kind: 'ActorCapabilityGrant',
     created_at: '2026-01-02T00:00:00Z',
   },
   {
@@ -779,6 +820,7 @@ export const mockRegistry: MockRegistry = {
     [mockIds.bobTrustsAliceStmt]: bobTrustsAliceStmt,
     [mockIds.carolTrustsAliceStmt]: carolTrustsAliceStmt,
     [mockIds.aliceGrantsBobStmt]: aliceGrantsBobStmt,
+    [mockIds.bobGrantsCarolStmt]: bobGrantsCarolStmt,
   },
 
   branchTips: {
@@ -838,12 +880,12 @@ export const mockRegistry: MockRegistry = {
 
   capabilitiesFromGrantor: {
     [mockIds.alice]: [aliceCapabilityHead],
-    [mockIds.bob]: [],
+    [mockIds.bob]: [bobCapabilityHead],
     [mockIds.carol]: [],
   },
 
   capabilitiesForObject: {
-    [mockIds.alpha]: [aliceCapabilityHead],
+    [mockIds.alpha]: [aliceCapabilityHead, bobCapabilityHead],
     [mockIds.beta]: [],
     [mockIds.gamma]: [],
     [mockIds.delta]: [],

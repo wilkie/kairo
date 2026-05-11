@@ -13,18 +13,24 @@
 #                   envelope-signing kind the v1 daemon exposes.
 #                   ObjectGenesis is tracked in the Created Objects
 #                   panel instead, by design.
-#   - **Bob**   — secondary actor; subject of one capability
-#                 grant from Alice and trusts Alice.
+#   - **Bob**   — secondary actor; subject of a delegable
+#                 capability grant from Alice (which Bob then
+#                 re-delegates to Carol), and trusts Alice.
 #                 - Created Objects panel: empty.
-#                 - Signed Statements panel: just the trust-grant
-#                   envelope.
+#                 - Signed Statements panel: 2 entries — the
+#                   experimental-branch advance + the trust-grant
+#                   envelope. The re-delegation grant lands in
+#                   Alpha's capability heads (see below).
 #   - **Carol** — third actor; blocks Alice (untrusted opinion).
 #                 - Created Objects panel: empty.
 #                 - Signed Statements panel: just the trust-block
 #                   envelope.
 #   - **Alpha** — rich object: 3 revisions (linear), 2 branches
 #                 (head + experimental), 2 tags (v1.0.0,
-#                 v1.1.0), one capability grant.
+#                 v1.1.0), and a 2-hop delegation chain
+#                 (Alice → Bob → Carol on ObjectVersionTag) so
+#                 the Authority chains panel renders a real
+#                 multi-step chain rather than a single hop.
 #   - **Beta**  — genesis-only object; exercises every empty-
 #                 state panel.
 #
@@ -128,10 +134,18 @@ echo "  binding tags: v1.0.0 → r2, v1.1.0 → r3 (both by alice)…"
 "$KAIRO" tag bind --actor "$ALICE" --object "$ALPHA" --version 1.0.0 --revision "$ALPHA_R2" >/dev/null 2>&1
 "$KAIRO" tag bind --actor "$ALICE" --object "$ALPHA" --version 1.1.0 --revision "$ALPHA_R3" >/dev/null 2>&1
 
-echo "  granting alice → bob ObjectVersionTag on alpha…"
+echo "  granting alice → bob ObjectVersionTag on alpha (delegable)…"
 "$KAIRO" capability grant \
     --grantor "$ALICE" \
     --grantee "$BOB" \
+    --object "$ALPHA" \
+    --kind ObjectVersionTag \
+    --delegable >/dev/null 2>&1
+
+echo "  bob re-delegates ObjectVersionTag → carol on alpha…"
+"$KAIRO" capability grant \
+    --grantor "$BOB" \
+    --grantee "$CAROL" \
     --object "$ALPHA" \
     --kind ObjectVersionTag >/dev/null 2>&1
 
@@ -160,11 +174,11 @@ manifest     $MANIFEST (cleaned up on exit)
 
 actors                                            (created / signed)
   alice      $ALICE   2 objects / 3 rev + 2 branch + 2 tag + 1 grant
-  bob        $BOB                            0 objects / 1 trust grant
+  bob        $BOB           0 objects / 1 branch + 1 grant + 1 trust
   carol      $CAROL                          0 objects / 1 trust block
 
 objects
-  alpha      $ALPHA      (3 revs / 2 branches / 2 tags / 1 grant)
+  alpha      $ALPHA      (3 revs / 2 branches / 2 tags / 2 grants)
   beta       $BETA       (genesis only)
 
 revisions (alpha)
@@ -178,10 +192,11 @@ next:
 
 inspector URLs (drop into your browser at http://127.0.0.1:<web-port>/):
   /                           dashboard
-  /objects/${ALPHA#kairo:object:}     rich object — every populated panel
+  /objects/${ALPHA#kairo:object:}     rich object — every populated panel including a
+                                      2-hop Authority chain (Alice → Bob → Carol)
   /objects/${BETA#kairo:object:}      genesis-only — every empty-state panel
   /actors/${ALICE#kairo:actor:}       2-object Created table + full signed-statements audit
-  /actors/${BOB#kairo:actor:}         empty Created table + single trust grant
+  /actors/${BOB#kairo:actor:}         empty Created + branch advance + re-delegation grant + trust
   /actors/${CAROL#kairo:actor:}       empty Created table + single trust block
   /statements/${ALPHA_R3#kairo:stmt:}   alpha r3 envelope (typed summary)
 EOF

@@ -145,8 +145,18 @@ describe('typed read methods unwrap the success envelope', () => {
 
   it('listCapabilitiesForObject returns capability heads scoped to the object', async () => {
     const result = await client.listCapabilitiesForObject(mockIds.object);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.scope).toMatchObject({ object: mockIds.object });
+    // The seeded fixture exercises a two-hop delegation chain
+    // (Alice → Bob → Carol on Alpha), so the object's head list
+    // carries both grants. Assert membership rather than a
+    // tighter count to keep this test stable as the fixture
+    // grows.
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    for (const head of result) {
+      expect(head.scope).toMatchObject({ object: mockIds.object });
+    }
+    const grantors = new Set(result.map((h) => h.grantor));
+    expect(grantors).toContain(mockIds.alice);
+    expect(grantors).toContain(mockIds.bob);
   });
 
   it('verifyObject returns ValidationResult', async () => {
