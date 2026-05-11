@@ -846,3 +846,286 @@ fn tag_bind_daemon_mode_persists_head_through_dispatch() {
     let _ = daemon.wait();
     drop(dir);
 }
+
+// Slice 4: object create + capability grant/revoke route through
+// dispatch. `kairo actor create` stays direct (Phase A-permanent
+// exception — keystore choreography is not a daemon concern).
+
+#[test]
+fn object_create_daemon_mode_persists_through_dispatch() {
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let actor_id = actor.actor_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+    let create = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "object",
+        "create",
+        "--actor",
+        &actor_id,
+        "--kind",
+        "kairo/object",
+    ]);
+    assert!(
+        create.status.success(),
+        "object create --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let create_out = String::from_utf8(create.stdout).expect("utf-8");
+    assert!(
+        create_out.contains("created object"),
+        "create: {create_out}"
+    );
+    let object_id = create_out
+        .lines()
+        .find_map(|l| l.strip_prefix("object = "))
+        .expect("object id");
+
+    // Read back through direct mode — the genesis persisted by
+    // the daemon should be visible to a direct-mode read of the
+    // same store.
+    let genesis_read = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--direct",
+        "revision",
+        "list",
+        "--object",
+        object_id,
+    ]);
+    assert!(
+        genesis_read.status.success(),
+        "revision list after daemon object create failed: stderr = {}",
+        String::from_utf8_lossy(&genesis_read.stderr)
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn capability_grant_daemon_mode_persists_and_revoke_chains() {
+    // End-to-end exercise of the §13 sub-decision 2 dispatcher
+    // for the capability surface: grant then revoke, both
+    // through `--daemon`. The follow-up `capability list` (read,
+    // already daemon-mode by Slice 8) sees the grant; direct-mode
+    // re-read sees the revocation chained on top.
+    let (dir, fixture) = StoreFixture::temp();
+    let grantor = fixture.make_actor();
+    let grantee = fixture.make_actor();
+    let object = fixture.make_object(&grantor, "kairo/object");
+    let grantor_id = grantor.actor_id.to_string();
+    let grantee_id = grantee.actor_id.to_string();
+    let object_id = object.object_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    let grant = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "capability",
+        "grant",
+        "--grantor",
+        &grantor_id,
+        "--grantee",
+        &grantee_id,
+        "--object",
+        &object_id,
+        "--kind",
+        "ObjectVersionTag",
+        "--delegable",
+    ]);
+    assert!(
+        grant.status.success(),
+        "capability grant --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&grant.stderr)
+    );
+    let grant_out = String::from_utf8(grant.stdout).expect("utf-8");
+    assert!(
+        grant_out.contains("grant capability"),
+        "grant: {grant_out}"
+    );
+    let grant_statement = grant_out
+        .lines()
+        .find_map(|l| l.strip_prefix("statement = "))
+        .expect("grant statement id");
+
+    // Daemon-mode list and direct-mode list converge.
+    assert_modes_agree(
+        &store_path,
+        &["capability", "list", "--grantor", &grantor_id],
+    );
+
+    // Revoke through the daemon, chained on the grant we just
+    // issued.
+    let revoke = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "capability",
+        "revoke",
+        "--grantor",
+        &grantor_id,
+        "--grant",
+        grant_statement,
+        "--retroactive",
+        "--reason",
+        "ci revocation",
+    ]);
+    assert!(
+        revoke.status.success(),
+        "capability revoke --daemon failed: stderr = {}",
+        String::from_utf8_lossy(&revoke.stderr)
+    );
+    let revoke_out = String::from_utf8(revoke.stdout).expect("utf-8");
+    assert!(
+        revoke_out.contains("revoke capability"),
+        "revoke: {revoke_out}"
+    );
+    assert!(
+        revoke_out.contains(&format!("revoked_grant = {grant_statement}")),
+        "revoke: {revoke_out}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}
+
+#[test]
+fn smoke_seed_two_hop_delegation_round_trips_through_daemon() {
+    // Slice 4 exit criterion: the 2-hop delegation chain in
+    // `scripts/smoke-seed.sh` (Alice → Bob delegable, Bob → Carol
+    // re-delegation) reproduces end-to-end through the daemon.
+    //
+    // We bootstrap actors + object via the test-support fixture
+    // (mirrors what `kairo actor create` and `object create`
+    // would do — `actor create` stays direct in Phase A, and we
+    // use a single `object create --daemon` to prove the genesis
+    // dispatcher arm). Then we issue both grants through the
+    // daemon and confirm the per-object capability head list
+    // contains both grantors.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let alice_id = alice.actor_id.to_string();
+    let bob_id = bob.actor_id.to_string();
+    let carol_id = carol.actor_id.to_string();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let mut daemon = spawn_daemon(&store_path);
+
+    // Object create through the daemon — exercises the
+    // ObjectGenesis arm we added in Slice 4.
+    let create = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "object",
+        "create",
+        "--actor",
+        &alice_id,
+        "--kind",
+        "software",
+    ]);
+    assert!(
+        create.status.success(),
+        "object create failed: stderr = {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let create_out = String::from_utf8(create.stdout).expect("utf-8");
+    let alpha_id = create_out
+        .lines()
+        .find_map(|l| l.strip_prefix("object = "))
+        .expect("alpha id");
+
+    // Alice → Bob, delegable.
+    let grant_ab = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "capability",
+        "grant",
+        "--grantor",
+        &alice_id,
+        "--grantee",
+        &bob_id,
+        "--object",
+        alpha_id,
+        "--kind",
+        "ObjectVersionTag",
+        "--delegable",
+    ]);
+    assert!(
+        grant_ab.status.success(),
+        "alice→bob grant failed: stderr = {}",
+        String::from_utf8_lossy(&grant_ab.stderr)
+    );
+
+    // Bob → Carol re-delegation (the second hop). Not delegable
+    // — Carol's the end of the chain.
+    let grant_bc = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "capability",
+        "grant",
+        "--grantor",
+        &bob_id,
+        "--grantee",
+        &carol_id,
+        "--object",
+        alpha_id,
+        "--kind",
+        "ObjectVersionTag",
+    ]);
+    assert!(
+        grant_bc.status.success(),
+        "bob→carol re-grant failed: stderr = {}",
+        String::from_utf8_lossy(&grant_bc.stderr)
+    );
+
+    // Both heads land in the per-object capability index.
+    let list = run_kairo(&[
+        "--store",
+        store_path.to_str().unwrap(),
+        "--daemon",
+        "capability",
+        "list",
+        "--object",
+        alpha_id,
+    ]);
+    assert!(
+        list.status.success(),
+        "capability list --object failed: stderr = {}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_out = String::from_utf8(list.stdout).expect("utf-8");
+    assert!(
+        list_out.contains(&alice_id),
+        "alice not in chain list: {list_out}"
+    );
+    assert!(
+        list_out.contains(&bob_id),
+        "bob not in chain list: {list_out}"
+    );
+    assert!(
+        list_out.contains(&carol_id),
+        "carol not in chain list: {list_out}"
+    );
+
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    drop(dir);
+}

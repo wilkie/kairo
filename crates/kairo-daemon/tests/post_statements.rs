@@ -65,12 +65,15 @@ use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{KairoRef, Timestamp};
 use kairo_daemon::{serve_with_shutdown, Config, Error};
 use kairo_statement::json::{
-    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
+    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
+    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorTrustBody, ObjectBranchBody, ObjectRevisionBody, ObjectVersionTagBody, RevisionId,
-    SemverVersion, Signature, SignedStatement, TrustDecision, UnsignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, Capability,
+    CapabilityScope, ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
+    ObjectRevisionBody, ObjectVersionTagBody, RevisionId, SemverVersion, Signature,
+    SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
 };
 use kairo_object::ObjectManifest;
 use kairo_store::{BlobStore, BranchResolver, TrustResolver, VersionTagResolver};
@@ -533,7 +536,13 @@ async fn rejects_unsupported_statement_kind_with_415() {
 
     let handle = spawn_daemon(store_path).await;
     let body = json!({
-        "type": "ActorCapabilityGrant",
+        // No `type` discriminator value is on Phase A's allowlist
+        // here — Slice 4 closed the original set (ActorTrust,
+        // ObjectRevision/Branch/VersionTag, ObjectGenesis,
+        // ActorCapabilityGrant/Revocation). Future kinds (e.g.,
+        // attestation key surfaces, ActorKeyRotation) are still
+        // 415 until a later slice opens them.
+        "type": "ActorKeyRotation",
         "version": 1,
         // Other fields intentionally absent — the handler must
         // reject on `type` alone, before attempting body decode.
@@ -870,5 +879,330 @@ async fn version_tag_byte_identical_redelivery_is_idempotent() {
     );
 
     handle.shutdown().await;
+    drop(dir);
+}
+
+// --- Slice 4: ObjectGenesis --------------------------------------------------
+
+/// Build a signature-valid `ObjectGenesisStatement` signed by
+/// `creator`. The signature covers `body.canonical_bytes()`
+/// directly (no envelope wrapping — see
+/// `project_genesis_signature_asymmetry`).
+fn sign_object_genesis(
+    creator: &CreatedActor,
+    kind: &str,
+    nonce_seed: u8,
+    created_at_seconds: i64,
+) -> ObjectGenesisStatement {
+    let nonce = [nonce_seed; 32];
+    let body = ObjectGenesisBody::new(
+        ObjectKind::new(kind.to_owned()),
+        creator.actor_id.clone(),
+        Timestamp::from_seconds(created_at_seconds),
+        nonce,
+        None,
+    );
+    let signature_bytes = creator.signing.sign(&body.canonical_bytes());
+    let signature = Signature::new(
+        creator.actor_id.clone(),
+        creator.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    ObjectGenesisStatement::new(body, signature)
+}
+
+#[tokio::test]
+async fn accepts_object_genesis_and_persists_it() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let statement = sign_object_genesis(&alice, "kairo/object", 0xA1, 1_700_002_000);
+    let expected_object_id = statement.object_id();
+    let body = serde_json::to_value(ObjectGenesisStatementJson::from_statement(&statement))
+        .expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["ok"], Value::Bool(true));
+    assert_eq!(
+        envelope["result"]["statement_id"].as_str(),
+        Some(expected_object_id.to_string().as_str()),
+        "ObjectGenesis writes echo the object_id in the statement_id field",
+    );
+    assert_eq!(envelope["result"]["statement"]["type"], "ObjectGenesis");
+
+    handle.shutdown().await;
+    let store_reread =
+        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let persisted = kairo_store::ObjectStore::get_object_genesis(&store_reread, &expected_object_id)
+        .expect("get_object_genesis");
+    assert_eq!(persisted.body(), statement.body());
+
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_object_genesis_with_bad_signature() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let statement = sign_object_genesis(&alice, "kairo/object", 0xA2, 1_700_002_001);
+    let mut bad_bytes = statement.signature().bytes().to_vec();
+    bad_bytes[0] ^= 0x01;
+    let bad_signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bad_bytes,
+    );
+    let bad = ObjectGenesisStatement::new(statement.body().clone(), bad_signature);
+    let body =
+        serde_json::to_value(ObjectGenesisStatementJson::from_statement(&bad)).expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["error"]["code"], "bad_signature");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_object_genesis_with_signature_actor_mismatch() {
+    // The genesis body's `created_by` is one actor but the
+    // signature is presented under a different one. Caught
+    // before any resolver lookup or signature math runs.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let statement = sign_object_genesis(&alice, "kairo/object", 0xA3, 1_700_002_002);
+    let mismatched = ObjectGenesisStatement::new(
+        statement.body().clone(),
+        Signature::new(
+            bob.actor_id.clone(),
+            bob.signing.public_key().key_id().to_string(),
+            "ed25519",
+            statement.signature().bytes().to_vec(),
+        ),
+    );
+    let body = serde_json::to_value(ObjectGenesisStatementJson::from_statement(&mismatched))
+        .expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["error"]["code"], "signature_actor_mismatch");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+// --- Slice 4: capability grant + revocation ---------------------------------
+
+fn sign_capability_grant(
+    grantor: &CreatedActor,
+    grantee: &CreatedActor,
+    object_id: &kairo_core::ObjectId,
+    created_at_seconds: i64,
+) -> SignedStatement<ActorCapabilityGrantBody> {
+    let scope = CapabilityScope::Object(object_id.clone());
+    let capability = Capability::new(
+        scope,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        Vec::new(),
+    )
+    .expect("capability shape");
+    let body = ActorCapabilityGrantBody::new(grantee.actor_id.clone(), capability, None);
+    let subject: KairoRef = format!("actor:{}", grantee.actor_id)
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        grantor.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(created_at_seconds),
+        body,
+    );
+    let signature_bytes = grantor.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        grantor.actor_id.clone(),
+        grantor.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    SignedStatement::new(unsigned, signature)
+}
+
+#[tokio::test]
+async fn accepts_capability_grant_and_persists_head() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let signed = sign_capability_grant(&alice, &bob, &object.object_id, 1_700_002_100);
+    let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["result"]["statement"]["type"], "ActorCapabilityGrant");
+
+    handle.shutdown().await;
+    let store_reread =
+        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let scope = CapabilityScope::Object(object.object_id.clone());
+    let head = kairo_store::CapabilityResolver::latest_capability(
+        &store_reread,
+        &alice.actor_id,
+        &bob.actor_id,
+        &scope,
+    )
+    .expect("latest_capability")
+    .expect("head present");
+    assert_eq!(head.statement_id(), signed.statement_id());
+
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_capability_grant_with_bad_signature() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_capability_grant(&alice, &bob, &object.object_id, 1_700_002_101);
+    let mut bad_bytes = signed.signature().bytes().to_vec();
+    bad_bytes[0] ^= 0x01;
+    let bad_signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bad_bytes,
+    );
+    let bad = SignedStatement::new(signed.unsigned().clone(), bad_signature);
+    let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&bad))
+        .expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(envelope["error"]["code"], "bad_signature");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn accepts_capability_revocation_and_persists_it() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    // Persist a grant directly so we have something to revoke.
+    let scope = CapabilityScope::Object(object.object_id.clone());
+    let capability = Capability::new(
+        scope.clone(),
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        Vec::new(),
+    )
+    .expect("capability shape");
+    let grant_body = ActorCapabilityGrantBody::new(bob.actor_id.clone(), capability, None);
+    let grant_subject: KairoRef = format!("actor:{}", bob.actor_id).parse().expect("subject");
+    let grant_unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        grant_subject,
+        Timestamp::from_seconds(1_700_002_200),
+        grant_body,
+    );
+    let grant_sig_bytes = alice.signing.sign(&grant_unsigned.canonical_bytes());
+    let grant_sig = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        grant_sig_bytes.bytes().to_vec(),
+    );
+    let grant = SignedStatement::new(grant_unsigned, grant_sig);
+    let grant_id = kairo_store::StatementStore::put_actor_capability_grant(&fixture.store, &grant)
+        .expect("put grant");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+
+    // Sign a default (non-retroactive) revocation pointing at
+    // grant_id.
+    let rev_body = ActorCapabilityRevocationBody::new(grant_id.clone(), false, None);
+    let rev_subject: KairoRef = format!("statement:{grant_id}").parse().expect("subject");
+    let rev_unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        rev_subject,
+        Timestamp::from_seconds(1_700_002_201),
+        rev_body,
+    );
+    let rev_sig_bytes = alice.signing.sign(&rev_unsigned.canonical_bytes());
+    let rev_sig = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        rev_sig_bytes.bytes().to_vec(),
+    );
+    let revocation = SignedStatement::new(rev_unsigned, rev_sig);
+
+    let body =
+        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&revocation))
+            .expect("serialize");
+
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
+    assert_eq!(
+        envelope["result"]["statement"]["type"],
+        "ActorCapabilityRevocation"
+    );
+
+    handle.shutdown().await;
+    let store_reread =
+        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let head = kairo_store::CapabilityResolver::latest_capability_revocation(
+        &store_reread,
+        &alice.actor_id,
+        &grant_id,
+    )
+    .expect("latest_capability_revocation")
+    .expect("revocation present");
+    assert_eq!(head.statement_id(), revocation.statement_id());
+
     drop(dir);
 }

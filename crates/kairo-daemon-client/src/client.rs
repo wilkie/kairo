@@ -18,13 +18,17 @@ use hyper::body::Bytes;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
 use kairo_statement::json::{
+    ActorCapabilityGrantStatementJson as KsActorCapabilityGrantStatementJson,
+    ActorCapabilityRevocationStatementJson as KsActorCapabilityRevocationStatementJson,
     ActorTrustStatementJson as KsActorTrustStatementJson,
     ObjectBranchStatementJson as KsObjectBranchStatementJson,
+    ObjectGenesisStatementJson as KsObjectGenesisStatementJson,
     ObjectRevisionStatementJson as KsObjectRevisionStatementJson,
     ObjectVersionTagStatementJson as KsObjectVersionTagStatementJson,
 };
 use kairo_statement::{
-    ActorTrustBody, ObjectBranchBody, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ObjectBranchBody,
+    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
 };
 use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
@@ -296,6 +300,48 @@ impl Client {
         let dto = KsObjectVersionTagStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto).map_err(|error| {
             ClientError::Decode(format!("serialize ObjectVersionTag body: {error}"))
+        })?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    /// `POST /api/v1/statements` for an `ObjectGenesisStatement`.
+    /// The result's `statement_id` field echoes the persisted
+    /// `object_id` — ObjectGenesis has no separate statement-id
+    /// concept; the object_id is the identity.
+    pub async fn put_object_genesis(
+        &self,
+        statement: &ObjectGenesisStatement,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsObjectGenesisStatementJson::from_statement(statement);
+        let body = serde_json::to_vec(&dto)
+            .map_err(|error| ClientError::Decode(format!("serialize ObjectGenesis body: {error}")))?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    /// `POST /api/v1/statements` for an `ActorCapabilityGrant`.
+    /// Used by `kairo capability grant` when dispatch routes
+    /// through the daemon.
+    pub async fn put_actor_capability_grant(
+        &self,
+        signed: &SignedStatement<ActorCapabilityGrantBody>,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsActorCapabilityGrantStatementJson::from_statement(signed);
+        let body = serde_json::to_vec(&dto).map_err(|error| {
+            ClientError::Decode(format!("serialize ActorCapabilityGrant body: {error}"))
+        })?;
+        self.post_json("/api/v1/statements", body).await
+    }
+
+    /// `POST /api/v1/statements` for an `ActorCapabilityRevocation`.
+    /// Used by `kairo capability revoke` when dispatch routes
+    /// through the daemon.
+    pub async fn put_actor_capability_revocation(
+        &self,
+        signed: &SignedStatement<ActorCapabilityRevocationBody>,
+    ) -> ClientResult<PutStatementResult> {
+        let dto = KsActorCapabilityRevocationStatementJson::from_statement(signed);
+        let body = serde_json::to_vec(&dto).map_err(|error| {
+            ClientError::Decode(format!("serialize ActorCapabilityRevocation body: {error}"))
         })?;
         self.post_json("/api/v1/statements", body).await
     }

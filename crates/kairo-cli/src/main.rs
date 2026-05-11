@@ -120,7 +120,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
     match cli.command {
         Some(Command::Actor { command }) => run_actor_command(command, &paths),
         Some(Command::Manifest { command }) => commands::manifest::run_manifest_command(command),
-        Some(Command::Object { command }) => run_object_command(command, &paths),
+        Some(Command::Object { command }) => run_object_command(command, &paths, dispatch_opts),
         Some(Command::Revision { command }) => run_revision_command(command, &paths, dispatch_opts),
         Some(Command::Branch { command }) => run_branch_command(command, &paths, dispatch_opts),
         Some(Command::Tag { command }) => run_tag_command(command, &paths, dispatch_opts),
@@ -2238,7 +2238,11 @@ fn surface_str(surface: kairo_identity::KeySurface) -> &'static str {
     }
 }
 
-fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<String, CliError> {
+fn run_object_command(
+    command: ObjectSubcommand,
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+) -> Result<String, CliError> {
     match command {
         ObjectSubcommand::Import { statement } => {
             let signed = read_object_genesis_statement(statement)?;
@@ -2293,12 +2297,21 @@ fn run_object_command(command: ObjectSubcommand, paths: &StorePaths) -> Result<S
             );
             let statement = ObjectGenesisStatement::new(body, signature);
 
-            store
-                .put_object_genesis(&statement)
-                .map_err(|error| CliError::WriteObjectGenesis {
-                    object: object_id.clone(),
-                    source: error,
-                })?;
+            match dispatch::resolve(paths, dispatch_opts)? {
+                dispatch::Mode::Daemon { runtime, client } => {
+                    runtime
+                        .block_on(client.put_object_genesis(&statement))
+                        .map_err(CliError::DaemonRequestFailed)?;
+                }
+                dispatch::Mode::Direct => {
+                    store
+                        .put_object_genesis(&statement)
+                        .map_err(|error| CliError::WriteObjectGenesis {
+                            object: object_id.clone(),
+                            source: error,
+                        })?;
+                }
+            }
 
             Ok(format!(
                 "created object\nobject = {object_id}\ncreated_by = {actor_id}\nstore = {}\n",
@@ -3671,6 +3684,7 @@ fn run_capability_command(
             key_pinned,
         } => run_capability_grant(
             paths,
+            dispatch_opts,
             grantor,
             grantee,
             object,
@@ -3685,7 +3699,7 @@ fn run_capability_command(
             grant,
             retroactive,
             reason,
-        } => run_capability_revoke(paths, grantor, grant, retroactive, reason),
+        } => run_capability_revoke(paths, dispatch_opts, grantor, grant, retroactive, reason),
         CapabilityCommand::List { grantor, object } => {
             run_capability_list(paths, dispatch_opts, grantor, object)
         }
@@ -3695,6 +3709,7 @@ fn run_capability_command(
 #[allow(clippy::too_many_arguments)]
 fn run_capability_grant(
     paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
     grantor: String,
     grantee: String,
     object: String,
@@ -3787,12 +3802,21 @@ fn run_capability_grant(
     let signed = SignedStatement::new(unsigned, signature);
     let statement_id = signed.statement_id();
 
-    store
-        .put_actor_capability_grant(&signed)
-        .map_err(|error| CliError::WriteCapabilityGrant {
-            statement: statement_id.clone(),
-            source: error,
-        })?;
+    match dispatch::resolve(paths, dispatch_opts)? {
+        dispatch::Mode::Daemon { runtime, client } => {
+            runtime
+                .block_on(client.put_actor_capability_grant(&signed))
+                .map_err(CliError::DaemonRequestFailed)?;
+        }
+        dispatch::Mode::Direct => {
+            store
+                .put_actor_capability_grant(&signed)
+                .map_err(|error| CliError::WriteCapabilityGrant {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+        }
+    }
 
     let supersedes_line = match supersedes {
         Some(id) => format!("supersedes = {id}\n"),
@@ -3814,6 +3838,7 @@ fn run_capability_grant(
 
 fn run_capability_revoke(
     paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
     grantor: String,
     grant: String,
     retroactive: bool,
@@ -3875,12 +3900,21 @@ fn run_capability_revoke(
     let signed = SignedStatement::new(unsigned, signature);
     let statement_id = signed.statement_id();
 
-    store
-        .put_actor_capability_revocation(&signed)
-        .map_err(|error| CliError::WriteCapabilityRevocation {
-            statement: statement_id.clone(),
-            source: error,
-        })?;
+    match dispatch::resolve(paths, dispatch_opts)? {
+        dispatch::Mode::Daemon { runtime, client } => {
+            runtime
+                .block_on(client.put_actor_capability_revocation(&signed))
+                .map_err(CliError::DaemonRequestFailed)?;
+        }
+        dispatch::Mode::Direct => {
+            store
+                .put_actor_capability_revocation(&signed)
+                .map_err(|error| CliError::WriteCapabilityRevocation {
+                    statement: statement_id.clone(),
+                    source: error,
+                })?;
+        }
+    }
 
     Ok(format!(
         "revoke capability\nstatement = {statement_id}\ngrantor = {grantor_id}\nrevoked_grant = {grant_id}\nretroactive = {retroactive}\n",
