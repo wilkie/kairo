@@ -20,6 +20,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/actors/{id}/objects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/actors/{id}/objects` */
+        get: operations["listObjectsByActor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/actors/{id}/statements": {
         parameters: {
             query?: never;
@@ -383,6 +400,26 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /**
+         * @description One object created by an actor, returned by
+         *     `GET /api/v1/actors/{id}/objects`. Backed by the per-actor
+         *     materialized index in the store
+         *     (`objects_by_actor/<XX>/<YY>/<actor-id>.json`), so the call is
+         *     O(entries) — no full objects-tree scan even on large stores.
+         *
+         *     `object_kind` is the genesis body's `ObjectKind::as_str()`
+         *     discriminator (e.g. `"kairo/object"`, `"software"`),
+         *     denormalized into the index at write time so the inspector
+         *     can render the kind tag without a per-row genesis fetch. The
+         *     kind is fixed at genesis time, so denormalization is safe.
+         */
+        ObjectByActorDto: {
+            actor: string;
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            object_id: string;
+            object_kind: string;
+        };
         ObjectGenesisBodyJson: {
             created_at: string;
             created_by: string;
@@ -640,6 +677,36 @@ export interface operations {
             };
             /** @description Actor not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listObjectsByActor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Actor id (kairo:actor:...) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Objects created by the actor (one entry per ObjectGenesis whose created_by is this actor), sorted by (created_at, object_id) ascending */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObjectByActorDto"][];
+                };
+            };
+            /** @description Malformed actor id */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

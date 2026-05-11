@@ -591,6 +591,40 @@ const carolStatementsByActor: Schemas['StatementByActorDto'][] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Per-actor owned-objects audit lists
+//
+// Mirrors the daemon's `objects_by_actor` index. One entry per
+// `ObjectGenesis` whose `created_by` is the actor; the inspector
+// renders this as the "Created objects" table on the actor page.
+
+const aliceObjectsByActor: Schemas['ObjectByActorDto'][] = [
+  {
+    actor: mockIds.alice,
+    object_id: mockIds.alpha,
+    object_kind: 'kairo/object',
+    created_at: T,
+  },
+  {
+    actor: mockIds.alice,
+    object_id: mockIds.beta,
+    object_kind: 'kairo/object',
+    created_at: T,
+  },
+  {
+    actor: mockIds.alice,
+    object_id: mockIds.gamma,
+    object_kind: 'kairo/object',
+    created_at: T,
+  },
+  {
+    actor: mockIds.alice,
+    object_id: mockIds.delta,
+    object_kind: 'kairo/object',
+    created_at: T,
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Validation results
 
 const alphaValidation: Schemas['ValidationResult'] = {
@@ -686,6 +720,9 @@ export interface MockRegistry {
 
   /** `GET /api/v1/actors/:id/statements`. */
   statementsByActor: Record<string, Schemas['StatementByActorDto'][]>;
+
+  /** `GET /api/v1/actors/:id/objects`. */
+  objectsByActor: Record<string, Schemas['ObjectByActorDto'][]>;
 
   /** `GET /api/v1/capabilities/:grantor`. */
   capabilitiesFromGrantor: Record<string, Schemas['CapabilityHeadDto'][]>;
@@ -791,6 +828,12 @@ export const mockRegistry: MockRegistry = {
     [mockIds.alice]: aliceStatementsByActor,
     [mockIds.bob]: bobStatementsByActor,
     [mockIds.carol]: carolStatementsByActor,
+  },
+
+  objectsByActor: {
+    [mockIds.alice]: aliceObjectsByActor,
+    [mockIds.bob]: [],
+    [mockIds.carol]: [],
   },
 
   capabilitiesFromGrantor: {

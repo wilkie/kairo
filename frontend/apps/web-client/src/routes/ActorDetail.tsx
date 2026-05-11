@@ -1,20 +1,28 @@
 // `/actors/$id` — actor genesis inspection plus the per-actor
-// signed-statement audit list. Per `WEB_CLIENT.md` §15 every
-// panel renders a locality state distinct from validity; v1
-// always renders `local`.
+// owned-objects and signed-statement audit lists. Per
+// `WEB_CLIENT.md` §15 every panel renders a locality state
+// distinct from validity; v1 always renders `local`.
 //
-// The Statements panel is backed by the daemon's
-// `statements_by_actor` materialized index — `ObjectGenesis` is
-// excluded server-side because it carries `created_by` rather
-// than the envelope `actor` field every other statement type
-// uses, so this panel is "what this actor *signed*", not "what
-// this actor caused to exist". The owned-objects view is a
-// separate follow-up.
+// Two complementary tables sit below the genesis panel:
+//
+//   - **Created objects** — backed by `objects_by_actor`. Lists
+//     every `ObjectGenesis` whose `created_by` is this actor.
+//   - **Signed statements** — backed by `statements_by_actor`.
+//     Lists every signed envelope this actor authored.
+//     `ObjectGenesis` is excluded server-side (it carries
+//     `created_by`, not the envelope `actor` field every other
+//     statement type uses), so this table is "what this actor
+//     *signed*" — the Created Objects table is the complement.
+//
+// Together the two answer "what is this actor responsible for in
+// the store?".
 
 import {
   useActor,
+  useObjectsByActor,
   useStatementsByActor,
   type ActorGenesisJson,
+  type ObjectByActorDto,
   type StatementByActorDto,
 } from '@kairo/api-client';
 import { idPrefix, statementKindLabel } from '@kairo/object-model';
@@ -41,6 +49,7 @@ export function ActorDetail({ id }: ActorDetailProps) {
   // bare ids); `kairo:actor:` is presentational and composed
   // for the page header below.
   const actorQ = useActor(id);
+  const objectsQ = useObjectsByActor(id);
   const statementsQ = useStatementsByActor(id);
 
   return (
@@ -64,8 +73,18 @@ export function ActorDetail({ id }: ActorDetailProps) {
       </Panel>
 
       <Panel
+        title="Created objects"
+        description="Every object whose ObjectGenesis names this actor as `created_by`. Sorted oldest first."
+        actions={<LocalityBadge state="local" />}
+      >
+        <QueryStatusBoundary query={objectsQ}>
+          {(rows) => <CreatedObjectsTable rows={rows} />}
+        </QueryStatusBoundary>
+      </Panel>
+
+      <Panel
         title="Signed statements"
-        description="Every signed envelope this actor authored, sorted oldest first. ObjectGenesis is excluded; the daemon's per-actor index keys off the envelope signer."
+        description="Every signed envelope this actor authored, sorted oldest first. ObjectGenesis is excluded; the Created Objects table above covers it."
         actions={<LocalityBadge state="local" />}
       >
         <QueryStatusBoundary query={statementsQ}>
@@ -73,6 +92,31 @@ export function ActorDetail({ id }: ActorDetailProps) {
         </QueryStatusBoundary>
       </Panel>
     </>
+  );
+}
+
+function CreatedObjectsTable({ rows }: { rows: ReadonlyArray<ObjectByActorDto> }) {
+  const columns: ReadonlyArray<TableColumn<ObjectByActorDto>> = [
+    {
+      key: 'object',
+      header: 'Object',
+      cell: (r) => <IdLink kind="object" id={r.object_id} />,
+    },
+    { key: 'kind', header: 'Kind', cell: (r) => <code>{r.object_kind}</code> },
+    { key: 'created_at', header: 'Created', cell: (r) => r.created_at },
+  ];
+  return (
+    <Table
+      columns={columns}
+      rows={rows}
+      rowKey={(r) => r.object_id}
+      emptyState={
+        <EmptyState
+          title="No created objects"
+          description="This actor has not authored any ObjectGenesis statements in the local store."
+        />
+      }
+    />
   );
 }
 
@@ -94,7 +138,7 @@ function StatementsTable({ rows }: { rows: ReadonlyArray<StatementByActorDto> })
       emptyState={
         <EmptyState
           title="No signed statements"
-          description="This actor has not signed any envelopes yet (excluding ObjectGenesis, which is tracked separately)."
+          description="This actor has not signed any envelopes yet (excluding ObjectGenesis, which is shown in the Created Objects table)."
         />
       }
     />

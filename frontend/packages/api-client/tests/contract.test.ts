@@ -121,6 +121,17 @@ describe('typed read methods unwrap the success envelope', () => {
     expect(kinds).toContain('ObjectVersionTag');
   });
 
+  it('listObjectsByActor returns the per-actor created-objects list', async () => {
+    const result = await client.listObjectsByActor(mockIds.actor);
+    expect(result.length).toBeGreaterThan(0);
+    for (const entry of result) {
+      expect(entry.actor).toBe(mockIds.actor);
+      expect(entry.object_kind).toBe('kairo/object');
+    }
+    // The seeded Alice fixture creates Alpha at minimum.
+    expect(result.map((entry) => entry.object_id)).toContain(mockIds.object);
+  });
+
   it('listTrustAbout returns trust heads expressed about an actor', async () => {
     const result = await client.listTrustAbout(mockIds.actor);
     expect(result.length).toBeGreaterThan(0);

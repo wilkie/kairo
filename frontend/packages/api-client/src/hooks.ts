@@ -23,6 +23,7 @@ import type {
   BranchTipDto,
   CapabilityHeadDto,
   ObjectBranchStatementJson,
+  ObjectByActorDto,
   ObjectGenesisStatementJson,
   ObjectVersionTagStatementJson,
   RevisionHeadDto,
@@ -68,6 +69,14 @@ export function useStatementsByActor(actorId: string): QueryResult<StatementByAc
   return useQuery<StatementByActorDto[], KairoApiClientError>({
     queryKey: kairoKeys.actorStatements(actorId),
     queryFn: () => client.listStatementsByActor(actorId),
+  });
+}
+
+export function useObjectsByActor(actorId: string): QueryResult<ObjectByActorDto[]> {
+  const client = useKairoClient();
+  return useQuery<ObjectByActorDto[], KairoApiClientError>({
+    queryKey: kairoKeys.actorObjects(actorId),
+    queryFn: () => client.listObjectsByActor(actorId),
   });
 }
 
