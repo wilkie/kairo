@@ -178,9 +178,9 @@ shape so external signing doesn't grow a parallel write stack.
 ### 2.4 Lifecycle diagram
 
 ```text
-                                        ┌──────────────────────────┐
+                                        ┌───────────────────────────┐
                                         │ ~/.kairo/keys/<actor>.json│
-                                        └─────────────┬────────────┘
+                                        └─────────────┬─────────────┘
                                                       │ keystore read
                                                       ▼
    browser ─► kairo-web ─► Unix socket ─► kairo-daemon
@@ -608,9 +608,38 @@ Each of these is its own future slice; none gate slices 1 or 2.
   `Authorization: KairoActor1` from the browser. Requires a
   separate browser-actor lifecycle (delegation from a CLI actor,
   WebCrypto Ed25519 or WASM fallback, recovery story).
-- **Session persistence across daemon restart.** A small on-disk
-  store under `~/.kairo/sessions/`. Unblocks long-lived workflows
-  that span restarts; trades off the simplicity of in-memory v1.
+- **Session persistence across daemon restart.** Preferred direction
+  is **AEAD-encrypted cookie sessions** rather than an on-disk
+  session directory:
+  - Daemon holds a long-lived secret at
+    `~/.kairo/daemon/session-secret.key` (`0600`, auto-generated on
+    first start, never logged).
+  - Session payload — `actor_id`, `created_at`, `expires_at`,
+    `idle_expires_at`, possibly `key_id_at_login` — is serialised,
+    AEAD-encrypted under that secret, and the ciphertext is the
+    cookie value. No `SessionStore` table; the browser holds the
+    only copy of the session.
+  - Every request re-decodes the cookie and re-checks
+    `expires_at` / `idle_expires_at` in the plaintext.
+  - Daemon restart no longer logs everyone out; secret rotation
+    via a small keys-ring (old + new during rollover) is the only
+    operational lever.
+  - **Tradeoff: revocation becomes best-effort.**
+    `DELETE /sessions/current` only clears the cookie on the
+    requesting browser; other tabs can keep replaying until the
+    bake-in expiry. Mitigated by the short idle timeout and by
+    `ActorKeyRevocation` invalidating signing at the protocol
+    layer regardless of session state. If crisp revocation is
+    ever required, add a bounded recently-revoked-session-id
+    denylist; the bound is `absolute_timeout`, so it stays small.
+  - **Paired with passphrase work.** When passphrase-protected
+    sign-in lands, the recommended split is: passphrase unlocks
+    the *keystore* key for the duration of the session (mirrors
+    CLI behaviour); the session secret stays a single daemon-held
+    key, *not* a passphrase-derived key. The stronger
+    passphrase-derived-cookie variant remains an option if the
+    threat model later wants at-rest protection on the cookie
+    itself.
 - **Per-actor concurrent-session cap / global session count
   ceiling.** Operational hardening; defer until usage suggests a
   ceiling matters.
