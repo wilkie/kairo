@@ -366,3 +366,109 @@ CLI-side:
   nonces accepted" — assert only what's true today (timestamp
   window) so the test fixture doesn't pin Phase B's choice into
   stone.
+
+---
+
+## 6. Future Shapes (Web Writes)
+
+Phase B does not lift the `kairo-web` POST-block (`DECISIONS.md
+§14` sub-decision 7). Browser writes are a separate decision-and-
+slice unit. This section is a forward pointer so that decision
+doesn't re-litigate the wire format from scratch — the
+`KairoActor1` envelope and `auth.rs` primitives are stable across
+every plausible web-write shape; what changes is *who builds and
+signs* the request.
+
+The locked auth-direction memo (`project_daemon_auth_direction`
+and `DAEMON.md §18.1`) gestures toward web-server-as-actor by
+default but explicitly leaves "or a delegated capability" open.
+Three architectures are on the table when the web-write decision
+is locked:
+
+### 6.1 Browser-signs-directly
+
+The browser holds the user's signing key (WebAuthn-backed,
+WebCrypto with non-exportable keys, or operator-imported
+ed25519). The SPA builds the canonical signing string from
+`auth::build_signing_string`, signs locally, and ships the same
+`Authorization: KairoActor1` header through the kairo-web
+proxy to the daemon. kairo-web is a transparent pass-through;
+the daemon never knows a browser is involved.
+
+- **Pros:** one auth surface across CLI, browser, and (eventually)
+  federation peers. Per-user attribution at the data-model layer
+  is preserved. kairo-web stays a thin loopback proxy.
+- **Cons:** real in-browser keystore work. WebAuthn-backed keys
+  are the safest UX but have export / portability limits;
+  operator-imported keys move the risk surface to the user's
+  device.
+- **Code touch:** add a TypeScript port of `auth.rs`'s pure
+  functions (likely under `frontend/packages/api-client/auth.ts`)
+  with byte-for-byte fixture tests cross-validated against the
+  Rust ones; SPA integrates a keystore module.
+
+### 6.2 Web-server-as-actor
+
+`kairo-web` runs as a configured Kairo actor with its own
+signing key (stored alongside the daemon's). End users log in
+with normal browser auth — cookie session, OIDC, WebAuthn,
+whatever the operator picks — which kairo-web terminates
+locally. kairo-web validates the session, then re-signs the
+daemon request using its own actor identity via `auth.rs`.
+
+- **Pros:** standard browser auth, no in-browser keystore.
+  kairo-web absorbs all the JWT/OIDC/cookie surface so the
+  daemon stays single-mechanism.
+- **Cons:** every browser-originated write is attributed to the
+  web-server actor at the data-model layer. Per-user attribution
+  has to be reconstructed somewhere (kairo-web's session log,
+  per-user delegated capabilities, audit metadata outside the
+  statement). Operationally: a long-lived signing key on the
+  server.
+- **Code touch:** kairo-web grows a `--actor` flag (or config-
+  file equivalent) and a keystore handle; the proxy stops
+  rejecting writes from authenticated sessions and re-signs them.
+
+### 6.3 Browser-builds, external-tool-signs
+
+The browser builds the signing string and presents it to the
+user; the user signs externally (CLI, hardware key, USB device,
+phone) and the browser POSTs the resulting signature. Suited
+to high-stakes writes (capability grants, attestation-surface
+operations) where per-request confirmation outside the browser
+trust boundary is the point.
+
+- **Pros:** no signing key in the browser; per-user attribution
+  preserved.
+- **Cons:** UX friction. Not the right default for routine
+  writes; reasonable as an opt-in second factor on top of (1) or
+  (2).
+- **Code touch:** SPA flow to display the signing string and
+  collect the signature; existing CLI `--sign-payload` or
+  similar verb on the operator side.
+
+### Cross-cutting
+
+Whichever path the web-write decision picks, the wire format
+stays stable: clients build the signing string per `§2.1`, fill
+in an `AuthEnvelope`, and emit `envelope.format()` as the
+`Authorization` header. The daemon's `RequestAuth` middleware
+from Slice 2 doesn't need to know which path generated the
+signature — it verifies a signed request against the resolved
+actor's active key and that's the entire contract.
+
+What the future decision *does* need to pin:
+
+- **Browser keystore policy** (paths 6.1 / 6.3): WebAuthn-only?
+  Imported keys allowed? Per-origin or per-account?
+- **Web-server identity policy** (path 6.2): one actor per
+  deployment? Operator-configured at startup? Rotated how?
+- **Per-user attribution** (path 6.2 specifically): delegated
+  capability per session? Session-to-actor mapping logged
+  outside the statement layer? Out of scope for the data model?
+- **POST-block lifecycle**: lifted when which slice ships;
+  partial lift (e.g., GET + POST `/api/v1/statements` only)
+  during the rollout?
+
+None of these need to be answered to ship Phase B. They become
+load-bearing when web writes are scoped.
