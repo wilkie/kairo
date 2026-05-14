@@ -237,6 +237,20 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// Phase B (`DECISIONS.md §14` sub-decision 6): the request
+    /// authenticated, but the signer does not hold a covering
+    /// capability for the statement they're trying to write.
+    /// Carries the underlying `CapabilityEvaluation` variant in
+    /// the message so operators can tell whether the grant was
+    /// revoked, expired, lacks depth, etc.
+    pub fn not_authorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: ApiErrorCode::NotAuthorized,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -288,6 +302,7 @@ pub enum ApiErrorCode {
     BadRequestSignature,
     ActorNotFoundForRequest,
     RequestKeyIdUnknown,
+    NotAuthorized,
 }
 
 impl ApiErrorCode {
@@ -308,6 +323,7 @@ impl ApiErrorCode {
             Self::BadRequestSignature => "bad_request_signature",
             Self::ActorNotFoundForRequest => "actor_not_found_for_request",
             Self::RequestKeyIdUnknown => "request_key_id_unknown",
+            Self::NotAuthorized => "not_authorized",
         }
     }
 }

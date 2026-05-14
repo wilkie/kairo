@@ -9,6 +9,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
+pub mod capability_gate;
 pub mod dto;
 pub mod envelope;
 pub mod handlers;

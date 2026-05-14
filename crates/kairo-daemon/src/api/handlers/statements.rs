@@ -19,7 +19,7 @@
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Request, State};
-use kairo_core::StatementId;
+use kairo_core::{StatementId, Timestamp};
 use kairo_daemon_client::dto::PutStatementResult;
 use kairo_identity::{verify_signature, ActorResolveError, ActorResolver};
 use kairo_statement::json::{
@@ -30,11 +30,12 @@ use kairo_statement::json::{
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, VerificationReport,
 };
-use kairo_statement::{ObjectGenesisStatement, SignedStatement, StatementBody};
+use kairo_statement::{ObjectGenesisStatement, SignedStatement, StatementBody, StatementKind};
 use kairo_store::{FilesystemStore, ObjectStore, StatementStore, StoreError};
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::api::capability_gate::require_object_write_authority;
 use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::request_auth::{
     authorization_header_value, path_and_query_for_signing, verify_request_auth,
@@ -157,9 +158,10 @@ pub async fn put_handler(
 
     // Phase B (DECISIONS.md §14, PHASE_2_DAEMON_AUTH.md Slice 2):
     // every write request carries a signed envelope. The
-    // resolved actor flows downstream so future slices (3 / 4)
-    // can run capability checks against it without re-parsing.
-    let _authenticated: AuthenticatedRequest = verify_request_auth(
+    // resolved actor flows downstream to drive Slice 3's
+    // capability check on object writes (and Slice 4's recursive
+    // grant/revocation checks).
+    let authenticated: AuthenticatedRequest = verify_request_auth(
         &state,
         authorization_header_value(&parts.headers),
         parts.method.as_str(),
@@ -197,6 +199,14 @@ pub async fn put_handler(
         "ObjectRevision" => {
             let signed =
                 decode_signed_body(body, &kind, ObjectRevisionStatementJson::to_statement)?;
+            require_object_write_authority(
+                &state,
+                &authenticated.actor,
+                signed.unsigned().body().object(),
+                StatementKind::ObjectRevision,
+                Timestamp::from_seconds(authenticated.timestamp),
+            )
+            .await?;
             persist_signed(
                 state,
                 signed,
@@ -208,6 +218,14 @@ pub async fn put_handler(
         }
         "ObjectBranch" => {
             let signed = decode_signed_body(body, &kind, ObjectBranchStatementJson::to_statement)?;
+            require_object_write_authority(
+                &state,
+                &authenticated.actor,
+                signed.unsigned().body().object(),
+                StatementKind::ObjectBranch,
+                Timestamp::from_seconds(authenticated.timestamp),
+            )
+            .await?;
             persist_signed(
                 state,
                 signed,
@@ -220,6 +238,14 @@ pub async fn put_handler(
         "ObjectVersionTag" => {
             let signed =
                 decode_signed_body(body, &kind, ObjectVersionTagStatementJson::to_statement)?;
+            require_object_write_authority(
+                &state,
+                &authenticated.actor,
+                signed.unsigned().body().object(),
+                StatementKind::ObjectVersionTag,
+                Timestamp::from_seconds(authenticated.timestamp),
+            )
+            .await?;
             persist_signed(
                 state,
                 signed,

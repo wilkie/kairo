@@ -71,9 +71,9 @@ use kairo_statement::json::{
 };
 use kairo_statement::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, Capability,
-    CapabilityScope, ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
-    ObjectRevisionBody, ObjectVersionTagBody, RevisionId, SemverVersion, Signature,
-    SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
+    CapabilityConstraint, CapabilityScope, ObjectBranchBody, ObjectGenesisBody,
+    ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, RevisionId,
+    SemverVersion, Signature, SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
 };
 use kairo_object::ObjectManifest;
 use kairo_store::{BlobStore, BranchResolver, TrustResolver, VersionTagResolver};
@@ -1482,6 +1482,337 @@ async fn rejects_post_with_request_key_id_unknown() {
     assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
     assert_eq!(envelope["error"]["code"], "request_key_id_unknown");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+// --- Phase B Slice 3: capability enforcement on object writes ----------------
+//
+// The daemon now runs `evaluate_capability` between authn and
+// the dispatcher arms for `ObjectRevision`/`Branch`/`VersionTag`.
+// Same-actor (root-authority) writes still pass — every Phase A
+// test above is a same-actor case and still green. These tests
+// drive the cross-actor cases the gate is meant to catch.
+
+/// Build, sign, and persist (directly through the store) an
+/// `ActorCapabilityGrant` from `grantor` to `grantee` with the
+/// supplied capability shape. Used as a fixture builder so the
+/// daemon-side gate has something to evaluate against.
+#[allow(clippy::too_many_arguments)]
+fn persist_grant(
+    fixture: &StoreFixture,
+    grantor: &CreatedActor,
+    grantee: &CreatedActor,
+    object_id: &kairo_core::ObjectId,
+    kinds: Vec<StatementKind>,
+    delegable: bool,
+    constraints: Vec<CapabilityConstraint>,
+    created_at_seconds: i64,
+) -> kairo_core::StatementId {
+    let scope = CapabilityScope::Object(object_id.clone());
+    let capability =
+        Capability::new(scope, kinds, delegable, constraints).expect("capability shape");
+    let body = ActorCapabilityGrantBody::new(grantee.actor_id.clone(), capability, None);
+    let subject: KairoRef = format!("actor:{}", grantee.actor_id)
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        grantor.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(created_at_seconds),
+        body,
+    );
+    let signature_bytes = grantor.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        grantor.actor_id.clone(),
+        grantor.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    kairo_store::StatementStore::put_actor_capability_grant(&fixture.store, &signed)
+        .expect("put grant")
+}
+
+/// Build + persist a revocation pointing at `grant_id`.
+fn persist_revocation(
+    fixture: &StoreFixture,
+    grantor: &CreatedActor,
+    grant_id: &kairo_core::StatementId,
+    retroactive: bool,
+    created_at_seconds: i64,
+) -> kairo_core::StatementId {
+    let body =
+        ActorCapabilityRevocationBody::new(grant_id.clone(), retroactive, None);
+    let subject: KairoRef = format!("statement:{grant_id}")
+        .parse()
+        .expect("subject parse");
+    let unsigned = UnsignedStatement::new(
+        grantor.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(created_at_seconds),
+        body,
+    );
+    let signature_bytes = grantor.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        grantor.actor_id.clone(),
+        grantor.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    kairo_store::StatementStore::put_actor_capability_revocation(&fixture.store, &signed)
+        .expect("put revocation")
+}
+
+#[tokio::test]
+async fn accepts_cross_actor_version_tag_with_valid_grant() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-tag-cross-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    // Alice grants Bob ObjectVersionTag on the object.
+    persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        Vec::new(),
+        1_700_003_000,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_version_tag(&bob, &object, &revision, "2.0.0", None, 1_700_003_100);
+    let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_cross_actor_revision_without_grant_with_403() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let manifest = ObjectManifest::parse_toml(FIXTURE_MANIFEST).expect("manifest");
+    let manifest_hash = manifest.manifest_hash();
+    fixture
+        .store
+        .put_blob(&manifest_hash, &manifest.canonical_bytes())
+        .expect("put_blob");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    // Bob signs a revision on Alice's object without holding any
+    // grant — capability gate should refuse before the dispatcher.
+    let signed = sign_revision(
+        &bob,
+        &object,
+        RevisionId::new("git:sha256:slice3-cross-r-nope"),
+        vec![],
+        manifest_hash,
+        1_700_003_200,
+    );
+    let body = serde_json::to_value(ObjectRevisionStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(
+        status,
+        hyper::StatusCode::FORBIDDEN,
+        "body: {response_body:?}"
+    );
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("ObjectRevision") && message.contains("does not hold"),
+        "expected NotHeld diagnostic in message: {message}",
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_cross_actor_branch_with_revoked_grant_with_403() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-cross-branch-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    let grant_id = persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectBranch],
+        true,
+        Vec::new(),
+        1_700_003_300,
+    );
+    // Revoke it default (i.e. only `at >= revocation.created_at`)
+    // — we'll request at a timestamp after the revocation.
+    persist_revocation(&fixture, &alice, &grant_id, false, 1_700_003_350);
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_branch(&bob, &object, &revision, "head", None, 1_700_003_400);
+    let body =
+        serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed)).expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("revoked"),
+        "expected revoked diagnostic in message: {message}",
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_cross_actor_version_tag_with_expired_grant_with_403() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-cross-tag-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    // Grant expires before the request timestamp.
+    persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        vec![CapabilityConstraint::ExpiresAt(Timestamp::from_seconds(
+            1_700_000_000,
+        ))],
+        1_699_000_000,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    // Request signed for "now"; the daemon's authn pipeline
+    // pins the evaluator to `request.timestamp`, so as long as
+    // the test runs after the grant expired (it always will),
+    // the evaluator returns Expired.
+    let signed = sign_version_tag(&bob, &object, &revision, "3.0.0", None, 1_700_003_500);
+    let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("expired"),
+        "expected expired diagnostic in message: {message}",
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_cross_actor_version_tag_with_delegation_depth_violation_with_403() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let revision = fixture.make_revision(
+        &alice,
+        &object,
+        RevisionId::new("git:sha256:slice3-cross-depth-r1"),
+        FIXTURE_MANIFEST,
+        vec![],
+    );
+    // Alice grants Bob with MaxDelegationDepth(0) — Bob can
+    // use it himself but cannot re-delegate.
+    persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        vec![CapabilityConstraint::MaxDelegationDepth(0)],
+        1_700_003_600,
+    );
+    // Bob re-delegates to Carol anyway. The store accepts the
+    // grant (Phase A doesn't validate); the evaluator surfaces
+    // the violation when Carol tries to use it.
+    persist_grant(
+        &fixture,
+        &bob,
+        &carol,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        false,
+        Vec::new(),
+        1_700_003_650,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_version_tag(&carol, &object, &revision, "4.0.0", None, 1_700_003_700);
+    let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &carol).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("MaxDelegationDepth") || message.contains("depth"),
+        "expected depth diagnostic in message: {message}",
+    );
 
     handle.shutdown().await;
     drop(dir);
