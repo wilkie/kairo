@@ -531,8 +531,10 @@ deferred bullet in `CAPABILITIES.md` §8.
 
 Deferred from Phase 1 §9 (`specs/PACKAGE.md` "MVP slice").
 
-- [ ] Optional `git/` subdirectory in bundles + import side ingestion into
-      the §1 managed cache (paired work).
+- [x] Optional `git/` subdirectory in bundles + import side ingestion into
+      the §1 managed cache (paired work). Shipped alongside §1 as
+      `kairo bundle export --include-git` / matching import flag; the
+      `BundleManifest::git_history.included` bit drives both sides.
 - [ ] Tar/zip archive transport (`*.kairo.tar` per `specs/PACKAGE.md` §5.2).
 - [ ] Deterministic export (`specs/PACKAGE.md` §17).
 - [ ] Snapshot-closure bundle type (`specs/PACKAGE.md` §4.2).
@@ -542,10 +544,13 @@ Deferred from Phase 1 §9 (`specs/PACKAGE.md` "MVP slice").
 - [ ] Trust-bundle type (transport per-truster opinions independently of
       object bundles).
 - [ ] Bundle-level signature (`specs/PACKAGE.md` §24).
-- [ ] Per-truster reverse trust index (currently `list_trust(by_actor)`
-      walks the trust dir).
-- [ ] Materialized-index rebuild from `statements/` (today every index
-      depends on always going through `put_*`).
+- [x] Per-truster reverse trust index. Both `list_trust(by_actor)` and
+      `list_opinions_about(trusted_actor)` are now indexed lookups in
+      `FilesystemStore` rather than directory walks.
+- [x] Materialized-index rebuild from `statements/`. `rebuild_indexes()`
+      shipped in §13 polish; the CLI exposes it as
+      `kairo store rebuild-indexes` so operators can recover from
+      hand-edited or partially-imported store state.
 
 **Why it matters:** the bundle MVP shipped a deliberately narrow slice;
 this is the explicit roadmap for filling out the long-term `PACKAGE.md`
