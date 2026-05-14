@@ -17,6 +17,8 @@ use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Bytes;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
+use kairo_core::Timestamp;
+use kairo_identity::SecretSigningKey;
 use kairo_statement::json::{
     ActorCapabilityGrantStatementJson as KsActorCapabilityGrantStatementJson,
     ActorCapabilityRevocationStatementJson as KsActorCapabilityRevocationStatementJson,
@@ -30,6 +32,8 @@ use kairo_statement::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ObjectBranchBody,
     ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
 };
+
+use crate::auth::{random_nonce, sign_request, AuthEnvelope};
 use serde::de::DeserializeOwned;
 use tokio::net::UnixStream;
 use tokio::time::timeout;
@@ -241,27 +245,27 @@ impl Client {
     }
 
     /// `POST /api/v1/statements` — persist an `ActorTrust`
-    /// statement through the daemon's Phase A write surface
-    /// (`DECISIONS.md §13`).
+    /// statement through the daemon's write surface
+    /// (`DECISIONS.md §13` / §14).
     ///
-    /// The caller signs the statement client-side; the daemon
-    /// re-verifies the signature against the actor's pinned
-    /// signing key on receipt, then writes through
+    /// The caller signs the statement client-side, and the same
+    /// signing key signs the request envelope (Phase B,
+    /// `DECISIONS.md §14`). The daemon authenticates the request
+    /// against the actor's active key, re-verifies the statement
+    /// signature, then writes through
     /// `FilesystemStore::put_actor_trust`. Returns the persisted
     /// `statement_id` and the echoed body so callers don't need a
     /// follow-up read.
-    ///
-    /// Later slices in Phase A widen the daemon dispatcher to
-    /// other statement kinds; this client gains a typed method
-    /// per kind as that happens.
     pub async fn put_actor_trust(
         &self,
         signed: &SignedStatement<ActorTrustBody>,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsActorTrustStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto)
             .map_err(|error| ClientError::Decode(format!("serialize ActorTrust body: {error}")))?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, signed.signature().actor().clone(), secret)
+            .await
     }
 
     /// `POST /api/v1/statements` for an `ObjectRevision`. The
@@ -270,12 +274,14 @@ impl Client {
     pub async fn put_object_revision(
         &self,
         signed: &SignedStatement<ObjectRevisionBody>,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsObjectRevisionStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto).map_err(|error| {
             ClientError::Decode(format!("serialize ObjectRevision body: {error}"))
         })?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, signed.signature().actor().clone(), secret)
+            .await
     }
 
     /// `POST /api/v1/statements` for an `ObjectBranch`. Used by
@@ -283,11 +289,13 @@ impl Client {
     pub async fn put_object_branch(
         &self,
         signed: &SignedStatement<ObjectBranchBody>,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsObjectBranchStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto)
             .map_err(|error| ClientError::Decode(format!("serialize ObjectBranch body: {error}")))?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, signed.signature().actor().clone(), secret)
+            .await
     }
 
     /// `POST /api/v1/statements` for an `ObjectVersionTag`. Used
@@ -296,12 +304,14 @@ impl Client {
     pub async fn put_object_version_tag(
         &self,
         signed: &SignedStatement<ObjectVersionTagBody>,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsObjectVersionTagStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto).map_err(|error| {
             ClientError::Decode(format!("serialize ObjectVersionTag body: {error}"))
         })?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, signed.signature().actor().clone(), secret)
+            .await
     }
 
     /// `POST /api/v1/statements` for an `ObjectGenesisStatement`.
@@ -311,11 +321,13 @@ impl Client {
     pub async fn put_object_genesis(
         &self,
         statement: &ObjectGenesisStatement,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsObjectGenesisStatementJson::from_statement(statement);
         let body = serde_json::to_vec(&dto)
             .map_err(|error| ClientError::Decode(format!("serialize ObjectGenesis body: {error}")))?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, statement.signature().actor().clone(), secret)
+            .await
     }
 
     /// `POST /api/v1/statements` for an `ActorCapabilityGrant`.
@@ -324,12 +336,14 @@ impl Client {
     pub async fn put_actor_capability_grant(
         &self,
         signed: &SignedStatement<ActorCapabilityGrantBody>,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsActorCapabilityGrantStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto).map_err(|error| {
             ClientError::Decode(format!("serialize ActorCapabilityGrant body: {error}"))
         })?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, signed.signature().actor().clone(), secret)
+            .await
     }
 
     /// `POST /api/v1/statements` for an `ActorCapabilityRevocation`.
@@ -338,22 +352,53 @@ impl Client {
     pub async fn put_actor_capability_revocation(
         &self,
         signed: &SignedStatement<ActorCapabilityRevocationBody>,
+        secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsActorCapabilityRevocationStatementJson::from_statement(signed);
         let body = serde_json::to_vec(&dto).map_err(|error| {
             ClientError::Decode(format!("serialize ActorCapabilityRevocation body: {error}"))
         })?;
-        self.post_json("/api/v1/statements", body).await
+        self.post_signed_statement(body, signed.signature().actor().clone(), secret)
+            .await
     }
 
-    async fn post_json<T: DeserializeOwned>(
+    /// Sign and POST a serialized statement envelope at
+    /// `/api/v1/statements`. Common helper behind every
+    /// `put_*` method: builds the Phase B request envelope
+    /// (`DECISIONS.md §14`), formats the `Authorization`
+    /// header, ships the bytes, decodes the response.
+    async fn post_signed_statement(
+        &self,
+        body: Vec<u8>,
+        actor: kairo_core::ActorId,
+        secret: &SecretSigningKey,
+    ) -> ClientResult<PutStatementResult> {
+        let nonce = random_nonce()
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+        let timestamp = Timestamp::now().seconds();
+        let envelope = sign_request(
+            "POST",
+            "/api/v1/statements",
+            &body,
+            actor,
+            secret,
+            timestamp,
+            nonce,
+        );
+        self.post_json_with_auth("/api/v1/statements", body, envelope)
+            .await
+    }
+
+    async fn post_json_with_auth<T: DeserializeOwned>(
         &self,
         path: &str,
         body: Vec<u8>,
+        auth: AuthEnvelope,
     ) -> ClientResult<T> {
         let path = path.to_owned();
+        let auth_header = auth.format();
         let work = async move {
-            let (status, bytes) = self.send_post(&path, body).await?;
+            let (status, bytes) = self.send_post(&path, body, &auth_header).await?;
             if (200..300).contains(&status) {
                 decode_success(&bytes)
             } else {
@@ -367,7 +412,12 @@ impl Client {
         }
     }
 
-    async fn send_post(&self, path: &str, body: Vec<u8>) -> ClientResult<(u16, Bytes)> {
+    async fn send_post(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        auth_header: &str,
+    ) -> ClientResult<(u16, Bytes)> {
         let stream = match timeout(
             REQUEST_CONNECT_TIMEOUT,
             UnixStream::connect(&self.socket_path),
@@ -392,6 +442,7 @@ impl Client {
             .uri(path)
             .header("host", "daemon")
             .header("content-type", "application/json")
+            .header("authorization", auth_header)
             .body(Full::new(Bytes::from(body)))
             .map_err(|error| ClientError::Transport(Box::new(error)))?;
 

@@ -13,6 +13,7 @@ pub mod dto;
 pub mod envelope;
 pub mod handlers;
 pub mod openapi;
+pub mod request_auth;
 pub mod state;
 pub(crate) mod store_errors;
 

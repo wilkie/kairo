@@ -148,6 +148,95 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// Phase B (`DECISIONS.md §14`): `POST /api/v1/statements`
+    /// requires an `Authorization: KairoActor1 …` header. The
+    /// caller didn't send one. 401 marks the request as
+    /// authentication-required; the read endpoints stay
+    /// unauthenticated per the same decision lock.
+    pub fn missing_authorization(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::MissingAuthorization,
+            message: message.into(),
+        }
+    }
+
+    /// The `Authorization` header is present but unparseable —
+    /// missing fields, duplicated parameters, invalid actor
+    /// id, malformed hex / base64, wrong-sized signature, etc.
+    /// `AuthHeaderError::Malformed` collapses to this single
+    /// wire code with the underlying reason in `message`.
+    pub fn malformed_authorization(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::MalformedAuthorization,
+            message: message.into(),
+        }
+    }
+
+    /// `Authorization` header carried a scheme tag other than
+    /// `KairoActor1`. Distinct code so a `Bearer ...` (or any
+    /// other future scheme) request fails fast with a useful
+    /// diagnostic rather than getting parser-rejected as
+    /// malformed.
+    pub fn unsupported_auth_scheme(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::UnsupportedAuthScheme,
+            message: message.into(),
+        }
+    }
+
+    /// Request's `timestamp` is more than
+    /// `TIMESTAMP_WINDOW_SECONDS` away from the daemon's
+    /// `now()`. Either the client clock is skewed or the
+    /// request is a replay outside the freshness window.
+    pub fn timestamp_out_of_window(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::TimestampOutOfWindow,
+            message: message.into(),
+        }
+    }
+
+    /// Signature on the request did not verify against the
+    /// actor's active signing key at the request's timestamp.
+    /// Distinct from `bad_signature` on the statement body —
+    /// this is the request envelope's signature.
+    pub fn bad_request_signature(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::BadRequestSignature,
+            message: message.into(),
+        }
+    }
+
+    /// Request's `actor` parameter references an actor whose
+    /// `ActorGenesis` is not in the store. Distinct from
+    /// `actor_not_found` on the statement body so callers can
+    /// tell whether the authn or the authz/validation pipeline
+    /// rejected the actor.
+    pub fn actor_not_found_for_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::ActorNotFoundForRequest,
+            message: message.into(),
+        }
+    }
+
+    /// Request's `key_id` does not match the actor's active
+    /// signing key at `request.timestamp` (per the rotation
+    /// chain). The actor exists, but the wrong key signed the
+    /// request. Common after a key rotation if a client cached
+    /// an old key id.
+    pub fn request_key_id_unknown(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::RequestKeyIdUnknown,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -191,6 +280,14 @@ pub enum ApiErrorCode {
     ActorNotFound,
     SignatureActorMismatch,
     UnsupportedStatementKind,
+    // Phase B (DECISIONS.md §14) request-auth codes — all 401.
+    MissingAuthorization,
+    MalformedAuthorization,
+    UnsupportedAuthScheme,
+    TimestampOutOfWindow,
+    BadRequestSignature,
+    ActorNotFoundForRequest,
+    RequestKeyIdUnknown,
 }
 
 impl ApiErrorCode {
@@ -204,6 +301,13 @@ impl ApiErrorCode {
             Self::ActorNotFound => "actor_not_found",
             Self::SignatureActorMismatch => "signature_actor_mismatch",
             Self::UnsupportedStatementKind => "unsupported_statement_kind",
+            Self::MissingAuthorization => "missing_authorization",
+            Self::MalformedAuthorization => "malformed_authorization",
+            Self::UnsupportedAuthScheme => "unsupported_auth_scheme",
+            Self::TimestampOutOfWindow => "timestamp_out_of_window",
+            Self::BadRequestSignature => "bad_request_signature",
+            Self::ActorNotFoundForRequest => "actor_not_found_for_request",
+            Self::RequestKeyIdUnknown => "request_key_id_unknown",
         }
     }
 }

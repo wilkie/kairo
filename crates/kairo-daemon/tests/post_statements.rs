@@ -41,7 +41,7 @@
 
 use axum as _;
 use hyper as _;
-use kairo_daemon_client as _;
+use kairo_daemon_client::auth::{random_nonce, sign_request, TIMESTAMP_WINDOW_SECONDS};
 use kairo_identity as _;
 use kairo_object as _;
 use kairo_store as _;
@@ -147,10 +147,26 @@ async fn wait_for_socket(path: &Path, max: Duration) {
     }
 }
 
+/// POST a JSON body, optionally with a precomputed Authorization
+/// header value. `auth = None` is used by the missing-auth-header
+/// test; tests that want to inject a specific (malformed,
+/// expired, etc.) auth value pass `Some(value)`. Tests that just
+/// want a valid signed request should call [`signed_post_json`].
 async fn http_post_json(
     socket: &Path,
     path: &str,
     body: &Value,
+    auth: Option<&str>,
+) -> (hyper::StatusCode, Bytes) {
+    let body_bytes = serde_json::to_vec(body).expect("serialize body");
+    http_post_raw(socket, path, body_bytes, auth).await
+}
+
+async fn http_post_raw(
+    socket: &Path,
+    path: &str,
+    body_bytes: Vec<u8>,
+    auth: Option<&str>,
 ) -> (hyper::StatusCode, Bytes) {
     let stream = UnixStream::connect(socket).await.expect("connect");
     let io = TokioIo::new(stream);
@@ -161,12 +177,15 @@ async fn http_post_json(
         let _ = conn.await;
     });
 
-    let body_bytes = serde_json::to_vec(body).expect("serialize body");
-    let req = Request::builder()
+    let mut req_builder = Request::builder()
         .method("POST")
         .uri(path)
         .header("host", "daemon")
-        .header("content-type", "application/json")
+        .header("content-type", "application/json");
+    if let Some(auth_value) = auth {
+        req_builder = req_builder.header("authorization", auth_value);
+    }
+    let req = req_builder
         .body(Full::new(Bytes::from(body_bytes)))
         .expect("build req");
     let resp = sender.send_request(req).await.expect("send");
@@ -180,6 +199,35 @@ async fn http_post_json(
     drop(sender);
     let _ = conn_task.await;
     (status, body)
+}
+
+/// POST a JSON body signed by `signer`. The request's
+/// `Authorization` envelope's actor is `signer.actor_id`; the
+/// signature is produced by `signer.signing`. Use this for any
+/// test that wants the Phase B authn pipeline to pass — happy
+/// path or any *body-level* failure (`bad_signature`,
+/// `signature_actor_mismatch`, etc.) that needs to reach the
+/// dispatcher.
+async fn signed_post_json(
+    socket: &Path,
+    path: &str,
+    body: &Value,
+    signer: &CreatedActor,
+) -> (hyper::StatusCode, Bytes) {
+    let body_bytes = serde_json::to_vec(body).expect("serialize body");
+    let nonce = random_nonce().expect("nonce");
+    let timestamp = Timestamp::now().seconds();
+    let envelope = sign_request(
+        "POST",
+        path,
+        &body_bytes,
+        signer.actor_id.clone(),
+        &signer.signing,
+        timestamp,
+        nonce,
+    );
+    let auth = envelope.format();
+    http_post_raw(socket, path, body_bytes, Some(&auth)).await
 }
 
 /// Recursive filename search under `root`. Returns the first
@@ -374,7 +422,7 @@ async fn accepts_signature_valid_trust_grant_and_persists_it() {
     let body = serde_json::to_value(&dto).expect("serialize dto");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
@@ -429,7 +477,7 @@ async fn rejects_signature_invalid_body_with_422_bad_signature() {
     let body =
         serde_json::to_value(ActorTrustStatementJson::from_statement(&bad_signed)).expect("serialize");
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(
         status,
         hyper::StatusCode::UNPROCESSABLE_ENTITY,
@@ -455,15 +503,19 @@ async fn rejects_signature_invalid_body_with_422_bad_signature() {
 }
 
 #[tokio::test]
-async fn rejects_unknown_actor_with_422_actor_not_found() {
+async fn rejects_actor_not_found_for_request_with_401() {
+    // Phase B (DECISIONS.md §14): the request's `actor`
+    // parameter is resolved against the store before the
+    // dispatcher sees the body. If the actor's genesis is
+    // missing, the request fails at the authentication layer
+    // with 401 `actor_not_found_for_request` — long before any
+    // body-level `actor_not_found` (422) could fire.
+    //
+    // The CLI signs with the same key it signs the statement,
+    // so request-actor and body-actor are always equal in
+    // practice. This test exercises the layer that catches
+    // that case.
     let (dir, fixture) = StoreFixture::temp();
-    // Build an actor pair, but make alice unresolvable in the
-    // store. The daemon's resolver should then return NotFound
-    // on the envelope-actor lookup during verification. We
-    // delete alice's genesis file by walking `<store>/actors/`
-    // and matching on filename — the shard layout (positions
-    // [3..5) and [5..7) of the bare id) is an internal kairo-
-    // store detail that this test shouldn't pin.
     let alice = fixture.make_actor();
     let bob = fixture.make_actor();
     let store_path = dir.path().to_path_buf();
@@ -479,14 +531,14 @@ async fn rejects_unknown_actor_with_422_actor_not_found() {
         serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(
         status,
-        hyper::StatusCode::UNPROCESSABLE_ENTITY,
+        hyper::StatusCode::UNAUTHORIZED,
         "body: {response_body:?}"
     );
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
-    assert_eq!(envelope["error"]["code"], "actor_not_found");
+    assert_eq!(envelope["error"]["code"], "actor_not_found_for_request");
 
     handle.shutdown().await;
     drop(dir);
@@ -511,7 +563,7 @@ async fn rejects_envelope_signature_actor_mismatch() {
     let body = serde_json::to_value(&dto).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(
         status,
         hyper::StatusCode::UNPROCESSABLE_ENTITY,
@@ -527,12 +579,15 @@ async fn rejects_envelope_signature_actor_mismatch() {
 #[tokio::test]
 async fn rejects_unsupported_statement_kind_with_415() {
     // POST a body whose `type` is not yet in Phase A's
-    // dispatcher allowlist (Slice 4 opens up capability + genesis
-    // kinds). The handler short-circuits with 415 before touching
-    // the store or trying to decode the body into a typed shape.
-    let (dir, _fixture) = StoreFixture::temp();
+    // dispatcher allowlist. The handler short-circuits with 415
+    // before touching the store or trying to decode the body
+    // into a typed shape. Phase B's authn pipeline runs first,
+    // so we need a real actor in the store to sign the request
+    // — the 415 only fires once auth has passed.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
     let store_path = dir.path().to_path_buf();
-    drop(_fixture);
+    drop(fixture);
 
     let handle = spawn_daemon(store_path).await;
     let body = json!({
@@ -549,7 +604,7 @@ async fn rejects_unsupported_statement_kind_with_415() {
     });
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(
         status,
         hyper::StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -563,14 +618,18 @@ async fn rejects_unsupported_statement_kind_with_415() {
 
 #[tokio::test]
 async fn rejects_body_missing_type_discriminator() {
-    let (dir, _fixture) = StoreFixture::temp();
+    // Phase B's authn pipeline runs before the body shape is
+    // inspected, so we need a real actor to get a 400 on the
+    // body rather than a 401 on the auth header.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
     let store_path = dir.path().to_path_buf();
-    drop(_fixture);
+    drop(fixture);
 
     let handle = spawn_daemon(store_path).await;
     let body = json!({ "version": 1, "actor": "kairo:actor:zNothing" });
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(
         status,
         hyper::StatusCode::BAD_REQUEST,
@@ -597,7 +656,7 @@ async fn byte_identical_redelivery_is_idempotent() {
 
     // POST once.
     let (status1, body1) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status1, hyper::StatusCode::OK);
     let env1: Value = serde_json::from_slice(&body1).expect("parse");
     let id1 = env1["result"]["statement_id"].as_str().expect("id1").to_owned();
@@ -607,7 +666,7 @@ async fn byte_identical_redelivery_is_idempotent() {
     // identical content. Per PHASE_2_DAEMON_WRITES.md §2.3, this
     // is idempotent success.
     let (status2, body2) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status2, hyper::StatusCode::OK, "body: {body2:?}");
     let env2: Value = serde_json::from_slice(&body2).expect("parse");
     let id2 = env2["result"]["statement_id"].as_str().expect("id2").to_owned();
@@ -651,7 +710,7 @@ async fn accepts_object_revision_and_persists_it() {
         serde_json::to_value(ObjectRevisionStatementJson::from_statement(&signed)).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
@@ -711,7 +770,7 @@ async fn rejects_object_revision_with_bad_signature() {
         serde_json::to_value(ObjectRevisionStatementJson::from_statement(&bad_signed)).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
     assert_eq!(envelope["error"]["code"], "bad_signature");
@@ -743,7 +802,7 @@ async fn accepts_object_branch_set_and_persists_head() {
         serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed)).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
@@ -791,7 +850,7 @@ async fn rejects_object_branch_with_bad_signature() {
         serde_json::to_value(ObjectBranchStatementJson::from_statement(&bad_signed)).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
     assert_eq!(envelope["error"]["code"], "bad_signature");
@@ -823,7 +882,7 @@ async fn accepts_version_tag_bind_and_persists_head() {
         .expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
@@ -867,8 +926,8 @@ async fn version_tag_byte_identical_redelivery_is_idempotent() {
     let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
         .expect("serialize");
 
-    let (s1, b1) = http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
-    let (s2, b2) = http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+    let (s1, b1) = signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
+    let (s2, b2) = signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(s1, hyper::StatusCode::OK);
     assert_eq!(s2, hyper::StatusCode::OK);
     let env1: Value = serde_json::from_slice(&b1).expect("parse");
@@ -926,7 +985,7 @@ async fn accepts_object_genesis_and_persists_it() {
         .expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
@@ -970,7 +1029,7 @@ async fn rejects_object_genesis_with_bad_signature() {
         serde_json::to_value(ObjectGenesisStatementJson::from_statement(&bad)).expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
     assert_eq!(envelope["error"]["code"], "bad_signature");
@@ -1005,7 +1064,7 @@ async fn rejects_object_genesis_with_signature_actor_mismatch() {
         .expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
     assert_eq!(envelope["error"]["code"], "signature_actor_mismatch");
@@ -1065,7 +1124,7 @@ async fn accepts_capability_grant_and_persists_head() {
         .expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
@@ -1112,7 +1171,7 @@ async fn rejects_capability_grant_with_bad_signature() {
         .expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::UNPROCESSABLE_ENTITY);
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
     assert_eq!(envelope["error"]["code"], "bad_signature");
@@ -1183,7 +1242,7 @@ async fn accepts_capability_revocation_and_persists_it() {
             .expect("serialize");
 
     let (status, response_body) =
-        http_post_json(handle.socket_path(), "/api/v1/statements", &body).await;
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
@@ -1204,5 +1263,226 @@ async fn accepts_capability_revocation_and_persists_it() {
     .expect("revocation present");
     assert_eq!(head.statement_id(), revocation.statement_id());
 
+    drop(dir);
+}
+
+// --- Phase B Slice 2: per-401 authn pipeline coverage --------------------
+//
+// These tests exercise the request-auth pipeline introduced by
+// `DECISIONS.md §14`. Each tests one failure mode of
+// `verify_request_auth` independently; the happy path is
+// already covered by every Phase A test above.
+
+#[tokio::test]
+async fn rejects_post_with_missing_authorization() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_trust_grant(&alice, &bob, Some(TrustDecision::Trusted), None);
+    let body =
+        serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
+
+    // `auth = None` deliberately sends no Authorization header.
+    let (status, response_body) =
+        http_post_json(handle.socket_path(), "/api/v1/statements", &body, None).await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "missing_authorization");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_post_with_malformed_authorization() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_trust_grant(&alice, &bob, Some(TrustDecision::Trusted), None);
+    let body =
+        serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
+
+    // Right scheme tag, gibberish params.
+    let (status, response_body) = http_post_json(
+        handle.socket_path(),
+        "/api/v1/statements",
+        &body,
+        Some("KairoActor1 not_a_param"),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "malformed_authorization");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_post_with_unsupported_auth_scheme() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_trust_grant(&alice, &bob, Some(TrustDecision::Trusted), None);
+    let body =
+        serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
+
+    let (status, response_body) = http_post_json(
+        handle.socket_path(),
+        "/api/v1/statements",
+        &body,
+        Some("Bearer abc.def.ghi"),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "unsupported_auth_scheme");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_post_with_timestamp_out_of_window() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_trust_grant(&alice, &bob, Some(TrustDecision::Trusted), None);
+    let body =
+        serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
+    let body_bytes = serde_json::to_vec(&body).expect("serialize");
+
+    // Sign with a timestamp that is just outside the window.
+    let stale_ts = Timestamp::now().seconds() - (TIMESTAMP_WINDOW_SECONDS + 10);
+    let nonce = random_nonce().expect("nonce");
+    let envelope = sign_request(
+        "POST",
+        "/api/v1/statements",
+        &body_bytes,
+        alice.actor_id.clone(),
+        &alice.signing,
+        stale_ts,
+        nonce,
+    );
+    let auth = envelope.format();
+
+    let (status, response_body) = http_post_raw(
+        handle.socket_path(),
+        "/api/v1/statements",
+        body_bytes,
+        Some(&auth),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "timestamp_out_of_window");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_post_with_bad_request_signature() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_trust_grant(&alice, &bob, Some(TrustDecision::Trusted), None);
+    let body =
+        serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
+    let body_bytes = serde_json::to_vec(&body).expect("serialize");
+
+    // Build a valid envelope, then flip one bit of the
+    // signature so it no longer verifies against alice's key.
+    let nonce = random_nonce().expect("nonce");
+    let timestamp = Timestamp::now().seconds();
+    let mut envelope = sign_request(
+        "POST",
+        "/api/v1/statements",
+        &body_bytes,
+        alice.actor_id.clone(),
+        &alice.signing,
+        timestamp,
+        nonce,
+    );
+    envelope.signature[0] ^= 0x01;
+    let auth = envelope.format();
+
+    let (status, response_body) = http_post_raw(
+        handle.socket_path(),
+        "/api/v1/statements",
+        body_bytes,
+        Some(&auth),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "bad_request_signature");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_post_with_request_key_id_unknown() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed = sign_trust_grant(&alice, &bob, Some(TrustDecision::Trusted), None);
+    let body =
+        serde_json::to_value(ActorTrustStatementJson::from_statement(&signed)).expect("serialize");
+    let body_bytes = serde_json::to_vec(&body).expect("serialize");
+
+    // Sign with bob's key but claim alice as the actor. The
+    // daemon resolves alice's active key, sees the envelope's
+    // key_id doesn't match, and returns 401.
+    let nonce = random_nonce().expect("nonce");
+    let timestamp = Timestamp::now().seconds();
+    let envelope = sign_request(
+        "POST",
+        "/api/v1/statements",
+        &body_bytes,
+        alice.actor_id.clone(),
+        &bob.signing,
+        timestamp,
+        nonce,
+    );
+    let auth = envelope.format();
+
+    let (status, response_body) = http_post_raw(
+        handle.socket_path(),
+        "/api/v1/statements",
+        body_bytes,
+        Some(&auth),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "request_key_id_unknown");
+
+    handle.shutdown().await;
     drop(dir);
 }

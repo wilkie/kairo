@@ -8,6 +8,7 @@
 // — silence `unused_crate_dependencies` for them.
 use base64 as _;
 use futures_util as _;
+use getrandom as _;
 use http_body_util as _;
 use hyper as _;
 use hyper_util as _;
@@ -693,7 +694,7 @@ async fn put_actor_trust_round_trips_through_client() {
     let expected_id = signed.statement_id();
 
     let result = client
-        .put_actor_trust(&signed)
+        .put_actor_trust(&signed, &alice.signing)
         .await
         .expect("put_actor_trust");
 
@@ -764,7 +765,7 @@ async fn put_actor_trust_surfaces_daemon_bad_signature() {
     );
     let signed = SignedStatement::new(unsigned, signature);
 
-    match client.put_actor_trust(&signed).await {
+    match client.put_actor_trust(&signed, &alice.signing).await {
         Err(ClientError::Http { status, code, .. }) => {
             assert_eq!(status, 422);
             assert_eq!(code, "bad_signature");

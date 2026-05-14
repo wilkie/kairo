@@ -43,7 +43,7 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use kairo_core::ActorId;
-use kairo_identity::KeyId;
+use kairo_identity::{KeyId, SecretSigningKey};
 use sha2::{Digest, Sha256};
 
 /// Domain prefix included verbatim as the first line of every
@@ -110,6 +110,69 @@ pub fn body_hash_hex(body: &[u8]) -> String {
     hasher.update(body);
     let digest = hasher.finalize();
     encode_hex(&digest)
+}
+
+/// Generate a fresh per-request nonce. 16 random bytes from
+/// the OS CSPRNG via `getrandom`. Returns `Err` only if the OS
+/// random source is unavailable, which is fatal for the
+/// requesting CLI invocation.
+pub fn random_nonce() -> Result<[u8; NONCE_LEN_BYTES], NonceError> {
+    let mut nonce = [0u8; NONCE_LEN_BYTES];
+    getrandom::getrandom(&mut nonce).map_err(|error| NonceError {
+        reason: error.to_string(),
+    })?;
+    Ok(nonce)
+}
+
+/// Failure mode of [`random_nonce`]. Wraps the platform-level
+/// `getrandom` error string so callers can surface a useful
+/// diagnostic.
+#[derive(Debug)]
+pub struct NonceError {
+    pub reason: String,
+}
+
+impl std::fmt::Display for NonceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "could not generate request nonce: {}", self.reason)
+    }
+}
+
+impl std::error::Error for NonceError {}
+
+/// Build and sign a request envelope in one step. The actor must
+/// match the signer's identity at the data-model layer (the
+/// client passes in the same `ActorId` the signed statement
+/// declares), and the `key_id` is derived from the secret's
+/// public key — so the daemon's resolver sees a coherent
+/// (actor, key_id, signature) triple.
+///
+/// `timestamp` is i64 epoch seconds (typically `Timestamp::now().seconds()`).
+/// `nonce` is 16 random bytes from [`random_nonce`].
+///
+/// Panics only if the underlying ed25519 signature is not
+/// exactly 64 bytes, which is a hard guarantee from
+/// `kairo-identity::SecretSigningKey::sign` and would indicate a
+/// crypto-library regression.
+pub fn sign_request(
+    method: &str,
+    path_and_query: &str,
+    body: &[u8],
+    actor: ActorId,
+    secret: &SecretSigningKey,
+    timestamp: i64,
+    nonce: [u8; NONCE_LEN_BYTES],
+) -> AuthEnvelope {
+    let signing = build_signing_string(method, path_and_query, body, timestamp, &nonce);
+    let signature_bytes = secret.sign(signing.as_bytes());
+    let signature: [u8; SIGNATURE_LEN_BYTES] = *signature_bytes.bytes();
+    AuthEnvelope {
+        actor,
+        key_id: secret.public_key().key_id(),
+        timestamp,
+        nonce,
+        signature,
+    }
 }
 
 /// Parsed/buildable form of an `Authorization: KairoActor1 ...`

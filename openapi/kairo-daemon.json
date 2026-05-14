@@ -442,11 +442,17 @@
           "400": {
             "description": "Malformed body (decode failure, missing `type` discriminator, …)"
           },
+          "401": {
+            "description": "Authorization header missing, malformed, replayed, or signed by the wrong key"
+          },
+          "413": {
+            "description": "Request body exceeds the daemon's write-body cap"
+          },
           "415": {
             "description": "Statement kind not yet accepted by Phase A's dispatcher"
           },
           "422": {
-            "description": "Signature did not verify, or actor/signature shape rejected"
+            "description": "Statement signature did not verify, or actor/signature shape rejected"
           },
           "500": {
             "description": "Store I/O or fixity failure"

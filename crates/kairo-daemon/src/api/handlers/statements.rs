@@ -17,8 +17,8 @@
 //! kind returns 415 `unsupported_statement_kind` until a later
 //! slice widens the dispatcher.
 
-use axum::extract::{Path, State};
-use axum::Json;
+use axum::body::{Body, Bytes};
+use axum::extract::{Path, Request, State};
 use kairo_core::StatementId;
 use kairo_daemon_client::dto::PutStatementResult;
 use kairo_identity::{verify_signature, ActorResolveError, ActorResolver};
@@ -36,8 +36,18 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::api::envelope::{ApiError, ApiResult};
+use crate::api::request_auth::{
+    authorization_header_value, path_and_query_for_signing, verify_request_auth,
+    AuthenticatedRequest,
+};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
+
+/// Maximum write-request body size, in bytes. Phase A statements
+/// fit comfortably in a few KiB; this is a safety cap so a
+/// malformed client can't make the daemon buffer arbitrary
+/// memory. Bumping it requires a separate decision.
+const MAX_WRITE_BODY_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 
 /// Statement kinds the `POST /api/v1/statements` dispatcher
 /// currently accepts (Phase A; see `PHASE_2_DAEMON_WRITES.md`).
@@ -130,15 +140,38 @@ pub async fn handler(
             body = PutStatementResult,
         ),
         (status = 400, description = "Malformed body (decode failure, missing `type` discriminator, …)"),
+        (status = 401, description = "Authorization header missing, malformed, replayed, or signed by the wrong key"),
+        (status = 413, description = "Request body exceeds the daemon's write-body cap"),
         (status = 415, description = "Statement kind not yet accepted by Phase A's dispatcher"),
-        (status = 422, description = "Signature did not verify, or actor/signature shape rejected"),
+        (status = 422, description = "Statement signature did not verify, or actor/signature shape rejected"),
         (status = 500, description = "Store I/O or fixity failure"),
     ),
 )]
 pub async fn put_handler(
     State(state): State<AppState>,
-    Json(body): Json<Value>,
+    request: Request,
 ) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    let (parts, body) = request.into_parts();
+
+    let body_bytes = read_body_capped(body).await?;
+
+    // Phase B (DECISIONS.md §14, PHASE_2_DAEMON_AUTH.md Slice 2):
+    // every write request carries a signed envelope. The
+    // resolved actor flows downstream so future slices (3 / 4)
+    // can run capability checks against it without re-parsing.
+    let _authenticated: AuthenticatedRequest = verify_request_auth(
+        &state,
+        authorization_header_value(&parts.headers),
+        parts.method.as_str(),
+        &path_and_query_for_signing(&parts.uri),
+        &body_bytes,
+    )
+    .await?;
+
+    let body: Value = serde_json::from_slice(&body_bytes).map_err(|error| {
+        ApiError::bad_request(format!("request body is not valid JSON: {error}"))
+    })?;
+
     let kind = body
         .get("type")
         .and_then(Value::as_str)
@@ -229,6 +262,22 @@ pub async fn put_handler(
              see PHASE_2_DAEMON_WRITES.md for the slice that opens up the remaining kinds",
         ))),
     }
+}
+
+/// Read the entire request body into memory, capped at
+/// `MAX_WRITE_BODY_BYTES`. Returns 413 `bad_request` on
+/// over-cap bodies, 400 on hyper transport failure. The cap
+/// keeps a malformed client from making the daemon buffer
+/// arbitrary memory; statement payloads in Phase A all fit
+/// comfortably.
+async fn read_body_capped(body: Body) -> Result<Bytes, ApiError> {
+    axum::body::to_bytes(body, MAX_WRITE_BODY_BYTES)
+        .await
+        .map_err(|error| {
+            ApiError::bad_request(format!(
+                "could not read request body (cap = {MAX_WRITE_BODY_BYTES} bytes): {error}",
+            ))
+        })
 }
 
 /// `ObjectGenesis` dispatcher arm. `ObjectGenesisStatement` is a

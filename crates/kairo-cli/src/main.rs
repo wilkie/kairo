@@ -2300,7 +2300,7 @@ fn run_object_command(
             match dispatch::resolve(paths, dispatch_opts)? {
                 dispatch::Mode::Daemon { runtime, client } => {
                     runtime
-                        .block_on(client.put_object_genesis(&statement))
+                        .block_on(client.put_object_genesis(&statement, &secret))
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
@@ -2464,7 +2464,7 @@ fn run_revision_command(
             match dispatch::resolve(paths, dispatch_opts)? {
                 dispatch::Mode::Daemon { runtime, client } => {
                     runtime
-                        .block_on(client.put_object_revision(&signed))
+                        .block_on(client.put_object_revision(&signed, &secret))
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
@@ -2595,7 +2595,7 @@ fn run_branch_command(
             match dispatch::resolve(paths, dispatch_opts)? {
                 dispatch::Mode::Daemon { runtime, client } => {
                     runtime
-                        .block_on(client.put_object_branch(&signed))
+                        .block_on(client.put_object_branch(&signed, &secret))
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
@@ -2891,7 +2891,7 @@ fn run_tag_command(
             match dispatch::resolve(paths, dispatch_opts)? {
                 dispatch::Mode::Daemon { runtime, client } => {
                     runtime
-                        .block_on(client.put_object_version_tag(&signed))
+                        .block_on(client.put_object_version_tag(&signed, &secret))
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
@@ -2974,7 +2974,7 @@ fn run_tag_command(
             match dispatch::resolve(paths, dispatch_opts)? {
                 dispatch::Mode::Daemon { runtime, client } => {
                     runtime
-                        .block_on(client.put_object_version_tag(&signed))
+                        .block_on(client.put_object_version_tag(&signed, &secret))
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
@@ -3404,7 +3404,7 @@ fn run_trust_decide(
     match dispatch::resolve(paths, dispatch_opts)? {
         dispatch::Mode::Daemon { runtime, client } => {
             runtime
-                .block_on(client.put_actor_trust(&signed))
+                .block_on(client.put_actor_trust(&signed, &secret))
                 .map_err(CliError::DaemonRequestFailed)?;
         }
         dispatch::Mode::Direct => {
@@ -3805,7 +3805,7 @@ fn run_capability_grant(
     match dispatch::resolve(paths, dispatch_opts)? {
         dispatch::Mode::Daemon { runtime, client } => {
             runtime
-                .block_on(client.put_actor_capability_grant(&signed))
+                .block_on(client.put_actor_capability_grant(&signed, &secret))
                 .map_err(CliError::DaemonRequestFailed)?;
         }
         dispatch::Mode::Direct => {
@@ -3903,7 +3903,7 @@ fn run_capability_revoke(
     match dispatch::resolve(paths, dispatch_opts)? {
         dispatch::Mode::Daemon { runtime, client } => {
             runtime
-                .block_on(client.put_actor_capability_revocation(&signed))
+                .block_on(client.put_actor_capability_revocation(&signed, &secret))
                 .map_err(CliError::DaemonRequestFailed)?;
         }
         dispatch::Mode::Direct => {
