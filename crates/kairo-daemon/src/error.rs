@@ -17,6 +17,12 @@ pub enum Error {
         path: PathBuf,
         source: Box<dyn StdError + Send + Sync>,
     },
+    /// `FilesystemKeystore::open(path)` failed. Underlying cause
+    /// is the `kairo_keystore::KeystoreError`.
+    OpenKeystore {
+        path: PathBuf,
+        source: Box<dyn StdError + Send + Sync>,
+    },
     /// Another daemon already holds the listening socket — the
     /// double-start probe found a live peer (or a probe timeout,
     /// which is treated conservatively as live).
@@ -45,6 +51,11 @@ impl fmt::Display for Error {
             Self::OpenStore { path, source } => {
                 write!(f, "failed to open store at {}: {source}", path.display())
             }
+            Self::OpenKeystore { path, source } => write!(
+                f,
+                "failed to open keystore at {}: {source}",
+                path.display()
+            ),
             Self::AlreadyRunning { socket } => write!(
                 f,
                 "another daemon is listening at {}; refusing to start a second one",
@@ -64,7 +75,9 @@ impl fmt::Display for Error {
 impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::OpenStore { source, .. } | Self::Serve { source, .. } => Some(source.as_ref()),
+            Self::OpenStore { source, .. }
+            | Self::OpenKeystore { source, .. }
+            | Self::Serve { source, .. } => Some(source.as_ref()),
             Self::SocketIo { source, .. } | Self::PidIo { source, .. } => Some(source),
             Self::AlreadyRunning { .. } => None,
         }

@@ -18,6 +18,7 @@ use hyper::Request;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::server::graceful::GracefulShutdown;
+use kairo_keystore::FilesystemKeystore;
 use kairo_store::FilesystemStore;
 use tokio::fs;
 use tokio::net::{UnixListener, UnixStream};
@@ -27,6 +28,7 @@ use tower::Service;
 
 use crate::api::{self, AppState};
 use crate::error::Error;
+use crate::sessions::{SessionConfig, SessionStore};
 use crate::Config;
 
 const SOCKET_FILE: &str = "daemon.sock";
@@ -68,9 +70,13 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let store_path = config.store_path;
+    let keys_path = config
+        .keys_path
+        .unwrap_or_else(|| store_path.join("keys"));
     let paths = Paths::for_store(&store_path);
 
     let store = open_store(&store_path)?;
+    let keystore = open_keystore(&keys_path)?;
     refuse_if_live_daemon(&paths.socket).await?;
 
     let listener = bind_listener(&paths.socket).await?;
@@ -78,9 +84,13 @@ where
     let socket_guard = SocketFile::new(paths.socket.clone());
 
     let pid = std::process::id();
+    let sessions = Arc::new(SessionStore::new(SessionConfig::default()));
     let state = AppState {
         store: Arc::new(store),
         store_path: store_path.clone(),
+        keystore: Arc::new(keystore),
+        keys_path: keys_path.clone(),
+        sessions,
         pid,
     };
 
@@ -90,6 +100,7 @@ where
         socket = %paths.socket.display(),
         pid = pid,
         store = %store_path.display(),
+        keys = %keys_path.display(),
         "kairo-daemon listening"
     );
 
@@ -185,6 +196,13 @@ fn spawn_connection(stream: UnixStream, app: Router, graceful: &GracefulShutdown
 fn open_store(store_path: &Path) -> Result<FilesystemStore, Error> {
     FilesystemStore::open(store_path).map_err(|error| Error::OpenStore {
         path: store_path.to_path_buf(),
+        source: Box::new(error),
+    })
+}
+
+fn open_keystore(keys_path: &Path) -> Result<FilesystemKeystore, Error> {
+    FilesystemKeystore::open(keys_path).map_err(|error| Error::OpenKeystore {
+        path: keys_path.to_path_buf(),
         source: Box::new(error),
     })
 }

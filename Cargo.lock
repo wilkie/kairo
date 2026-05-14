@@ -1404,12 +1404,15 @@ name = "kairo-daemon"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
+ "getrandom 0.2.17",
  "http-body-util",
  "hyper",
  "hyper-util",
  "kairo-core",
  "kairo-daemon-client",
  "kairo-identity",
+ "kairo-keystore",
  "kairo-object",
  "kairo-statement",
  "kairo-store",

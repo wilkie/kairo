@@ -334,6 +334,29 @@
         }
       }
     },
+    "/api/v1/keystore/actors": {
+      "get": {
+        "tags": [
+          "keystore"
+        ],
+        "operationId": "listKeystoreActors",
+        "responses": {
+          "200": {
+            "description": "Actors with a signing key in the local keystore",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeystoreActorsResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Keystore unreadable (perms, IO)"
+          }
+        }
+      }
+    },
     "/api/v1/objects/{id}": {
       "get": {
         "tags": [
@@ -405,6 +428,85 @@
           },
           "400": {
             "description": "Malformed object id"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Open a fresh session.",
+        "description": "Verifies the actor id is well-formed, the keystore holds a\nusable signing key for it, the active key is not revoked, and\nthen creates a session bound to that actor. The response sets\n`kairo_session=<id>; HttpOnly; SameSite=Strict; Path=/` and\nreturns the session metadata.",
+        "operationId": "openSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Session opened; cookie set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed actor id"
+          },
+          "404": {
+            "description": "No private key for that actor in the local keystore"
+          },
+          "409": {
+            "description": "Actor's active signing key is revoked"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/current": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Read the current session's metadata.",
+        "description": "The `kairo_session` cookie's value is the only input. Misses\n(no cookie, malformed cookie, expired session) all map to 401\n`no_session`. A successful lookup also touches the session,\nresetting the sliding idle deadline.",
+        "operationId": "getCurrentSession",
+        "responses": {
+          "200": {
+            "description": "Session metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No live session for this cookie"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "Terminate the current session.",
+        "description": "Idempotent: returns 204 even when no cookie / no live session\nis present, and always emits a clearing `Set-Cookie` so the\nbrowser drops its handle even if the server already evicted\nthe record.",
+        "operationId": "deleteCurrentSession",
+        "responses": {
+          "204": {
+            "description": "Session terminated (or already gone)"
           }
         }
       }
@@ -1018,6 +1120,33 @@
           }
         ]
       },
+      "KeystoreActorDto": {
+        "type": "object",
+        "description": "One entry in the response from\n`GET /api/v1/keystore/actors` — the local keystore's listing\nof actors with private keys available for daemon-side signing.\n\n`display_name` is intentionally absent in v1; per\n`PHASE_2_WEB_CLIENT_AUTH.md` §1.2 it lives in a future\n`ActorProfile` statement and is additive when it lands.",
+        "required": [
+          "actor_id"
+        ],
+        "properties": {
+          "actor_id": {
+            "type": "string"
+          }
+        }
+      },
+      "KeystoreActorsResponse": {
+        "type": "object",
+        "description": "Response body for `GET /api/v1/keystore/actors`.",
+        "required": [
+          "actors"
+        ],
+        "properties": {
+          "actors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeystoreActorDto"
+            }
+          }
+        }
+      },
       "ObjectBranchBodyJson": {
         "type": "object",
         "required": [
@@ -1290,6 +1419,18 @@
           }
         }
       },
+      "OpenSessionRequest": {
+        "type": "object",
+        "description": "Request body for `POST /api/v1/sessions`. Names the actor the\nsession will be bound to; the daemon verifies the local\nkeystore has a usable (non-revoked-active-key) signing key for\nthe actor before opening the session.",
+        "required": [
+          "actor_id"
+        ],
+        "properties": {
+          "actor_id": {
+            "type": "string"
+          }
+        }
+      },
       "PublicKeyJson": {
         "type": "object",
         "required": [
@@ -1358,6 +1499,33 @@
           },
           "statement_id": {
             "type": "string"
+          }
+        }
+      },
+      "SessionInfo": {
+        "type": "object",
+        "description": "Session metadata returned by `POST /api/v1/sessions` and\n`GET /api/v1/sessions/current`.\n\n`idle_expires_at` is the sliding deadline reset by every\nauthenticated touch; `expires_at` is the absolute hard cap\nfrom `created_at`. The frontend may pre-emptively re-auth as\neither deadline approaches.",
+        "required": [
+          "actor_id",
+          "created_at",
+          "expires_at",
+          "idle_expires_at"
+        ],
+        "properties": {
+          "actor_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds. Absolute hard cap."
+          },
+          "idle_expires_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds. Sliding idle deadline."
           }
         }
       },
@@ -1669,6 +1837,14 @@
     {
       "name": "verify",
       "description": "Object verification"
+    },
+    {
+      "name": "keystore",
+      "description": "Local keystore introspection"
+    },
+    {
+      "name": "sessions",
+      "description": "Browser session lifecycle"
     }
   ]
 }

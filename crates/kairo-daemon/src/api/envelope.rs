@@ -251,6 +251,44 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// Session-create target actor exists shape-wise but the
+    /// local keystore has no private key for it. Distinct from
+    /// `actor_not_found` (which is about the store's actor
+    /// genesis) so operators can tell "I have no key" from "I
+    /// don't know this actor."
+    pub fn actor_not_in_keystore(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            code: ApiErrorCode::ActorNotInKeystore,
+            message: message.into(),
+        }
+    }
+
+    /// Session-create refused because the actor's active signing
+    /// key is revoked at the current head. The caller should
+    /// rotate or recover the actor before signing in. 409
+    /// captures the "your local credentials conflict with the
+    /// observed state" framing.
+    pub fn key_revoked(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: ApiErrorCode::KeyRevoked,
+            message: message.into(),
+        }
+    }
+
+    /// Session-read endpoint hit with no cookie or with an
+    /// expired session. 401 marks the request as authentication-
+    /// required (consistent with the existing Phase B auth
+    /// codes).
+    pub fn no_session(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: ApiErrorCode::NoSession,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -303,6 +341,10 @@ pub enum ApiErrorCode {
     ActorNotFoundForRequest,
     RequestKeyIdUnknown,
     NotAuthorized,
+    // Session-machinery codes (PHASE_2_WEB_CLIENT_AUTH.md §3.2).
+    ActorNotInKeystore,
+    KeyRevoked,
+    NoSession,
 }
 
 impl ApiErrorCode {
@@ -324,6 +366,9 @@ impl ApiErrorCode {
             Self::ActorNotFoundForRequest => "actor_not_found_for_request",
             Self::RequestKeyIdUnknown => "request_key_id_unknown",
             Self::NotAuthorized => "not_authorized",
+            Self::ActorNotInKeystore => "actor_not_in_keystore",
+            Self::KeyRevoked => "key_revoked",
+            Self::NoSession => "no_session",
         }
     }
 }

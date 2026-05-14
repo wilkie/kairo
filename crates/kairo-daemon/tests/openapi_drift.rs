@@ -23,7 +23,10 @@ use kairo_daemon::ApiDoc;
 
 // dev-deps not used by this test; silence unused-crate warnings.
 use axum as _;
+use base64 as _;
+use getrandom as _;
 use http_body_util as _;
+use kairo_keystore as _;
 use hyper as _;
 use hyper_util as _;
 use kairo_core as _;

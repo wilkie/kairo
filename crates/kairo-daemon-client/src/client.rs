@@ -40,9 +40,10 @@ use tokio::time::timeout;
 
 use crate::dto::{
     ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
-    ObjectBranchStatementJson, ObjectByActorDto, ObjectGenesisStatementJson,
-    ObjectVersionTagStatementJson, PutStatementResult, StatementByActorDto, StatementValue,
-    StatusInfo, ValidationResult, VersionInfo,
+    KeystoreActorDto, KeystoreActorsResponse, ObjectBranchStatementJson, ObjectByActorDto,
+    ObjectGenesisStatementJson, ObjectVersionTagStatementJson, OpenSessionRequest,
+    PutStatementResult, SessionInfo, StatementByActorDto, StatementValue, StatusInfo,
+    ValidationResult, VersionInfo,
 };
 use crate::envelope::{decode_error, decode_success};
 use crate::error::{ClientError, ClientResult};
@@ -242,6 +243,104 @@ impl Client {
     pub async fn verify_object(&self, object_id: &str) -> ClientResult<ValidationResult> {
         self.get_json(&format!("/api/v1/verify-object/{object_id}"))
             .await
+    }
+
+    /// `GET /api/v1/keystore/actors` — list actor IDs the local
+    /// keystore can sign for. Returns the actor IDs in sorted
+    /// order; an empty keystore returns an empty list rather than
+    /// an error.
+    pub async fn keystore_actors(&self) -> ClientResult<Vec<KeystoreActorDto>> {
+        let response: KeystoreActorsResponse = self.get_json("/api/v1/keystore/actors").await?;
+        Ok(response.actors)
+    }
+
+    /// `POST /api/v1/sessions` — open a daemon-side session bound
+    /// to `actor_id`. Returns the session metadata and the
+    /// session id extracted from the `Set-Cookie` header; callers
+    /// pass the id verbatim to [`current_session`](Self::current_session)
+    /// and [`close_session`](Self::close_session).
+    ///
+    /// Pass `prior_session_id = Some(id)` to forward an existing
+    /// session cookie alongside the request. The daemon will
+    /// delete that session before creating the new one, matching
+    /// the "replace on re-auth" behaviour a browser exhibits
+    /// automatically via its cookie jar. Stateless callers (CLI,
+    /// most tests) pass `None`.
+    pub async fn open_session(
+        &self,
+        actor_id: &str,
+        prior_session_id: Option<&str>,
+    ) -> ClientResult<(SessionInfo, String)> {
+        let body = serde_json::to_vec(&OpenSessionRequest {
+            actor_id: actor_id.to_owned(),
+        })
+        .map_err(|error| {
+            ClientError::Decode(format!("serialize OpenSessionRequest: {error}"))
+        })?;
+        let work = async move {
+            let (status, bytes, set_cookie) = self
+                .send_post_with_cookie("/api/v1/sessions", body, prior_session_id)
+                .await?;
+            if (200..300).contains(&status) {
+                let info: SessionInfo = decode_success(&bytes)?;
+                let cookie = set_cookie
+                    .as_deref()
+                    .and_then(extract_session_cookie_value)
+                    .ok_or_else(|| {
+                        ClientError::Decode(
+                            "POST /api/v1/sessions did not set a kairo_session cookie".to_owned(),
+                        )
+                    })?;
+                Ok((info, cookie))
+            } else {
+                Err(decode_error(status, &bytes))
+            }
+        };
+        match timeout(REQUEST_DEADLINE, work).await {
+            Ok(result) => result,
+            Err(_) => Err(ClientError::Timeout(REQUEST_DEADLINE)),
+        }
+    }
+
+    /// `GET /api/v1/sessions/current` — read the metadata for the
+    /// session identified by `session_id` (the value previously
+    /// returned by [`open_session`](Self::open_session)). Returns
+    /// 401 `no_session` for missing / expired sessions.
+    pub async fn current_session(&self, session_id: &str) -> ClientResult<SessionInfo> {
+        let work = async move {
+            let (status, bytes, _) = self
+                .send_get_with_cookie("/api/v1/sessions/current", Some(session_id))
+                .await?;
+            if (200..300).contains(&status) {
+                decode_success(&bytes)
+            } else {
+                Err(decode_error(status, &bytes))
+            }
+        };
+        match timeout(REQUEST_DEADLINE, work).await {
+            Ok(result) => result,
+            Err(_) => Err(ClientError::Timeout(REQUEST_DEADLINE)),
+        }
+    }
+
+    /// `DELETE /api/v1/sessions/current` — terminate the session
+    /// identified by `session_id`. Idempotent: succeeds even when
+    /// the session has already expired or never existed.
+    pub async fn close_session(&self, session_id: &str) -> ClientResult<()> {
+        let work = async move {
+            let (status, bytes, _) = self
+                .send_delete_with_cookie("/api/v1/sessions/current", Some(session_id))
+                .await?;
+            if (200..300).contains(&status) {
+                Ok(())
+            } else {
+                Err(decode_error(status, &bytes))
+            }
+        };
+        match timeout(REQUEST_DEADLINE, work).await {
+            Ok(result) => result,
+            Err(_) => Err(ClientError::Timeout(REQUEST_DEADLINE)),
+        }
     }
 
     /// `POST /api/v1/statements` — persist an `ActorTrust`
@@ -533,4 +632,128 @@ impl Client {
 
         Ok((status, body))
     }
+
+    async fn send_get_with_cookie(
+        &self,
+        path: &str,
+        session_id: Option<&str>,
+    ) -> ClientResult<(u16, Bytes, Option<String>)> {
+        self.send_with_cookie("GET", path, Empty::<Bytes>::new(), None, session_id)
+            .await
+    }
+
+    async fn send_post_with_cookie(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+        session_id: Option<&str>,
+    ) -> ClientResult<(u16, Bytes, Option<String>)> {
+        self.send_with_cookie(
+            "POST",
+            path,
+            Full::new(Bytes::from(body)),
+            Some("application/json"),
+            session_id,
+        )
+        .await
+    }
+
+    async fn send_delete_with_cookie(
+        &self,
+        path: &str,
+        session_id: Option<&str>,
+    ) -> ClientResult<(u16, Bytes, Option<String>)> {
+        self.send_with_cookie("DELETE", path, Empty::<Bytes>::new(), None, session_id)
+            .await
+    }
+
+    async fn send_with_cookie<B>(
+        &self,
+        method: &str,
+        path: &str,
+        body: B,
+        content_type: Option<&str>,
+        session_id: Option<&str>,
+    ) -> ClientResult<(u16, Bytes, Option<String>)>
+    where
+        B: hyper::body::Body<Data = Bytes> + Send + 'static,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let stream = match timeout(
+            REQUEST_CONNECT_TIMEOUT,
+            UnixStream::connect(&self.socket_path),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error)) => return Err(ClientError::Connect(error)),
+            Err(_) => return Err(ClientError::Timeout(REQUEST_CONNECT_TIMEOUT)),
+        };
+        let io = TokioIo::new(stream);
+
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+            .await
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+        let conn_task = tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", "daemon");
+        if let Some(ct) = content_type {
+            builder = builder.header("content-type", ct);
+        }
+        if let Some(id) = session_id {
+            builder = builder.header("cookie", format!("kairo_session={id}"));
+        }
+        let req = builder
+            .body(body)
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+
+        let response = sender
+            .send_request(req)
+            .await
+            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+        let status = response.status().as_u16();
+
+        // Capture Set-Cookie before consuming the response — once
+        // we move the body out, the headers are gone.
+        let set_cookie = response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .find_map(|value| value.to_str().ok().map(|s| s.to_owned()));
+
+        let body_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|error| ClientError::Transport(Box::new(error)))?
+            .to_bytes();
+
+        drop(sender);
+        let _ = conn_task.await;
+
+        Ok((status, body_bytes, set_cookie))
+    }
+}
+
+/// Extract just the session id from a full `Set-Cookie` value of the
+/// form `kairo_session=<id>; HttpOnly; SameSite=Strict; Path=/; Max-Age=...`.
+/// Returns `None` for any value that doesn't lead with the expected
+/// cookie name or whose value is empty (the daemon's clearing
+/// Set-Cookie on logout, for instance).
+fn extract_session_cookie_value(set_cookie: &str) -> Option<String> {
+    for segment in set_cookie.split(';') {
+        let pair = segment.trim();
+        if let Some(rest) = pair.strip_prefix("kairo_session=") {
+            if rest.is_empty() {
+                return None;
+            }
+            return Some(rest.to_owned());
+        }
+    }
+    None
 }

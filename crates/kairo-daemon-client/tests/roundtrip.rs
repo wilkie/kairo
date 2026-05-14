@@ -70,6 +70,7 @@ async fn spawn_daemon_at(dir: TempDir) -> (DaemonHandle, TempDir) {
     let task = tokio::spawn(serve_with_shutdown(
         Config {
             store_path: store_path.clone(),
+            keys_path: None,
         },
         async move {
             let _ = rx.await;

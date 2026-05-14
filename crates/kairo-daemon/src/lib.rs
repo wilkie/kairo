@@ -32,6 +32,7 @@ use tempfile as _;
 pub mod api;
 mod error;
 mod server;
+pub mod sessions;
 
 pub use api::openapi::ApiDoc;
 pub use error::Error;
@@ -45,6 +46,10 @@ pub struct Config {
     /// Both the listening socket (`<store>/daemon.sock`) and the
     /// PID file (`<store>/daemon.pid`) live under this directory.
     pub store_path: PathBuf,
+    /// Filesystem path of the local keystore. When `None`, the
+    /// daemon uses `<store_path>/keys`, matching the CLI's
+    /// default in `kairo-cli::store_paths`.
+    pub keys_path: Option<PathBuf>,
 }
 
 /// Install the daemon's tracing subscriber on stderr with the

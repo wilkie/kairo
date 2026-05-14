@@ -79,6 +79,15 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/verify-object/:id",
             get(handlers::verify_object::handler),
         )
+        .route(
+            "/api/v1/keystore/actors",
+            get(handlers::keystore::list_actors_handler),
+        )
+        .route("/api/v1/sessions", post(handlers::sessions::open_handler))
+        .route(
+            "/api/v1/sessions/current",
+            get(handlers::sessions::current_handler).delete(handlers::sessions::delete_handler),
+        )
         .route("/api/v1/openapi.json", get(openapi::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

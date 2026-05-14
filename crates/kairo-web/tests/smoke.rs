@@ -76,6 +76,7 @@ async fn spawn_daemon(store_path: PathBuf) -> ProcHandle<kairo_daemon::Error> {
     let task = tokio::spawn(daemon_serve(
         DaemonConfig {
             store_path: store_path.clone(),
+            keys_path: None,
         },
         async move {
             let _ = rx.await;

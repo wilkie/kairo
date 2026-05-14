@@ -6,4 +6,7 @@
 //! Adding a new endpoint shape goes in the client crate and is
 //! used here.
 
-pub use kairo_daemon_client::dto::{StatusInfo, VersionInfo};
+pub use kairo_daemon_client::dto::{
+    KeystoreActorDto, KeystoreActorsResponse, OpenSessionRequest, SessionInfo, StatusInfo,
+    VersionInfo,
+};

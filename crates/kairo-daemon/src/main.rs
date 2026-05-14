@@ -17,11 +17,14 @@ use kairo_daemon::{install_tracing, serve, ApiDoc, Config};
 // public API. These shims silence `unused_crate_dependencies`
 // for crates the bin doesn't reference directly.
 use axum as _;
+use base64 as _;
+use getrandom as _;
 use hyper as _;
 use hyper_util as _;
 use kairo_core as _;
 use kairo_daemon_client as _;
 use kairo_identity as _;
+use kairo_keystore as _;
 use kairo_object as _;
 use kairo_statement as _;
 use kairo_store as _;
@@ -47,11 +50,11 @@ fn main() -> ExitCode {
         return run_dump_openapi(&args[2..]);
     }
 
-    let store_path = match parse_store_path(&args) {
-        Ok(path) => path,
+    let (store_path, keys_path) = match parse_args(&args) {
+        Ok(parsed) => parsed,
         Err(message) => {
             eprintln!("kairo-daemon: {message}");
-            eprintln!("usage: kairo-daemon --store <path>");
+            eprintln!("usage: kairo-daemon --store <path> [--keys <path>]");
             eprintln!("       kairo-daemon dump-openapi [--out <path>]");
             return ExitCode::from(2);
         }
@@ -76,7 +79,10 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(serve(Config { store_path })) {
+    match runtime.block_on(serve(Config {
+        store_path,
+        keys_path,
+    })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("kairo-daemon: {error}");
@@ -145,9 +151,10 @@ fn run_dump_openapi(args: &[String]) -> ExitCode {
     }
 }
 
-fn parse_store_path(args: &[String]) -> Result<PathBuf, String> {
+fn parse_args(args: &[String]) -> Result<(PathBuf, Option<PathBuf>), String> {
     let mut iter = args.iter().skip(1);
     let mut store: Option<PathBuf> = None;
+    let mut keys: Option<PathBuf> = None;
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--store" => {
@@ -156,8 +163,15 @@ fn parse_store_path(args: &[String]) -> Result<PathBuf, String> {
                     .ok_or_else(|| "--store requires a path argument".to_owned())?;
                 store = Some(PathBuf::from(value));
             }
+            "--keys" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "--keys requires a path argument".to_owned())?;
+                keys = Some(PathBuf::from(value));
+            }
             other => return Err(format!("unrecognized argument: {other}")),
         }
     }
-    store.ok_or_else(|| "--store <path> is required".to_owned())
+    let store = store.ok_or_else(|| "--store <path> is required".to_owned())?;
+    Ok((store, keys))
 }

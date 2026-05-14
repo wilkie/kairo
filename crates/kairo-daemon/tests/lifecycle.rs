@@ -8,7 +8,10 @@
 // `unused_crate_dependencies` for crates the test doesn't
 // reference directly.
 use axum as _;
+use base64 as _;
+use getrandom as _;
 use kairo_core as _;
+use kairo_keystore as _;
 use kairo_daemon_client as _;
 use kairo_identity as _;
 use kairo_object as _;
@@ -81,6 +84,7 @@ async fn spawn_daemon() -> (DaemonHandle, TempDir) {
     let task = tokio::spawn(serve_with_shutdown(
         Config {
             store_path: store_path.clone(),
+            keys_path: None,
         },
         async move {
             let _ = rx.await;
@@ -210,6 +214,7 @@ async fn double_start_refuses_when_socket_is_live() {
 
     let result = serve(Config {
         store_path: dir.path().to_path_buf(),
+        keys_path: None,
     })
     .await;
 
@@ -238,6 +243,7 @@ async fn stale_socket_is_unlinked_and_replaced() {
     let task = tokio::spawn(serve_with_shutdown(
         Config {
             store_path: store_path.clone(),
+            keys_path: None,
         },
         async move {
             let _ = rx.await;

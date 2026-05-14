@@ -58,6 +58,7 @@ fn run_start(paths: &StorePaths) -> Result<String, CliError> {
     runtime
         .block_on(serve(Config {
             store_path: paths.store.clone(),
+            keys_path: Some(paths.keys.clone()),
         }))
         .map_err(|error| CliError::DaemonServe {
             source: Box::new(error),

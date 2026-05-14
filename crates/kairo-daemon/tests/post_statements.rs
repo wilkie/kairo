@@ -40,9 +40,12 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use axum as _;
+use base64 as _;
+use getrandom as _;
 use hyper as _;
 use kairo_daemon_client::auth::{random_nonce, sign_request, TIMESTAMP_WINDOW_SECONDS};
 use kairo_identity as _;
+use kairo_keystore as _;
 use kairo_object as _;
 use kairo_store as _;
 use serde as _;
@@ -118,6 +121,7 @@ async fn spawn_daemon(store_path: PathBuf) -> DaemonHandle {
     let task = tokio::spawn(serve_with_shutdown(
         Config {
             store_path: store_path.clone(),
+            keys_path: None,
         },
         async move {
             let _ = rx.await;

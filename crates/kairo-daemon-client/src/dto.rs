@@ -296,3 +296,48 @@ pub struct PutStatementResult {
     pub statement_id: String,
     pub statement: StatementValue,
 }
+
+/// One entry in the response from
+/// `GET /api/v1/keystore/actors` — the local keystore's listing
+/// of actors with private keys available for daemon-side signing.
+///
+/// `display_name` is intentionally absent in v1; per
+/// `PHASE_2_WEB_CLIENT_AUTH.md` §1.2 it lives in a future
+/// `ActorProfile` statement and is additive when it lands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct KeystoreActorDto {
+    pub actor_id: String,
+}
+
+/// Response body for `GET /api/v1/keystore/actors`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct KeystoreActorsResponse {
+    pub actors: Vec<KeystoreActorDto>,
+}
+
+/// Request body for `POST /api/v1/sessions`. Names the actor the
+/// session will be bound to; the daemon verifies the local
+/// keystore has a usable (non-revoked-active-key) signing key for
+/// the actor before opening the session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct OpenSessionRequest {
+    pub actor_id: String,
+}
+
+/// Session metadata returned by `POST /api/v1/sessions` and
+/// `GET /api/v1/sessions/current`.
+///
+/// `idle_expires_at` is the sliding deadline reset by every
+/// authenticated touch; `expires_at` is the absolute hard cap
+/// from `created_at`. The frontend may pre-emptively re-auth as
+/// either deadline approaches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SessionInfo {
+    pub actor_id: String,
+    /// RFC 3339 UTC seconds.
+    pub created_at: String,
+    /// RFC 3339 UTC seconds. Absolute hard cap.
+    pub expires_at: String,
+    /// RFC 3339 UTC seconds. Sliding idle deadline.
+    pub idle_expires_at: String,
+}
