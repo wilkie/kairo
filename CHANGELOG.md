@@ -18,6 +18,68 @@ rather than per-commit.
 
 ### Added
 
+- **Daemon write-path Phase B — signed-request auth +
+  capability authz (`PHASE_2.md` §15.1,
+  `PHASE_2_DAEMON_AUTH.md`, `DECISIONS.md §14`).** The daemon's
+  `POST /api/v1/statements` write surface now requires an
+  `Authorization: KairoActor1 …` header carrying an ed25519
+  signature over a domain-prefixed canonical string covering
+  method, path-and-query, body SHA-256, timestamp, and a
+  per-request nonce. The daemon resolves the request actor
+  through the same `ActorResolver` as the rest of the system,
+  enforces a ±60s timestamp window (no server-side nonce cache
+  in v1; the nonce is in the signed input so a stateful cache
+  can be added later without a wire-format change), and
+  verifies the signature against the actor's active signing
+  key at `request.timestamp`. Read endpoints stay
+  unauthenticated; their trust model is the Unix socket's
+  filesystem permissions, unchanged. Seven new 401 error codes
+  (`missing_authorization`, `malformed_authorization`,
+  `unsupported_auth_scheme`, `timestamp_out_of_window`,
+  `bad_request_signature`, `actor_not_found_for_request`,
+  `request_key_id_unknown`) surface each failure mode of the
+  pipeline. The CLI signs the request envelope with the same
+  actor key it already uses for the statement body; the
+  command shape and output text are unchanged.
+- **Per-kind authorization on the daemon write surface.**
+  After authentication, the daemon runs a request-time
+  capability check that mirrors `CAPABILITIES.md §6.1`:
+  - `ActorTrust`, `ObjectGenesis` — identity-only (signer is
+    the authority by construction).
+  - `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag` —
+    root-authority short-circuit, otherwise
+    `evaluate_capability(grantee=signer, scope=Object(...),
+    kind, at=request.timestamp)` must return `Held`.
+  - `ActorCapabilityGrant` — signer must be root authority OR
+    hold every granted kind with `delegable=true` via the new
+    `evaluate_capability_for_regrant`.
+  - `ActorCapabilityRevocation` — signer must equal the
+    original grant's `actor()`.
+
+  Any other outcome is a 403 `not_authorized` carrying the
+  underlying `CapabilityEvaluation` variant in the message.
+  Direct-mode writes still bypass authz entirely (the
+  operator's recovery path); the daemon is the policy
+  enforcement layer.
+- **`kairo daemon status` reports the live auth posture.**
+  `StatusInfo` grew an `auth_mode: String` field, defaulting
+  to `"filesystem-perms"` for forward-compat with pre-Phase-B
+  clients. Phase B daemons emit `"signed-request"`; the CLI
+  prints it as `auth    = signed-request` so operators and the
+  inspector can tell at a glance whether the daemon has Phase B
+  enforcement active.
+- **`DECISIONS.md §14` — Phase B daemon write-path auth shape
+  locked.** Eight sub-decisions paralleling §13's pattern:
+  two-mechanism split (authn + authz); `Authorization:
+  KairoActor1` header with structured params; domain-prefixed
+  canonical signing string; SHA-256 body hash always present;
+  ±60s timestamp-only replay defense (forward-compatible with a
+  future stateful nonce cache); per-kind authz matrix;
+  `kairo-web` POST-block remains in place during Phase B (web
+  inspector login is its own decision); out-of-scope list
+  covering web auth, federation peer auth, mTLS, rate limiting,
+  attestation-surface request signing.
+
 - **Daemon write-path Phase A (`PHASE_2.md` §15,
   `PHASE_2_DAEMON_WRITES.md`).** The Phase 2 §2 read-only daemon
   gains a single generic write endpoint, `POST /api/v1/statements`,

@@ -473,25 +473,66 @@ dangerous operations require daemon policy approval even if the
 API request is authenticated. v1 has no mutation/execution
 endpoints, so this section is informational until those land.
 
-### 9.4 Post-v1 authentication direction
+### 9.4 Write-path authentication (Phase B)
 
-When per-request authentication lands on the daemon (alongside
-mutation/execution endpoints), the mechanism is **actor
-signing-key request auth**: clients sign `(method, path, body-
-hash, timestamp, nonce)` with their actor's active signing key
-(ed25519); the daemon verifies via the same `ActorResolver`
-the rest of the system uses. Authorization is a capability
-lookup against the existing `CAPABILITIES.md` model —
-`ActorCapabilityGrant` doubles as the authorization token, and
-`ActorCapabilityRevocation` is the revocation surface.
+Locked in `DECISIONS.md` §14 and implemented per
+`PHASE_2_DAEMON_AUTH.md`. `POST /api/v1/statements` carries an
+`Authorization: KairoActor1 …` header:
+
+```http
+Authorization: KairoActor1 actor=<actor-id>, key_id=<key-id>,
+  timestamp=<i64-epoch-seconds>, nonce=<32-hex>, signature=<base64>
+```
+
+The signature is ed25519 over the canonical string
+
+```text
+kairo-daemon-write-v1\n
+<METHOD>\n
+<path-and-query>\n
+<sha256-hex of body>\n
+<timestamp>\n
+<nonce-hex>\n
+```
+
+with the actor's active signing key at `timestamp` (per the
+rotation chain). The daemon enforces a ±60s timestamp window;
+no server-side nonce cache in Phase B. Failure paths return
+`401` with structured codes (`missing_authorization`,
+`malformed_authorization`, `unsupported_auth_scheme`,
+`timestamp_out_of_window`, `bad_request_signature`,
+`actor_not_found_for_request`, `request_key_id_unknown`).
+
+Authorization runs after authentication and before the per-
+kind dispatcher:
+
+- `ActorTrust`, `ObjectGenesis` — identity-only checks (signer
+  is the authority by construction).
+- `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag` —
+  signer must be the object's root authority OR
+  `evaluate_capability(grantee=signer, scope=Object(body.object),
+   kind, at=request.timestamp)` returns `Held`. Failure → 403
+  `not_authorized` carrying the underlying `CapabilityEvaluation`
+  variant in the message.
+- `ActorCapabilityGrant` — signer must be root authority OR
+  hold every granted kind with `delegable=true`
+  (`evaluate_capability_for_regrant`). Failure → 403.
+- `ActorCapabilityRevocation` — signer must equal the original
+  grant's `actor()`. Failure → 403.
+
+Read endpoints (everything not `POST /api/v1/statements`) are
+unauthenticated regardless — their trust model is the Unix
+socket's filesystem permissions.
 
 JWT, OIDC, cookies, WebAuthn, and other browser-facing schemes
 stay in `kairo-web` (§9.2) — the web server terminates them
-and forwards to the daemon over Unix socket using its own
+and forwards to the daemon over the Unix socket using its own
 actor key (or a delegated capability), never a forwarded user
-token. This is the same auth mechanism federation peers use,
-so the daemon, federation, and (via the web server) the
-browser share one identity model. See `DAEMON.md` §18.1.
+token. This is the same auth mechanism federation peers will
+use, so the daemon, federation, and (via the web server) the
+browser share one identity model. See `DAEMON.md` §18.1 for
+the long-term framing and `PHASE_2_DAEMON_AUTH.md` §6 for the
+forward-pointer on web writes.
 
 ---
 
@@ -503,7 +544,8 @@ Long-term endpoint groups, tagged by phase:
 /system          [v1] /version, /status only; /openapi.json post-v1
 /actors          [v1] read-only
 /objects         [v1] genesis read; /list and /summary post-v1
-/statements      [v1] read-only
+/statements      [v1+B] reads + Phase-B-authenticated POST
+                        (DECISIONS.md §14)
 /branches        [v1] list + latest
 /version-tags    [v1] read-only
 /trust           [v1] read-only
@@ -521,6 +563,11 @@ Long-term endpoint groups, tagged by phase:
 /executors       [post-v1] depends on Phase 2 §7
 /config          [post-v1]
 ```
+
+`[v1+B]` marks endpoints that ship in v1 for reads and gain
+Phase B authenticated writes (see §9.4 above). The read half
+stays unauthenticated; only writes require the
+`Authorization: KairoActor1 …` header.
 
 The `[v1]` groups together comprise the ~11 read-only endpoints
 locked in `DECISIONS.md` §10.4. Sections §11–§22 below describe the

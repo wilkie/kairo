@@ -32,5 +32,9 @@ pub async fn handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
         pid: state.pid,
         daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
         write_surface: SUPPORTED_WRITE_KINDS.iter().map(|k| (*k).to_owned()).collect(),
+        // Phase B (DECISIONS.md §14): the write surface requires
+        // ed25519-signed requests with capability-statement authz.
+        // Reads stay unauthenticated.
+        auth_mode: "signed-request".to_owned(),
     })
 }

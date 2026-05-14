@@ -188,6 +188,14 @@ pub struct VersionInfo {
 /// semantics. `#[serde(default)]` keeps older client builds
 /// compatible with newer daemons (the field decodes as an empty
 /// list); newer clients reading older daemons see the same.
+///
+/// `auth_mode` advertises the daemon's request-auth posture for
+/// the write surface (`POST /api/v1/statements`). Phase A
+/// daemons reported nothing — the field defaults to
+/// `"filesystem-perms"` on absent for forward-compat with older
+/// clients. Phase B daemons set it to `"signed-request"`,
+/// matching `DECISIONS.md §14`'s `KairoActor1` envelope. The
+/// read surface is always unauthenticated regardless.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct StatusInfo {
     pub daemon_running: bool,
@@ -197,6 +205,12 @@ pub struct StatusInfo {
     pub daemon_version: String,
     #[serde(default)]
     pub write_surface: Vec<String>,
+    #[serde(default = "default_auth_mode")]
+    pub auth_mode: String,
+}
+
+fn default_auth_mode() -> String {
+    "filesystem-perms".to_string()
 }
 
 /// Validation status summarizing a `verify-object` result.

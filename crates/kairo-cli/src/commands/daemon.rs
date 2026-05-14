@@ -93,13 +93,14 @@ fn run_status(paths: &StorePaths, require_daemon: bool) -> Result<String, CliErr
                 status.write_surface.join(",")
             };
             Ok(format!(
-                "kairo-daemon: running\nsocket  = {}\npid     = {}\nstore   = {}\nschema  = {}\nversion = {}\nwrites  = {}\n",
+                "kairo-daemon: running\nsocket  = {}\npid     = {}\nstore   = {}\nschema  = {}\nversion = {}\nwrites  = {}\nauth    = {}\n",
                 socket_path.display(),
                 status.pid,
                 status.store_path,
                 status.store_schema_version,
                 status.daemon_version,
                 write_surface,
+                status.auth_mode,
             ))
         }
         None => {

@@ -1159,30 +1159,47 @@ Shape is locked in `DECISIONS.md` §14; slice plan in
 
 Bullets, by slice (see `PHASE_2_DAEMON_AUTH.md` §3):
 
-- [ ] Slice 1 — Wire-format primitives. Pure module in
+- [x] Slice 1 — Wire-format primitives. Pure module in
       `kairo-daemon-client::auth` for signing-string assembly +
       `Authorization` header build/parse. Fixed-fixture tests
       pin the byte output; no daemon changes.
-- [ ] Slice 2 — Daemon-side authentication enforcement. Tower
+- [x] Slice 2 — Daemon-side authentication enforcement. Tower
       layer parses + validates the `Authorization` header on
       `POST /api/v1/statements`; CLI passes the local signing
       key into the client so every daemon-mode write builds the
       signed envelope. Authorization checks not yet enforced —
       every authenticated request still passes through.
-- [ ] Slice 3 — Capability enforcement on object writes.
+- [x] Slice 3 — Capability enforcement on object writes.
       `evaluate_capability` runs server-side for
       `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`.
       Root-authority match short-circuits the chain walk.
-- [ ] Slice 4 — Capability enforcement on grant + revocation.
-      Recursive delegation check for `ActorCapabilityGrant`;
+- [x] Slice 4 — Capability enforcement on grant + revocation.
+      Recursive delegation check for `ActorCapabilityGrant`
+      via the new `evaluate_capability_for_regrant`;
       grantor-identity check for `ActorCapabilityRevocation`.
-- [ ] Slice 5 — Polish: status field, spec sweeps, smoke-seed
-      verification, CHANGELOG entry.
+- [x] Slice 5 — Polish: `auth_mode` field on `daemon status`,
+      spec sweeps (`DAEMON.md §18.1`, `API.md §9.4` /  §10,
+      `CLI.md §3.3`, this section), smoke-seed verification
+      under full Phase B enforcement, CHANGELOG entry.
+
+**Status: shipped.** Phase B's five slices have landed. The
+`auth_mode` field on `GET /api/v1/status` advertises the
+posture (`"signed-request"`) so operators and the inspector
+can confirm enforcement is live. The smoke seed
+(`scripts/smoke-seed.sh`) runs end-to-end through `--daemon`
+under full authn+authz, including the 2-hop Alice→Bob→Carol
+delegation chain (Bob's re-grant clears the
+`evaluate_capability_for_regrant` check because Alice issued
+delegable=true; Carol's downstream writes clear
+`evaluate_capability` because the chain back to Alice as root
+holds).
 
 **Out of Phase B (per `DECISIONS.md §14` sub-decision 8):** web
 auth, federation peer auth, mutual TLS, server-side nonce cache,
 per-actor rate limiting, attestation-surface request signing,
-browser-side keystore.
+browser-side keystore. The `kairo-web` POST-block stays in
+place; lifting it is tied to the web inspector's login design
+(see `PHASE_2_DAEMON_AUTH.md §6` for the forward-pointer).
 
 **Why it matters:** every downstream surface that needs a single
 coordination layer for writes (federation, multi-actor workflows,

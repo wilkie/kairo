@@ -848,29 +848,52 @@ The daemon must:
 
 ### 18.1 Authentication direction
 
-**[v1] filesystem perms only.** The daemon listens on a Unix
-socket at `<store>/daemon.sock` (mode 0600); anyone who can
-`connect(2)` is fully trusted, identical to a `kairo-cli`
-direct-mode caller. No bearer tokens, no per-request auth.
+**[v1 reads + Phase A writes] filesystem perms only.** The
+daemon listens on a Unix socket at `<store>/daemon.sock`
+(mode 0600); anyone who can `connect(2)` is fully trusted,
+identical to a `kairo-cli` direct-mode caller. This held for
+all reads and for Phase A of the daemon write-path
+(`PHASE_2.md` §15 / `PHASE_2_DAEMON_WRITES.md`).
 
-**[post-v1] actor signing-key request auth + capability
-statements.** When mutation/execution endpoints land, clients
-will sign `(method, path, body-hash, timestamp, nonce)` with
-their actor's active signing key (ed25519); the daemon resolves
-the actor through the same `ActorResolver` the rest of the
-system uses. Authorization is then a capability lookup against
-the existing `CAPABILITIES.md` model — `ActorCapabilityGrant`
-is the authorization token; `ActorCapabilityRevocation` is the
-revocation surface.
+**[Phase B writes] actor signing-key request auth + capability
+statements.** Locked in `DECISIONS.md` §14 and implemented as
+Slices 1–5 of `PHASE_2_DAEMON_AUTH.md`. The `POST
+/api/v1/statements` write surface now requires an
+`Authorization: KairoActor1 …` header carrying an ed25519
+signature over `(method, path, body-hash, timestamp, nonce)`.
+The daemon resolves the request actor through the same
+`ActorResolver` the rest of the system uses, validates the
+timestamp against a ±60s window, and verifies the signature
+against the actor's active signing key at `request.timestamp`.
 
-The daemon stays a single-mechanism auth surface. JWT, OIDC,
-cookies, WebAuthn, and other browser-facing schemes belong in
-`kairo-web` (Phase 2 §5), which terminates them and forwards
-to the daemon over the Unix socket using its own actor key
-(or a delegated capability) — never a forwarded user token.
-This is the same auth mechanism federation peers will use, so
-the daemon, federation, and (via the web server) the browser
-share one identity model.
+Authorization is a capability lookup against the existing
+`CAPABILITIES.md` model. Per-kind enforcement:
+
+- `ActorTrust`, `ObjectGenesis` — identity-only (signer is the
+  authority by construction).
+- `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag` —
+  signer must be the object's root authority OR hold a
+  covering capability with `evaluate_capability` → `Held`.
+- `ActorCapabilityGrant` — signer must be root authority OR
+  hold every granted kind with `delegable = true`
+  (`evaluate_capability_for_regrant`).
+- `ActorCapabilityRevocation` — signer must be the original
+  grantor of the revoked grant.
+
+The read surface remains unauthenticated regardless — its
+trust model is the Unix socket's filesystem permissions.
+
+**Post-Phase B.** The daemon stays a single-mechanism auth
+surface. JWT, OIDC, cookies, WebAuthn, and other browser-
+facing schemes belong in `kairo-web` (Phase 2 §5), which
+terminates them and forwards to the daemon over the Unix
+socket using its own actor key (or a delegated capability) —
+never a forwarded user token. This is the same auth mechanism
+federation peers will use, so the daemon, federation, and (via
+the web server) the browser share one identity model. The
+`kairo-web` POST-block stays in place during Phase B per
+`DECISIONS.md` §14 sub-decision 7; lifting it is a separate
+decision tied to the web inspector's login design.
 
 ---
 

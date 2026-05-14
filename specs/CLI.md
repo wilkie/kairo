@@ -148,7 +148,20 @@ writes):
    mode. Even in daemon mode the CLI opens the keystore, builds
    and signs the envelope locally, then ships the signed
    statement to the daemon (`DECISIONS.md §13` sub-decision 3).
-   Per-request auth on the daemon side is Phase B work.
+
+   **Phase B** (`DECISIONS.md §14`) adds a second signature on
+   every daemon-mode write: the request envelope itself. The
+   CLI uses the same actor signing key (already in scope for
+   the statement body's signature) to sign `(method, path,
+   body-hash, timestamp, nonce)` and emits the result as the
+   request's `Authorization: KairoActor1 …` header. From the
+   user's perspective the command shape and output text are
+   unchanged; the daemon will surface failure modes like
+   `bad_request_signature` or `timestamp_out_of_window` if
+   something is wrong with the local clock or keystore.
+   Direct-mode writes bypass the request-auth surface entirely
+   (they never touch the wire) — by design, since direct mode
+   is the operator's-own-hand recovery path.
 
 5. **Federation, build, run, reproduce, task, sync, fetch.** Not
    shipped in v1 in either mode; they exit 13 (`unsupported

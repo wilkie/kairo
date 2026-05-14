@@ -107,6 +107,13 @@ fn daemon_start_status_stop_round_trip() {
         out.contains("writes  = ") && out.contains("ActorTrust"),
         "status stdout missing write surface: {out}"
     );
+    // Slice 5 (Phase B): status reports the daemon's request-auth
+    // posture. `signed-request` is the value Phase B daemons emit;
+    // older clients see `filesystem-perms` via the dto default.
+    assert!(
+        out.contains("auth    = signed-request"),
+        "status stdout missing Phase B auth mode: {out}"
+    );
 
     // stop --wait: should drain in well under 10s
     let stop = run_kairo(&[

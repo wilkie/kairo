@@ -1411,7 +1411,7 @@
       },
       "StatusInfo": {
         "type": "object",
-        "description": "Response body for `GET /api/v1/status`.\n\nV1 fields only: federation, runtime, and task counts are\nomitted because those subsystems are post-v1 (see\n`specs/API.md` §11.2 v1 surface note).\n\n`write_surface` lists the statement kinds the daemon's\n`POST /api/v1/statements` dispatcher will accept. Added in\nSlice 5 of `PHASE_2_DAEMON_WRITES.md` to surface Phase A's\nexpansion to write-mode without changing `daemon_running`\nsemantics. `#[serde(default)]` keeps older client builds\ncompatible with newer daemons (the field decodes as an empty\nlist); newer clients reading older daemons see the same.",
+        "description": "Response body for `GET /api/v1/status`.\n\nV1 fields only: federation, runtime, and task counts are\nomitted because those subsystems are post-v1 (see\n`specs/API.md` §11.2 v1 surface note).\n\n`write_surface` lists the statement kinds the daemon's\n`POST /api/v1/statements` dispatcher will accept. Added in\nSlice 5 of `PHASE_2_DAEMON_WRITES.md` to surface Phase A's\nexpansion to write-mode without changing `daemon_running`\nsemantics. `#[serde(default)]` keeps older client builds\ncompatible with newer daemons (the field decodes as an empty\nlist); newer clients reading older daemons see the same.\n\n`auth_mode` advertises the daemon's request-auth posture for\nthe write surface (`POST /api/v1/statements`). Phase A\ndaemons reported nothing — the field defaults to\n`\"filesystem-perms\"` on absent for forward-compat with older\nclients. Phase B daemons set it to `\"signed-request\"`,\nmatching `DECISIONS.md §14`'s `KairoActor1` envelope. The\nread surface is always unauthenticated regardless.",
         "required": [
           "daemon_running",
           "store_path",
@@ -1420,6 +1420,9 @@
           "daemon_version"
         ],
         "properties": {
+          "auth_mode": {
+            "type": "string"
+          },
           "daemon_running": {
             "type": "boolean"
           },
