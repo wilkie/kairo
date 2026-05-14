@@ -1430,6 +1430,7 @@ dependencies = [
 name = "kairo-daemon-client"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "futures-util",
  "http-body-util",
  "hyper",
@@ -1442,6 +1443,7 @@ dependencies = [
  "kairo-test-support",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-util",

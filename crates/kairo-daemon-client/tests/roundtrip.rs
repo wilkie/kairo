@@ -6,12 +6,14 @@
 
 // Production deps the integration test doesn't reference directly
 // — silence `unused_crate_dependencies` for them.
+use base64 as _;
 use futures_util as _;
 use http_body_util as _;
 use hyper as _;
 use hyper_util as _;
 use kairo_identity as _;
 use serde as _;
+use sha2 as _;
 use tokio_util as _;
 use utoipa as _;
 
