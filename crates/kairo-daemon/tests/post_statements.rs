@@ -1817,3 +1817,287 @@ async fn rejects_cross_actor_version_tag_with_delegation_depth_violation_with_40
     handle.shutdown().await;
     drop(dir);
 }
+
+// --- Phase B Slice 4: capability gate on grant + revocation ------------------
+//
+// Recursive delegable check on `ActorCapabilityGrant`:
+//   signer must be the object's root authority OR hold the
+//   exact capability being granted with `delegable = true`.
+// Grantor-identity check on `ActorCapabilityRevocation`:
+//   signer must be the original grantor of the revoked grant.
+
+#[tokio::test]
+async fn accepts_delegable_regrant_by_holder() {
+    // Alice creates the object and grants Bob ObjectVersionTag
+    // delegable. Bob then re-grants Carol — the daemon's gate
+    // walks the chain Bob → Alice (root) and accepts.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        Vec::new(),
+        1_700_004_000,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed =
+        sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_100);
+    let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_non_delegable_regrant_with_403() {
+    // Alice grants Bob ObjectVersionTag NON-delegable. Bob's
+    // attempt to re-grant Carol must be refused — Bob has the
+    // capability for himself, but not the authority to pass it
+    // on.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        false, // non-delegable
+        Vec::new(),
+        1_700_004_200,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed =
+        sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_300);
+    let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("does not hold a delegable"),
+        "expected 'does not hold a delegable' diagnostic: {message}",
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_grant_by_non_holder_with_403() {
+    // Bob has no grant at all on Alice's object. Bob's attempt
+    // to grant Carol is refused.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let signed =
+        sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_400);
+    let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
+        .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn accepts_revocation_by_original_grantor() {
+    // Alice grants Bob, then revokes — daemon-mode revocation
+    // by the original grantor (root authority for the grant
+    // identity, irrespective of object scope).
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let grant_id = persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        Vec::new(),
+        1_700_004_500,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+
+    // Sign a revocation as Alice (the original grantor).
+    let body_rev = ActorCapabilityRevocationBody::new(grant_id.clone(), false, None);
+    let subject: KairoRef = format!("statement:{grant_id}").parse().expect("subject");
+    let unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(1_700_004_600),
+        body_rev,
+    );
+    let signature_bytes = alice.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let body =
+        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&signed))
+            .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
+    assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_revocation_by_non_grantor_with_403() {
+    // Alice grants Bob. Carol (a third party) signs a revocation
+    // for that grant. The grant body's `actor` is Alice, so
+    // the daemon refuses regardless of any capability Carol
+    // might hold.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let grant_id = persist_grant(
+        &fixture,
+        &alice,
+        &bob,
+        &object.object_id,
+        vec![StatementKind::ObjectVersionTag],
+        true,
+        Vec::new(),
+        1_700_004_700,
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+
+    let body_rev = ActorCapabilityRevocationBody::new(grant_id.clone(), false, None);
+    let subject: KairoRef = format!("statement:{grant_id}").parse().expect("subject");
+    let unsigned = UnsignedStatement::new(
+        carol.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(1_700_004_800),
+        body_rev,
+    );
+    let signature_bytes = carol.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        carol.actor_id.clone(),
+        carol.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let body =
+        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&signed))
+            .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &carol).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("not the original grantor"),
+        "expected 'not the original grantor' diagnostic: {message}",
+    );
+
+    // Unused — silence the bob warning.
+    let _ = &bob;
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn rejects_revocation_of_unknown_grant_with_403() {
+    // Revoke a grant id that doesn't exist locally. The daemon
+    // cannot verify the signer's authority either way and
+    // refuses with 403 carrying a "grant not found" diagnostic.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+
+    let fake_grant_id = kairo_core::StatementId::from_sha256_digest([0xCD; 32]);
+    let body_rev = ActorCapabilityRevocationBody::new(fake_grant_id.clone(), false, None);
+    let subject: KairoRef =
+        format!("statement:{fake_grant_id}").parse().expect("subject");
+    let unsigned = UnsignedStatement::new(
+        alice.actor_id.clone(),
+        subject,
+        Timestamp::from_seconds(1_700_004_900),
+        body_rev,
+    );
+    let signature_bytes = alice.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        alice.actor_id.clone(),
+        alice.signing.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let body =
+        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&signed))
+            .expect("serialize");
+
+    let (status, response_body) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&response_body).expect("parse envelope");
+    assert_eq!(envelope["error"]["code"], "not_authorized");
+    let message = envelope["error"]["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("not in the store"),
+        "expected 'not in the store' diagnostic: {message}",
+    );
+
+    handle.shutdown().await;
+    drop(dir);
+}

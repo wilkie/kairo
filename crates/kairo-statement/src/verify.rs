@@ -311,6 +311,28 @@ pub fn evaluate_capability<R: CapabilityResolver>(
     evaluate_inner(grantee, target, at, false, resolver, &mut visited, 0)
 }
 
+/// Resolve "is `grantee` authorized to *re-grant* `target.kind()`
+/// against `target` at `at`?" against `resolver`.
+///
+/// Same chain walk as [`evaluate_capability`] but requires the
+/// grantee's covering grant to carry `delegable = true` (a non-
+/// delegable grant lets the holder *exercise* the capability but
+/// not pass it on). Used by the daemon's Phase B authz gate to
+/// decide whether the signer of an `ActorCapabilityGrant` is
+/// permitted to issue it (`PHASE_2_DAEMON_AUTH.md` Slice 4).
+///
+/// Root-authority match still short-circuits the chain walk:
+/// `grantee == object.created_by` is always allowed to grant.
+pub fn evaluate_capability_for_regrant<R: CapabilityResolver>(
+    grantee: &ActorId,
+    target: &ResolutionTarget,
+    at: Timestamp,
+    resolver: &R,
+) -> Result<CapabilityEvaluation, R::Error> {
+    let mut visited = HashSet::new();
+    evaluate_inner(grantee, target, at, true, resolver, &mut visited, 0)
+}
+
 fn evaluate_inner<R: CapabilityResolver>(
     grantee: &ActorId,
     target: &ResolutionTarget,

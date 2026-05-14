@@ -35,7 +35,9 @@ use kairo_store::{FilesystemStore, ObjectStore, StatementStore, StoreError};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::api::capability_gate::require_object_write_authority;
+use crate::api::capability_gate::{
+    require_grant_authority, require_object_write_authority, require_revocation_authority,
+};
 use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::request_auth::{
     authorization_header_value, path_and_query_for_signing, verify_request_auth,
@@ -259,6 +261,13 @@ pub async fn put_handler(
         "ActorCapabilityGrant" => {
             let signed =
                 decode_signed_body(body, &kind, ActorCapabilityGrantStatementJson::to_statement)?;
+            require_grant_authority(
+                &state,
+                &authenticated.actor,
+                signed.unsigned().body(),
+                Timestamp::from_seconds(authenticated.timestamp),
+            )
+            .await?;
             persist_signed(
                 state,
                 signed,
@@ -274,6 +283,12 @@ pub async fn put_handler(
                 &kind,
                 ActorCapabilityRevocationStatementJson::to_statement,
             )?;
+            require_revocation_authority(
+                &state,
+                &authenticated.actor,
+                signed.unsigned().body().revoked_grant(),
+            )
+            .await?;
             persist_signed(
                 state,
                 signed,
