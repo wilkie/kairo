@@ -24,3 +24,11 @@ export { Tabs, type TabsProps, type TabsTab } from './Tabs';
 export { Dialog, type DialogProps } from './Dialog';
 export { EmptyState, type EmptyStateProps } from './EmptyState';
 export { ErrorDisplay, type ErrorDisplayProps } from './ErrorDisplay';
+export {
+  ActorPicker,
+  truncateActorId,
+  type ActorPickerProps,
+  type ActorPickerActor,
+  type ActorPickerSession,
+  type ActorPickerError,
+} from './ActorPicker';

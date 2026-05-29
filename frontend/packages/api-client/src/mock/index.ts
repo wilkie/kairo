@@ -9,5 +9,5 @@
 export { fixtures, mockIds, versionFixture, statusFixture } from './fixtures';
 export { mockRegistry, type MockRegistry } from './registry';
 export { successEnvelope, errorEnvelope } from './envelope';
-export { handlers, createHandlers } from './handlers';
+export { handlers, createHandlers, resetMockSessions } from './handlers';
 export { startMockWorker, stopMockWorker, type StartMockWorkerOptions } from './browser';

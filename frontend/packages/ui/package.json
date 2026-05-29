@@ -12,6 +12,7 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit",
     "lint": "eslint src",
+    "test": "vitest run",
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build"
   },
@@ -27,11 +28,16 @@
     "@storybook/blocks": "^8.4.7",
     "@storybook/react": "^8.4.7",
     "@storybook/react-vite": "^8.4.7",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.0.0",
+    "happy-dom": "^20.9.0",
     "react-dom": "^19.1.0",
     "storybook": "^8.4.7",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^4.1.6"
   },
   "peerDependencies": {
     "react": "^19.0.0",

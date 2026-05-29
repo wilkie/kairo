@@ -17,6 +17,7 @@ import StorageIcon from '@mui/icons-material/Storage';
 import SettingsIcon from '@mui/icons-material/Settings';
 import { KairoLogo } from '@kairo/ui';
 import { forwardRef, type ReactNode } from 'react';
+import { ActorPickerContainer } from '../components/ActorPickerContainer';
 
 type NavTo = '/' | '/objects' | '/settings';
 
@@ -73,6 +74,17 @@ export function AppShell() {
           gap: 3,
         }}
       >
+        <Box
+          component="header"
+          sx={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            alignItems: 'center',
+            minHeight: 32,
+          }}
+        >
+          <ActorPickerContainer />
+        </Box>
         <Outlet />
       </Box>
     </Box>

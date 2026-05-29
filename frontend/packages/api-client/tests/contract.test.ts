@@ -19,6 +19,7 @@ import { http, HttpResponse } from 'msw';
 import { setupMockServer } from '../src/mock/node';
 import { fixtures, mockIds } from '../src/mock/fixtures';
 import { errorEnvelope, successEnvelope } from '../src/mock/envelope';
+import { resetMockSessions } from '../src/mock/handlers';
 import { createKairoClient, KairoApiClientError } from '../src/index';
 
 const BASE_URL = 'http://daemon';
@@ -219,6 +220,56 @@ describe('error envelope mapping', () => {
     await expect(client.getVersion()).rejects.toMatchObject({
       detail: { kind: 'decode' },
     });
+  });
+});
+
+describe('session endpoints', () => {
+  afterEach(() => {
+    resetMockSessions();
+  });
+
+  it('listKeystoreActors returns the seeded actors', async () => {
+    const actors = await client.listKeystoreActors();
+    expect(actors.length).toBeGreaterThan(0);
+    expect(actors.map((a) => a.actor_id)).toContain(mockIds.actor);
+  });
+
+  it('openSession returns SessionInfo for a known actor', async () => {
+    const info = await client.openSession(mockIds.actor);
+    expect(info.actor_id).toBe(mockIds.actor);
+    expect(typeof info.created_at).toBe('string');
+    expect(typeof info.expires_at).toBe('string');
+    expect(typeof info.idle_expires_at).toBe('string');
+  });
+
+  it('openSession rejects an actor missing from the keystore', async () => {
+    const unknown = 'zUnknownActorXxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx';
+    const error = await client.openSession(unknown).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(KairoApiClientError);
+    expect((error as KairoApiClientError).detail).toMatchObject({
+      kind: 'daemon',
+      code: 'actor_not_in_keystore',
+      status: 404,
+    });
+  });
+
+  it('openSession rejects a malformed actor id', async () => {
+    const error = await client.openSession('not-a-valid-id').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(KairoApiClientError);
+    expect((error as KairoApiClientError).detail).toMatchObject({
+      kind: 'daemon',
+      code: 'bad_request',
+      status: 400,
+    });
+  });
+
+  it('getCurrentSession returns null when no session cookie is present', async () => {
+    const info = await client.getCurrentSession();
+    expect(info).toBeNull();
+  });
+
+  it('closeSession succeeds even with no active session', async () => {
+    await expect(client.closeSession()).resolves.toBeUndefined();
   });
 });
 

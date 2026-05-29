@@ -18,6 +18,7 @@
 // configured base).
 
 import { http, HttpResponse } from 'msw';
+import type { components } from '../generated/schema';
 import { errorEnvelope, successEnvelope } from './envelope';
 import { mockRegistry, type MockRegistry } from './registry';
 
@@ -29,6 +30,19 @@ function badRequest(message: string) {
   return HttpResponse.json(errorEnvelope('bad_request', message), { status: 400 });
 }
 
+function notInKeystore(actorId: string) {
+  return HttpResponse.json(
+    errorEnvelope('actor_not_in_keystore', `no local signing key for actor ${actorId}`),
+    { status: 404 },
+  );
+}
+
+function noSession() {
+  return HttpResponse.json(errorEnvelope('no_session', 'no live session for that cookie'), {
+    status: 401,
+  });
+}
+
 function pathParam(value: string | readonly string[] | undefined): string | null {
   if (typeof value === 'string') {
     return value;
@@ -37,6 +51,80 @@ function pathParam(value: string | readonly string[] | undefined): string | null
     return value[0];
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Mock session state
+//
+// MSW handlers run in a single page / Node process; one global
+// map is enough for the inspector's needs. Tests that need
+// isolation call `resetMockSessions()` in `beforeEach`.
+//
+// The cookie attributes mirror the daemon's
+// `set_cookie_for` exactly: HttpOnly; SameSite=Strict; Path=/;
+// Max-Age=<idle>.
+
+const COOKIE_NAME = 'kairo_session';
+const IDLE_TIMEOUT_SECS = 30 * 60;
+const ABSOLUTE_TIMEOUT_SECS = 24 * 60 * 60;
+
+interface MockSession {
+  actorId: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+const sessions = new Map<string, MockSession>();
+
+/**
+ * Wipe every active mock session. Vitest test setup hooks
+ * should call this so a leftover cookie from a prior test
+ * can't bleed across runs.
+ */
+export function resetMockSessions(): void {
+  sessions.clear();
+}
+
+function generateSessionId(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function parseSessionCookie(cookieHeader: string | null): string | null {
+  if (cookieHeader === null) return null;
+  for (const pair of cookieHeader.split(';')) {
+    const trimmed = pair.trim();
+    if (trimmed.startsWith(`${COOKIE_NAME}=`)) {
+      const value = trimmed.slice(COOKIE_NAME.length + 1);
+      return value.length > 0 ? value : null;
+    }
+  }
+  return null;
+}
+
+function rfc3339(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function sessionInfoFor(session: MockSession): components['schemas']['SessionInfo'] {
+  const idleExpires = new Date(Date.now() + IDLE_TIMEOUT_SECS * 1000);
+  return {
+    actor_id: session.actorId,
+    created_at: rfc3339(session.createdAt),
+    expires_at: rfc3339(session.expiresAt),
+    idle_expires_at: rfc3339(idleExpires),
+  };
+}
+
+function setCookieFor(id: string): string {
+  return `${COOKIE_NAME}=${id}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${IDLE_TIMEOUT_SECS}`;
+}
+
+function clearCookieValue(): string {
+  return `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
 }
 
 export function createHandlers(registry: MockRegistry = mockRegistry) {
@@ -224,6 +312,75 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
       return result === undefined
         ? notFound(`object not found: ${id}`)
         : HttpResponse.json(successEnvelope(result));
+    }),
+
+    http.get('*/api/v1/keystore/actors', () =>
+      HttpResponse.json(successEnvelope({ actors: registry.keystoreActors })),
+    ),
+
+    http.post('*/api/v1/sessions', async ({ request }) => {
+      let body: components['schemas']['OpenSessionRequest'];
+      try {
+        body = (await request.json()) as components['schemas']['OpenSessionRequest'];
+      } catch {
+        return badRequest('malformed request body');
+      }
+      const actorId = body?.actor_id;
+      if (typeof actorId !== 'string' || actorId.length === 0) {
+        return badRequest('invalid actor id');
+      }
+      // Same lightweight shape check the daemon applies: any
+      // non-`z`-prefixed id is rejected as malformed before the
+      // keystore lookup. Loose enough for the inspector — the
+      // real daemon does a full `ActorId::from_str` parse.
+      if (!actorId.startsWith('z')) {
+        return badRequest(`invalid actor id ${actorId}`);
+      }
+      const inKeystore = registry.keystoreActors.some((entry) => entry.actor_id === actorId);
+      if (!inKeystore) {
+        return notInKeystore(actorId);
+      }
+
+      // Replace-on-reauth: if a prior session cookie rides in,
+      // drop it before creating the new one.
+      const prior = parseSessionCookie(request.headers.get('cookie'));
+      if (prior !== null) {
+        sessions.delete(prior);
+      }
+
+      const id = generateSessionId();
+      const now = new Date();
+      const session: MockSession = {
+        actorId,
+        createdAt: now,
+        expiresAt: new Date(now.getTime() + ABSOLUTE_TIMEOUT_SECS * 1000),
+      };
+      sessions.set(id, session);
+
+      return new HttpResponse(JSON.stringify(successEnvelope(sessionInfoFor(session))), {
+        status: 201,
+        headers: {
+          'Content-Type': 'application/json',
+          'Set-Cookie': setCookieFor(id),
+        },
+      });
+    }),
+
+    http.get('*/api/v1/sessions/current', ({ request }) => {
+      const id = parseSessionCookie(request.headers.get('cookie'));
+      if (id === null) return noSession();
+      const session = sessions.get(id);
+      if (session === undefined) return noSession();
+      return HttpResponse.json(successEnvelope(sessionInfoFor(session)));
+    }),
+
+    http.delete('*/api/v1/sessions/current', ({ request }) => {
+      const id = parseSessionCookie(request.headers.get('cookie'));
+      if (id !== null) sessions.delete(id);
+      return new HttpResponse(null, {
+        status: 204,
+        headers: { 'Set-Cookie': clearCookieValue() },
+      });
     }),
   ];
 }

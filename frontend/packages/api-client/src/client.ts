@@ -18,6 +18,10 @@ import { createTransport, type TransportOptions } from './transport';
 export type VersionInfo = components['schemas']['VersionInfo'];
 export type StatusInfo = components['schemas']['StatusInfo'];
 export type ActorGenesisJson = components['schemas']['ActorGenesisJson'];
+export type KeystoreActorDto = components['schemas']['KeystoreActorDto'];
+export type KeystoreActorsResponse = components['schemas']['KeystoreActorsResponse'];
+export type OpenSessionRequest = components['schemas']['OpenSessionRequest'];
+export type SessionInfo = components['schemas']['SessionInfo'];
 export type ObjectGenesisStatementJson = components['schemas']['ObjectGenesisStatementJson'];
 export type ObjectBranchStatementJson = components['schemas']['ObjectBranchStatementJson'];
 export type ObjectVersionTagStatementJson = components['schemas']['ObjectVersionTagStatementJson'];
@@ -100,6 +104,27 @@ export interface KairoApiClient {
   getBlob(blobId: string): Promise<Blob>;
   /** `GET /api/v1/verify-object/{id}`. */
   verifyObject(objectId: string): Promise<ValidationResult>;
+
+  /** `GET /api/v1/keystore/actors` — local keystore listing. */
+  listKeystoreActors(): Promise<KeystoreActorDto[]>;
+  /**
+   * `POST /api/v1/sessions` — open a daemon-side session bound
+   * to `actorId`. The browser cookie jar persists the
+   * `kairo_session` cookie automatically; subsequent
+   * `getCurrentSession` / `closeSession` calls ride that cookie
+   * via the standard `same-origin` fetch behaviour.
+   */
+  openSession(actorId: string): Promise<SessionInfo>;
+  /**
+   * `GET /api/v1/sessions/current` — returns the active
+   * session, or `null` when the cookie is missing / expired.
+   * Wrapping 401 as `null` keeps consuming hooks /
+   * components branch-free.
+   */
+  getCurrentSession(): Promise<SessionInfo | null>;
+  /** `DELETE /api/v1/sessions/current` — terminate the active
+   * session. Idempotent: succeeds even when no session is live. */
+  closeSession(): Promise<void>;
 }
 
 export interface CreateKairoClientOptions extends Partial<TransportOptions> {
@@ -223,6 +248,34 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
         `api/v1/verify-object/${encodeURIComponent(objectId)}`,
       );
     },
+    async listKeystoreActors() {
+      const response = await getJson<KeystoreActorsResponse>(http, 'api/v1/keystore/actors');
+      return response.actors;
+    },
+    async openSession(actorId) {
+      return postJson<SessionInfo>(http, 'api/v1/sessions', { actor_id: actorId });
+    },
+    async getCurrentSession() {
+      try {
+        return await getJson<SessionInfo>(http, 'api/v1/sessions/current');
+      } catch (error) {
+        if (
+          error instanceof KairoApiClientError &&
+          error.detail.kind === 'daemon' &&
+          error.detail.code === 'no_session'
+        ) {
+          return null;
+        }
+        throw error;
+      }
+    },
+    async closeSession() {
+      try {
+        await http.delete('api/v1/sessions/current').text();
+      } catch (error) {
+        throw await mapTransportError(error);
+      }
+    },
   };
 }
 
@@ -242,6 +295,15 @@ async function getJson<T>(
     const body = await http
       .get(path, searchParams !== undefined ? { searchParams } : {})
       .json<unknown>();
+    return unwrapEnvelope<T>(body);
+  } catch (error) {
+    throw await mapTransportError(error);
+  }
+}
+
+async function postJson<T>(http: KyInstance, path: string, json: unknown): Promise<T> {
+  try {
+    const body = await http.post(path, { json }).json<unknown>();
     return unwrapEnvelope<T>(body);
   } catch (error) {
     throw await mapTransportError(error);

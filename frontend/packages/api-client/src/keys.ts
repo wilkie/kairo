@@ -46,4 +46,8 @@ export const kairoKeys = {
   verifyObject: (id: string) => [...kairoKeys.object(id), 'verify'] as const,
 
   blob: (id: string) => [...kairoKeys.all, 'blobs', id] as const,
+
+  session: () => [...kairoKeys.all, 'session'] as const,
+  sessionCurrent: () => [...kairoKeys.session(), 'current'] as const,
+  keystoreActors: () => [...kairoKeys.session(), 'keystore-actors'] as const,
 } as const;

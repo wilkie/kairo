@@ -14,7 +14,13 @@
 // preview components in slice 10 will manage blob fetches with
 // their own object-URL lifecycle.
 
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import type { KairoApiClientError } from './error';
 import type {
   ActorGenesisJson,
@@ -22,11 +28,13 @@ import type {
   BranchActorOption,
   BranchTipDto,
   CapabilityHeadDto,
+  KeystoreActorDto,
   ObjectBranchStatementJson,
   ObjectByActorDto,
   ObjectGenesisStatementJson,
   ObjectVersionTagStatementJson,
   RevisionHeadDto,
+  SessionInfo,
   StatementByActorDto,
   StatementValue,
   StatusInfo,
@@ -193,5 +201,72 @@ export function useVerifyObject(objectId: string): QueryResult<ValidationResult>
   return useQuery<ValidationResult, KairoApiClientError>({
     queryKey: kairoKeys.verifyObject(objectId),
     queryFn: () => client.verifyObject(objectId),
+  });
+}
+
+/**
+ * `GET /api/v1/keystore/actors` — actors the local daemon can
+ * sign for. Used by `<ActorPicker />`. Returns the same array
+ * the daemon serves, sorted by actor id.
+ */
+export function useKeystoreActors(): QueryResult<KeystoreActorDto[]> {
+  const client = useKairoClient();
+  return useQuery<KeystoreActorDto[], KairoApiClientError>({
+    queryKey: kairoKeys.keystoreActors(),
+    queryFn: () => client.listKeystoreActors(),
+  });
+}
+
+/**
+ * `GET /api/v1/sessions/current` — active session metadata, or
+ * `null` for the anonymous viewer. 401 from the daemon is
+ * normalised to `null` by the client, so consumers can treat
+ * "signed in or not" as a single branch on `data`.
+ *
+ * Refetches on window focus so an idle-expired session
+ * surfaces within one focus cycle (no tight polling).
+ */
+export function useSession(): QueryResult<SessionInfo | null> {
+  const client = useKairoClient();
+  return useQuery<SessionInfo | null, KairoApiClientError>({
+    queryKey: kairoKeys.sessionCurrent(),
+    queryFn: () => client.getCurrentSession(),
+    refetchOnWindowFocus: true,
+    staleTime: 5 * 60 * 1000, // 5 min; window-focus invalidates anyway
+  });
+}
+
+/**
+ * Mutation: `POST /api/v1/sessions { actor_id }`. On success,
+ * invalidates the session-current query so observers re-render
+ * with the new session in one cycle.
+ */
+export function useSignIn(): UseMutationResult<
+  SessionInfo,
+  KairoApiClientError,
+  { actorId: string }
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<SessionInfo, KairoApiClientError, { actorId: string }>({
+    mutationFn: ({ actorId }) => client.openSession(actorId),
+    onSuccess: (info) => {
+      queryClient.setQueryData<SessionInfo>(kairoKeys.sessionCurrent(), info);
+    },
+  });
+}
+
+/**
+ * Mutation: `DELETE /api/v1/sessions/current`. On success,
+ * clears the session-current cache to `null`.
+ */
+export function useSignOut(): UseMutationResult<void, KairoApiClientError, void> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<void, KairoApiClientError, void>({
+    mutationFn: () => client.closeSession(),
+    onSuccess: () => {
+      queryClient.setQueryData<SessionInfo | null>(kairoKeys.sessionCurrent(), null);
+    },
   });
 }

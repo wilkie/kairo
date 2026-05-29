@@ -137,6 +137,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/keystore/actors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["listKeystoreActors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/objects/{id}": {
         parameters: {
             query?: never;
@@ -164,6 +180,93 @@ export interface paths {
         get: operations["listRevisions"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a fresh session.
+         * @description Verifies the actor id is well-formed, the keystore holds a
+         *     usable signing key for it, the active key is not revoked, and
+         *     then creates a session bound to that actor. The response sets
+         *     `kairo_session=<id>; HttpOnly; SameSite=Strict; Path=/` and
+         *     returns the session metadata.
+         */
+        post: operations["openSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the current session's metadata.
+         * @description The `kairo_session` cookie's value is the only input. Misses
+         *     (no cookie, malformed cookie, expired session) all map to 401
+         *     `no_session`. A successful lookup also touches the session,
+         *     resetting the sliding idle deadline.
+         */
+        get: operations["getCurrentSession"];
+        put?: never;
+        post?: never;
+        /**
+         * Terminate the current session.
+         * @description Idempotent: returns 204 even when no cookie / no live session
+         *     is present, and always emits a clearing `Set-Cookie` so the
+         *     browser drops its handle even if the server already evicted
+         *     the record.
+         */
+        delete: operations["deleteCurrentSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * `POST /api/v1/statements` — Phase A's generic write endpoint.
+         * @description Accepts a `SignedStatement<*>` JSON envelope and routes on the
+         *     `type` discriminator. The current allowlist lives in
+         *     `SUPPORTED_WRITE_KINDS`; everything else returns 415
+         *     `unsupported_statement_kind`. `GET /api/v1/status` reads from
+         *     the same const so the inspector / operator can see the live
+         *     surface without parsing the dispatcher source.
+         *
+         *     The handler runs the same verification the direct-mode CLI
+         *     runs (`verify_envelope_statement` against the daemon's
+         *     resolver), then persists via the store's typed `put_*`. No
+         *     per-request auth: Phase A's trust model is the Unix socket's
+         *     filesystem permissions, identical to the v1 read endpoints.
+         *     Signed-request auth is locked for Phase B (`DECISIONS.md §13`
+         *     sub-decision 7).
+         */
+        post: operations["putStatement"];
         delete?: never;
         options?: never;
         head?: never;
@@ -384,6 +487,22 @@ export interface components {
         } | {
             actor: string;
         };
+        /**
+         * @description One entry in the response from
+         *     `GET /api/v1/keystore/actors` — the local keystore's listing
+         *     of actors with private keys available for daemon-side signing.
+         *
+         *     `display_name` is intentionally absent in v1; per
+         *     `PHASE_2_WEB_CLIENT_AUTH.md` §1.2 it lives in a future
+         *     `ActorProfile` statement and is additive when it lands.
+         */
+        KeystoreActorDto: {
+            actor_id: string;
+        };
+        /** @description Response body for `GET /api/v1/keystore/actors`. */
+        KeystoreActorsResponse: {
+            actors: components["schemas"]["KeystoreActorDto"][];
+        };
         ObjectBranchBodyJson: {
             name: string;
             object: string;
@@ -467,9 +586,33 @@ export interface components {
             /** Format: int32 */
             version: number;
         };
+        /**
+         * @description Request body for `POST /api/v1/sessions`. Names the actor the
+         *     session will be bound to; the daemon verifies the local
+         *     keystore has a usable (non-revoked-active-key) signing key for
+         *     the actor before opening the session.
+         */
+        OpenSessionRequest: {
+            actor_id: string;
+        };
         PublicKeyJson: {
             algorithm: string;
             bytes: string;
+        };
+        /**
+         * @description Response payload returned by `POST /api/v1/statements`.
+         *
+         *     Echoes the persisted statement back to the caller so write
+         *     flows don't need a follow-up read to discover the canonical
+         *     `statement_id` or to confirm the daemon stored the body
+         *     byte-for-byte. The `statement` field carries the same
+         *     polymorphic JSON shape the daemon's read endpoints return —
+         *     callers decode it against the typed `*StatementJson` of the
+         *     kind they sent.
+         */
+        PutStatementResult: {
+            statement: components["schemas"]["Value"];
+            statement_id: string;
         };
         /**
          * @description Revision head summary returned by
@@ -492,6 +635,24 @@ export interface components {
             parents: string[];
             revision_id: string;
             statement_id: string;
+        };
+        /**
+         * @description Session metadata returned by `POST /api/v1/sessions` and
+         *     `GET /api/v1/sessions/current`.
+         *
+         *     `idle_expires_at` is the sliding deadline reset by every
+         *     authenticated touch; `expires_at` is the absolute hard cap
+         *     from `created_at`. The frontend may pre-emptively re-auth as
+         *     either deadline approaches.
+         */
+        SessionInfo: {
+            actor_id: string;
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            /** @description RFC 3339 UTC seconds. Absolute hard cap. */
+            expires_at: string;
+            /** @description RFC 3339 UTC seconds. Sliding idle deadline. */
+            idle_expires_at: string;
         };
         SignatureJson: {
             actor: string;
@@ -527,14 +688,32 @@ export interface components {
          *     V1 fields only: federation, runtime, and task counts are
          *     omitted because those subsystems are post-v1 (see
          *     `specs/API.md` §11.2 v1 surface note).
+         *
+         *     `write_surface` lists the statement kinds the daemon's
+         *     `POST /api/v1/statements` dispatcher will accept. Added in
+         *     Slice 5 of `PHASE_2_DAEMON_WRITES.md` to surface Phase A's
+         *     expansion to write-mode without changing `daemon_running`
+         *     semantics. `#[serde(default)]` keeps older client builds
+         *     compatible with newer daemons (the field decodes as an empty
+         *     list); newer clients reading older daemons see the same.
+         *
+         *     `auth_mode` advertises the daemon's request-auth posture for
+         *     the write surface (`POST /api/v1/statements`). Phase A
+         *     daemons reported nothing — the field defaults to
+         *     `"filesystem-perms"` on absent for forward-compat with older
+         *     clients. Phase B daemons set it to `"signed-request"`,
+         *     matching `DECISIONS.md §14`'s `KairoActor1` envelope. The
+         *     read surface is always unauthenticated regardless.
          */
         StatusInfo: {
+            auth_mode?: string;
             daemon_running: boolean;
             daemon_version: string;
             /** Format: int32 */
             pid: number;
             store_path: string;
             store_schema_version: string;
+            write_surface?: string[];
         };
         /**
          * @description Trust head summary returned by
@@ -608,6 +787,7 @@ export interface components {
          * @enum {string}
          */
         ValidationStatus: "valid" | "invalid" | "conflicted" | "indeterminate" | "unverified";
+        Value: unknown;
         /**
          * @description Response body for `GET /api/v1/version`.
          *
@@ -913,6 +1093,33 @@ export interface operations {
             };
         };
     };
+    listKeystoreActors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Actors with a signing key in the local keystore */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeystoreActorsResponse"];
+                };
+            };
+            /** @description Keystore unreadable (perms, IO) */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getObject: {
         parameters: {
             query?: never;
@@ -973,6 +1180,163 @@ export interface operations {
             };
             /** @description Malformed object id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    openSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Session opened; cookie set */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Malformed actor id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No private key for that actor in the local keystore */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Actor's active signing key is revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getCurrentSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description No live session for this cookie */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteCurrentSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session terminated (or already gone) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putStatement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Signed statement envelope. Phase A accepts the kinds listed in `GET /api/v1/status`'s `write_surface` field (ActorTrust, ObjectRevision, ObjectBranch, ObjectVersionTag, ObjectGenesis, ActorCapabilityGrant, ActorCapabilityRevocation). The schema annotation shows one example (ActorTrust); the daemon dispatches on the `type` discriminator inside the body. Polymorphic-body schema is post-Phase A. */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActorTrustStatementJson"];
+            };
+        };
+        responses: {
+            /** @description Persisted statement; `statement` echoes the body the daemon stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PutStatementResult"];
+                };
+            };
+            /** @description Malformed body (decode failure, missing `type` discriminator, …) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authorization header missing, malformed, replayed, or signed by the wrong key */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body exceeds the daemon's write-body cap */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Statement kind not yet accepted by Phase A's dispatcher */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Statement signature did not verify, or actor/signature shape rejected */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Store I/O or fixity failure */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

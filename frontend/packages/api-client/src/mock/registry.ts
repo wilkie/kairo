@@ -775,6 +775,14 @@ export interface MockRegistry {
 
   /** `GET /api/v1/verify-object/:id`. */
   verifyObject: Record<string, Schemas['ValidationResult']>;
+
+  /**
+   * `GET /api/v1/keystore/actors` — actors the (mock) local
+   * keystore can sign for. Seeded with Alice and Bob so the
+   * `<ActorPicker />` has two entries to choose between out of
+   * the box. Tests override by mutating this field directly.
+   */
+  keystoreActors: Schemas['KeystoreActorDto'][];
 }
 
 const versionFixture: Schemas['VersionInfo'] = {
@@ -903,4 +911,9 @@ export const mockRegistry: MockRegistry = {
     [mockIds.gamma]: gammaValidation,
     [mockIds.delta]: deltaValidation,
   },
+
+  keystoreActors: [
+    { actor_id: mockIds.alice },
+    { actor_id: mockIds.bob },
+  ],
 };

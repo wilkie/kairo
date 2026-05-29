@@ -28,6 +28,10 @@ export type {
   ValidationStatus,
   ValidationIssue,
   ValidationIssueSeverity,
+  KeystoreActorDto,
+  KeystoreActorsResponse,
+  OpenSessionRequest,
+  SessionInfo,
 } from './client';
 
 export { createTransport, type TransportOptions } from './transport';
@@ -64,6 +68,10 @@ export {
   useCapabilitiesFromGrantor,
   useCapabilitiesForObject,
   useVerifyObject,
+  useKeystoreActors,
+  useSession,
+  useSignIn,
+  useSignOut,
 } from './hooks';
 
 // Generated path/component types — exposed so callers can
