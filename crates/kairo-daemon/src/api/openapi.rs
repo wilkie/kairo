@@ -103,6 +103,7 @@ entirely and streams `application/octet-stream` bytes.\
         kairo_daemon_client::dto::KeystoreActorsResponse,
         kairo_daemon_client::dto::OpenSessionRequest,
         kairo_daemon_client::dto::SessionInfo,
+        kairo_daemon_client::dto::SessionWriteRequest,
         kairo_identity::json::ActorGenesisJson,
         kairo_identity::json::PublicKeyJson,
         kairo_statement::json::SignatureJson,

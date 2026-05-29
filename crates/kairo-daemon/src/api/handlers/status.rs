@@ -32,9 +32,13 @@ pub async fn handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
         pid: state.pid,
         daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
         write_surface: SUPPORTED_WRITE_KINDS.iter().map(|k| (*k).to_owned()).collect(),
-        // Phase B (DECISIONS.md §14): the write surface requires
-        // ed25519-signed requests with capability-statement authz.
+        // Comma-separated set of auth modes accepted by the
+        // write surface:
+        // - `signed-request` — Phase B `Authorization:
+        //   KairoActor1` request signing (CLI, federation peers).
+        // - `session-cookie` — `PHASE_2_WEB_CLIENT_AUTH.md`
+        //   §2.3 cookie-mode with daemon-side body signing.
         // Reads stay unauthenticated.
-        auth_mode: "signed-request".to_owned(),
+        auth_mode: "signed-request,session-cookie".to_owned(),
     })
 }

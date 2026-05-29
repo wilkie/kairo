@@ -289,6 +289,20 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// `POST /api/v1/statements` carried *both* an
+    /// `Authorization: KairoActor1` header and a
+    /// `kairo_session` cookie. Either alone is fine; together
+    /// the intent is ambiguous (would the daemon sign the body
+    /// itself, or verify the supplied envelope?). Reject so
+    /// the caller picks one mode explicitly.
+    pub fn ambiguous_auth(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: ApiErrorCode::AmbiguousAuth,
+            message: message.into(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -345,6 +359,8 @@ pub enum ApiErrorCode {
     ActorNotInKeystore,
     KeyRevoked,
     NoSession,
+    // Session-mode write codes.
+    AmbiguousAuth,
 }
 
 impl ApiErrorCode {
@@ -369,6 +385,7 @@ impl ApiErrorCode {
             Self::ActorNotInKeystore => "actor_not_in_keystore",
             Self::KeyRevoked => "key_revoked",
             Self::NoSession => "no_session",
+            Self::AmbiguousAuth => "ambiguous_auth",
         }
     }
 }

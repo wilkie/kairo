@@ -210,7 +210,14 @@ pub async fn delete_handler(
     response
 }
 
-fn parse_session_cookie(headers: &HeaderMap) -> Option<SessionId> {
+/// Read the `kairo_session` cookie out of a request's headers.
+/// Returns `None` for any input that doesn't match the expected
+/// shape — including unparseable utf-8, missing cookie, or
+/// malformed session id. Exported so the write-statement
+/// handler can detect cookie-mode auth on
+/// `POST /api/v1/statements` (per `PHASE_2_WEB_CLIENT_AUTH.md`
+/// §2.3 "two payload shapes on one endpoint").
+pub fn parse_session_cookie(headers: &HeaderMap) -> Option<SessionId> {
     for value in &headers.get_all(header::COOKIE) {
         let value = value.to_str().ok()?;
         for pair in value.split(';') {

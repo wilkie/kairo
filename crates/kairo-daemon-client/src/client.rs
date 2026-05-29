@@ -343,6 +343,51 @@ impl Client {
         }
     }
 
+    /// `POST /api/v1/statements` (cookie-mode) — daemon-side
+    /// body signing per `PHASE_2_WEB_CLIENT_AUTH.md` §2.3.
+    ///
+    /// The caller supplies the session id (returned by
+    /// [`open_session`](Self::open_session)), the `body_kind`
+    /// discriminator (e.g. `"ActorTrust"`, `"ObjectRevision"`),
+    /// and the unsigned body fields. The daemon stamps
+    /// `created_at`, constructs the envelope, signs with the
+    /// session's keystore key, and routes through the same
+    /// capability-check + persistence path as the
+    /// Authorization-mode write surface.
+    ///
+    /// Browsers don't need this method — they use the same
+    /// endpoint via the same-origin cookie jar. It exists for
+    /// Rust callers (CLI, tests, integration shims) that want to
+    /// exercise cookie-mode without managing cookies manually.
+    pub async fn write_via_session(
+        &self,
+        session_id: &str,
+        body_kind: &str,
+        body: serde_json::Value,
+    ) -> ClientResult<PutStatementResult> {
+        let request = crate::dto::SessionWriteRequest {
+            body_kind: body_kind.to_owned(),
+            body,
+        };
+        let body_bytes = serde_json::to_vec(&request).map_err(|error| {
+            ClientError::Decode(format!("serialize SessionWriteRequest: {error}"))
+        })?;
+        let work = async move {
+            let (status, bytes, _) = self
+                .send_post_with_cookie("/api/v1/statements", body_bytes, Some(session_id))
+                .await?;
+            if (200..300).contains(&status) {
+                decode_success(&bytes)
+            } else {
+                Err(decode_error(status, &bytes))
+            }
+        };
+        match timeout(REQUEST_DEADLINE, work).await {
+            Ok(result) => result,
+            Err(_) => Err(ClientError::Timeout(REQUEST_DEADLINE)),
+        }
+    }
+
     /// `POST /api/v1/statements` — persist an `ActorTrust`
     /// statement through the daemon's write surface
     /// (`DECISIONS.md §13` / §14).

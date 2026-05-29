@@ -341,3 +341,24 @@ pub struct SessionInfo {
     /// RFC 3339 UTC seconds. Sliding idle deadline.
     pub idle_expires_at: String,
 }
+
+/// Session-mode payload for `POST /api/v1/statements` (per
+/// `PHASE_2_WEB_CLIENT_AUTH.md` §2.3 "two payload shapes on
+/// one endpoint"). Used when the request carries a
+/// `kairo_session` cookie instead of `Authorization:
+/// KairoActor1`.
+///
+/// `body_kind` matches the `type` discriminator the signed
+/// envelopes carry (e.g. `"ActorTrust"`, `"ObjectRevision"`,
+/// `"ObjectBranch"`). `body` is the kind's unsigned body fields
+/// — the daemon supplies the envelope fields (`actor`,
+/// `subject`, `created_at`), constructs the canonical bytes,
+/// signs with the session's keystore key, and dispatches
+/// through the same persistence path as the signed envelope
+/// mode.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SessionWriteRequest {
+    pub body_kind: String,
+    #[schema(value_type = Object)]
+    pub body: serde_json::Value,
+}

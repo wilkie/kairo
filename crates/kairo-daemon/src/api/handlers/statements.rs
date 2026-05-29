@@ -19,19 +19,28 @@
 
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Request, State};
-use kairo_core::{StatementId, Timestamp};
-use kairo_daemon_client::dto::PutStatementResult;
+use kairo_core::canonical::CanonicalEncode;
+use kairo_core::{ActorId, KairoRef, StatementId, Timestamp};
+use kairo_daemon_client::dto::{PutStatementResult, SessionWriteRequest};
 use kairo_identity::{verify_signature, ActorResolveError, ActorResolver};
+use kairo_keystore::Keystore;
 use kairo_statement::json::{
-    ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
-    ActorTrustStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
-    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    ActorCapabilityGrantBodyJson, ActorCapabilityGrantStatementJson,
+    ActorCapabilityRevocationBodyJson, ActorCapabilityRevocationStatementJson,
+    ActorTrustBodyJson, ActorTrustStatementJson, ObjectBranchBodyJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionBodyJson,
+    ObjectRevisionStatementJson, ObjectVersionTagBodyJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, VerificationReport,
 };
-use kairo_statement::{ObjectGenesisStatement, SignedStatement, StatementBody, StatementKind};
+use kairo_statement::{
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ObjectBranchBody,
+    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, Signature,
+    SignedStatement, StatementBody, StatementKind, UnsignedStatement,
+};
 use kairo_store::{FilesystemStore, ObjectStore, StatementStore, StoreError};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -39,9 +48,9 @@ use crate::api::capability_gate::{
     require_grant_authority, require_object_write_authority, require_revocation_authority,
 };
 use crate::api::envelope::{ApiError, ApiResult};
+use crate::api::handlers::sessions::parse_session_cookie;
 use crate::api::request_auth::{
     authorization_header_value, path_and_query_for_signing, verify_request_auth,
-    AuthenticatedRequest,
 };
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
@@ -155,15 +164,42 @@ pub async fn put_handler(
     request: Request,
 ) -> Result<ApiResult<PutStatementResult>, ApiError> {
     let (parts, body) = request.into_parts();
-
     let body_bytes = read_body_capped(body).await?;
 
-    // Phase B (DECISIONS.md §14, PHASE_2_DAEMON_AUTH.md Slice 2):
-    // every write request carries a signed envelope. The
-    // resolved actor flows downstream to drive Slice 3's
-    // capability check on object writes (and Slice 4's recursive
-    // grant/revocation checks).
-    let authenticated: AuthenticatedRequest = verify_request_auth(
+    let has_authz = authorization_header_value(&parts.headers).is_some();
+    let cookie = parse_session_cookie(&parts.headers);
+
+    // PHASE_2_WEB_CLIENT_AUTH.md §2.3 "two payload shapes on one
+    // endpoint": Authorization-mode is the existing Phase B path,
+    // Cookie-mode is the daemon-signs path. Both together is
+    // ambiguous; neither is unauthenticated.
+    match (has_authz, cookie) {
+        (true, Some(_)) => Err(ApiError::ambiguous_auth(
+            "POST /api/v1/statements accepted both Authorization header and \
+             kairo_session cookie; pick one auth mode",
+        )),
+        (true, None) => dispatch_signed_envelope(state, &parts, body_bytes).await,
+        (false, Some(session_id)) => {
+            dispatch_session_unsigned(state, session_id, &body_bytes).await
+        }
+        (false, None) => Err(ApiError::missing_authorization(
+            "POST /api/v1/statements requires either an Authorization: KairoActor1 \
+             header or a kairo_session cookie",
+        )),
+    }
+}
+
+/// Signed-envelope mode: caller signed the body client-side and
+/// supplied an `Authorization: KairoActor1` request signature.
+/// Verifies the request signature, decodes the typed signed
+/// envelope, runs the capability check (for kinds that need it),
+/// and persists.
+async fn dispatch_signed_envelope(
+    state: AppState,
+    parts: &axum::http::request::Parts,
+    body_bytes: Bytes,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    let authenticated = verify_request_auth(
         &state,
         authorization_header_value(&parts.headers),
         parts.method.as_str(),
@@ -186,96 +222,33 @@ pub async fn put_handler(
         })?
         .to_owned();
 
+    let actor = authenticated.actor.clone();
+    let request_ts = Timestamp::from_seconds(authenticated.timestamp);
+
     match kind.as_str() {
         "ActorTrust" => {
             let signed = decode_signed_body(body, &kind, ActorTrustStatementJson::to_statement)?;
-            persist_signed(
-                state,
-                signed,
-                FilesystemStore::put_actor_trust,
-                "put_actor_trust",
-                ActorTrustStatementJson::from_statement,
-            )
-            .await
+            persist_actor_trust(state, signed).await
         }
         "ObjectRevision" => {
             let signed =
                 decode_signed_body(body, &kind, ObjectRevisionStatementJson::to_statement)?;
-            require_object_write_authority(
-                &state,
-                &authenticated.actor,
-                signed.unsigned().body().object(),
-                StatementKind::ObjectRevision,
-                Timestamp::from_seconds(authenticated.timestamp),
-            )
-            .await?;
-            persist_signed(
-                state,
-                signed,
-                FilesystemStore::put_object_revision,
-                "put_object_revision",
-                ObjectRevisionStatementJson::from_statement,
-            )
-            .await
+            persist_object_revision(state, &actor, signed, request_ts).await
         }
         "ObjectBranch" => {
             let signed = decode_signed_body(body, &kind, ObjectBranchStatementJson::to_statement)?;
-            require_object_write_authority(
-                &state,
-                &authenticated.actor,
-                signed.unsigned().body().object(),
-                StatementKind::ObjectBranch,
-                Timestamp::from_seconds(authenticated.timestamp),
-            )
-            .await?;
-            persist_signed(
-                state,
-                signed,
-                FilesystemStore::put_object_branch,
-                "put_object_branch",
-                ObjectBranchStatementJson::from_statement,
-            )
-            .await
+            persist_object_branch(state, &actor, signed, request_ts).await
         }
         "ObjectVersionTag" => {
             let signed =
                 decode_signed_body(body, &kind, ObjectVersionTagStatementJson::to_statement)?;
-            require_object_write_authority(
-                &state,
-                &authenticated.actor,
-                signed.unsigned().body().object(),
-                StatementKind::ObjectVersionTag,
-                Timestamp::from_seconds(authenticated.timestamp),
-            )
-            .await?;
-            persist_signed(
-                state,
-                signed,
-                FilesystemStore::put_object_version_tag,
-                "put_object_version_tag",
-                ObjectVersionTagStatementJson::from_statement,
-            )
-            .await
+            persist_object_version_tag(state, &actor, signed, request_ts).await
         }
         "ObjectGenesis" => put_object_genesis(state, body).await,
         "ActorCapabilityGrant" => {
             let signed =
                 decode_signed_body(body, &kind, ActorCapabilityGrantStatementJson::to_statement)?;
-            require_grant_authority(
-                &state,
-                &authenticated.actor,
-                signed.unsigned().body(),
-                Timestamp::from_seconds(authenticated.timestamp),
-            )
-            .await?;
-            persist_signed(
-                state,
-                signed,
-                FilesystemStore::put_actor_capability_grant,
-                "put_actor_capability_grant",
-                ActorCapabilityGrantStatementJson::from_statement,
-            )
-            .await
+            persist_actor_capability_grant(state, &actor, signed, request_ts).await
         }
         "ActorCapabilityRevocation" => {
             let signed = decode_signed_body(
@@ -283,26 +256,331 @@ pub async fn put_handler(
                 &kind,
                 ActorCapabilityRevocationStatementJson::to_statement,
             )?;
-            require_revocation_authority(
-                &state,
-                &authenticated.actor,
-                signed.unsigned().body().revoked_grant(),
-            )
-            .await?;
-            persist_signed(
-                state,
-                signed,
-                FilesystemStore::put_actor_capability_revocation,
-                "put_actor_capability_revocation",
-                ActorCapabilityRevocationStatementJson::from_statement,
-            )
-            .await
+            persist_actor_capability_revocation(state, &actor, signed).await
         }
         other => Err(ApiError::unsupported_statement_kind(format!(
             "statement kind {other:?} is not accepted by Phase A's current dispatcher; \
              see PHASE_2_DAEMON_WRITES.md for the slice that opens up the remaining kinds",
         ))),
     }
+}
+
+/// Session-cookie mode: caller supplied an unsigned body and a
+/// `kairo_session` cookie. The daemon resolves the session's
+/// actor, fetches the signing key from the keystore, stamps
+/// `created_at = now()` and a per-kind subject, signs the
+/// envelope, and dispatches through the same per-kind path the
+/// signed-envelope mode uses.
+///
+/// `ObjectGenesis` is intentionally out of scope here: its
+/// envelope shape is asymmetric (signature covers
+/// `body.canonical_bytes()`, no envelope wrapping) so it needs
+/// its own session-mode helper. Land it in a follow-up slice.
+async fn dispatch_session_unsigned(
+    state: AppState,
+    session_id: crate::sessions::SessionId,
+    body_bytes: &[u8],
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    let session = state
+        .sessions
+        .touch(&session_id)
+        .ok_or_else(|| ApiError::no_session("no live session for that cookie"))?;
+    let actor = session.actor_id.clone();
+
+    let request: SessionWriteRequest = serde_json::from_slice(body_bytes).map_err(|error| {
+        ApiError::bad_request(format!(
+            "session-mode write expects {{ body_kind, body }} JSON: {error}"
+        ))
+    })?;
+
+    let now = Timestamp::now();
+
+    match request.body_kind.as_str() {
+        "ActorTrust" => {
+            let body = decode_unsigned_body::<ActorTrustBodyJson, _, _>(
+                &request.body_kind,
+                request.body,
+                |dto| dto.to_body(),
+            )?;
+            let subject = build_subject_for_actor(body.trusted_actor(), &request.body_kind)?;
+            let signed = sign_envelope(&state, &actor, subject, now, body).await?;
+            persist_actor_trust(state, signed).await
+        }
+        "ObjectRevision" => {
+            let body = decode_unsigned_body::<ObjectRevisionBodyJson, _, _>(
+                &request.body_kind,
+                request.body,
+                |dto| dto.to_body(),
+            )?;
+            let subject = build_subject_for_object(body.object(), &request.body_kind)?;
+            let signed = sign_envelope(&state, &actor, subject, now, body).await?;
+            persist_object_revision(state, &actor, signed, now).await
+        }
+        "ObjectBranch" => {
+            let body = decode_unsigned_body::<ObjectBranchBodyJson, _, _>(
+                &request.body_kind,
+                request.body,
+                |dto| dto.to_body(),
+            )?;
+            let subject = build_subject_for_object(body.object(), &request.body_kind)?;
+            let signed = sign_envelope(&state, &actor, subject, now, body).await?;
+            persist_object_branch(state, &actor, signed, now).await
+        }
+        "ObjectVersionTag" => {
+            let body = decode_unsigned_body::<ObjectVersionTagBodyJson, _, _>(
+                &request.body_kind,
+                request.body,
+                |dto| dto.to_body(),
+            )?;
+            let subject = build_subject_for_object(body.object(), &request.body_kind)?;
+            let signed = sign_envelope(&state, &actor, subject, now, body).await?;
+            persist_object_version_tag(state, &actor, signed, now).await
+        }
+        "ActorCapabilityGrant" => {
+            let body = decode_unsigned_body::<ActorCapabilityGrantBodyJson, _, _>(
+                &request.body_kind,
+                request.body,
+                |dto| dto.to_body(),
+            )?;
+            let subject = build_subject_for_actor(body.grantee(), &request.body_kind)?;
+            let signed = sign_envelope(&state, &actor, subject, now, body).await?;
+            persist_actor_capability_grant(state, &actor, signed, now).await
+        }
+        "ActorCapabilityRevocation" => {
+            let body = decode_unsigned_body::<ActorCapabilityRevocationBodyJson, _, _>(
+                &request.body_kind,
+                request.body,
+                |dto| dto.to_body(),
+            )?;
+            let subject = build_subject_for_statement(body.revoked_grant(), &request.body_kind)?;
+            let signed = sign_envelope(&state, &actor, subject, now, body).await?;
+            persist_actor_capability_revocation(state, &actor, signed).await
+        }
+        "ObjectGenesis" => Err(ApiError::unsupported_statement_kind(
+            "session-mode does not yet accept ObjectGenesis; \
+             see PHASE_2_WEB_CLIENT_AUTH.md §8 for the follow-up",
+        )),
+        other => Err(ApiError::unsupported_statement_kind(format!(
+            "statement kind {other:?} is not accepted by Phase A's current dispatcher",
+        ))),
+    }
+}
+
+// ----- Per-kind persist helpers (shared by signed + session modes) -----
+
+async fn persist_actor_trust(
+    state: AppState,
+    signed: SignedStatement<ActorTrustBody>,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_actor_trust,
+        "put_actor_trust",
+        ActorTrustStatementJson::from_statement,
+    )
+    .await
+}
+
+async fn persist_object_revision(
+    state: AppState,
+    actor: &ActorId,
+    signed: SignedStatement<ObjectRevisionBody>,
+    timestamp: Timestamp,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    require_object_write_authority(
+        &state,
+        actor,
+        signed.unsigned().body().object(),
+        StatementKind::ObjectRevision,
+        timestamp,
+    )
+    .await?;
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_object_revision,
+        "put_object_revision",
+        ObjectRevisionStatementJson::from_statement,
+    )
+    .await
+}
+
+async fn persist_object_branch(
+    state: AppState,
+    actor: &ActorId,
+    signed: SignedStatement<ObjectBranchBody>,
+    timestamp: Timestamp,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    require_object_write_authority(
+        &state,
+        actor,
+        signed.unsigned().body().object(),
+        StatementKind::ObjectBranch,
+        timestamp,
+    )
+    .await?;
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_object_branch,
+        "put_object_branch",
+        ObjectBranchStatementJson::from_statement,
+    )
+    .await
+}
+
+async fn persist_object_version_tag(
+    state: AppState,
+    actor: &ActorId,
+    signed: SignedStatement<ObjectVersionTagBody>,
+    timestamp: Timestamp,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    require_object_write_authority(
+        &state,
+        actor,
+        signed.unsigned().body().object(),
+        StatementKind::ObjectVersionTag,
+        timestamp,
+    )
+    .await?;
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_object_version_tag,
+        "put_object_version_tag",
+        ObjectVersionTagStatementJson::from_statement,
+    )
+    .await
+}
+
+async fn persist_actor_capability_grant(
+    state: AppState,
+    actor: &ActorId,
+    signed: SignedStatement<ActorCapabilityGrantBody>,
+    timestamp: Timestamp,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    require_grant_authority(&state, actor, signed.unsigned().body(), timestamp).await?;
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_actor_capability_grant,
+        "put_actor_capability_grant",
+        ActorCapabilityGrantStatementJson::from_statement,
+    )
+    .await
+}
+
+async fn persist_actor_capability_revocation(
+    state: AppState,
+    actor: &ActorId,
+    signed: SignedStatement<ActorCapabilityRevocationBody>,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    require_revocation_authority(&state, actor, signed.unsigned().body().revoked_grant()).await?;
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_actor_capability_revocation,
+        "put_actor_capability_revocation",
+        ActorCapabilityRevocationStatementJson::from_statement,
+    )
+    .await
+}
+
+// ----- Session-mode signing helpers -----
+
+/// Deserialize the unsigned body fields from
+/// `SessionWriteRequest.body` into a typed body. Both the
+/// shape-decode failure (400 on bad JSON keys/types) and the
+/// domain validation failure inside `to_body` (400 on invalid
+/// body content) collapse to `bad_request`.
+fn decode_unsigned_body<TDto, B, Err>(
+    body_kind: &str,
+    body: Value,
+    to_body: impl FnOnce(&TDto) -> Result<B, Err>,
+) -> Result<B, ApiError>
+where
+    TDto: DeserializeOwned,
+    Err: std::fmt::Display,
+{
+    let dto: TDto = serde_json::from_value(body).map_err(|error| {
+        ApiError::bad_request(format!("invalid {body_kind} body shape: {error}"))
+    })?;
+    to_body(&dto)
+        .map_err(|error| ApiError::bad_request(format!("invalid {body_kind} body: {error}")))
+}
+
+fn build_subject_for_actor(target_actor: &ActorId, body_kind: &str) -> Result<KairoRef, ApiError> {
+    format!("actor:{target_actor}").parse::<KairoRef>().map_err(|error| {
+        ApiError::internal(format!(
+            "could not construct subject reference for {body_kind}: {error}"
+        ))
+    })
+}
+
+fn build_subject_for_object(
+    object_id: &kairo_core::ObjectId,
+    body_kind: &str,
+) -> Result<KairoRef, ApiError> {
+    format!("object:{object_id}").parse::<KairoRef>().map_err(|error| {
+        ApiError::internal(format!(
+            "could not construct subject reference for {body_kind}: {error}"
+        ))
+    })
+}
+
+fn build_subject_for_statement(
+    statement_id: &StatementId,
+    body_kind: &str,
+) -> Result<KairoRef, ApiError> {
+    format!("statement:{statement_id}").parse::<KairoRef>().map_err(|error| {
+        ApiError::internal(format!(
+            "could not construct subject reference for {body_kind}: {error}"
+        ))
+    })
+}
+
+/// Daemon-side signing: fetch the session actor's secret key,
+/// construct an `UnsignedStatement<B>`, sign its canonical bytes,
+/// and wrap into a `SignedStatement<B>`.
+///
+/// The downstream verify path (in `persist_signed` →
+/// `verify_signed_against_store`) revalidates the signature
+/// against the actor's resolver-reported active key. This is
+/// deliberate: if the keystore drifted from the actor's active
+/// rotation chain, the verify catches the mismatch rather than
+/// silently persisting an unverifiable envelope.
+async fn sign_envelope<B>(
+    state: &AppState,
+    actor: &ActorId,
+    subject: KairoRef,
+    created_at: Timestamp,
+    body: B,
+) -> Result<SignedStatement<B>, ApiError>
+where
+    B: StatementBody + Send + 'static,
+{
+    let keystore = state.keystore.clone();
+    let actor_for_keystore = actor.clone();
+    let secret = tokio::task::spawn_blocking(move || keystore.get_signing_key(&actor_for_keystore))
+        .await
+        .map_err(|error| ApiError::internal(format!("keystore fetch task: {error}")))?
+        .map_err(|error| {
+            ApiError::internal(format!("could not load signing key for {actor}: {error}"))
+        })?;
+
+    let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+    let canonical = unsigned.canonical_bytes();
+    let signature_bytes = secret.sign(&canonical);
+    let key_id = secret.public_key().key_id().to_string();
+    let signature = Signature::new(
+        actor.clone(),
+        key_id,
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+
+    Ok(SignedStatement::new(unsigned, signature))
 }
 
 /// Read the entire request body into memory, capped at

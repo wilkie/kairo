@@ -1529,6 +1529,22 @@
           }
         }
       },
+      "SessionWriteRequest": {
+        "type": "object",
+        "description": "Session-mode payload for `POST /api/v1/statements` (per\n`PHASE_2_WEB_CLIENT_AUTH.md` §2.3 \"two payload shapes on\none endpoint\"). Used when the request carries a\n`kairo_session` cookie instead of `Authorization:\nKairoActor1`.\n\n`body_kind` matches the `type` discriminator the signed\nenvelopes carry (e.g. `\"ActorTrust\"`, `\"ObjectRevision\"`,\n`\"ObjectBranch\"`). `body` is the kind's unsigned body fields\n— the daemon supplies the envelope fields (`actor`,\n`subject`, `created_at`), constructs the canonical bytes,\nsigns with the session's keystore key, and dispatches\nthrough the same persistence path as the signed envelope\nmode.",
+        "required": [
+          "body_kind",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "object"
+          },
+          "body_kind": {
+            "type": "string"
+          }
+        }
+      },
       "SignatureJson": {
         "type": "object",
         "required": [
