@@ -22,6 +22,8 @@ export type KeystoreActorDto = components['schemas']['KeystoreActorDto'];
 export type KeystoreActorsResponse = components['schemas']['KeystoreActorsResponse'];
 export type OpenSessionRequest = components['schemas']['OpenSessionRequest'];
 export type SessionInfo = components['schemas']['SessionInfo'];
+export type SessionWriteRequest = components['schemas']['SessionWriteRequest'];
+export type PutStatementResult = components['schemas']['PutStatementResult'];
 export type ObjectGenesisStatementJson = components['schemas']['ObjectGenesisStatementJson'];
 export type ObjectBranchStatementJson = components['schemas']['ObjectBranchStatementJson'];
 export type ObjectVersionTagStatementJson = components['schemas']['ObjectVersionTagStatementJson'];
@@ -125,6 +127,21 @@ export interface KairoApiClient {
   /** `DELETE /api/v1/sessions/current` — terminate the active
    * session. Idempotent: succeeds even when no session is live. */
   closeSession(): Promise<void>;
+
+  /**
+   * `POST /api/v1/statements` (cookie-mode) — daemon-side body
+   * signing per `PHASE_2_WEB_CLIENT_AUTH.md` §2.3.
+   *
+   * The browser supplies the unsigned body fields; the daemon
+   * fetches the session's signing key, stamps `created_at`,
+   * builds and signs the envelope, then dispatches through the
+   * same per-kind capability check + persistence path used by
+   * the `Authorization: KairoActor1` mode.
+   *
+   * Returns the persisted statement_id plus the echoed
+   * statement body the daemon stored.
+   */
+  writeViaSession(bodyKind: string, body: unknown): Promise<PutStatementResult>;
 }
 
 export interface CreateKairoClientOptions extends Partial<TransportOptions> {
@@ -275,6 +292,18 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
       } catch (error) {
         throw await mapTransportError(error);
       }
+    },
+    async writeViaSession(bodyKind, body) {
+      // The OpenAPI-generated `SessionWriteRequest.body` types
+      // as `Record<string, never>` because the daemon's schema
+      // marks the field with `value_type = Object` (polymorphic
+      // body). We bypass the generated shape here and post the
+      // payload directly — the daemon's per-kind decoder is the
+      // source of truth.
+      return postJson<PutStatementResult>(http, 'api/v1/statements', {
+        body_kind: bodyKind,
+        body,
+      });
     },
   };
 }

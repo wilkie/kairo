@@ -32,6 +32,8 @@ export type {
   KeystoreActorsResponse,
   OpenSessionRequest,
   SessionInfo,
+  SessionWriteRequest,
+  PutStatementResult,
 } from './client';
 
 export { createTransport, type TransportOptions } from './transport';
@@ -72,6 +74,8 @@ export {
   useSession,
   useSignIn,
   useSignOut,
+  useCreateTrustOpinion,
+  type CreateTrustOpinionVars,
 } from './hooks';
 
 // Generated path/component types — exposed so callers can

@@ -32,3 +32,9 @@ export {
   type ActorPickerSession,
   type ActorPickerError,
 } from './ActorPicker';
+export {
+  TrustOpinionDialog,
+  type TrustOpinionDialogProps,
+  type TrustOpinionDialogError,
+  type TrustDecision,
+} from './TrustOpinionDialog';

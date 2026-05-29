@@ -20,25 +20,31 @@
 import {
   useActor,
   useObjectsByActor,
+  useSession,
   useStatementsByActor,
+  useTrustAbout,
   type ActorGenesisJson,
   type ObjectByActorDto,
   type StatementByActorDto,
+  type TrustHeadDto,
 } from '@kairo/api-client';
 import { idPrefix, statementKindLabel } from '@kairo/object-model';
 import {
+  Button,
   EmptyState,
   LocalityBadge,
   Panel,
+  StatusBadge,
   Table,
   type TableColumn,
 } from '@kairo/ui';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
+import { TrustOpinionDialogContainer } from '../components/TrustOpinionDialogContainer';
 
 export interface ActorDetailProps {
   id: string;
@@ -51,6 +57,11 @@ export function ActorDetail({ id }: ActorDetailProps) {
   const actorQ = useActor(id);
   const objectsQ = useObjectsByActor(id);
   const statementsQ = useStatementsByActor(id);
+  const trustQ = useTrustAbout(id);
+  const sessionQ = useSession();
+  const [trustDialogOpen, setTrustDialogOpen] = useState(false);
+
+  const session = sessionQ.data ?? null;
 
   return (
     <>
@@ -73,6 +84,30 @@ export function ActorDetail({ id }: ActorDetailProps) {
       </Panel>
 
       <Panel
+        title="Trust opinions"
+        description={`What other actors say about ${id.slice(0, 8)}…${id.slice(-4)}. Latest opinion per actor wins.`}
+        actions={
+          <Stack direction="row" spacing={1} alignItems="center">
+            {session !== null && (
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => setTrustDialogOpen(true)}
+                data-testid="express-trust-opinion"
+              >
+                Express trust opinion
+              </Button>
+            )}
+            <LocalityBadge state="local" />
+          </Stack>
+        }
+      >
+        <QueryStatusBoundary query={trustQ}>
+          {(rows) => <TrustTable rows={rows} subjectActor={id} />}
+        </QueryStatusBoundary>
+      </Panel>
+
+      <Panel
         title="Created objects"
         description="Every object whose ObjectGenesis names this actor as `created_by`. Sorted oldest first."
         actions={<LocalityBadge state="local" />}
@@ -91,8 +126,59 @@ export function ActorDetail({ id }: ActorDetailProps) {
           {(rows) => <StatementsTable rows={rows} />}
         </QueryStatusBoundary>
       </Panel>
+
+      <TrustOpinionDialogContainer
+        open={trustDialogOpen}
+        onClose={() => setTrustDialogOpen(false)}
+        trustedActor={id}
+      />
     </>
   );
+}
+
+function TrustTable({
+  rows,
+  subjectActor,
+}: {
+  rows: ReadonlyArray<TrustHeadDto>;
+  subjectActor: string;
+}) {
+  if (rows.length === 0) {
+    return (
+      <EmptyState
+        title="No opinions recorded"
+        description={`No actor has expressed trust about ${subjectActor.slice(0, 8)}…${subjectActor.slice(-4)}.`}
+      />
+    );
+  }
+  const columns: ReadonlyArray<TableColumn<TrustHeadDto>> = [
+    { key: 'by', header: 'By actor', cell: (r) => <IdLink kind="actor" id={r.by_actor} /> },
+    {
+      key: 'decision',
+      header: 'Decision',
+      cell: (r) => <DecisionBadge decision={r.decision} />,
+    },
+    {
+      key: 'statement',
+      header: 'Statement',
+      cell: (r) => <IdLink kind="statement" id={r.statement_id} />,
+    },
+    { key: 'created_at', header: 'Created', cell: (r) => r.created_at },
+  ];
+  return <Table columns={columns} rows={rows} rowKey={(r) => r.by_actor} />;
+}
+
+function DecisionBadge({ decision }: { decision: TrustHeadDto['decision'] }) {
+  if (decision === null || decision === undefined) {
+    return <StatusBadge tone="neutral">Withdrawn</StatusBadge>;
+  }
+  if (decision === 'trusted') {
+    return <StatusBadge tone="success">Trusted</StatusBadge>;
+  }
+  if (decision === 'untrusted') {
+    return <StatusBadge tone="error">Untrusted</StatusBadge>;
+  }
+  return <StatusBadge tone="neutral">{decision}</StatusBadge>;
 }
 
 function CreatedObjectsTable({ rows }: { rows: ReadonlyArray<ObjectByActorDto> }) {

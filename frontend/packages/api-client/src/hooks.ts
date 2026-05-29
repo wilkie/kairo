@@ -33,6 +33,7 @@ import type {
   ObjectByActorDto,
   ObjectGenesisStatementJson,
   ObjectVersionTagStatementJson,
+  PutStatementResult,
   RevisionHeadDto,
   SessionInfo,
   StatementByActorDto,
@@ -267,6 +268,62 @@ export function useSignOut(): UseMutationResult<void, KairoApiClientError, void>
     mutationFn: () => client.closeSession(),
     onSuccess: () => {
       queryClient.setQueryData<SessionInfo | null>(kairoKeys.sessionCurrent(), null);
+    },
+  });
+}
+
+/**
+ * Variables accepted by [`useCreateTrustOpinion`]. `byActor`
+ * is the signed-in actor (passed in by callers so the hook
+ * doesn't need to read the session itself, keeping it
+ * dependency-free of session state).
+ */
+export interface CreateTrustOpinionVars {
+  byActor: string;
+  trustedActor: string;
+  decision: 'trusted' | 'untrusted';
+  reason?: string;
+}
+
+/**
+ * Mutation: cookie-mode write of an `ActorTrust` statement
+ * (the simplest body kind — no capability check). Wraps
+ * `client.writeViaSession("ActorTrust", body)`; on success,
+ * invalidates the trust queries that surface the new opinion
+ * so consumers re-fetch and re-render.
+ */
+export function useCreateTrustOpinion(): UseMutationResult<
+  PutStatementResult,
+  KairoApiClientError,
+  CreateTrustOpinionVars
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<PutStatementResult, KairoApiClientError, CreateTrustOpinionVars>({
+    mutationFn: ({ trustedActor, decision, reason }) => {
+      const body: Record<string, unknown> = {
+        trusted_actor: trustedActor,
+        decision,
+      };
+      if (reason !== undefined && reason.length > 0) {
+        body.reason = reason;
+      }
+      return client.writeViaSession('ActorTrust', body);
+    },
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.trustAbout(vars.trustedActor),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.trust(vars.byActor, vars.trustedActor),
+      });
+      // The new trust statement is also surfaced via the
+      // by-actor signed-statements list — invalidate so the
+      // actor-detail page's signed-statements panel reflects
+      // the addition on next render.
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.actorStatements(vars.byActor),
+      });
     },
   });
 }

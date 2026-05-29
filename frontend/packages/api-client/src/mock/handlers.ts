@@ -77,12 +77,28 @@ interface MockSession {
 const sessions = new Map<string, MockSession>();
 
 /**
+ * The current "active session" the SPA is signed-in to.
+ * MSW + browser mode does not fully round-trip `Set-Cookie`
+ * → fetch headers when the cookie is `HttpOnly`, so the
+ * handlers can't reliably authenticate session-mode requests
+ * by reading `Cookie`. Instead the open/close handlers
+ * update this module-level slot, and downstream handlers
+ * (notably `POST /api/v1/statements`) fall back to it when
+ * the cookie header is missing.
+ *
+ * The real daemon's auth path uses real cookies; this slot
+ * is a mock-only convenience.
+ */
+let activeMockSessionId: string | null = null;
+
+/**
  * Wipe every active mock session. Vitest test setup hooks
  * should call this so a leftover cookie from a prior test
  * can't bleed across runs.
  */
 export function resetMockSessions(): void {
   sessions.clear();
+  activeMockSessionId = null;
 }
 
 function generateSessionId(): string {
@@ -356,6 +372,7 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
         expiresAt: new Date(now.getTime() + ABSOLUTE_TIMEOUT_SECS * 1000),
       };
       sessions.set(id, session);
+      activeMockSessionId = id;
 
       return new HttpResponse(JSON.stringify(successEnvelope(sessionInfoFor(session))), {
         status: 201,
@@ -367,7 +384,8 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
     }),
 
     http.get('*/api/v1/sessions/current', ({ request }) => {
-      const id = parseSessionCookie(request.headers.get('cookie'));
+      const id =
+        parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
       if (id === null) return noSession();
       const session = sessions.get(id);
       if (session === undefined) return noSession();
@@ -375,14 +393,153 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
     }),
 
     http.delete('*/api/v1/sessions/current', ({ request }) => {
-      const id = parseSessionCookie(request.headers.get('cookie'));
+      const id =
+        parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
       if (id !== null) sessions.delete(id);
+      activeMockSessionId = null;
       return new HttpResponse(null, {
         status: 204,
         headers: { 'Set-Cookie': clearCookieValue() },
       });
     }),
+
+    // `POST /api/v1/statements` — bifurcates on Authorization
+    // header presence vs `kairo_session` cookie. The mock only
+    // implements the cookie-mode (daemon-side body signing)
+    // path; signed-envelope mode is exercised by the Rust
+    // integration tests against the real daemon.
+    http.post('*/api/v1/statements', async ({ request }) =>
+      handleSessionWrite(request, registry),
+    ),
   ];
+}
+
+async function handleSessionWrite(
+  request: Request,
+  registry: MockRegistry,
+) {
+  const sessionId =
+    parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
+  if (sessionId === null) {
+    return HttpResponse.json(
+      errorEnvelope(
+        'missing_authorization',
+        'POST /api/v1/statements requires a kairo_session cookie',
+      ),
+      { status: 401 },
+    );
+  }
+  const session = sessions.get(sessionId);
+  if (session === undefined) {
+    return HttpResponse.json(
+      errorEnvelope('no_session', 'no live session for that cookie'),
+      { status: 401 },
+    );
+  }
+
+  let payload: components['schemas']['SessionWriteRequest'];
+  try {
+    payload = (await request.json()) as components['schemas']['SessionWriteRequest'];
+  } catch {
+    return badRequest('request body is not valid JSON');
+  }
+  if (typeof payload?.body_kind !== 'string') {
+    return badRequest('missing required string field `body_kind`');
+  }
+
+  switch (payload.body_kind) {
+    case 'ActorTrust':
+      return handleSessionActorTrust(session.actorId, payload.body, registry);
+    default:
+      return HttpResponse.json(
+        errorEnvelope(
+          'unsupported_statement_kind',
+          `mock surface does not yet accept body_kind ${payload.body_kind}`,
+        ),
+        { status: 415 },
+      );
+  }
+}
+
+function handleSessionActorTrust(
+  byActor: string,
+  body: unknown,
+  registry: MockRegistry,
+) {
+  if (typeof body !== 'object' || body === null) {
+    return badRequest('invalid ActorTrust body shape');
+  }
+  const fields = body as {
+    trusted_actor?: unknown;
+    decision?: unknown;
+    reason?: unknown;
+  };
+  if (typeof fields.trusted_actor !== 'string') {
+    return badRequest('invalid ActorTrust body: trusted_actor must be a string');
+  }
+  if (
+    fields.decision !== 'trusted' &&
+    fields.decision !== 'untrusted' &&
+    fields.decision !== null &&
+    fields.decision !== undefined
+  ) {
+    return badRequest('invalid ActorTrust body: decision must be trusted | untrusted | null');
+  }
+
+  const trustedActor = fields.trusted_actor;
+  const decision = fields.decision === undefined ? null : (fields.decision as
+    | 'trusted'
+    | 'untrusted'
+    | null);
+  const createdAt = rfc3339(new Date());
+  const statementId = `zMockSessionTrustStmt${Date.now().toString(36)}`;
+  const reason = typeof fields.reason === 'string' ? fields.reason : undefined;
+
+  const trustHead: components['schemas']['TrustHeadDto'] = {
+    by_actor: byActor,
+    trusted_actor: trustedActor,
+    statement_id: statementId,
+    created_at: createdAt,
+    decision,
+  };
+
+  // Append into the registry so the trust-about query
+  // re-fetches and renders the new opinion. Replace any prior
+  // opinion from the same `by_actor` — matches the daemon's
+  // latest-wins semantics.
+  const prior = registry.trustAbout[trustedActor] ?? [];
+  registry.trustAbout[trustedActor] = [
+    ...prior.filter((entry) => entry.by_actor !== byActor),
+    trustHead,
+  ];
+
+  // Also seed the statement under `getStatement` so navigating
+  // to the new statement id resolves a body.
+  const statementBody: Record<string, unknown> = {
+    trusted_actor: trustedActor,
+    decision,
+  };
+  if (reason !== undefined) statementBody.reason = reason;
+  registry.statements[statementId] = {
+    type: 'ActorTrust',
+    version: 1,
+    actor: byActor,
+    subject: `actor:${trustedActor}`,
+    created_at: createdAt,
+    body: statementBody,
+    signature: {
+      actor: byActor,
+      key_id: 'mock-key-1',
+      algorithm: 'ed25519',
+      bytes: 'A'.repeat(88),
+    },
+  };
+
+  const result: components['schemas']['PutStatementResult'] = {
+    statement_id: statementId,
+    statement: registry.statements[statementId],
+  };
+  return HttpResponse.json(successEnvelope(result));
 }
 
 /** Default handler set — what `setupBrowserMock` /
