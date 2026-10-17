@@ -274,7 +274,7 @@ plan in `PHASE_2_FEDERATION.md`.
       ids, but not `ActorTrust` (§16 sub-decision 4). Actor key
       events are fetched per actor, separately from the object.
       Snapshot-closure and trust transport come later.
-- [ ] Implement pull (`kairo fetch <object-ref> --from <url>`, `CLI.md` §15)
+- [ ] Implement pull (`kairo fetch --object <id> --from <url>`, `CLI.md` §15)
       — `PHASE_2_FEDERATION.md` slices 1–6.
 - [ ] Implement push (command named with its decision; `CLI.md`
       §16 `kairo sync` is the candidate) — after pull,

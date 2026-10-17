@@ -61,6 +61,15 @@ pub(crate) enum CliError {
     ListPublishedObjects {
         source: kairo_store::StoreError,
     },
+    ParseRecordRef {
+        record: String,
+        source: kairo_core::IdError,
+    },
+    ReadProvenance {
+        record: String,
+        source: kairo_store::StoreError,
+    },
+    Fetch(Box<kairo_federation_http::client::PullError>),
     OpenKeystore {
         path: PathBuf,
         source: kairo_keystore::KeystoreError,
@@ -487,6 +496,15 @@ impl fmt::Display for CliError {
             Self::ListPublishedObjects { source } => {
                 write!(f, "failed to read the publish list: {source}")
             }
+            Self::ParseRecordRef { record, source } => write!(
+                f,
+                "invalid record reference {record:?} (expected statement:<id>, object:<id>, \
+                 actor:<id>, or blob:<id>): {source}"
+            ),
+            Self::ReadProvenance { record, source } => {
+                write!(f, "failed to read provenance for {record}: {source}")
+            }
+            Self::Fetch(error) => write!(f, "fetch failed: {error}"),
             Self::OpenKeystore { path, source } => {
                 write!(f, "failed to open keystore at {}: {source}", path.display())
             }
@@ -879,6 +897,7 @@ impl Error for CliError {
             | Self::PublishObject { source, .. }
             | Self::UnpublishObject { source, .. }
             | Self::ListPublishedObjects { source, .. }
+            | Self::ReadProvenance { source, .. }
             | Self::WriteActor { source, .. }
             | Self::ReadActor { source, .. }
             | Self::WriteObjectGenesis { source, .. }
@@ -914,9 +933,11 @@ impl Error for CliError {
             | Self::ReadKey { source, .. } => Some(source),
             Self::ListKeystore(error) => Some(error),
             Self::Bundle(error) => Some(error),
+            Self::Fetch(error) => Some(error.as_ref()),
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
             | Self::ParseStatementId { source, .. }
+            | Self::ParseRecordRef { source, .. }
             | Self::BuildSubjectRef { source, .. }
             | Self::BuildActorSubjectRef { source, .. }
             | Self::BuildStatementSubjectRef { source, .. } => Some(source),

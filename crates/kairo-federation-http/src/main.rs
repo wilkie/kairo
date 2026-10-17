@@ -19,6 +19,8 @@ use axum as _;
 use http_body_util as _;
 use kairo_federation_core as _;
 use kairo_identity as _;
+#[cfg(feature = "client")]
+use kairo_object as _;
 use kairo_statement as _;
 use kairo_store as _;
 #[cfg(test)]
@@ -31,6 +33,8 @@ use tempfile as _;
 use tower as _;
 use tracing as _;
 use tracing_subscriber as _;
+#[cfg(feature = "client")]
+use ureq as _;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "\

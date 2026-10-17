@@ -4,6 +4,8 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -11,225 +13,30 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
-use kairo_core::canonical::CanonicalEncode;
-use kairo_core::{ActorId, KairoRef, ObjectId, StatementId, Timestamp};
+use kairo_core::{ObjectId, StatementId, Timestamp};
 use kairo_federation_core::{
     ActorListing, FedErrorCode, FedErrorEnvelope, NodeDocument, ObjectListing, PublishedObjects,
 };
 use kairo_federation_http::{Error, Node};
-use kairo_identity::{ActorGenesisBody, ActorKind, SecretSigningKey};
-use kairo_statement::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorKeyRotationBody, ActorTrustBody,
-    Capability, CapabilityScope, RevisionId, Signature, SignedStatement, StatementBody,
-    StatementKind, TrustDecision, UnsignedStatement,
-};
-use kairo_store::{ActorStore, FilesystemStore, PublishedObjectStore, StatementStore};
-use kairo_test_support::store::{CreatedActor, StoreFixture};
-use tempfile::TempDir;
+use kairo_identity::ActorKind;
+use kairo_store::PublishedObjectStore;
+use kairo_test_support::store::StoreFixture;
 use tower::ServiceExt;
 
-// Crates the lib depends on that this test target doesn't name.
+use common::{node_actor, seed, Seeded, BASE_URL};
+
+// Crates the lib or `common` depends on that this target doesn't name.
 use kairo_federation_core as _;
+use kairo_object as _;
 use serde as _;
 use serde_json as _;
-use tokio as _;
+use tempfile as _;
 use tracing as _;
 use tracing_subscriber as _;
-
-const MANIFEST: &str = r#"
-    [kairo]
-    schema = 1
-    kind = "kairo/object"
-    name = "federation-fixture"
-
-    [content]
-    kind = "tree"
-"#;
-
-const BASE_URL: &str = "http://127.0.0.1:7880";
-
-fn sign<B: StatementBody>(
-    signer: &CreatedActor,
-    subject: &str,
-    seconds: i64,
-    body: B,
-) -> SignedStatement<B> {
-    let subject: KairoRef = subject.parse().expect("subject parses");
-    let unsigned = UnsignedStatement::new(
-        signer.actor_id.clone(),
-        subject,
-        Timestamp::from_seconds(seconds),
-        body,
-    );
-    let bytes = signer.signing.sign(&unsigned.canonical_bytes());
-    let signature = Signature::new(
-        signer.actor_id.clone(),
-        signer.signing.public_key().key_id().to_string(),
-        "ed25519",
-        bytes.bytes().to_vec(),
-    );
-    SignedStatement::new(unsigned, signature)
-}
-
-fn grant(
-    store: &FilesystemStore,
-    grantor: &CreatedActor,
-    grantee: &CreatedActor,
-    object: &ObjectId,
-    seconds: i64,
-) -> StatementId {
-    let capability = Capability::new(
-        CapabilityScope::Object(object.clone()),
-        vec![StatementKind::ObjectBranch],
-        false,
-        Vec::new(),
-    )
-    .expect("capability");
-    let body = ActorCapabilityGrantBody::new(grantee.actor_id.clone(), capability, None);
-    let signed = sign(
-        grantor,
-        &format!("actor:{}", grantee.actor_id),
-        seconds,
-        body,
-    );
-    store
-        .put_actor_capability_grant(&signed)
-        .expect("put grant")
-}
-
-fn node_actor(store: &FilesystemStore, kind: ActorKind) -> ActorId {
-    let genesis = ActorGenesisBody::new(
-        kind,
-        SecretSigningKey::ed25519([200; 32]).public_key(),
-        vec![SecretSigningKey::ed25519([201; 32]).public_key()],
-        1,
-        Timestamp::from_seconds(1_700_000_000),
-        [202; 32],
-    )
-    .expect("genesis");
-    store.put_actor(&genesis).expect("put node actor")
-}
-
-/// Everything the tests assert against.
-struct Seeded {
-    _dir: TempDir,
-    store: FilesystemStore,
-    node_actor: ActorId,
-    published: ObjectId,
-    unpublished: ObjectId,
-    alice: ActorId,
-    bob: ActorId,
-    carol: ActorId,
-    statements: BTreeSet<StatementId>,
-    authority: BTreeSet<StatementId>,
-    manifest: kairo_core::BlobId,
-    alice_rotation: StatementId,
-    trust: StatementId,
-    unpublished_statements: Vec<StatementId>,
-}
-
-/// alice owns `published`: one revision, her `main` branch, a grant
-/// letting bob move branches (bob then sets `bob`), and a grant to
-/// carol that alice revoked. alice rotated her key and trusts bob.
-/// alice also owns `unpublished`, with its own revision and a grant
-/// to carol.
-fn seed() -> Seeded {
-    let (dir, fixture) = StoreFixture::temp();
-    let alice = fixture.make_actor();
-    let bob = fixture.make_actor();
-    let carol = fixture.make_actor();
-    let store = fixture.store.clone();
-
-    let object = fixture.make_object(&alice, "kairo/object");
-    let revision = fixture.make_revision(
-        &alice,
-        &object,
-        RevisionId::new("git:sha256:r1"),
-        MANIFEST,
-        Vec::new(),
-    );
-    let alice_main = fixture.set_branch(&alice, &object, &revision, "main");
-    let bob_grant = grant(&store, &alice, &bob, &object.object_id, 1_700_000_100);
-    let bob_branch = fixture.set_branch(&bob, &object, &revision, "bob");
-    let carol_grant = grant(&store, &alice, &carol, &object.object_id, 1_700_000_200);
-    let revocation = store
-        .put_actor_capability_revocation(&sign(
-            &alice,
-            &format!("statement:{carol_grant}"),
-            1_700_000_300,
-            ActorCapabilityRevocationBody::new(carol_grant.clone(), false, None),
-        ))
-        .expect("put revocation");
-    let alice_rotation = store
-        .put_actor_key_rotation(&sign(
-            &alice,
-            &format!("actor:{}", alice.actor_id),
-            1_700_000_400,
-            ActorKeyRotationBody::new(SecretSigningKey::ed25519([99; 32]).public_key(), None),
-        ))
-        .expect("put rotation");
-    let trust = store
-        .put_actor_trust(&sign(
-            &alice,
-            &format!("actor:{}", bob.actor_id),
-            1_700_000_500,
-            ActorTrustBody::new(
-                bob.actor_id.clone(),
-                Some(TrustDecision::Trusted),
-                None,
-                None,
-            )
-            .expect("trust body"),
-        ))
-        .expect("put trust");
-
-    let other = fixture.make_object(&alice, "kairo/other");
-    let other_revision = fixture.make_revision(
-        &alice,
-        &other,
-        RevisionId::new("git:sha256:o1"),
-        MANIFEST,
-        Vec::new(),
-    );
-    let other_grant = grant(&store, &alice, &carol, &other.object_id, 1_700_000_600);
-
-    let node_actor = node_actor(&store, ActorKind::node());
-    store
-        .publish_object(&object.object_id, Timestamp::from_seconds(1_700_001_000))
-        .expect("publish");
-
-    Seeded {
-        _dir: dir,
-        node_actor,
-        published: object.object_id,
-        unpublished: other.object_id,
-        alice: alice.actor_id,
-        bob: bob.actor_id,
-        carol: carol.actor_id,
-        statements: [
-            revision.statement_id,
-            alice_main.statement_id,
-            bob_branch.statement_id,
-        ]
-        .into(),
-        authority: [bob_grant, carol_grant, revocation].into(),
-        manifest: revision.manifest_blob_id,
-        alice_rotation,
-        trust,
-        unpublished_statements: vec![other_revision.statement_id, other_grant],
-        store,
-    }
-}
+use ureq as _;
 
 fn router(seeded: &Seeded) -> Router {
-    Node::from_store(
-        seeded.store.clone(),
-        &seeded.node_actor,
-        BASE_URL,
-        Duration::ZERO,
-    )
-    .expect("node opens")
-    .router()
+    common::node(seeded).router()
 }
 
 async fn call(router: &Router, method: Method, uri: &str) -> (StatusCode, String, Vec<u8>) {

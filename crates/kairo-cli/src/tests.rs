@@ -6046,3 +6046,79 @@ fn federation_publish_refuses_objects_not_in_the_store() -> Result<(), Box<dyn s
     assert!(bad_id.is_err());
     Ok(())
 }
+
+#[test]
+fn parses_fetch_and_provenance_commands() {
+    assert!(matches!(
+        Cli::try_parse_from([
+            "kairo", "fetch", "--object", OBJECT_ID, "--from", "https://archive.example.org",
+        ]),
+        Ok(Cli {
+            command: Some(Command::Fetch { object, from, json: false }),
+            ..
+        }) if object == OBJECT_ID && from == "https://archive.example.org"
+    ));
+    let record = format!("statement:{OBJECT_ID}");
+    assert!(matches!(
+        Cli::try_parse_from(["kairo", "federation", "provenance", "--ref", record.as_str()]),
+        Ok(Cli {
+            command: Some(Command::Federation {
+                command: FederationCommand::Provenance { record: parsed },
+            }),
+            ..
+        }) if parsed == record
+    ));
+}
+
+#[test]
+fn provenance_of_a_local_record_says_so() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let object = create_cli_object(store_dir.path())?;
+    let output = run_in(
+        store_dir.path(),
+        federation(FederationCommand::Provenance {
+            record: format!("object:{object}"),
+        }),
+    )?;
+    assert_eq!(
+        output,
+        format!(
+            "record = object:{object}\npeers = 0\nnote = not fetched from a peer; authored or imported locally\n"
+        )
+    );
+
+    let bad = run_in(
+        store_dir.path(),
+        federation(FederationCommand::Provenance {
+            record: object.clone(),
+        }),
+    );
+    assert!(
+        bad.err()
+            .is_some_and(|e| e.to_string().contains("invalid record reference")),
+        "a bare id is not a typed reference"
+    );
+    Ok(())
+}
+
+#[test]
+fn fetch_refuses_plain_http_to_a_remote_host() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let error = run_in(
+        store_dir.path(),
+        Command::Fetch {
+            object: OBJECT_ID.to_owned(),
+            from: "http://archive.example.org".to_owned(),
+            json: false,
+        },
+    )
+    .err()
+    .ok_or("plain http to a remote host was accepted")?;
+    assert!(
+        error
+            .to_string()
+            .contains("only allowed for loopback hosts"),
+        "{error}"
+    );
+    Ok(())
+}

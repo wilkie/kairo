@@ -1107,7 +1107,7 @@ Ten sub-decisions, locked together:
    separate, so a compromised server key cannot sign object
    history.
 
-2. **MVP scope is object pull.** `kairo fetch <object-ref>
+2. **MVP scope is object pull.** `kairo fetch --object <id>
    --from <url>` (`CLI.md` §15, as a direct federation client
    per `CLI.md` §25) fetches a published object's closure
    (sub-decision 4), verifies it, and stores it. Push, trust
@@ -1213,7 +1213,13 @@ Ten sub-decisions, locked together:
    (actors and key events, then genesis, then everything else),
    so an interrupted pull leaves a consistent store and a re-run
    resumes. A fixity, signature, or schema failure rejects that
-   record and fails the pull. Records that verify but fail a
+   record and fails the pull, and so does a record that doesn't
+   belong where the listing put it (an object statement for
+   another object, a grant scoped elsewhere, any `ActorTrust`). A
+   statement whose signing key is revoked at its `created_at` is
+   skipped, not stored, without failing the pull: it is a verified
+   fact about the actor rather than tampering, and the
+   revocation came through the same checks. Records that verify but fail a
    capability check are stored anyway, because the store keeps
    conflicts and the resolver decides (`FEDERATION.md` "Conflict
    Handling"). The client requires `https://` except for
@@ -1224,7 +1230,8 @@ Ten sub-decisions, locked together:
    federation client.
 
 8. **Provenance is a local record of the immediate peer.** For
-   every statement and blob that a pull stores or re-sees, the
+   every statement, blob, actor genesis, and object genesis that a
+   pull stores or re-sees, the
    pulling node records `{ peer_url, peer_actor, fetched_at }`
    at `<store>/provenance/<XX>/<YY>/<id>.json`, using the
    standard shard scheme. A record keeps its first-seen entry

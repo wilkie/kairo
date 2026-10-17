@@ -51,6 +51,7 @@ mod federation;
 mod keys;
 mod lock;
 mod objects_by_actor;
+mod provenance;
 mod published;
 mod shard;
 mod statements_by_actor;
@@ -91,6 +92,7 @@ pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
 pub use federation::ObjectClosure;
 pub use objects_by_actor::ObjectByActor;
+pub use provenance::{ProvenanceEntry, ProvenanceStore};
 pub use published::{PublishedObject, PublishedObjectStore};
 pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
@@ -6793,6 +6795,92 @@ mod tests {
             store.get_object_genesis_bytes(&ObjectId::new(OBJECT_ID)?),
             Err(StoreError::Missing)
         ));
+        Ok(())
+    }
+
+    // --- provenance ----------------------------------------------
+
+    fn provenance_entry(peer: &str, seconds: i64) -> ProvenanceEntry {
+        ProvenanceEntry {
+            peer_url: peer.to_owned(),
+            peer_actor: fresh_genesis().actor_id(),
+            fetched_at: Timestamp::from_seconds(seconds),
+        }
+    }
+
+    #[test]
+    fn provenance_is_empty_for_unfetched_records() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let record = KairoRef::Statement(StatementId::from_sha256_digest([7; 32]));
+        assert!(store.get_provenance(&record)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn provenance_appends_one_entry_per_peer() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let id = StatementId::from_sha256_digest([7; 32]);
+        let record = KairoRef::Statement(id.clone());
+
+        assert!(store.record_provenance(&record, &provenance_entry("https://a.example", 1))?);
+        // The same peer again keeps the first fetched_at.
+        assert!(!store.record_provenance(&record, &provenance_entry("https://a.example", 2))?);
+        assert!(store.record_provenance(&record, &provenance_entry("https://b.example", 3))?);
+
+        let entries = store.get_provenance(&record)?;
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.peer_url.as_str(), e.fetched_at.seconds()))
+                .collect::<Vec<_>>(),
+            vec![("https://a.example", 1), ("https://b.example", 3)]
+        );
+
+        // Sharded like every other record.
+        let path = shard::shard_path(dir.path(), "provenance", id.as_str(), JSON_SUFFIX)?;
+        assert!(path.exists(), "{}", path.display());
+        Ok(())
+    }
+
+    #[test]
+    fn provenance_refuses_a_file_naming_another_record() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let id = StatementId::from_sha256_digest([7; 32]);
+        store.record_provenance(
+            &KairoRef::Statement(id.clone()),
+            &provenance_entry("https://a.example", 1),
+        )?;
+        // Same payload, different kind: the file says `statement:`.
+        let as_blob = KairoRef::Blob(BlobId::new(id.as_str())?);
+        assert!(matches!(
+            store.get_provenance(&as_blob),
+            Err(StoreError::Corrupt { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn provenance_rejects_snapshot_refs() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let snapshot: KairoRef = format!(
+            "object:{OBJECT_ID}:snapshot:{}",
+            kairo_core::SnapshotId::from_sha256_digest([1; 32])
+        )
+        .parse()?;
+        assert!(matches!(
+            store.get_provenance(&snapshot),
+            Err(StoreError::Rejected { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_indexes_leaves_provenance_alone() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let record = KairoRef::Statement(StatementId::from_sha256_digest([7; 32]));
+        store.record_provenance(&record, &provenance_entry("https://a.example", 1))?;
+        store.rebuild_indexes()?;
+        assert_eq!(store.get_provenance(&record)?.len(), 1);
         Ok(())
     }
 }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–2 shipped.
+Draft, locked 2026-10-16. Slices 1–3 shipped.
 
 Slice plan for the first federation milestone in `PHASE_2.md` §4:
 pulling a published object's signed history from one node into
@@ -33,7 +33,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `crates/kairo-federation-core` (new) | Wire types: `NodeDocument`, `ObjectListing`, `ActorListing`, `PublishedObjects`, `Cursor` / `PageRequest`, `FedErrorEnvelope` / `FedErrorCode`. Serde only; depends on `kairo-core` and `kairo-identity`. No I/O. |
 | `crates/kairo-federation-http` (new) | `server` (closure computation, axum router), `client` (fetch + verify + ingest). Depends on `kairo-federation-core`, `kairo-store`, `kairo-statement`. `kairo-federation-http` binary. |
 | `crates/kairo-store` | `published` module: `PublishedObjectStore` trait + `FilesystemStore` impl over `<store>/federation/published.json` (slice 1). `provenance` module: `ProvenanceStore` trait + `FilesystemStore` impl over `<store>/provenance/` (slice 3). Both live here, not in the federation crate: they need the store's index lock and atomic write, and the daemon reads provenance (slice 5) without depending on federation. |
-| `crates/kairo-cli` | `kairo fetch <object-ref> --from <url>`; `kairo federation publish \| unpublish --object <id>`, `published`, `provenance`, `status` |
+| `crates/kairo-cli` | `kairo fetch --object <id> --from <url>`; `kairo federation publish \| unpublish --object <id>`, `published`, `provenance`, `status` |
 | `crates/kairo-daemon` | Slice 5 only: provenance on read DTOs |
 | `frontend/` | Slice 5 only: "Fetched from" badge |
 
@@ -204,21 +204,52 @@ Exceeding one fails the pull with what was stored so far kept.
   - `unpublish` taking effect, malformed ids, limits, and
     cursors, the method guard, and node-actor refusals.
 
-### Slice 3 — Pull with verification and provenance
+### Slice 3 — Pull with verification and provenance *(shipped)*
 
-- `client` module: well-known → listing (all pages) → actors and
-  key events → genesis → statements and authority → blobs, each
-  fetched only if absent, each fixity- and signature-checked, each
-  stored via `put_*`.
-- `kairo-store` `provenance` module: shard-path writes per §16
-  sub-decision 8, appended under the store's index lock;
-  `kairo federation provenance <id>` prints it.
-- `kairo fetch <object-ref> --from <url>` (`CLI.md` §15) reporting
-  fetched / already-held / rejected counts.
-- Tests: two-store round trip, re-pull is a no-op that appends
-  no duplicate provenance, second peer appends a provenance entry,
-  and every adversarial case from §2.5 rejects without storing the
-  bad record. `rebuild-indexes` leaves `provenance/` untouched.
+- `kairo_federation_http::client::pull_object` runs: well-known
+  (validated) → listing (all pages, deduplicated) → each actor
+  (genesis derives its id; missing key events ingested in
+  `created_at` order) → genesis → authority (grants, then
+  revocations) → object statements (revisions, then branches and
+  tags) → blobs. Each record is fetched only if absent, then
+  checked and stored via `put_*`. The checks are: schema; fixity
+  (the re-derived id equals the requested one); section (the
+  record belongs where it was listed, and `ActorTrust` is always
+  refused); and signature, through the same
+  `verify_envelope_statement` / `verify_envelope_multi_statement`
+  calls the daemon uses, plus the genesis check against
+  `created_by`'s active key.
+- A statement signed by a key revoked at its `created_at` is
+  skipped and reported, not stored, and the pull continues
+  (§16 sub-decision 7).
+- Transport is `ureq` 3 with rustls (ring, webpki roots). It
+  follows no redirects, so an `https://` peer can't bounce the
+  client to plain HTTP, and applies the §2.4 limits per request.
+  The crate splits into `server` and `client` features, and the
+  CLI takes `client` only.
+- `kairo-store` `provenance` module: `ProvenanceStore` over
+  `<store>/provenance/`, keyed by typed reference
+  (`statement:`, `object:`, `actor:`, `blob:`). Entries are
+  appended under the index lock, one per distinct `peer_url`, and
+  the first `fetched_at` is kept.
+- CLI: `kairo fetch --object <id> --from <url> [--json]` reports
+  fetched / already-held / skipped counts.
+  `kairo federation provenance --ref <typed-ref>` prints the peers,
+  or says the record is local.
+- Tests (`tests/pull.rs`, real server on a loopback port) cover:
+  - a round trip (branch heads and key events resolve the same on
+    both stores; nothing outside the closure arrives);
+  - re-pull is a no-op that keeps the first provenance;
+  - a second peer appends;
+  - revoked-key statements are skipped.
+
+  Every adversarial case fails the pull without storing the bad
+  record: tampered bytes, a substituted statement, withheld key
+  events, smuggled `ActorTrust`, a node document claiming another
+  actor, an oversize blob (earlier records kept), the record
+  limit, an unpublished object, and plain HTTP to a remote host.
+  Store tests cover provenance dedup, mismatched records,
+  snapshot refs, and `rebuild-indexes` leaving it alone.
 
 ### Slice 4 — Git pack transfer
 

@@ -977,7 +977,7 @@ The CLI must return validation-specific exit codes.
 **[post-v1].** Depends on Phase 2 §4 federation. The Git-side
 of fetch (per-object Git mirror) ships in v1 as `kairo git
 fetch` (Phase 2 §1). The first federated form is `kairo fetch
-<object-ref> --from <url>`. It is a direct federation client that
+--object <id> --from <url> [--json]`. It is a direct federation client that
 pulls a published object's closure from one peer
 (`DECISIONS.md` §16, `PHASE_2_FEDERATION.md` slice 3); the
 options below come later.
@@ -1297,7 +1297,7 @@ kairo federation search <query>
 kairo federation publish --object <id>
 kairo federation unpublish --object <id>
 kairo federation published
-kairo federation provenance <statement-or-blob-ref>
+kairo federation provenance --ref <typed-ref>
 ```
 
 Federation commands require daemon/federation support unless a direct federation client is explicitly implemented.

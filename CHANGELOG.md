@@ -18,6 +18,20 @@ rather than per-commit.
 
 ### Added
 
+- **Federation pull (`PHASE_2_FEDERATION.md` slice 3).** `kairo fetch
+  --object <id> --from <url>` pulls a published object's closure from
+  a peer: its actors and their key events, its genesis, its grants and
+  revocations, its statements, and its blobs. It fetches only what
+  the store lacks, so a re-pull fetches nothing new. Each record is
+  checked for schema, fixity (its content matches its id), placement
+  (`ActorTrust` is always refused), and signature before it is
+  stored. Statements signed by a revoked key are skipped. Each record
+  gets a provenance entry naming the peer, and `kairo federation
+  provenance --ref <typed-ref>` shows them. The client requires
+  `https://` except on loopback, follows no redirects, and enforces
+  size, count, and time limits. It adds `ureq` with rustls, the
+  workspace's first TLS dependency.
+
 - **Federation serving (`PHASE_2_FEDERATION.md` slice 2).** New
   `kairo-federation-http` crate and binary: a separate, read-only,
   loopback-by-default process that serves the closures of this

@@ -14,13 +14,13 @@
 //! - [`serve`] / [`serve_with_shutdown`] bind and run it.
 //!
 //! The process serves plain HTTP and binds loopback by default; TLS
-//! is a reverse proxy's job. The client side (pull) lands in slice 3.
-
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
-use std::time::Duration;
-
-use kairo_core::ActorId;
+//! is a reverse proxy's job.
+//!
+//! Slice 3 adds the pulling side, [`client::pull_object`] (feature
+//! `client`): a blocking HTTPS client that fetches a published
+//! object's closure from a peer, verifies every record, stores it,
+//! and records provenance. The server items above are behind the
+//! `server` feature; both are on by default.
 
 // dev-deps used only by integration tests under `tests/`.
 #[cfg(test)]
@@ -32,57 +32,25 @@ use tempfile as _;
 #[cfg(test)]
 use tower as _;
 
+#[cfg(feature = "client")]
+pub mod client;
+#[cfg(feature = "server")]
 mod error;
+#[cfg(feature = "server")]
 mod handlers;
+#[cfg(feature = "server")]
 mod node;
+#[cfg(feature = "server")]
 mod server;
+#[cfg(feature = "server")]
 mod view;
 
+#[cfg(feature = "server")]
 pub use error::Error;
+#[cfg(feature = "server")]
 pub use node::Node;
-pub use server::{serve, serve_with_shutdown};
-
-/// Default port: one above `kairo-web`'s 7878 family, easy to tell
-/// apart in `ss -ltn`.
-pub const DEFAULT_PORT: u16 = 7880;
-
-/// Default bind: loopback, because TLS terminates at a reverse proxy
-/// in front of this process (§16 sub-decision 6).
-pub const DEFAULT_BIND: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_PORT);
-
-/// How long a computed view of the published closures is reused
-/// before recomputing. Bounds both the cost of a pull's many
-/// per-record requests and how long an `unpublish` takes to stop
-/// serving.
-pub const DEFAULT_VIEW_TTL: Duration = Duration::from_secs(5);
-
-/// Resolved server configuration.
-#[derive(Debug, Clone)]
-pub struct Config {
-    /// Store root to serve from. Opened read-only in practice: the
-    /// server calls no `put_*`.
-    pub store: PathBuf,
-    pub bind_addr: SocketAddr,
-    /// Public base URL peers reach this node at, e.g.
-    /// `https://archive.example.org`. Goes into the node document.
-    pub base_url: String,
-    /// The node's own actor. Must be in the store with
-    /// `actor_kind = "node"`.
-    pub node_actor: ActorId,
-    /// See [`DEFAULT_VIEW_TTL`]. Zero recomputes on every request.
-    pub view_ttl: Duration,
-}
-
-/// Install the structured-text tracing subscriber on stderr, matching
-/// `kairo-daemon` and `kairo-web`.
-pub fn install_tracing() {
-    use tracing_subscriber::fmt;
-    use tracing_subscriber::EnvFilter;
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_writer(std::io::stderr)
-        .try_init();
-}
+#[cfg(feature = "server")]
+pub use server::{
+    install_tracing, serve, serve_with_shutdown, Config, DEFAULT_BIND, DEFAULT_PORT,
+    DEFAULT_VIEW_TTL,
+};

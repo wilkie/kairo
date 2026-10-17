@@ -131,6 +131,20 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WebCommand,
     },
+    /// Pull a published object's closure from a federation peer into
+    /// the local store (`specs/DECISIONS.md` §16). Every record is
+    /// fixity- and signature-checked before it is stored, and records
+    /// which peer served it. Requires `https://` except for loopback
+    /// hosts.
+    Fetch {
+        #[arg(long)]
+        object: String,
+        /// The peer's base URL, e.g. `https://archive.example.org`.
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Federation controls for this node (`specs/DECISIONS.md` §16).
     /// Publishing marks an object as servable to peers; nothing is
     /// served until it is published.
@@ -157,6 +171,14 @@ pub(crate) enum FederationCommand {
     },
     /// List the objects this node serves to federation peers.
     Published,
+    /// Show which federation peers served a record (immediate peer
+    /// only; authorship is proven by the signature, not here).
+    Provenance {
+        /// Typed reference: `statement:<id>`, `object:<id>`,
+        /// `actor:<id>`, or `blob:<id>`.
+        #[arg(long = "ref")]
+        record: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
