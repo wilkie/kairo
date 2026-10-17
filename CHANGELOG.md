@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **Federation serving (`PHASE_2_FEDERATION.md` slice 2).** New
+  `kairo-federation-http` crate and binary: a separate, read-only,
+  loopback-by-default process that serves the closures of this
+  node's published objects (`DECISIONS.md` §16). It exposes the node
+  document, published-object and per-object listings, object
+  genesis, actor key-event listings, and single statements and
+  blobs. An id outside every published closure gets the same `404`
+  as one the store doesn't hold. `kairo-store` gains
+  `object_closure`, `actor_key_event_ids`, and
+  `get_object_genesis_bytes`. Pulling (slice 3) is not implemented
+  yet.
+
 - **Federation publish list and wire types (`PHASE_2_FEDERATION.md`
   slice 1).** New `kairo-federation-core` crate with the object-pull
   wire types (node document, published-object, object and actor

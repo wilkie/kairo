@@ -1169,7 +1169,9 @@ Ten sub-decisions, locked together:
    - `GET /.well-known/kairo-node` returns the node document.
    - `GET /federation/v1/objects` lists published object ids.
    - `GET /federation/v1/objects/{id}` lists the ids in that
-     object's closure.
+     object's closure, and `/objects/{id}/genesis` returns its
+     `ObjectGenesis`. The genesis has no statement id, because
+     its body derives the object id.
    - `GET /federation/v1/actors/{id}` returns an actor's
      genesis and key-event ids.
    - `GET /federation/v1/statements/{id}` and

@@ -427,7 +427,7 @@ HTTP transport for federation queries and content retrieval.
 Responsibilities:
 
 - `/.well-known/kairo-node`
-- `GET /federation/v1/objects/{id}`, `/actors/{id}`,
+- `GET /federation/v1/objects/{id}`, `/objects/{id}/genesis`, `/actors/{id}`,
   `/statements/{id}`, `/blobs/{id}`, `/objects/{id}/git` (the
   object-pull MVP, `DECISIONS.md` §16)
 - `POST /federation/v1/query`, `POST /federation/v1/announce`,

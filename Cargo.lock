@@ -1465,6 +1465,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-federation-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "kairo-core",
+ "kairo-federation-core",
+ "kairo-identity",
+ "kairo-statement",
+ "kairo-store",
+ "kairo-test-support",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "kairo-git"
 version = "0.1.0"
 dependencies = [

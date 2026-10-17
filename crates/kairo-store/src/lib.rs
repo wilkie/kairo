@@ -47,6 +47,7 @@ mod capabilities;
 mod capabilities_by_object;
 mod chain;
 pub mod error;
+mod federation;
 mod keys;
 mod lock;
 mod objects_by_actor;
@@ -88,6 +89,7 @@ pub use branches::BranchTip;
 pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
+pub use federation::ObjectClosure;
 pub use objects_by_actor::ObjectByActor;
 pub use published::{PublishedObject, PublishedObjectStore};
 pub use statements_by_actor::StatementByActor;
@@ -6718,6 +6720,79 @@ mod tests {
         store.publish_object(&object, timestamp())?;
         store.rebuild_indexes()?;
         assert!(store.is_object_published(&object)?);
+        Ok(())
+    }
+
+    // --- federation read helpers ---------------------------------
+
+    #[test]
+    fn object_closure_of_absent_object_is_missing() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        assert!(matches!(
+            store.object_closure(&ObjectId::new(OBJECT_ID)?),
+            Err(StoreError::Missing)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn object_closure_of_bare_object_names_only_its_creator() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        store.put_actor(&fresh_genesis())?;
+        let object = put_published_test_object(&store, 1)?;
+        let closure = store.object_closure(&object)?;
+        assert!(closure.statements.is_empty());
+        assert!(closure.authority.is_empty());
+        assert!(closure.blobs.is_empty());
+        assert_eq!(
+            closure.actors.into_iter().collect::<Vec<_>>(),
+            vec![fresh_genesis().actor_id()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actor_key_event_ids_cover_every_key_event_list() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let genesis = fresh_genesis();
+        let actor = genesis.actor_id();
+        store.put_actor(&genesis)?;
+        assert!(store.actor_key_event_ids(&actor)?.is_empty());
+
+        let rotation = store.put_actor_key_rotation(&signed_key_rotation(
+            actor.clone(),
+            other_public_key(),
+            None,
+            Timestamp::from_seconds(1_700_000_100),
+        )?)?;
+        let revocation = store.put_actor_key_revocation(&signed_key_revocation(
+            actor.clone(),
+            other_public_key().key_id(),
+            false,
+            Timestamp::from_seconds(1_700_000_200),
+        )?)?;
+        let attestation_add = store.put_actor_attestation_key_add(&signed_attestation_key_add(
+            actor.clone(),
+            third_public_key(),
+            Timestamp::from_seconds(1_700_000_300),
+        )?)?;
+
+        let mut expected = vec![rotation, revocation, attestation_add];
+        expected.sort();
+        assert_eq!(store.actor_key_event_ids(&actor)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn object_genesis_bytes_are_the_stored_file() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let object = put_published_test_object(&store, 1)?;
+        let path = shard::shard_path(dir.path(), OBJECTS_DIR, object.as_str(), JSON_SUFFIX)?;
+        assert_eq!(store.get_object_genesis_bytes(&object)?, fs::read(path)?);
+        assert!(matches!(
+            store.get_object_genesis_bytes(&ObjectId::new(OBJECT_ID)?),
+            Err(StoreError::Missing)
+        ));
         Ok(())
     }
 }

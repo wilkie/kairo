@@ -287,6 +287,7 @@ The MVP node serves only published objects' closures
 GET  /.well-known/kairo-node
 GET  /federation/v1/objects
 GET  /federation/v1/objects/{objectId}
+GET  /federation/v1/objects/{objectId}/genesis
 GET  /federation/v1/objects/{objectId}/git
 GET  /federation/v1/actors/{actorId}
 GET  /federation/v1/statements/{statementId}

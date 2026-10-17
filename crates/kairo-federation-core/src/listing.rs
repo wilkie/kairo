@@ -54,8 +54,10 @@ pub struct ObjectListing {
     pub schema: ObjectListingSchema,
     #[serde(with = "crate::wire_id::one")]
     pub object: ObjectId,
-    /// `ObjectGenesis` plus the `ObjectRevision`, `ObjectBranch`, and
-    /// `ObjectVersionTag` statements whose body names the object.
+    /// Every `ObjectRevision`, `ObjectBranch`, and `ObjectVersionTag`
+    /// whose body names the object. `ObjectGenesis` has no statement
+    /// id (its body derives the object id); it is served at
+    /// `/federation/v1/objects/{id}/genesis`.
     #[serde(with = "crate::wire_id::many")]
     pub statements: Vec<StatementId>,
     /// `ActorCapabilityGrant`s scoped to the object and

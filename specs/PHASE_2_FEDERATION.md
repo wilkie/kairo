@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slice 1 shipped.
+Draft, locked 2026-10-16. Slices 1–2 shipped.
 
 Slice plan for the first federation milestone in `PHASE_2.md` §4:
 pulling a published object's signed history from one node into
@@ -51,6 +51,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/.well-known/kairo-node` | `NodeDocument` |
 | `GET` | `/federation/v1/objects` | `Page<ObjectId>` of published objects |
 | `GET` | `/federation/v1/objects/{id}` | `ObjectListing` (paged) |
+| `GET` | `/federation/v1/objects/{id}/genesis` | `ObjectGenesis` JSON, exactly as stored |
 | `GET` | `/federation/v1/objects/{id}/git` | Git pack bytes (slice 4) |
 | `GET` | `/federation/v1/actors/{id}` | `ActorListing` |
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
@@ -86,7 +87,11 @@ whether or not the store holds it.
 }
 ```
 
-`statements` holds the object-bound kinds; `authority` holds
+`statements` holds the object-bound envelope kinds
+(`ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`, every chain
+entry, not just heads). `ObjectGenesis` is not among them: it has
+no statement id, because its body derives the object id, so it is
+fetched from `/objects/{id}/genesis`. `authority` holds
 object-scoped capability grants and revocations of them
 (§16 sub-decision 4). Paging walks the four id lists in that order,
 so a cursor is a position in their concatenation; `git` appears on
@@ -154,24 +159,50 @@ Exceeding one fails the pull with what was stored so far kept.
   use `--object` like the other v1 subtrees, not `CLI.md` §25's
   positional `<object-ref>`.
 
-### Slice 2 — Serving
+### Slice 2 — Serving *(shipped)*
 
-- Closure computation: given an object id, walk the store's
-  object and capability indexes for the §16 sub-decision 4 set.
-  Unit-tested on its own, including: `ActorTrust` never appears;
-  grants scoped to *other* objects don't appear; a grantee who
-  signed a branch appears in `actors`, and the actor endpoint
-  serves that grantee's key events.
-- axum router for §2.1 (except `/git`), `kairo-federation-http`
-  binary with `--store`, `--bind` (default `127.0.0.1:7880`),
-  `--base-url`, `--node-actor`. Non-loopback bind logs a warning
-  naming the reverse-proxy expectation.
-- `--node-actor` must name an actor whose genesis kind is `node`
-  (refuse otherwise) and must not hold any capability grant
-  (warn).
-- Tests: every endpoint; absence ambiguity (an unpublished but
-  present statement returns the same body as a nonexistent one);
-  served statement bytes equal the stored file.
+- Closure computation is `FilesystemStore::object_closure` in
+  `kairo-store`, since it reads the store's private indexes:
+  revisions by directory walk (there is no revision index yet),
+  every branch, tag, and object-scoped grant entry from the
+  per-object indexes, and those grants' revocations from each
+  grantor's index. `actor_key_event_ids` lists an actor's key
+  events; `get_object_genesis_bytes` serves the genesis raw. The
+  trust index is never read.
+- The server builds a *published view* (every published closure,
+  plus the key events of every actor those closures name), and
+  each per-record endpoint checks membership in it before reading
+  the store. The view is reused for `--view-ttl` seconds (default
+  5). That bounds the cost of a pull's many per-record requests,
+  and also how long an `unpublish` takes to stop serving.
+- Listing cursors are `<section>.<last id>` (`st`, `au`, `ac`,
+  `bl`), so page boundaries survive records being added between
+  requests. `git` is `{ available: false }` until slice 4.
+- `kairo-federation-http` binary with `--store`, `--node-actor`,
+  `--bind` (default `127.0.0.1:7880`), `--base-url` (default
+  `http://<bind>`), and `--view-ttl`. A non-loopback bind logs a
+  warning naming the reverse-proxy expectation. Every non-`GET` /
+  `HEAD` request, including to unknown paths, gets `405
+  fed_method_not_allowed` with `Allow: GET, HEAD`. Unknown paths
+  get `404 fed_not_found`.
+- `--node-actor` must be in the store with kind `node` (refused
+  otherwise). The server warns, without refusing, if the node actor
+  created objects or signed object or capability statements.
+  Nothing indexes grants by grantee across objects, so "holds no
+  grant" is checked from what the actor signed.
+- Tests (`crates/kairo-federation-http/tests/serve.rs`, plus store
+  unit tests) cover:
+  - every endpoint, and that the closure matches the seeded set
+    (no `ActorTrust`, no other object's statements or grants, a
+    grantee who signed a branch listed, a grantor's revocation
+    included);
+  - paged listings reassembling to the whole;
+  - unpublished-but-present records returning a body
+    byte-identical to a missing record's;
+  - statement, genesis, and blob bytes equal to the stored
+    files;
+  - `unpublish` taking effect, malformed ids, limits, and
+    cursors, the method guard, and node-actor refusals.
 
 ### Slice 3 — Pull with verification and provenance
 
