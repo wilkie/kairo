@@ -1074,3 +1074,218 @@ Affected specs:
   `PHASE_2_WEB_CLIENT_AUTH.md` §2.2.
 - §13 sub-decision 3 and 5, §14 sub-decision 7 — annotated as
   superseded by this section where they conflict.
+
+---
+
+## 16. Federation MVP: Object Pull Between Nodes
+
+Decision: the first federation milestone is **pulling a published
+object's signed history from one node into another**, over
+**per-record, content-addressed HTTP endpoints** served by a
+**separate, read-only `kairo-federation-http` process**. A node
+is an **actor**; serving is **explicit per-object opt-in**; TLS
+is terminated by a **reverse proxy**; and the pulling node keeps
+a **local provenance record naming the immediate peer**. The
+discovery half of `FEDERATION.md` (token advertisements, token
+indexes, provider and resolution discovery, DHT, gossip) waits
+for the statement types it depends on. The slice plan is
+`PHASE_2_FEDERATION.md`.
+
+Ten sub-decisions, locked together:
+
+1. **A node is an actor.** A node signs, and is named, as an
+   ordinary actor (`kairo:actor:<id>` externally) created with
+   `actor_kind = "node"`. Keys, rotation, emergency attestation,
+   trust, and `KairoActor1` request signing apply unchanged.
+   There is no `NodeId` type and no `kairo:node:` reference
+   form. `actor_kind` is self-declared, so it is a display hint
+   and a lint target (e.g. warn when granting a capability to a
+   node actor), never an authority input: what makes an actor a
+   peer is local federation policy naming that actor id. By
+   convention a node actor holds no capabilities and never signs
+   as a maintainer; its operator's personal actor stays
+   separate, so a compromised server key cannot sign object
+   history.
+
+2. **MVP scope is object pull.** `kairo fetch <object-ref>
+   --from <url>` (`CLI.md` §15, as a direct federation client
+   per `CLI.md` §25) fetches a published object's closure
+   (sub-decision 4), verifies it, and stores it. Push, trust
+   transport, and the discovery half of `FEDERATION.md` come
+   later: discovery needs `ProvidesCapability`,
+   `ResolutionSucceeded`, and `TokenAdvertisement`, which arrive
+   with `PHASE_2.md` §7 and §8. Push is last because it is the
+   only part that lets a remote party write into a store.
+
+3. **Serving is explicit per-object opt-in.** A node serves
+   nothing until its operator runs `kairo federation
+   publish <object-ref>` (`CLI.md` §25). The publish list is local operator state at
+   `<store>/federation/published.json`, not a statement: it is
+   policy about this node, not a claim about the object.
+   `kairo federation unpublish` stops serving but cannot recall
+   copies peers already hold, and the CLI says so. Requests for
+   unpublished and nonexistent records get the same `404
+   fed_not_found`, so a peer cannot probe for private objects
+   (`FEDERATION.md` "Privacy and Access Control").
+
+4. **The published closure of an object** is everything a
+   pulling node needs to verify it, and nothing that would read
+   as authority it shouldn't:
+   - its `ObjectGenesis`, plus every `ObjectRevision`,
+     `ObjectBranch`, and `ObjectVersionTag` whose body names it;
+   - **authority evidence**: every `ActorCapabilityGrant` scoped
+     to the object, and every `ActorCapabilityRevocation` of
+     such a grant;
+   - the id of every actor that signed any of the above.
+     Actor data is not part of the object. The client fetches
+     each actor's `ActorGenesis` and current key-event history
+     (rotations, revocations, emergency and attestation kinds)
+     from `/federation/v1/actors/{id}`, and skips any it already
+     holds up to date. A node may hold many objects by one actor,
+     and that actor's keys change independently of any of them.
+     The server serves an actor's record when the actor appears
+     in some published closure;
+   - every blob those statements reference;
+   - the object's Git pack, when the managed cache has one.
+
+   `ActorTrust` is never served in the MVP. Shipping grants
+   departs from the object-bundle rule (`crates/kairo-bundle/AGENTS.md`)
+   on purpose. A grant is not an opinion: its effect is computed
+   by the same capability evaluator against the object's genesis
+   authority, so importing one confers nothing unless its chain
+   roots there, and withholding it only turns cross-actor
+   statements `Indeterminate`. Trust opinions have no such
+   anchor and would be misread as authority, so they stay out
+   until an opt-in trust transport exists. A pull is not
+   complete until every listed actor's key events are fetched,
+   because withholding a revocation is the attack
+   `THREAT_MODEL.md` warns about. Object bundles follow the same
+   split by shipping only each signer's `ActorGenesis`. The
+   importing node is responsible for getting current key
+   knowledge, which it may already have and which may have
+   changed since export.
+
+5. **Wire format: per-record endpoints under `/federation/v1/`.**
+   - `GET /.well-known/kairo-node` returns the node document.
+   - `GET /federation/v1/objects` lists published object ids.
+   - `GET /federation/v1/objects/{id}` lists the ids in that
+     object's closure.
+   - `GET /federation/v1/actors/{id}` returns an actor's
+     genesis and key-event ids.
+   - `GET /federation/v1/statements/{id}` and
+     `/federation/v1/blobs/{id}` return single records.
+   - `GET /federation/v1/objects/{id}/git` returns the Git pack.
+
+   Statements are served as exactly the JSON DTO the store holds
+   (the `kairo-statement` wire shape, not `FEDERATION.md`'s
+   earlier camelCase sketch), and blobs as raw bytes. Paths and
+   typed fields carry bare ids. Listings are ids only, ordered
+   by id, and paged with `limit` (at most 1000) and an opaque
+   `cursor`; the client diffs a listing against its own store
+   and fetches only what it lacks, which makes re-pulls
+   incremental. Errors use the `API.md` §7.2 envelope with
+   `fed_*` codes. A whole-bundle stream was rejected because it
+   resends everything on every pull and would wait on the tar
+   transport.
+
+6. **Serving is a separate, read-only process.**
+   `kairo-federation-http` opens the store read-only and
+   computes closures itself; it does not proxy the daemon API,
+   whose reads are unauthenticated and assume socket
+   permissions, so exposing them would publish the whole store.
+   It serves plain HTTP and binds `127.0.0.1` by default. A
+   non-loopback bind needs an explicit `--bind` with a
+   non-loopback address and a startup warning. TLS is terminated
+   by a reverse proxy (Caddy, nginx), and the node document's
+   `base_url` names the public `https://` URL. The daemon stays
+   Unix-socket only. Daemon-side `FederationService` integration
+   (`DAEMON.md` §5.3, §10) comes after the MVP.
+
+7. **The pulling side verifies more than bundle import does.**
+   `kairo fetch --from` writes to the store directly, like
+   `kairo bundle import`. Each record is fixity-checked (its id
+   re-derived and compared with the id requested) and each
+   statement's signature is verified against the actor's
+   key-event history before `put_*`. Bundle import does not
+   verify signatures today. Records go in dependency order
+   (actors and key events, then genesis, then everything else),
+   so an interrupted pull leaves a consistent store and a re-run
+   resumes. A fixity, signature, or schema failure rejects that
+   record and fails the pull. Records that verify but fail a
+   capability check are stored anyway, because the store keeps
+   conflicts and the resolver decides (`FEDERATION.md` "Conflict
+   Handling"). The client requires `https://` except for
+   loopback `http://`, which tests use, and enforces size and
+   count limits on every response. Client TLS uses rustls. This
+   is the workspace's first TLS dependency, which §8's
+   shell-out choice deferred, and it stays confined to the
+   federation client.
+
+8. **Provenance is a local record of the immediate peer.** For
+   every statement and blob that a pull stores or re-sees, the
+   pulling node records `{ peer_url, peer_actor, fetched_at }`
+   at `<store>/provenance/<XX>/<YY>/<id>.json`, using the
+   standard shard scheme. A record keeps its first-seen entry
+   and appends one per distinct peer that later serves the same
+   id. Provenance is primary local state, not a materialized
+   index: it cannot be rebuilt from `statements/`, so
+   `rebuild-indexes` must not touch it. A record with no
+   provenance was authored or imported locally. Authorship needs
+   no provenance because the signature proves it. Only the
+   immediate peer is recorded, not the route a relayed record
+   took. A route can be added later, either as an unverified
+   hint or through signed holder statements tied to
+   `FEDERATION.md` holder discovery, without breaking this
+   record.
+
+9. **The MVP node document is unsigned.** It carries
+   `node_actor`, the actor's `ActorGenesis` (so the client can
+   check that the id derives from it), `base_url`,
+   `protocol_versions: ["kairo-fed/1"]`, and `supports:
+   ["object-pull"]`. Pulled data never depends on the node's
+   identity, because every record verifies on its own. So in
+   provenance, `peer_url` is the observed fact and `peer_actor`
+   is recorded as claimed. Authenticating nodes, by signing the
+   document and responses or by `KairoActor1` on requests,
+   comes with push, which is the first operation that has to
+   know who the peer is.
+
+10. **Out of scope:** push and its acceptance policy; trust
+    transport and `forget` for peer opinions (`PHASE_2.md` §4);
+    token advertisements, indexes, the query protocol, DHT, and
+    gossip; daemon `FederationService`; authenticated or private
+    reads; rate limiting beyond the client's response limits;
+    bundle-level signatures (`PACKAGE.md` §24); recording the
+    full relay route.
+
+Rationale: object pull is the smallest exchange that exercises
+the whole trust design. Records verify independently of their
+transport, conflicts survive, nothing is trusted on arrival,
+and the receiver records where data came from. It uses only
+statement types that exist today. Making the node an actor
+reuses the identity, rotation, and trust machinery rather than
+duplicating it for a second principal type, and the node
+convention keeps a hot server key away from object authority.
+Opt-in publishing, a read-only server, and loopback-by-default
+binding mean one misconfiguration cannot expose a private store.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md`: new slice plan.
+- `PHASE_2.md` §4: checkboxes resolved against this section,
+  and its `kairo federate push/pull` names replaced with
+  `CLI.md`'s `kairo fetch` / `kairo federation` tree.
+- `FEDERATION.md`: new status section scoping the MVP to this
+  decision. The node document, envelope, endpoint, and
+  blob-transfer examples now follow the real wire shape and
+  `IDENTIFIERS.md`. `kairo:node:` references become actor
+  references.
+- `PROJECT_LAYOUT.md`: `kairo-federation-core` "Node identity"
+  now means node actors. `kairo-federation-http` gains the
+  serve binary and fetch client.
+- `DAEMON.md` §5.3 and §10: the MVP serves from a separate
+  process; daemon integration is deferred.
+- `CLI.md` §15 and §25: `kairo fetch --from` and the
+  `kairo federation` subcommands the MVP implements.
+- `OBJECT_STORE.md`: federation endpoint examples use the
+  `/federation/v1/` paths.

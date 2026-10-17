@@ -392,8 +392,11 @@ Protocol-independent federation data types.
 
 Responsibilities:
 
-- Node identity
+- Node identity (a node is an actor with `actor_kind = "node"`;
+  `DECISIONS.md` §16)
 - Peer references
+- Transfer wire types: node document, object and actor listings,
+  pagination (`PHASE_2_FEDERATION.md` §2.2)
 - Federation query types
 - Query response types
 - Token advertisement model
@@ -424,12 +427,16 @@ HTTP transport for federation queries and content retrieval.
 Responsibilities:
 
 - `/.well-known/kairo-node`
-- `POST /federation/query`
-- `POST /federation/announce`
-- `GET /statements/{hash}`
-- `GET /blobs/{hash}`
-- `GET /token/{token}`
-- Peer-to-peer HTTP client
+- `GET /federation/v1/objects/{id}`, `/actors/{id}`,
+  `/statements/{id}`, `/blobs/{id}`, `/objects/{id}/git` (the
+  object-pull MVP, `DECISIONS.md` §16)
+- `POST /federation/v1/query`, `POST /federation/v1/announce`,
+  `GET /federation/v1/tokens/{token}` (discovery phase)
+- The `kairo-federation-http` serve binary: a separate, read-only
+  process over the store, loopback-bound by default, behind a
+  TLS-terminating reverse proxy
+- Peer-to-peer HTTP client: fetch, verify, ingest, and record
+  provenance
 - Request signing, if needed
 - Rate limits and pagination
 

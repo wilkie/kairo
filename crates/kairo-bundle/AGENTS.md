@@ -13,8 +13,17 @@ land in the store undetected — fix the bypass.
 
 **Goes in:** `ObjectGenesis` for the root object; every
 `ObjectRevision` / `ObjectBranch` / `ObjectVersionTag` whose
-`body.object()` matches the root; every actor that signed any of
-those statements; every blob those statements reference.
+`body.object()` matches the root; the `ActorGenesis` of every actor
+that signed any of those statements; every blob those statements
+reference.
+
+Actor key events (rotations, revocations, emergency and attestation
+kinds) deliberately stay out. Key knowledge belongs to the actor,
+not the object, and may already be known to the importing node or
+have changed since export. The importer is responsible for getting
+it, for example from a federation peer's
+`/federation/v1/actors/{id}` (`specs/DECISIONS.md` §16). Don't add
+key events to object bundles to make one self-verifying.
 
 **Does not go in:** `ActorTrust` statements (trust is first-person —
 shipping it inside an object package would invite reading peers'

@@ -18,6 +18,26 @@ This document should be read alongside `PROJECT_LAYOUT.md`, especially the secti
 - `kairo-store/`
 - `kairo-trust/`
 
+## Status
+
+The first implemented milestone is **object pull** between nodes,
+locked in `DECISIONS.md` §16 and decomposed in
+`PHASE_2_FEDERATION.md`. That decision overrides this document
+where they differ:
+
+- A node is an actor (`actor_kind = "node"`), referenced as
+  `kairo:actor:<id>`. There is no separate node identifier.
+- The MVP transfer surface is the `/federation/v1/` endpoint set
+  in "HTTP Endpoints" below. The query protocol, token
+  advertisements, token indexes, routing, gossip, and DHT sections
+  describe the later discovery phase. They depend on statement
+  types (`ProvidesCapability`, `ResolutionSucceeded`,
+  `TokenAdvertisement`) that arrive with `PHASE_2.md` §7 and §8,
+  and their examples are illustrative until then.
+- Statements travel in the `kairo-statement` JSON wire shape
+  (`type`, `version`, `actor`, `subject`, `created_at`, `body`,
+  `signature`), not a separate federation envelope.
+
 ---
 
 ## Goals
@@ -102,7 +122,7 @@ A node may be:
 - a mirror
 - a specialized Provider node
 
-A node has a `NodeId` and may have one or more network endpoints.
+A node is identified by its node actor (`actor_kind = "node"`, see "Status") and may have one or more network endpoints.
 
 ### Actor
 
@@ -214,33 +234,22 @@ Example:
 
 ```json
 {
-  "nodeId": "kairo:node:z6MkNode...",
-  "protocolVersions": ["kairo-fed/0.1"],
-  "publicKeys": [
-    {
-      "id": "key-1",
-      "algorithm": "ed25519",
-      "publicKey": "..."
-    }
-  ],
-  "endpoints": {
-    "query": "https://archive.example.org/federation/query",
-    "announce": "https://archive.example.org/federation/announce",
-    "statements": "https://archive.example.org/statements/",
-    "blobs": "https://archive.example.org/blobs/",
-    "tokens": "https://archive.example.org/tokens/"
-  },
-  "supports": [
-    "statements",
-    "blobs",
-    "token-indexes",
-    "holder-discovery",
-    "provider-discovery"
-  ]
+  "schema": "kairo.fed.node.v1",
+  "node_actor": "z6MkNode...",
+  "actor_genesis": { "...": "the node actor's ActorGenesis JSON" },
+  "base_url": "https://archive.example.org",
+  "protocol_versions": ["kairo-fed/1"],
+  "supports": ["object-pull"]
 }
 ```
 
-The well-known document is a discovery aid. It is not itself a trust root unless local policy says so.
+`node_actor` is the actor the node speaks as. Its keys and
+rotation history come from that actor's ordinary key events, so
+the document carries no key list of its own. Later phases add
+`supports` values (`token-indexes`, `holder-discovery`,
+`provider-discovery`) as those endpoints exist.
+
+The well-known document is a discovery aid. It is not itself a trust root unless local policy says so. In the MVP it is unsigned, so `node_actor` is a claim. Node authentication arrives with push (`DECISIONS.md` §16 sub-decision 9).
 
 ---
 
@@ -271,29 +280,30 @@ The protocol should be designed so that transport can evolve without changing th
 
 ## HTTP Endpoints
 
-A basic HTTP federation node SHOULD support:
+The MVP node serves only published objects' closures
+(`PHASE_2_FEDERATION.md` §2.1):
 
 ```text
 GET  /.well-known/kairo-node
-POST /federation/query
-POST /federation/announce
-GET  /statements/{statementHash}
-GET  /blobs/{blobHash}
-GET  /tokens/{encodedToken}
-GET  /holders/{hash}
-GET  /advertisers/{encodedToken}
+GET  /federation/v1/objects
+GET  /federation/v1/objects/{objectId}
+GET  /federation/v1/objects/{objectId}/git
+GET  /federation/v1/actors/{actorId}
+GET  /federation/v1/statements/{statementId}
+GET  /federation/v1/blobs/{blobId}
 ```
 
-Optional endpoints:
+The discovery phase adds, under the same `/federation/v1/` prefix:
 
 ```text
-GET  /objects/{objectId}/git
-GET  /objects/{objectId}/revisions/{revision}
-GET  /plans/{planHash}
-GET  /builds/{buildArtifactId}
+POST /federation/v1/query
+POST /federation/v1/announce
+GET  /federation/v1/tokens/{encodedToken}
+GET  /federation/v1/holders/{id}
+GET  /federation/v1/advertisers/{encodedToken}
 ```
 
-These optional endpoints may internally resolve to blob retrieval.
+Path segments carry bare ids.
 
 ---
 
@@ -305,23 +315,28 @@ A statement envelope should include:
 
 ```json
 {
-  "statementType": "ProvidesCapability",
-  "statementVersion": 1,
-  "subject": "kairo:object:dosbox-x",
-  "actor": "kairo:actor:alice",
-  "issuedAt": "2026-04-29T12:00:00Z",
+  "type": "ProvidesCapability",
+  "version": 1,
+  "actor": "z6MkAlice...",
+  "subject": "object:z6MkDosbox...",
+  "created_at": "2026-04-29T12:00:00Z",
   "body": {
     "capability": "provider:environment:msdos/x86",
-    "object": "kairo:object:dosbox-x",
-    "revision": "git:def456"
+    "object": "z6MkDosbox...",
+    "revision": "git:sha256:def456..."
   },
   "signature": {
+    "actor": "z6MkAlice...",
+    "key_id": "...",
     "algorithm": "ed25519",
-    "keyId": "...",
-    "value": "..."
+    "bytes": "..."
   }
 }
 ```
+
+This is the `kairo-statement` JSON wire shape every statement
+type uses; `ProvidesCapability` itself is a future type (§8). A
+node serves a statement as exactly these bytes as stored.
 
 Statement IDs are content hashes over the canonical signed representation.
 
@@ -345,22 +360,23 @@ Example advertisement:
 
 ```json
 {
-  "statementType": "TokenAdvertisement",
-  "subject": "provider:environment:msdos/x86",
-  "actor": "kairo:actor:node-operator",
-  "issuedAt": "2026-04-29T12:00:00Z",
+  "type": "TokenAdvertisement",
+  "version": 1,
+  "actor": "z6MkNode...",
+  "subject": "actor:z6MkNode...",
+  "created_at": "2026-04-29T12:00:00Z",
   "body": {
     "token": "provider:environment:msdos/x86",
-    "node": "kairo:node:z6MkNode...",
-    "endpoint": "https://archive.example.org/tokens/provider%3Aenvironment%3Amsdos%2Fx86",
-    "indexRoot": "sha256:...",
-    "entryCount": 42,
+    "endpoint": "https://archive.example.org/federation/v1/tokens/provider%3Aenvironment%3Amsdos%2Fx86",
+    "index_root": "z6MkIndexRoot...",
+    "entry_count": 42,
     "watermark": "2026-04-29T12:00:00Z"
   },
   "signature": {
+    "actor": "z6MkNode...",
+    "key_id": "...",
     "algorithm": "ed25519",
-    "keyId": "...",
-    "value": "..."
+    "bytes": "..."
   }
 }
 ```
@@ -378,21 +394,21 @@ Example:
 ```json
 {
   "token": "provider:environment:msdos/x86",
-  "indexRoot": "sha256:...",
+  "index_root": "z6MkIndexRoot...",
   "entries": [
     {
-      "statement": "kairo:statement:sha256:111",
-      "statementType": "ProvidesCapability",
-      "subject": "kairo:object:dosbox-x",
+      "statement": "kairo:statement:z6MkStmtA...",
+      "statement_type": "ProvidesCapability",
+      "subject": "kairo:object:z6MkDosbox...",
       "holders": [
-        "kairo:node:node-a",
-        "kairo:node:node-b"
+        "kairo:actor:z6MkNodeA...",
+        "kairo:actor:z6MkNodeB..."
       ],
       "advertisers": [
-        "kairo:node:node-a"
+        "kairo:actor:z6MkNodeA..."
       ],
-      "firstSeen": "2026-04-20T12:00:00Z",
-      "lastSeen": "2026-04-29T12:00:00Z"
+      "first_seen": "2026-04-20T12:00:00Z",
+      "last_seen": "2026-04-29T12:00:00Z"
     }
   ],
   "more": null
@@ -426,7 +442,7 @@ A node that can serve a specific statement or blob.
 Example:
 
 ```text
-This node can serve kairo:statement:sha256:111.
+This node can serve kairo:statement:z6MkStmtA....
 ```
 
 ### Indexer
@@ -436,7 +452,7 @@ A node that knows about statements or holders, but may not possess all reference
 Example:
 
 ```text
-This node knows that kairo:statement:sha256:111 exists and is held by node A.
+This node knows that kairo:statement:z6MkStmtA... exists and is held by node A.
 ```
 
 A single node may be an advertiser, holder, and indexer, but the protocol should not require this.
@@ -448,15 +464,15 @@ A single node may be an advertiser, holder, and indexer, but the protocol should
 The main query endpoint is:
 
 ```text
-POST /federation/query
+POST /federation/v1/query
 ```
 
 A query request should include:
 
 ```json
 {
-  "queryType": "FindProviders",
-  "queryVersion": 1,
+  "query_type": "FindProviders",
+  "query_version": 1,
   "body": {},
   "limit": 50,
   "cursor": null
@@ -490,10 +506,10 @@ Example request:
 
 ```json
 {
-  "queryType": "FindStatements",
+  "query_type": "FindStatements",
   "body": {
-    "statementType": "ProvidesCapability",
-    "subject": "kairo:object:dosbox-x"
+    "statement_type": "ProvidesCapability",
+    "subject": "kairo:object:z6MkDosbox..."
   },
   "limit": 20
 }
@@ -509,11 +525,11 @@ Example request:
 
 ```json
 {
-  "queryType": "FindProviders",
+  "query_type": "FindProviders",
   "body": {
     "token": "provider:environment:msdos/x86",
     "constraints": {
-      "requiresEnvironment": "provider:environment:linux/x86_64"
+      "requires_environment": "provider:environment:linux/x86_64"
     }
   },
   "limit": 20
@@ -524,10 +540,10 @@ Example response item:
 
 ```json
 {
-  "statement": "kairo:statement:sha256:111",
-  "statementType": "ProvidesCapability",
-  "subject": "kairo:object:dosbox-x",
-  "holders": ["kairo:node:node-a"]
+  "statement": "kairo:statement:z6MkStmtA...",
+  "statement_type": "ProvidesCapability",
+  "subject": "kairo:object:z6MkDosbox...",
+  "holders": ["kairo:actor:z6MkNodeA..."]
 }
 ```
 
@@ -541,11 +557,11 @@ Example request:
 
 ```json
 {
-  "queryType": "FindSuccessfulResolutions",
+  "query_type": "FindSuccessfulResolutions",
   "body": {
     "object": "kairo:object:z6MkObject...",
-    "revision": "git:abc123",
-    "nativeEnvironment": "provider:environment:linux/x86_64"
+    "revision": "git:sha256:abc123...",
+    "native_environment": "provider:environment:linux/x86_64"
   },
   "limit": 20
 }
@@ -555,13 +571,13 @@ Example response item:
 
 ```json
 {
-  "statement": "kairo:statement:sha256:222",
-  "statementType": "ResolutionSucceeded",
-  "subject": "kairo:object:z6MkObject...:revision:git:abc123",
-  "resolution": "kairo:resolution:sha256:aaa",
-  "environmentPlan": "kairo:plan:sha256:bbb",
-  "buildArtifact": "kairo:build:sha256:ccc",
-  "holders": ["kairo:node:node-b"]
+  "statement": "kairo:statement:z6MkStmtB...",
+  "statement_type": "ResolutionSucceeded",
+  "subject": "kairo:object:z6MkObject...:revision:git:sha256:abc123...",
+  "resolution": "kairo:blob:z6MkResolution...",
+  "environment_plan": "kairo:blob:z6MkPlan...",
+  "build_artifact": "kairo:blob:z6MkBuild...",
+  "holders": ["kairo:actor:z6MkNodeB..."]
 }
 ```
 
@@ -575,9 +591,9 @@ Example request:
 
 ```json
 {
-  "queryType": "FindStatementHolders",
+  "query_type": "FindStatementHolders",
   "body": {
-    "statement": "kairo:statement:sha256:111"
+    "statement": "kairo:statement:z6MkStmtA..."
   }
 }
 ```
@@ -592,9 +608,9 @@ Example request:
 
 ```json
 {
-  "queryType": "FindBlobHolders",
+  "query_type": "FindBlobHolders",
   "body": {
-    "blob": "sha256:deadbeef..."
+    "blob": "kairo:blob:z6MkBlob..."
   }
 }
 ```
@@ -609,7 +625,7 @@ Example request:
 
 ```json
 {
-  "queryType": "FindAdvertisers",
+  "query_type": "FindAdvertisers",
   "body": {
     "token": "provider:environment:msdos/x86"
   }
@@ -626,7 +642,7 @@ Example request:
 
 ```json
 {
-  "queryType": "FindObjectsByName",
+  "query_type": "FindObjectsByName",
   "body": {
     "name": "gcc"
   },
@@ -763,7 +779,7 @@ Token indexes SHOULD support incremental synchronization.
 Example request:
 
 ```text
-GET /tokens/provider%3Aenvironment%3Amsdos%2Fx86?since=sha256:oldRoot
+GET /federation/v1/tokens/provider%3Aenvironment%3Amsdos%2Fx86?since=z6MkOldRoot...
 ```
 
 Example response:
@@ -771,12 +787,12 @@ Example response:
 ```json
 {
   "token": "provider:environment:msdos/x86",
-  "previousRoot": "sha256:oldRoot",
-  "currentRoot": "sha256:newRoot",
+  "previous_root": "z6MkOldRoot...",
+  "current_root": "z6MkNewRoot...",
   "added": [
     {
-      "statement": "kairo:statement:sha256:111",
-      "holders": ["kairo:node:node-a"]
+      "statement": "kairo:statement:z6MkStmtA...",
+      "holders": ["kairo:actor:z6MkNodeA..."]
     }
   ],
   "removed": [],
@@ -869,7 +885,7 @@ Content-addressed blobs should be fetchable by hash.
 Example:
 
 ```text
-GET /blobs/sha256:deadbeef...
+GET /federation/v1/blobs/z6MkBlob...
 ```
 
 The response should include:
@@ -880,7 +896,9 @@ Content-Length
 Digest
 ```
 
-Clients MUST verify the received blob hash.
+Clients MUST verify the received blob hash by recomputing the
+Blob ID from the bytes; the `Digest` header is a hint, never the
+check.
 
 Blobs may include:
 
@@ -979,7 +997,7 @@ Example:
 
 ```json
 {
-  "queryType": "FindProviders",
+  "query_type": "FindProviders",
   "body": {
     "token": "provider:tool:make"
   },
@@ -1031,7 +1049,11 @@ Remote Environment Plans must not be executed merely because they were discovere
 
 ## Minimal Viable Federation
 
-The first implementation should include:
+`DECISIONS.md` §16 narrows the first milestone to items 1, 3, 4,
+and 9 below, applied to object pull. Items 2 and 5–8 are the
+discovery phase.
+
+The full minimal federation should include:
 
 ```text
 1. HTTPS node discovery
@@ -1058,6 +1080,11 @@ automatic remote execution
 ---
 
 ## Suggested Implementation Order
+
+Steps 1 and 3 are done (`kairo-statement`, `kairo-store`).
+`PHASE_2_FEDERATION.md` covers step 2 for transfer types, plus
+transfer endpoints that precede step 4. Steps 5 onward wait for
+the discovery phase.
 
 1. Define statement envelope and canonical hashing.
 2. Define federation query/response types in `kairo-federation-core`.
@@ -1106,14 +1133,14 @@ Provider candidates for provider:environment:msdos/x86:
 
 1. DOSBox-X
    Object: kairo:object:z6MkDosbox...
-   Revision: git:def456
+   Revision: git:sha256:def456...
    Signed by: kairo:actor:z6MkDosboxMaintainer...
    Trust: accepted
    Known successful runs: 128
 
 2. PCem
    Object: kairo:object:z6MkPcem...
-   Revision: git:abc999
+   Revision: git:sha256:abc999...
    Signed by: kairo:actor:z6MkRetroCurator...
    Trust: manual review required
    Known successful runs: 12

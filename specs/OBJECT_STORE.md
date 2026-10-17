@@ -816,9 +816,9 @@ Suggested endpoints:
 GET /objects/{objectId}/refs
 GET /objects/{objectId}/git/bundle?revision={revision}
 GET /objects/{objectId}/git/pack?want={revision}
-GET /statements/{statementHash}
-GET /blobs/{blobHash}
-POST /federation/query
+GET /federation/v1/statements/{statementId}
+GET /federation/v1/blobs/{blobId}
+POST /federation/v1/query
 ```
 
 A simple first implementation may use Git bundles over HTTPS.

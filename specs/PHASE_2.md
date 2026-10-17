@@ -258,14 +258,27 @@ without inventing their own.
 `specs/FEDERATION.md` exists and describes the long-term design. Phase 2
 turns the spec into something a Kairo node can actually do.
 
-- [ ] Reconcile `specs/FEDERATION.md` with implementation reality (what
-      bundles already cover, what trust already covers).
-- [ ] Define the on-wire transport (likely HTTP + bundle stream, possibly
-      `application/vnd.kairo.bundle` content type).
-- [ ] Decide which bundle types federate: object bundles, trust bundles,
-      capability bundles, snapshot-closure bundles.
-- [ ] Implement push (`kairo federate push --to <url>`) and pull (`kairo
-      federate pull --from <url> --object <id>`).
+MVP shape locked in `DECISIONS.md` §16 (object pull, node as actor,
+opt-in publishing, per-record endpoints, local provenance); slice
+plan in `PHASE_2_FEDERATION.md`.
+
+- [x] Reconcile `specs/FEDERATION.md` with implementation reality (what
+      bundles already cover, what trust already covers). Its new
+      "Status" section scopes it to §16, and its examples follow the
+      real wire shape.
+- [x] Define the on-wire transport: per-record, content-addressed HTTP
+      endpoints under `/federation/v1/`, not a bundle stream (§16
+      sub-decision 5).
+- [x] Decide what federates: a published object's closure, including
+      object-scoped capability grants as authority evidence and actor
+      ids, but not `ActorTrust` (§16 sub-decision 4). Actor key
+      events are fetched per actor, separately from the object.
+      Snapshot-closure and trust transport come later.
+- [ ] Implement pull (`kairo fetch <object-ref> --from <url>`, `CLI.md` §15)
+      — `PHASE_2_FEDERATION.md` slices 1–6.
+- [ ] Implement push (command named with its decision; `CLI.md`
+      §16 `kairo sync` is the candidate) — after pull,
+      with node authentication (`PHASE_2_FEDERATION.md` §4).
 - [ ] Implement peer discovery and trust propagation policy
       (`specs/POLICY.md`) — explicitly *opt-in*; importing a peer's bundle
       never auto-trusts that peer.

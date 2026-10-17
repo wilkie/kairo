@@ -213,6 +213,13 @@ Responsibilities:
 
 Federation semantics are defined by `FEDERATION.md`, not by this document.
 
+The object-pull MVP (`DECISIONS.md` §16) does not run inside the
+daemon: serving is the separate, read-only `kairo-federation-http`
+process, and pulling is `kairo fetch --from <url>` writing to the store
+directly. The daemon stays Unix-socket only. `FederationService`
+integration (background sync, on-demand fetch for §9) comes after
+the MVP.
+
 ### 5.4 PolicyService
 
 Applies local policy.
