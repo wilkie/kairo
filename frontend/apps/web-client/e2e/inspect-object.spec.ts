@@ -27,9 +27,7 @@ test('renders every panel of the object-detail page for the rich Alpha fixture',
     // `exact: true` so e.g. the panel header "Genesis" doesn't
     // collide with the trust-panel empty state's "Waiting for
     // genesis" placeholder while the chained query resolves.
-    await expect(
-      page.getByRole('heading', { level: 3, name: title, exact: true }),
-    ).toBeVisible();
+    await expect(page.getByRole('heading', { level: 3, name: title, exact: true })).toBeVisible();
   }
 
   // Branch tip + tag rows from the Alpha fixture. We query

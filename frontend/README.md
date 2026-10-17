@@ -149,7 +149,8 @@ intercept fetch calls in Node.
 ## Scripts
 
 Run from `frontend/`. All are routed through Turborepo so caching
-+ task dependencies stay correct.
+
+- task dependencies stay correct.
 
 ```sh
 pnpm install          # Install workspace deps.

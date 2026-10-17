@@ -5,10 +5,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import {
-  BranchUpdateDialog,
-  type BranchUpdateDialogRevision,
-} from '../src/BranchUpdateDialog';
+import { BranchUpdateDialog, type BranchUpdateDialogRevision } from '../src/BranchUpdateDialog';
 
 const ALICE = 'zMockActor00000000000000000000000000000000';
 const ALPHA = 'zMockObject00000000000000000000000000000000';
@@ -123,9 +120,7 @@ describe('<BranchUpdateDialog />', () => {
     );
 
     await user.type(screen.getByTestId('branch-name-input'), 'release-1.x');
-    expect(screen.getByTestId('branch-mode-hint')).toHaveTextContent(
-      /creates a new branch/i,
-    );
+    expect(screen.getByTestId('branch-mode-hint')).toHaveTextContent(/creates a new branch/i);
     expect(screen.getByTestId('branch-update-submit')).toHaveTextContent(/create/i);
   });
 
@@ -229,9 +224,7 @@ describe('<BranchUpdateDialog />', () => {
     // Open the select and pick the older revision.
     await user.click(screen.getByRole('combobox', { name: /revision/i }));
     const listbox = await screen.findByRole('listbox');
-    await user.click(
-      within(listbox).getByTestId(`branch-revision-option-${REV_OLD.statementId}`),
-    );
+    await user.click(within(listbox).getByTestId(`branch-revision-option-${REV_OLD.statementId}`));
     await user.click(screen.getByTestId('branch-update-submit'));
 
     expect(onSubmit).toHaveBeenCalledWith({

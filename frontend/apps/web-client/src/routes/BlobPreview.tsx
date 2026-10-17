@@ -35,7 +35,12 @@ export function BlobPreviewRoute({ id }: BlobPreviewRouteProps) {
       <Typography variant="h2" component="h2">
         Blob
       </Typography>
-      <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
+      <Box
+        sx={{
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          wordBreak: 'break-all',
+        }}
+      >
         {idPrefix('blob')}
         {id}
       </Box>

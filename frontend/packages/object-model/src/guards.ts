@@ -32,9 +32,7 @@ export function isObjectGenesisStatement(
   return statementType(value) === 'ObjectGenesis';
 }
 
-export function isObjectBranchStatement(
-  value: StatementValue,
-): value is ObjectBranchStatementJson {
+export function isObjectBranchStatement(value: StatementValue): value is ObjectBranchStatementJson {
   return statementType(value) === 'ObjectBranch';
 }
 
@@ -44,8 +42,6 @@ export function isObjectVersionTagStatement(
   return statementType(value) === 'ObjectVersionTag';
 }
 
-export function isActorTrustStatement(
-  value: StatementValue,
-): value is ActorTrustStatementJson {
+export function isActorTrustStatement(value: StatementValue): value is ActorTrustStatementJson {
   return statementType(value) === 'ActorTrust';
 }

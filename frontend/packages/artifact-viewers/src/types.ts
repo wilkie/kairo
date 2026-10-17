@@ -44,10 +44,7 @@ export interface ArtifactViewerProps {
  * `inline-safe`; sandboxed and runtime-required viewers are
  * post-v1 (HTML applications, JavaScript, emulators, VM
  * displays etc.). */
-export type ArtifactViewerSafety =
-  | 'inline-safe'
-  | 'sandbox-required'
-  | 'daemon-runtime-required';
+export type ArtifactViewerSafety = 'inline-safe' | 'sandbox-required' | 'daemon-runtime-required';
 
 /** One entry in the registry. */
 export interface ArtifactViewer {

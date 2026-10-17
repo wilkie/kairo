@@ -93,8 +93,7 @@ export function BranchUpdateDialog(props: BranchUpdateDialogProps) {
 
   const trimmedName = name.trim();
   const isUpdate = trimmedName.length > 0 && existingNames.includes(trimmedName);
-  const canSubmit =
-    trimmedName.length > 0 && revisionStatementId.length > 0 && !submitting;
+  const canSubmit = trimmedName.length > 0 && revisionStatementId.length > 0 && !submitting;
 
   const handleSubmit = () => {
     onSubmit({ name: trimmedName, revisionStatementId });

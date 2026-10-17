@@ -35,8 +35,8 @@ export function BinaryArtifactViewer({ record }: ArtifactViewerProps) {
   return (
     <Stack spacing={2}>
       <Typography variant="body2">
-        This blob does not appear to be UTF-8 text. The inspector does not render binary
-        payloads inline; download the bytes to inspect them locally.
+        This blob does not appear to be UTF-8 text. The inspector does not render binary payloads
+        inline; download the bytes to inspect them locally.
       </Typography>
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>

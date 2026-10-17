@@ -912,8 +912,5 @@ export const mockRegistry: MockRegistry = {
     [mockIds.delta]: deltaValidation,
   },
 
-  keystoreActors: [
-    { actor_id: mockIds.alice },
-    { actor_id: mockIds.bob },
-  ],
+  keystoreActors: [{ actor_id: mockIds.alice }, { actor_id: mockIds.bob }],
 };

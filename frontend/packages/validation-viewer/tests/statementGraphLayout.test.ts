@@ -93,8 +93,7 @@ describe('computeLayout', () => {
   it('produces an height that fits every row', () => {
     const layout = computeLayout([rev('a'), rev('b', ['a']), rev('c', ['b'])]);
     // height = topMargin * 2 + (n-1) * rowHeight
-    const expected =
-      DEFAULT_LAYOUT_DIMS.topMargin * 2 + 2 * DEFAULT_LAYOUT_DIMS.rowHeight;
+    const expected = DEFAULT_LAYOUT_DIMS.topMargin * 2 + 2 * DEFAULT_LAYOUT_DIMS.rowHeight;
     expect(layout.height).toBe(expected);
   });
 });

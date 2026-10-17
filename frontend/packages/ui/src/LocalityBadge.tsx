@@ -25,10 +25,7 @@ export interface LocalityBadgeProps {
   state: LocalityState;
 }
 
-const STATE_TO_PRESENTATION: Record<
-  LocalityState,
-  { tone: StatusBadgeTone; label: string }
-> = {
+const STATE_TO_PRESENTATION: Record<LocalityState, { tone: StatusBadgeTone; label: string }> = {
   local: { tone: 'success', label: 'Local' },
   remote: { tone: 'info', label: 'Remote' },
   cached: { tone: 'info', label: 'Cached' },

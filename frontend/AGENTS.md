@@ -58,7 +58,7 @@ Concretely, when writing or reviewing frontend code:
 The Playwright suite under `apps/web-client/e2e/` is the
 practical enforcement point: when a failure traces back to
 "two heading elements for X" or "no element with role Y",
-fix the *component* (give it the right semantics), not the
+fix the _component_ (give it the right semantics), not the
 test (loosen the assertion to free text). The test catching
 the issue is the win.
 

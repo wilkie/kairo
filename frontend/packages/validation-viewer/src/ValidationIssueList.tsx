@@ -38,10 +38,7 @@ export function ValidationIssueList({ issues, renderRef, emptyState }: Validatio
   if (issues.length === 0) {
     return (
       emptyState ?? (
-        <EmptyState
-          title="No issues"
-          description="The daemon's verifier raised no findings."
-        />
+        <EmptyState title="No issues" description="The daemon's verifier raised no findings." />
       )
     );
   }
@@ -65,7 +62,9 @@ function IssueItem({
 }) {
   const refRenderer = renderRef ?? defaultRenderRef;
   const hasDetails =
-    issue.details !== null && typeof issue.details === 'object' && Object.keys(issue.details).length > 0;
+    issue.details !== null &&
+    typeof issue.details === 'object' &&
+    Object.keys(issue.details).length > 0;
   return (
     <Stack spacing={1}>
       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexWrap: 'wrap', rowGap: 1 }}>

@@ -39,9 +39,7 @@ export function BranchUpdateDialogContainer(props: BranchUpdateDialogContainerPr
   const branchesQ = useBranches(objectId);
   const revisionsQ = useRevisions(objectId);
   const mutation = useUpdateBranch();
-  const [stickyError, setStickyError] = useState<BranchUpdateDialogError | undefined>(
-    undefined,
-  );
+  const [stickyError, setStickyError] = useState<BranchUpdateDialogError | undefined>(undefined);
 
   if (sessionQ.data === null || sessionQ.data === undefined) {
     return null;
@@ -62,8 +60,7 @@ export function BranchUpdateDialogContainer(props: BranchUpdateDialogContainerPr
       createdAt: row.created_at,
     }));
 
-  const errorFromMutation =
-    mutation.error !== null ? toDialogError(mutation.error) : undefined;
+  const errorFromMutation = mutation.error !== null ? toDialogError(mutation.error) : undefined;
   const effectiveError = errorFromMutation ?? stickyError;
 
   const handleClose = () => {

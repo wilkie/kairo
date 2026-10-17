@@ -191,16 +191,10 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
       );
     },
     async getStatement(statementId) {
-      return getJson<StatementValue>(
-        http,
-        `api/v1/statements/${encodeURIComponent(statementId)}`,
-      );
+      return getJson<StatementValue>(http, `api/v1/statements/${encodeURIComponent(statementId)}`);
     },
     async listBranches(objectId) {
-      return getJson<BranchTipDto[]>(
-        http,
-        `api/v1/branches/${encodeURIComponent(objectId)}`,
-      );
+      return getJson<BranchTipDto[]>(http, `api/v1/branches/${encodeURIComponent(objectId)}`);
     },
     async getLatestBranch(objectId, name, opts) {
       return getJson<ObjectBranchStatementJson>(
@@ -223,10 +217,7 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
       );
     },
     async listRevisions(objectId) {
-      return getJson<RevisionHeadDto[]>(
-        http,
-        `api/v1/revisions/${encodeURIComponent(objectId)}`,
-      );
+      return getJson<RevisionHeadDto[]>(http, `api/v1/revisions/${encodeURIComponent(objectId)}`);
     },
     async getTrust(byActor, ofActor) {
       return getJson<ActorTrustStatementJson>(
@@ -235,10 +226,7 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
       );
     },
     async listTrustAbout(ofActor) {
-      return getJson<TrustHeadDto[]>(
-        http,
-        `api/v1/trust/about/${encodeURIComponent(ofActor)}`,
-      );
+      return getJson<TrustHeadDto[]>(http, `api/v1/trust/about/${encodeURIComponent(ofActor)}`);
     },
     async listCapabilitiesFromGrantor(grantorId) {
       return getJson<CapabilityHeadDto[]>(

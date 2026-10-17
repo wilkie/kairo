@@ -18,12 +18,8 @@ type Schemas = components['schemas'];
 const aliceActor = mockRegistry.actors[registryIds.alice];
 const alphaObject = mockRegistry.objects[registryIds.alpha];
 const aliceSelfTrust = mockRegistry.trustPair[`${registryIds.alice}:${registryIds.alice}`];
-const alphaHeadBranch = mockRegistry.branchLatest[
-  `${registryIds.alpha}:head:${registryIds.alice}`
-];
-const alphaV1Tag = mockRegistry.versionTagLatest[
-  `${registryIds.alpha}:1.0.0:${registryIds.alice}`
-];
+const alphaHeadBranch = mockRegistry.branchLatest[`${registryIds.alpha}:head:${registryIds.alice}`];
+const alphaV1Tag = mockRegistry.versionTagLatest[`${registryIds.alpha}:1.0.0:${registryIds.alice}`];
 const aliceCapabilityHeads = mockRegistry.capabilitiesFromGrantor[registryIds.alice] ?? [];
 const alphaRevisionStmt = mockRegistry.statements[registryIds.alphaRev1Stmt];
 const alphaBlobBytes = mockRegistry.blobs[registryIds.alphaManifestBlob] ?? new Uint8Array();

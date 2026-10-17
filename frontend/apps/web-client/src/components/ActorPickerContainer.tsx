@@ -16,11 +16,7 @@ import {
   useSignOut,
   type KairoApiClientError,
 } from '@kairo/api-client';
-import {
-  ActorPicker,
-  type ActorPickerError,
-  type ActorPickerProps,
-} from '@kairo/ui';
+import { ActorPicker, type ActorPickerError, type ActorPickerProps } from '@kairo/ui';
 
 export function ActorPickerContainer() {
   const sessionQuery = useSession();

@@ -68,7 +68,12 @@ export function ActorDetail({ id }: ActorDetailProps) {
       <Typography variant="h2" component="h2">
         Actor
       </Typography>
-      <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
+      <Box
+        sx={{
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          wordBreak: 'break-all',
+        }}
+      >
         {idPrefix('actor')}
         {id}
       </Box>
@@ -257,7 +262,10 @@ function GenesisFields({ data }: { data: ActorGenesisJson }) {
         value={
           <Stack spacing={1}>
             {data.attestation_keys.map((key, idx) => (
-              <Box key={`${key.algorithm}:${key.bytes}:${idx}`} sx={{ display: 'grid', rowGap: 0.25 }}>
+              <Box
+                key={`${key.algorithm}:${key.bytes}:${idx}`}
+                sx={{ display: 'grid', rowGap: 0.25 }}
+              >
                 <span>
                   <code>{key.algorithm}</code>
                 </span>
@@ -273,7 +281,14 @@ function GenesisFields({ data }: { data: ActorGenesisJson }) {
 
 function KeyValue({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: '12rem 1fr', columnGap: 2, alignItems: 'baseline' }}>
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: '12rem 1fr',
+        columnGap: 2,
+        alignItems: 'baseline',
+      }}
+    >
       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
         {label}
       </Typography>

@@ -9,7 +9,9 @@ import Typography from '@mui/material/Typography';
 export function Settings() {
   return (
     <>
-      <Typography variant="h2" component="h2">Settings</Typography>
+      <Typography variant="h2" component="h2">
+        Settings
+      </Typography>
       <Panel title="Inspector settings">
         <EmptyState
           title="Settings are intentionally empty in v1"

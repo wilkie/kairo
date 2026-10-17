@@ -48,7 +48,9 @@ export function QueryStatusBoundary<T>({
       <ErrorDisplay
         title={errorTitle ?? 'Could not load this section'}
         message={errorMessage ?? 'The daemon returned an error.'}
-        detail={query.error !== undefined && query.error !== null ? renderDetail(query.error) : undefined}
+        detail={
+          query.error !== undefined && query.error !== null ? renderDetail(query.error) : undefined
+        }
       />
     );
   }

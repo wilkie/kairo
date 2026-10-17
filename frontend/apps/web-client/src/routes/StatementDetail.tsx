@@ -49,7 +49,12 @@ export function StatementDetail({ id }: StatementDetailProps) {
       <Typography variant="h2" component="h2">
         Statement
       </Typography>
-      <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
+      <Box
+        sx={{
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          wordBreak: 'break-all',
+        }}
+      >
         {idPrefix('statement')}
         {id}
       </Box>
@@ -71,10 +76,10 @@ function StatementBody({ value }: { value: StatementValue }) {
         title={kindLabel}
         description={
           <>
-            Typed summary derived from the body&rsquo;s kind discriminator. This page does not
-            run verification &mdash; navigate to the owning object to see the daemon&rsquo;s
-            validation status (per <code>WEB_CLIENT.md</code> &sect;10, raw statement views must
-            never imply validity).
+            Typed summary derived from the body&rsquo;s kind discriminator. This page does not run
+            verification &mdash; navigate to the owning object to see the daemon&rsquo;s validation
+            status (per <code>WEB_CLIENT.md</code> &sect;10, raw statement views must never imply
+            validity).
           </>
         }
         actions={
@@ -162,7 +167,13 @@ function ObjectVersionTagSummary({ stmt }: { stmt: ObjectVersionTagStatementJson
       <KeyValue label="Version" value={<strong>{stmt.body.version}</strong>} />
       <KeyValue
         label="Target"
-        value={target === null || target === undefined || target === '' ? <em>(none)</em> : <IdText id={target} />}
+        value={
+          target === null || target === undefined || target === '' ? (
+            <em>(none)</em>
+          ) : (
+            <IdText id={target} />
+          )
+        }
       />
       <KeyValue
         label="Supersedes"
@@ -215,8 +226,8 @@ function FallbackSummary({ value }: { value: StatementValue }) {
   return (
     <Stack spacing={1.5}>
       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
-        No dedicated summary for this statement kind yet — the envelope below carries the full body. Add
-        a typed guard in <code>@kairo/object-model</code> to surface it here.
+        No dedicated summary for this statement kind yet — the envelope below carries the full body.
+        Add a typed guard in <code>@kairo/object-model</code> to surface it here.
       </Typography>
       {actor !== undefined && (
         <KeyValue label="Signer" value={<IdLink kind="actor" id={actor} />} />
@@ -228,7 +239,14 @@ function FallbackSummary({ value }: { value: StatementValue }) {
 
 function KeyValue({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: '12rem 1fr', columnGap: 2, alignItems: 'baseline' }}>
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: '12rem 1fr',
+        columnGap: 2,
+        alignItems: 'baseline',
+      }}
+    >
       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
         {label}
       </Typography>

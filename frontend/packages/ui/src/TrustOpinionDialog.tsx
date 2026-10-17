@@ -51,15 +51,7 @@ export interface TrustOpinionDialogProps {
 }
 
 export function TrustOpinionDialog(props: TrustOpinionDialogProps) {
-  const {
-    open,
-    onClose,
-    trustedActor,
-    byActor,
-    submitting = false,
-    submitError,
-    onSubmit,
-  } = props;
+  const { open, onClose, trustedActor, byActor, submitting = false, submitError, onSubmit } = props;
 
   const [decision, setDecision] = useState<TrustDecision>('trusted');
   const [reason, setReason] = useState('');
@@ -106,19 +98,13 @@ export function TrustOpinionDialog(props: TrustOpinionDialogProps) {
         </>
       }
     >
-      <Box
-        data-testid="trust-opinion-form"
-      >
+      <Box data-testid="trust-opinion-form">
         <Stack spacing={2}>
           <Box>
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               About
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{ fontFamily: 'monospace' }}
-              title={trustedActor}
-            >
+            <Typography variant="body1" sx={{ fontFamily: 'monospace' }} title={trustedActor}>
               {truncateActorId(trustedActor)}
             </Typography>
           </Box>
@@ -126,11 +112,7 @@ export function TrustOpinionDialog(props: TrustOpinionDialogProps) {
             <Typography variant="body2" sx={{ color: 'text.secondary' }}>
               Signing as
             </Typography>
-            <Typography
-              variant="body1"
-              sx={{ fontFamily: 'monospace' }}
-              title={byActor}
-            >
+            <Typography variant="body1" sx={{ fontFamily: 'monospace' }} title={byActor}>
               {truncateActorId(byActor)}
             </Typography>
           </Box>

@@ -384,8 +384,7 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
     }),
 
     http.get('*/api/v1/sessions/current', ({ request }) => {
-      const id =
-        parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
+      const id = parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
       if (id === null) return noSession();
       const session = sessions.get(id);
       if (session === undefined) return noSession();
@@ -393,8 +392,7 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
     }),
 
     http.delete('*/api/v1/sessions/current', ({ request }) => {
-      const id =
-        parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
+      const id = parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
       if (id !== null) sessions.delete(id);
       activeMockSessionId = null;
       return new HttpResponse(null, {
@@ -408,18 +406,12 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
     // implements the cookie-mode (daemon-side body signing)
     // path; signed-envelope mode is exercised by the Rust
     // integration tests against the real daemon.
-    http.post('*/api/v1/statements', async ({ request }) =>
-      handleSessionWrite(request, registry),
-    ),
+    http.post('*/api/v1/statements', async ({ request }) => handleSessionWrite(request, registry)),
   ];
 }
 
-async function handleSessionWrite(
-  request: Request,
-  registry: MockRegistry,
-) {
-  const sessionId =
-    parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
+async function handleSessionWrite(request: Request, registry: MockRegistry) {
+  const sessionId = parseSessionCookie(request.headers.get('cookie')) ?? activeMockSessionId;
   if (sessionId === null) {
     return HttpResponse.json(
       errorEnvelope(
@@ -431,10 +423,9 @@ async function handleSessionWrite(
   }
   const session = sessions.get(sessionId);
   if (session === undefined) {
-    return HttpResponse.json(
-      errorEnvelope('no_session', 'no live session for that cookie'),
-      { status: 401 },
-    );
+    return HttpResponse.json(errorEnvelope('no_session', 'no live session for that cookie'), {
+      status: 401,
+    });
   }
 
   let payload: components['schemas']['SessionWriteRequest'];
@@ -465,11 +456,7 @@ async function handleSessionWrite(
   }
 }
 
-function handleSessionActorTrust(
-  byActor: string,
-  body: unknown,
-  registry: MockRegistry,
-) {
+function handleSessionActorTrust(byActor: string, body: unknown, registry: MockRegistry) {
   if (typeof body !== 'object' || body === null) {
     return badRequest('invalid ActorTrust body shape');
   }
@@ -548,11 +535,7 @@ function handleSessionActorTrust(
   return HttpResponse.json(successEnvelope(result));
 }
 
-function handleSessionObjectBranch(
-  byActor: string,
-  body: unknown,
-  registry: MockRegistry,
-) {
+function handleSessionObjectBranch(byActor: string, body: unknown, registry: MockRegistry) {
   if (typeof body !== 'object' || body === null) {
     return badRequest('invalid ObjectBranch body shape');
   }
@@ -582,10 +565,9 @@ function handleSessionObjectBranch(
   const objectId = fields.object;
   const objectGenesis = registry.objects[objectId];
   if (objectGenesis === undefined) {
-    return HttpResponse.json(
-      errorEnvelope('not_found', `object not found: ${objectId}`),
-      { status: 404 },
-    );
+    return HttpResponse.json(errorEnvelope('not_found', `object not found: ${objectId}`), {
+      status: 404,
+    });
   }
 
   // Root-authority check: only the object's creator may write
@@ -604,8 +586,7 @@ function handleSessionObjectBranch(
 
   const name = fields.name;
   const revision = fields.revision;
-  const supersedes =
-    typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
+  const supersedes = typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
   const createdAt = rfc3339(new Date());
   const statementId = `zMockSessionBranchStmt${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 
@@ -620,9 +601,7 @@ function handleSessionObjectBranch(
     statement_id: statementId,
     created_at: createdAt,
   };
-  const others = priorTips.filter(
-    (entry) => !(entry.actor === byActor && entry.name === name),
-  );
+  const others = priorTips.filter((entry) => !(entry.actor === byActor && entry.name === name));
   registry.branchTips[objectId] = [...others, tip];
 
   // Seed the statement body so navigating to the new id
@@ -689,11 +668,7 @@ function mockMayWrite(
   });
 }
 
-function handleSessionObjectVersionTag(
-  byActor: string,
-  body: unknown,
-  registry: MockRegistry,
-) {
+function handleSessionObjectVersionTag(byActor: string, body: unknown, registry: MockRegistry) {
   if (typeof body !== 'object' || body === null) {
     return badRequest('invalid ObjectVersionTag body shape');
   }
@@ -726,10 +701,9 @@ function handleSessionObjectVersionTag(
 
   const objectId = fields.object;
   if (registry.objects[objectId] === undefined) {
-    return HttpResponse.json(
-      errorEnvelope('not_found', `object not found: ${objectId}`),
-      { status: 404 },
-    );
+    return HttpResponse.json(errorEnvelope('not_found', `object not found: ${objectId}`), {
+      status: 404,
+    });
   }
   if (!mockMayWrite(registry, byActor, objectId, 'ObjectVersionTag')) {
     return HttpResponse.json(
@@ -743,8 +717,7 @@ function handleSessionObjectVersionTag(
 
   const version = fields.version;
   const target = fields.target;
-  const supersedes =
-    typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
+  const supersedes = typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
   const createdAt = rfc3339(new Date());
   const statementId = `zMockSessionTagStmt${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 

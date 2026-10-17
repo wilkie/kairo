@@ -11,15 +11,8 @@
 // between trigger click and dialog mount).
 
 import { useState } from 'react';
-import {
-  useCreateTrustOpinion,
-  useSession,
-  type KairoApiClientError,
-} from '@kairo/api-client';
-import {
-  TrustOpinionDialog,
-  type TrustOpinionDialogError,
-} from '@kairo/ui';
+import { useCreateTrustOpinion, useSession, type KairoApiClientError } from '@kairo/api-client';
+import { TrustOpinionDialog, type TrustOpinionDialogError } from '@kairo/ui';
 
 export interface TrustOpinionDialogContainerProps {
   open: boolean;
@@ -37,9 +30,7 @@ export function TrustOpinionDialogContainer(props: TrustOpinionDialogContainerPr
   const { open, onClose, trustedActor, onSubmitted } = props;
   const sessionQ = useSession();
   const mutation = useCreateTrustOpinion();
-  const [stickyError, setStickyError] = useState<TrustOpinionDialogError | undefined>(
-    undefined,
-  );
+  const [stickyError, setStickyError] = useState<TrustOpinionDialogError | undefined>(undefined);
 
   if (sessionQ.data === null || sessionQ.data === undefined) {
     // Defensive: trigger should already be hidden when
@@ -48,8 +39,7 @@ export function TrustOpinionDialogContainer(props: TrustOpinionDialogContainerPr
   }
 
   const byActor = sessionQ.data.actor_id;
-  const errorFromMutation =
-    mutation.error !== null ? toDialogError(mutation.error) : undefined;
+  const errorFromMutation = mutation.error !== null ? toDialogError(mutation.error) : undefined;
   const effectiveError = errorFromMutation ?? stickyError;
 
   const handleClose = () => {

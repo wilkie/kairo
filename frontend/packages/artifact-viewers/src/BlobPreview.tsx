@@ -18,10 +18,7 @@ import { ErrorDisplay } from '@kairo/ui';
 import Skeleton from '@mui/material/Skeleton';
 import Stack from '@mui/material/Stack';
 import { useMemo } from 'react';
-import {
-  defaultArtifactViewers,
-  pickViewer,
-} from './registry';
+import { defaultArtifactViewers, pickViewer } from './registry';
 import { sniffArtifact } from './sniffer';
 import type { ArtifactRecord, ArtifactViewer } from './types';
 

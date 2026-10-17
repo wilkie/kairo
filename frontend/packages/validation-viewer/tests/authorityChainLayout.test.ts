@@ -46,11 +46,7 @@ describe('buildAuthorityChains', () => {
 
   it('walks back through delegation hops, root-first', () => {
     // Alice → Bob → Carol → Dave
-    const caps = [
-      grant(ROOT, BOB, 's1'),
-      grant(BOB, CAROL, 's2'),
-      grant(CAROL, DAVE, 's3'),
-    ];
+    const caps = [grant(ROOT, BOB, 's1'), grant(BOB, CAROL, 's2'), grant(CAROL, DAVE, 's3')];
     const chains = buildAuthorityChains(ROOT, caps);
     // One chain per cap; pick the most-grantee'd one (Dave) and
     // verify it walks all the way back.
@@ -111,9 +107,7 @@ describe('buildAuthorityChains', () => {
     const caps = [grant(BOB, CAROL, 's1'), grant(CAROL, BOB, 's2')];
     const chains = buildAuthorityChains(ROOT, caps);
     // Pick the chain explaining BOB-as-grantee (Carol granted Bob).
-    const bobChain = chains.find(
-      (c) => c.head.grantee === BOB && c.head.grantor === CAROL,
-    )!;
+    const bobChain = chains.find((c) => c.head.grantee === BOB && c.head.grantor === CAROL)!;
     expect(bobChain.reachesRoot).toBe(false);
     // Should not loop forever; the chain length is bounded by
     // the number of distinct grantees we visit before a repeat.

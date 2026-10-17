@@ -86,9 +86,7 @@ export function AuthorityChainView<C extends AuthorityChainInputCapability>({
 
   const chains = buildAuthorityChains(rootActor, capabilities);
   const ariaLabel =
-    chains.length === 1
-      ? 'Authority chains: 1 chain'
-      : `Authority chains: ${chains.length} chains`;
+    chains.length === 1 ? 'Authority chains: 1 chain' : `Authority chains: ${chains.length} chains`;
 
   return (
     <div
@@ -158,8 +156,7 @@ function ActorBox({ children }: { children: ReactNode }) {
         padding: '4px 10px',
         borderRadius: 6,
         border: '1px solid var(--mui-palette-divider, rgba(0,0,0,0.12))',
-        backgroundColor:
-          'var(--mui-palette-background-paper, rgba(255,255,255,0.04))',
+        backgroundColor: 'var(--mui-palette-background-paper, rgba(255,255,255,0.04))',
         // Keep IDs from forcing the row to wrap mid-id.
         whiteSpace: 'nowrap',
       }}

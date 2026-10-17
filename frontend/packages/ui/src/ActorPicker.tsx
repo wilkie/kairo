@@ -259,11 +259,7 @@ function renderConfirm(args: {
       <Typography variant="body2" sx={{ mb: 1 }}>
         Sign in as
       </Typography>
-      <Typography
-        variant="body1"
-        sx={{ fontFamily: 'monospace', mb: 2 }}
-        title={actorId}
-      >
+      <Typography variant="body1" sx={{ fontFamily: 'monospace', mb: 2 }} title={actorId}>
         {truncateActorId(actorId)}
       </Typography>
       {signInError !== undefined && (
@@ -294,4 +290,3 @@ function renderConfirm(args: {
     </Box>
   );
 }
-

@@ -44,7 +44,11 @@ export function EmptyState({ title, description, actions }: EmptyStateProps) {
           {description}
         </Typography>
       )}
-      {actions !== undefined && <Stack direction="row" spacing={1} sx={{ pt: 1 }}>{actions}</Stack>}
+      {actions !== undefined && (
+        <Stack direction="row" spacing={1} sx={{ pt: 1 }}>
+          {actions}
+        </Stack>
+      )}
     </Box>
   );
 }

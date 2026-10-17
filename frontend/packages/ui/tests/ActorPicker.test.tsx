@@ -32,12 +32,7 @@ describe('truncateActorId', () => {
 describe('<ActorPicker /> — anonymous', () => {
   it('renders a sign-in button', () => {
     render(
-      <ActorPicker
-        session={null}
-        actors={[ALICE, BOB]}
-        onSignIn={() => {}}
-        onSignOut={() => {}}
-      />,
+      <ActorPicker session={null} actors={[ALICE, BOB]} onSignIn={() => {}} onSignOut={() => {}} />,
     );
     expect(screen.getByRole('button', { name: /sign in/i })).toBeInTheDocument();
     // The signed-in label should not be present.
@@ -47,12 +42,7 @@ describe('<ActorPicker /> — anonymous', () => {
   it('opens a popover listing keystore actors', async () => {
     const user = userEvent.setup();
     render(
-      <ActorPicker
-        session={null}
-        actors={[ALICE, BOB]}
-        onSignIn={() => {}}
-        onSignOut={() => {}}
-      />,
+      <ActorPicker session={null} actors={[ALICE, BOB]} onSignIn={() => {}} onSignOut={() => {}} />,
     );
 
     await user.click(screen.getByRole('button', { name: /sign in/i }));
@@ -65,14 +55,7 @@ describe('<ActorPicker /> — anonymous', () => {
 
   it('shows a hint when the keystore is empty', async () => {
     const user = userEvent.setup();
-    render(
-      <ActorPicker
-        session={null}
-        actors={[]}
-        onSignIn={() => {}}
-        onSignOut={() => {}}
-      />,
-    );
+    render(<ActorPicker session={null} actors={[]} onSignIn={() => {}} onSignOut={() => {}} />);
 
     await user.click(screen.getByRole('button', { name: /sign in/i }));
 
@@ -102,12 +85,7 @@ describe('<ActorPicker /> — confirmation step', () => {
   it('shows confirm after selecting an actor', async () => {
     const user = userEvent.setup();
     render(
-      <ActorPicker
-        session={null}
-        actors={[ALICE]}
-        onSignIn={() => {}}
-        onSignOut={() => {}}
-      />,
+      <ActorPicker session={null} actors={[ALICE]} onSignIn={() => {}} onSignOut={() => {}} />,
     );
 
     await user.click(screen.getByRole('button', { name: /sign in/i }));
@@ -122,12 +100,7 @@ describe('<ActorPicker /> — confirmation step', () => {
     const user = userEvent.setup();
     const onSignIn = vi.fn();
     render(
-      <ActorPicker
-        session={null}
-        actors={[ALICE]}
-        onSignIn={onSignIn}
-        onSignOut={() => {}}
-      />,
+      <ActorPicker session={null} actors={[ALICE]} onSignIn={onSignIn} onSignOut={() => {}} />,
     );
 
     await user.click(screen.getByRole('button', { name: /sign in/i }));
@@ -142,12 +115,7 @@ describe('<ActorPicker /> — confirmation step', () => {
     const user = userEvent.setup();
     const onSignIn = vi.fn();
     render(
-      <ActorPicker
-        session={null}
-        actors={[ALICE, BOB]}
-        onSignIn={onSignIn}
-        onSignOut={() => {}}
-      />,
+      <ActorPicker session={null} actors={[ALICE, BOB]} onSignIn={onSignIn} onSignOut={() => {}} />,
     );
 
     await user.click(screen.getByRole('button', { name: /sign in/i }));

@@ -38,12 +38,7 @@ export type {
 
 export { createTransport, type TransportOptions } from './transport';
 
-export {
-  unwrapEnvelope,
-  EnvelopeError,
-  apiErrorCodeSchema,
-  type ApiErrorCode,
-} from './envelope';
+export { unwrapEnvelope, EnvelopeError, apiErrorCodeSchema, type ApiErrorCode } from './envelope';
 export type { ApiEnvelope, ApiSuccess, ApiFailure } from './envelope';
 
 export { KairoApiClientError, type ApiClientError } from './error';

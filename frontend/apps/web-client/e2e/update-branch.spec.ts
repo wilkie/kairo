@@ -51,9 +51,7 @@ test.describe('update branch', () => {
 
     // Type the existing branch name → dialog flips to Update.
     await page.getByTestId('branch-name-input').fill('head');
-    await expect(page.getByTestId('branch-mode-hint')).toContainText(
-      /replaces your prior tip/i,
-    );
+    await expect(page.getByTestId('branch-mode-hint')).toContainText(/replaces your prior tip/i);
     await expect(page.getByTestId('branch-update-submit')).toContainText(/update/i);
     await page.getByTestId('branch-update-submit').click();
 
@@ -75,9 +73,7 @@ test.describe('update branch', () => {
 
     await expect(page.getByTestId('branch-update-form')).toHaveCount(0);
     // The Branches table grows: a new row with the fresh name.
-    await expect(
-      page.getByRole('row').filter({ hasText: 'release-2.x' }),
-    ).toBeVisible();
+    await expect(page.getByRole('row').filter({ hasText: 'release-2.x' })).toBeVisible();
   });
 
   test('non-owner sees a 403 surface inline and the panel is untouched', async ({ page }) => {

@@ -89,7 +89,12 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
       <Typography variant="h2" component="h2">
         Object
       </Typography>
-      <Box sx={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', wordBreak: 'break-all' }}>
+      <Box
+        sx={{
+          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          wordBreak: 'break-all',
+        }}
+      >
         {idPrefix('object')}
         {id}
       </Box>
@@ -247,9 +252,7 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
                 rootActor={createdBy}
                 capabilities={rows}
                 renderActorLabel={(actorId) => <IdLink kind="actor" id={actorId} />}
-                renderGrantEdge={(statementId) => (
-                  <IdLink kind="statement" id={statementId} />
-                )}
+                renderGrantEdge={(statementId) => <IdLink kind="statement" id={statementId} />}
                 emptyMessage="No grants on this object."
               />
             )}
@@ -267,7 +270,10 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
         actions={<LocalityBadge state="local" />}
       >
         {createdBy === undefined ? (
-          <EmptyState title="Waiting for genesis" description="Trust opinions render once the object's signer is known." />
+          <EmptyState
+            title="Waiting for genesis"
+            description="Trust opinions render once the object's signer is known."
+          />
         ) : (
           <QueryStatusBoundary query={trustQ}>
             {(rows) => <TrustTable rows={rows} subjectActor={createdBy} />}
@@ -319,10 +325,7 @@ function GenesisFields({ data }: { data: ObjectGenesisStatementJson }) {
   return (
     <Stack spacing={1.5}>
       <KeyValue label="Object kind" value={<code>{body.object_kind}</code>} />
-      <KeyValue
-        label="Created by"
-        value={<IdLink kind="actor" id={body.created_by} />}
-      />
+      <KeyValue label="Created by" value={<IdLink kind="actor" id={body.created_by} />} />
       <KeyValue label="Created at" value={body.created_at} />
       <KeyValue label="Nonce" value={<IdText id={body.nonce} />} />
     </Stack>
@@ -345,7 +348,12 @@ function BranchesTable({ rows }: { rows: ReadonlyArray<BranchTipDto> }) {
       columns={columns}
       rows={rows}
       rowKey={(r) => `${r.actor}:${r.name}`}
-      emptyState={<EmptyState title="No branches" description="Nothing has been published as a branch tip for this object." />}
+      emptyState={
+        <EmptyState
+          title="No branches"
+          description="Nothing has been published as a branch tip for this object."
+        />
+      }
     />
   );
 }
@@ -366,7 +374,9 @@ function TagsTable({ rows }: { rows: ReadonlyArray<VersionTagHeadDto> }) {
       columns={columns}
       rows={rows}
       rowKey={(r) => `${r.actor}:${r.version}`}
-      emptyState={<EmptyState title="No tags" description="Nothing has been tagged on this object." />}
+      emptyState={
+        <EmptyState title="No tags" description="Nothing has been tagged on this object." />
+      }
     />
   );
 }
@@ -409,7 +419,12 @@ function RevisionsTable({ rows }: { rows: ReadonlyArray<RevisionHeadDto> }) {
       columns={columns}
       rows={rows}
       rowKey={(r) => r.statement_id}
-      emptyState={<EmptyState title="No revisions" description="No ObjectRevision statements observe this object yet." />}
+      emptyState={
+        <EmptyState
+          title="No revisions"
+          description="No ObjectRevision statements observe this object yet."
+        />
+      }
     />
   );
 }
@@ -435,7 +450,12 @@ function CapabilitiesTable({ rows }: { rows: ReadonlyArray<CapabilityHeadDto> })
       columns={columns}
       rows={rows}
       rowKey={(r) => r.statement_id}
-      emptyState={<EmptyState title="No capability heads" description="No actor has granted capabilities scoped to this object." />}
+      emptyState={
+        <EmptyState
+          title="No capability heads"
+          description="No actor has granted capabilities scoped to this object."
+        />
+      }
     />
   );
 }
@@ -477,7 +497,14 @@ function TrustTable({
 
 function KeyValue({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <Box sx={{ display: 'grid', gridTemplateColumns: '10rem 1fr', columnGap: 2, alignItems: 'baseline' }}>
+    <Box
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: '10rem 1fr',
+        columnGap: 2,
+        alignItems: 'baseline',
+      }}
+    >
       <Typography variant="body2" sx={{ color: 'text.secondary' }}>
         {label}
       </Typography>
@@ -535,4 +562,3 @@ function DecisionBadge({ decision }: { decision: TrustHeadDto['decision'] }) {
   }
   return <StatusBadge tone="neutral">{decision}</StatusBadge>;
 }
-

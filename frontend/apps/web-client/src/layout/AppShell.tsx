@@ -95,12 +95,11 @@ export function AppShell() {
  * MUI ListItemButton. We bridge the two by wrapping `Link` in a
  * `forwardRef` shim so MUI's ref forwarding lands on the
  * underlying anchor. */
-const RouterLink = forwardRef<HTMLAnchorElement, LinkComponentProps<'a'>>(function RouterLink(
-  props,
-  ref,
-) {
-  return <Link {...props} ref={ref} />;
-});
+const RouterLink = forwardRef<HTMLAnchorElement, LinkComponentProps<'a'>>(
+  function RouterLink(props, ref) {
+    return <Link {...props} ref={ref} />;
+  },
+);
 
 function NavLinkItem({ item }: { item: NavItem }) {
   const matchRoute = useMatchRoute();
@@ -110,11 +109,7 @@ function NavLinkItem({ item }: { item: NavItem }) {
   // implicitly to re-render on route change.
   useMatch({ strict: false });
   return (
-    <ListItemButton
-      component={RouterLink}
-      to={item.to}
-      selected={selected}
-    >
+    <ListItemButton component={RouterLink} to={item.to} selected={selected}>
       <ListItemIcon>{item.icon}</ListItemIcon>
       <ListItemText primary={item.label} />
     </ListItemButton>

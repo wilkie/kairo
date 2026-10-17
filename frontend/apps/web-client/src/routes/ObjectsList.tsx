@@ -8,7 +8,9 @@ import Typography from '@mui/material/Typography';
 export function ObjectsList() {
   return (
     <>
-      <Typography variant="h2" component="h2">Objects</Typography>
+      <Typography variant="h2" component="h2">
+        Objects
+      </Typography>
       <Panel title="Object browser">
         <EmptyState
           title="Object listing is a slice-8 follow-up"

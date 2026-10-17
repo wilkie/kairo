@@ -1,9 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
-import {
-  TrustOpinionDialog,
-  type TrustDecision,
-} from '../TrustOpinionDialog';
+import { TrustOpinionDialog, type TrustDecision } from '../TrustOpinionDialog';
 import { Button } from '../Button';
 
 const alice = 'zMockActor00000000000000000000000000000000';
@@ -68,7 +65,13 @@ function InteractiveDemo() {
         onClose={() => setOpen(false)}
         trustedActor={bob}
         byActor={alice}
-        onSubmit={({ decision, reason }: { decision: TrustDecision; reason: string | undefined }) => {
+        onSubmit={({
+          decision,
+          reason,
+        }: {
+          decision: TrustDecision;
+          reason: string | undefined;
+        }) => {
           setLast(`${decision}${reason !== undefined ? ` — ${reason}` : ''}`);
           setOpen(false);
         }}

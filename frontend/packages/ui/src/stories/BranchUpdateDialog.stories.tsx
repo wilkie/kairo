@@ -1,9 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react';
 import { useState } from 'react';
-import {
-  BranchUpdateDialog,
-  type BranchUpdateDialogRevision,
-} from '../BranchUpdateDialog';
+import { BranchUpdateDialog, type BranchUpdateDialogRevision } from '../BranchUpdateDialog';
 import { Button } from '../Button';
 
 const alice = 'zMockActor00000000000000000000000000000000';
@@ -71,8 +68,7 @@ export const CapabilityDenied: Story = {
     revisions: REVISIONS,
     submitError: {
       code: 'not_authorized',
-      message:
-        'actor zMockActorBob… lacks an ObjectBranch capability for object zMockObject…',
+      message: 'actor zMockActorBob… lacks an ObjectBranch capability for object zMockObject…',
     },
     onSubmit: () => {},
   },

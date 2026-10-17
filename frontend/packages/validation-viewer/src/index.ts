@@ -5,10 +5,7 @@
 // and screen readers.
 
 export { ValidationBadge, type ValidationBadgeProps } from './ValidationBadge';
-export {
-  ValidationIssueList,
-  type ValidationIssueListProps,
-} from './ValidationIssueList';
+export { ValidationIssueList, type ValidationIssueListProps } from './ValidationIssueList';
 export {
   StatementGraphView,
   type StatementGraphViewProps,
@@ -23,10 +20,7 @@ export {
   type LayoutEdge,
   type LayoutNode,
 } from './statementGraphLayout';
-export {
-  AuthorityChainView,
-  type AuthorityChainViewProps,
-} from './AuthorityChainView';
+export { AuthorityChainView, type AuthorityChainViewProps } from './AuthorityChainView';
 export {
   buildAuthorityChains,
   type AuthorityChain,

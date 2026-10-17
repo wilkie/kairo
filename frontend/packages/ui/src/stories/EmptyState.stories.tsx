@@ -20,7 +20,8 @@ export const Default: Story = {
 export const WithAction: Story = {
   args: {
     title: 'Object listing is a slice-8 follow-up',
-    description: 'Once a /api/v1/objects listing endpoint exists on the daemon, the inspector will surface it here.',
+    description:
+      'Once a /api/v1/objects listing endpoint exists on the daemon, the inspector will surface it here.',
     actions: <Button variant="primary">Refresh</Button>,
   },
 };
