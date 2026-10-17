@@ -1244,8 +1244,10 @@ Bullets, by slice (see `PHASE_2_WEB_WRITES.md` §3):
 - [x] Slice 5 — Version-tag dialog (`ObjectVersionTag`):
       create + retarget with auto-derived `supersedes`;
       revocation deferred.
-- [ ] Slice 6 — Capability grant / revoke dialogs
-      (`ActorCapabilityGrant`, `ActorCapabilityRevocation`).
+- [x] Slice 6 — Capability grant / revoke dialogs
+      (`ActorCapabilityGrant`, `ActorCapabilityRevocation`);
+      `CapabilityHeadDto` carries the grant's kinds, delegable,
+      constraints, and revocation.
 - [ ] Slice 7 — Session-mode `ObjectGenesis` helper + create-
       object flow.
 - [x] Slice 8 — Real-stack Playwright suite (daemon + `kairo-web`

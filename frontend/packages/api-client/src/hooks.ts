@@ -420,6 +420,113 @@ export function useSetVersionTag(): UseMutationResult<
   });
 }
 
+/** Statement kinds an object-scoped capability can carry
+ * (`CAPABILITIES.md` §4.3). */
+export type ObjectCapabilityKind = 'ObjectRevision' | 'ObjectBranch' | 'ObjectVersionTag';
+
+/**
+ * Variables accepted by [`useGrantCapability`]. Sends an
+ * object-scoped `ActorCapabilityGrant`. Each `(grantor, grantee,
+ * scope)` triple has one chain, and its leaf's kind list is the
+ * complete authorized set (`CAPABILITIES.md` §5.1.1): to change an
+ * existing grant, pass the *full* new list and the current head as
+ * `supersedes`.
+ */
+export interface GrantCapabilityVars {
+  byActor: string;
+  objectId: string;
+  grantee: string;
+  statementKinds: ObjectCapabilityKind[];
+  delegable: boolean;
+  /** RFC 3339 UTC seconds; becomes an `expires_at` constraint. */
+  expiresAt?: string;
+  /** Statement id of the current head for this triple. Omit for
+   * the triple's first grant. */
+  supersedes?: string;
+}
+
+/**
+ * Mutation: cookie-mode write of an `ActorCapabilityGrant`. The
+ * daemon checks the session actor is the object's root authority
+ * or holds every granted kind with `delegable = true`. On success
+ * invalidates the object's capability heads (which also drive the
+ * Authority chains panel), the grantor's list, and the grantor's
+ * signed-statements list.
+ */
+export function useGrantCapability(): UseMutationResult<
+  PutStatementResult,
+  KairoApiClientError,
+  GrantCapabilityVars
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<PutStatementResult, KairoApiClientError, GrantCapabilityVars>({
+    mutationFn: ({ objectId, grantee, statementKinds, delegable, expiresAt, supersedes }) => {
+      const body: Record<string, unknown> = {
+        grantee,
+        capability: {
+          scope: { object: objectId },
+          statement_kinds: statementKinds,
+          delegable,
+          constraints: expiresAt !== undefined ? [{ expires_at: expiresAt }] : [],
+        },
+      };
+      if (supersedes !== undefined) {
+        body.supersedes = supersedes;
+      }
+      return client.writeViaSession('ActorCapabilityGrant', body);
+    },
+    onSuccess: (_data, vars) => invalidateCapabilityQueries(queryClient, vars),
+  });
+}
+
+/**
+ * Variables accepted by [`useRevokeCapability`]. `retroactive`
+ * invalidates the grant from inception, along with everything
+ * signed under it (`CAPABILITIES.md` §6.3) — reserve it for grant
+ * fraud or grantee key compromise.
+ */
+export interface RevokeCapabilityVars {
+  byActor: string;
+  /** Object the grant is scoped to; used for cache invalidation. */
+  objectId: string;
+  revokedGrant: string;
+  retroactive: boolean;
+  reason?: string;
+}
+
+/**
+ * Mutation: cookie-mode write of an `ActorCapabilityRevocation`.
+ * Only the original grantor may revoke; the daemon enforces it.
+ */
+export function useRevokeCapability(): UseMutationResult<
+  PutStatementResult,
+  KairoApiClientError,
+  RevokeCapabilityVars
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<PutStatementResult, KairoApiClientError, RevokeCapabilityVars>({
+    mutationFn: ({ revokedGrant, retroactive, reason }) => {
+      const body: Record<string, unknown> = { revoked_grant: revokedGrant, retroactive };
+      if (reason !== undefined && reason.length > 0) {
+        body.reason = reason;
+      }
+      return client.writeViaSession('ActorCapabilityRevocation', body);
+    },
+    onSuccess: (_data, vars) => invalidateCapabilityQueries(queryClient, vars),
+  });
+}
+
+function invalidateCapabilityQueries(
+  queryClient: ReturnType<typeof useQueryClient>,
+  vars: { byActor: string; objectId: string },
+): void {
+  void queryClient.invalidateQueries({ queryKey: kairoKeys.capabilitiesForObject(vars.objectId) });
+  void queryClient.invalidateQueries({ queryKey: kairoKeys.capabilitiesFrom(vars.byActor) });
+  void queryClient.invalidateQueries({ queryKey: kairoKeys.actorStatements(vars.byActor) });
+}
+
 /**
  * Mutation: cookie-mode write of an `ActorTrust` statement
  * (the simplest body kind — no capability check). Wraps

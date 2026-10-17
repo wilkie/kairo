@@ -18,8 +18,8 @@ use utoipa::ToSchema;
 // daemon serves in the success envelope's `result` field.
 pub use kairo_identity::json::ActorGenesisJson;
 pub use kairo_statement::json::{
-    ActorTrustStatementJson, CapabilityScopeJson, ObjectBranchStatementJson,
-    ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
+    ActorTrustStatementJson, CapabilityConstraintJson, CapabilityScopeJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectVersionTagStatementJson,
 };
 
 /// Polymorphic statement payload: any signed statement variant
@@ -53,12 +53,40 @@ pub struct BranchTipDto {
 /// per `(grantee, scope)` chain leaf — mirrors the shape
 /// produced by `kairo capability list --grantor` in direct
 /// mode.
+///
+/// `statement_kinds`, `delegable`, and `constraints` are copied
+/// from the head's `ActorCapabilityGrant` body; `revocation` is
+/// the grantor's most-restrictive revocation of it, if any. These
+/// are stored facts, not an evaluation: a head with no revocation
+/// can still fail `evaluate_capability` (expiry, a broken chain
+/// above the grantor). The four fields are `#[serde(default)]`
+/// so clients built before they existed keep decoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct CapabilityHeadDto {
     pub grantor: String,
     pub grantee: String,
     pub scope: CapabilityScopeJson,
     pub statement_id: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub statement_kinds: Vec<String>,
+    #[serde(default)]
+    pub delegable: bool,
+    #[serde(default)]
+    pub constraints: Vec<CapabilityConstraintJson>,
+    #[serde(default)]
+    pub revocation: Option<CapabilityRevocationDto>,
+}
+
+/// The revocation attached to a [`CapabilityHeadDto`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CapabilityRevocationDto {
+    /// Statement id of the `ActorCapabilityRevocation`.
+    pub statement_id: String,
+    /// `true` invalidates the grant from inception
+    /// (`CAPABILITIES.md` §6.3), not just from the revocation on.
+    pub retroactive: bool,
+    /// RFC 3339 UTC seconds.
     pub created_at: String,
 }
 

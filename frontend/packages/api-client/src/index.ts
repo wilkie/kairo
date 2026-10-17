@@ -75,6 +75,11 @@ export {
   type UpdateBranchVars,
   useSetVersionTag,
   type SetVersionTagVars,
+  useGrantCapability,
+  type GrantCapabilityVars,
+  useRevokeCapability,
+  type RevokeCapabilityVars,
+  type ObjectCapabilityKind,
 } from './hooks';
 
 // Generated path/component types — exposed so callers can

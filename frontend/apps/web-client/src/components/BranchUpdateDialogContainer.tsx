@@ -10,18 +10,13 @@
 // prior tip" hint based on the same lookup.
 
 import { useState } from 'react';
-import {
-  useBranches,
-  useRevisions,
-  useSession,
-  useUpdateBranch,
-  type KairoApiClientError,
-} from '@kairo/api-client';
+import { useBranches, useRevisions, useSession, useUpdateBranch } from '@kairo/api-client';
 import {
   BranchUpdateDialog,
   type BranchUpdateDialogError,
   type BranchUpdateDialogRevision,
 } from '@kairo/ui';
+import { toDialogError } from './dialogError';
 
 export interface BranchUpdateDialogContainerProps {
   open: boolean;
@@ -110,15 +105,4 @@ export function BranchUpdateDialogContainer(props: BranchUpdateDialogContainerPr
       onSubmit={handleSubmit}
     />
   );
-}
-
-function toDialogError(error: KairoApiClientError): BranchUpdateDialogError {
-  const detail = error.detail;
-  if (detail.kind === 'daemon') {
-    return { code: detail.code, message: detail.message };
-  }
-  if (detail.kind === 'network') {
-    return { code: 'network', message: detail.message };
-  }
-  return { code: 'decode', message: detail.message };
 }

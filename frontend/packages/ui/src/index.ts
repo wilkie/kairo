@@ -51,3 +51,18 @@ export {
   type VersionTagDialogError,
   type VersionTagDialogRevision,
 } from './VersionTagDialog';
+export {
+  CapabilityGrantDialog,
+  CAPABILITY_GRANT_KINDS,
+  type CapabilityGrantDialogProps,
+  type CapabilityGrantDialogError,
+  type CapabilityGrantDialogExisting,
+  type CapabilityGrantDialogSubmit,
+  type CapabilityGrantKind,
+} from './CapabilityGrantDialog';
+export {
+  CapabilityRevokeDialog,
+  type CapabilityRevokeDialogProps,
+  type CapabilityRevokeDialogError,
+  type CapabilityRevokeDialogGrant,
+} from './CapabilityRevokeDialog';

@@ -1040,7 +1040,7 @@
       },
       "CapabilityHeadDto": {
         "type": "object",
-        "description": "Capability head summary returned by\n`GET /api/v1/capabilities/{grantor}` and\n`GET /api/v1/capabilities/for-object/{object}`. One entry\nper `(grantee, scope)` chain leaf — mirrors the shape\nproduced by `kairo capability list --grantor` in direct\nmode.",
+        "description": "Capability head summary returned by\n`GET /api/v1/capabilities/{grantor}` and\n`GET /api/v1/capabilities/for-object/{object}`. One entry\nper `(grantee, scope)` chain leaf — mirrors the shape\nproduced by `kairo capability list --grantor` in direct\nmode.\n\n`statement_kinds`, `delegable`, and `constraints` are copied\nfrom the head's `ActorCapabilityGrant` body; `revocation` is\nthe grantor's most-restrictive revocation of it, if any. These\nare stored facts, not an evaluation: a head with no revocation\ncan still fail `evaluate_capability` (expiry, a broken chain\nabove the grantor). The four fields are `#[serde(default)]`\nso clients built before they existed keep decoding.",
         "required": [
           "grantor",
           "grantee",
@@ -1049,8 +1049,17 @@
           "created_at"
         ],
         "properties": {
+          "constraints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CapabilityConstraintJson"
+            }
+          },
           "created_at": {
             "type": "string"
+          },
+          "delegable": {
+            "type": "boolean"
           },
           "grantee": {
             "type": "string"
@@ -1058,11 +1067,27 @@
           "grantor": {
             "type": "string"
           },
+          "revocation": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CapabilityRevocationDto"
+              }
+            ]
+          },
           "scope": {
             "$ref": "#/components/schemas/CapabilityScopeJson"
           },
           "statement_id": {
             "type": "string"
+          },
+          "statement_kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -1091,6 +1116,29 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "CapabilityRevocationDto": {
+        "type": "object",
+        "description": "The revocation attached to a [`CapabilityHeadDto`].",
+        "required": [
+          "statement_id",
+          "retroactive",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "retroactive": {
+            "type": "boolean",
+            "description": "`true` invalidates the grant from inception\n(`CAPABILITIES.md` §6.3), not just from the revocation on."
+          },
+          "statement_id": {
+            "type": "string",
+            "description": "Statement id of the `ActorCapabilityRevocation`."
           }
         }
       },

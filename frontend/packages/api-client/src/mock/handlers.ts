@@ -445,6 +445,10 @@ async function handleSessionWrite(request: Request, registry: MockRegistry) {
       return handleSessionObjectBranch(session.actorId, payload.body, registry);
     case 'ObjectVersionTag':
       return handleSessionObjectVersionTag(session.actorId, payload.body, registry);
+    case 'ActorCapabilityGrant':
+      return handleSessionActorCapabilityGrant(session.actorId, payload.body, registry);
+    case 'ActorCapabilityRevocation':
+      return handleSessionActorCapabilityRevocation(session.actorId, payload.body, registry);
     default:
       return HttpResponse.json(
         errorEnvelope(
@@ -646,11 +650,29 @@ function handleSessionObjectBranch(byActor: string, body: unknown, registry: Moc
 const STRICT_SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
 
+type CapabilityHead = components['schemas']['CapabilityHeadDto'];
+
+/** Unrevoked capability heads on `objectId` whose grantee is
+ * `actor` and whose grant lists `kind`. */
+function mockHeldHeads(
+  registry: MockRegistry,
+  actor: string,
+  objectId: string,
+  kind: string,
+): CapabilityHead[] {
+  return (registry.capabilitiesForObject[objectId] ?? []).filter(
+    (head) =>
+      head.grantee === actor &&
+      (head.revocation ?? null) === null &&
+      (head.statement_kinds ?? []).includes(kind),
+  );
+}
+
 /** Whether `actor` may write `kind` on `objectId` in the mock:
- * the object's creator (root authority), or the grantee of a
- * seeded capability head on the object whose grant lists the
- * kind. The real daemon also walks the grant chain back to the
- * root and checks `delegable`; the mock trusts the seeds. */
+ * the object's creator (root authority), or the grantee of an
+ * unrevoked seeded head listing the kind. The real daemon also
+ * walks the chain back to the root and checks expiry; the mock
+ * trusts the seeds. */
 function mockMayWrite(
   registry: MockRegistry,
   actor: string,
@@ -658,14 +680,223 @@ function mockMayWrite(
   kind: string,
 ): boolean {
   if (registry.objects[objectId]?.body.created_by === actor) return true;
-  return (registry.capabilitiesForObject[objectId] ?? []).some((head) => {
-    if (head.grantee !== actor) return false;
-    const grant = registry.statements[head.statement_id] as
-      | { body?: { capability?: { kinds?: unknown; statement_kinds?: unknown } } }
-      | undefined;
-    const kinds = grant?.body?.capability?.statement_kinds ?? grant?.body?.capability?.kinds;
-    return Array.isArray(kinds) && kinds.includes(kind);
-  });
+  return mockHeldHeads(registry, actor, objectId, kind).length > 0;
+}
+
+/** Whether `actor` may grant `kind` onward on `objectId`: root
+ * authority, or a held head with `delegable` set — the mock's
+ * approximation of `evaluate_capability_for_regrant`. */
+function mockMayRegrant(
+  registry: MockRegistry,
+  actor: string,
+  objectId: string,
+  kind: string,
+): boolean {
+  if (registry.objects[objectId]?.body.created_by === actor) return true;
+  return mockHeldHeads(registry, actor, objectId, kind).some((head) => head.delegable === true);
+}
+
+function mockStatementId(prefix: string): string {
+  return `zMockSession${prefix}${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+
+function mockSignature(actor: string) {
+  return { actor, key_id: 'mock-key-1', algorithm: 'ed25519', bytes: 'A'.repeat(88) };
+}
+
+const OBJECT_SCOPED_KINDS = ['ObjectRevision', 'ObjectBranch', 'ObjectVersionTag'];
+
+function handleSessionActorCapabilityGrant(byActor: string, body: unknown, registry: MockRegistry) {
+  if (typeof body !== 'object' || body === null) {
+    return badRequest('invalid ActorCapabilityGrant body shape');
+  }
+  const fields = body as {
+    grantee?: unknown;
+    capability?: {
+      scope?: { object?: unknown };
+      statement_kinds?: unknown;
+      delegable?: unknown;
+      constraints?: unknown;
+    };
+    supersedes?: unknown;
+  };
+  if (typeof fields.grantee !== 'string' || !fields.grantee.startsWith('z')) {
+    return badRequest('invalid ActorCapabilityGrant body: grantee must be an actor id');
+  }
+  const capability = fields.capability;
+  const objectId = capability?.scope?.object;
+  if (typeof objectId !== 'string') {
+    return badRequest('invalid ActorCapabilityGrant body: scope must be { object }');
+  }
+  const kinds = capability?.statement_kinds;
+  if (
+    !Array.isArray(kinds) ||
+    kinds.length === 0 ||
+    !kinds.every((kind) => typeof kind === 'string' && OBJECT_SCOPED_KINDS.includes(kind))
+  ) {
+    return badRequest(
+      'invalid ActorCapabilityGrant body: statement_kinds must be a non-empty list of object-scoped kinds',
+    );
+  }
+  if (typeof capability?.delegable !== 'boolean') {
+    return badRequest('invalid ActorCapabilityGrant body: delegable must be a boolean');
+  }
+  const constraints = Array.isArray(capability.constraints)
+    ? (capability.constraints as components['schemas']['CapabilityConstraintJson'][])
+    : [];
+  if (
+    fields.supersedes !== undefined &&
+    fields.supersedes !== null &&
+    typeof fields.supersedes !== 'string'
+  ) {
+    return badRequest('invalid ActorCapabilityGrant body: supersedes must be a string or null');
+  }
+  if (registry.objects[objectId] === undefined) {
+    return HttpResponse.json(errorEnvelope('not_found', `object not found: ${objectId}`), {
+      status: 404,
+    });
+  }
+  const denied = (kinds as string[]).find(
+    (kind) => !mockMayRegrant(registry, byActor, objectId, kind),
+  );
+  if (denied !== undefined) {
+    return HttpResponse.json(
+      errorEnvelope(
+        'not_authorized',
+        `actor ${byActor} may not grant ${denied} on object ${objectId} (not held with delegable=true)`,
+      ),
+      { status: 403 },
+    );
+  }
+
+  // One chain per (grantor, grantee, scope): a successor must
+  // supersede the current head (`CAPABILITIES.md` §5.1.1).
+  const heads = registry.capabilitiesForObject[objectId] ?? [];
+  const prior = heads.find((head) => head.grantor === byActor && head.grantee === fields.grantee);
+  const supersedes = typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
+  if (prior !== undefined && supersedes !== prior.statement_id) {
+    return badRequest(
+      `grant on an existing (grantor, grantee, scope) chain must supersede ${prior.statement_id}`,
+    );
+  }
+
+  const grantee = fields.grantee;
+  const createdAt = rfc3339(new Date());
+  const statementId = mockStatementId('GrantStmt');
+  const head: CapabilityHead = {
+    grantor: byActor,
+    grantee,
+    scope: { object: objectId },
+    statement_id: statementId,
+    created_at: createdAt,
+    statement_kinds: kinds as string[],
+    delegable: capability.delegable,
+    constraints,
+    revocation: null,
+  };
+  const replace = (list: CapabilityHead[] | undefined) => [
+    ...(list ?? []).filter((entry) => !(entry.grantor === byActor && entry.grantee === grantee)),
+    head,
+  ];
+  registry.capabilitiesForObject[objectId] = replace(registry.capabilitiesForObject[objectId]);
+  registry.capabilitiesFromGrantor[byActor] = replace(registry.capabilitiesFromGrantor[byActor]);
+
+  const grantBody: Record<string, unknown> = {
+    grantee,
+    capability: {
+      scope: { object: objectId },
+      statement_kinds: kinds,
+      delegable: capability.delegable,
+      constraints,
+    },
+  };
+  if (supersedes !== undefined) grantBody.supersedes = supersedes;
+  registry.statements[statementId] = {
+    type: 'ActorCapabilityGrant',
+    version: 1,
+    actor: byActor,
+    subject: `actor:${grantee}`,
+    created_at: createdAt,
+    body: grantBody,
+    signature: mockSignature(byActor),
+  };
+  const result: components['schemas']['PutStatementResult'] = {
+    statement_id: statementId,
+    statement: registry.statements[statementId],
+  };
+  return HttpResponse.json(successEnvelope(result));
+}
+
+function handleSessionActorCapabilityRevocation(
+  byActor: string,
+  body: unknown,
+  registry: MockRegistry,
+) {
+  if (typeof body !== 'object' || body === null) {
+    return badRequest('invalid ActorCapabilityRevocation body shape');
+  }
+  const fields = body as { revoked_grant?: unknown; retroactive?: unknown; reason?: unknown };
+  if (typeof fields.revoked_grant !== 'string') {
+    return badRequest('invalid ActorCapabilityRevocation body: revoked_grant must be a string');
+  }
+  if (typeof fields.retroactive !== 'boolean') {
+    return badRequest('invalid ActorCapabilityRevocation body: retroactive must be a boolean');
+  }
+  const revokedGrant = fields.revoked_grant;
+  const heads = Object.values(registry.capabilitiesForObject).flat();
+  const target = heads.find((head) => head.statement_id === revokedGrant);
+  if (target === undefined) {
+    return HttpResponse.json(errorEnvelope('not_found', `grant not found: ${revokedGrant}`), {
+      status: 404,
+    });
+  }
+  // Only the original grantor may revoke (`DECISIONS.md` §14).
+  if (target.grantor !== byActor) {
+    return HttpResponse.json(
+      errorEnvelope(
+        'not_authorized',
+        `actor ${byActor} did not issue grant ${revokedGrant}; only its grantor may revoke it`,
+      ),
+      { status: 403 },
+    );
+  }
+
+  const createdAt = rfc3339(new Date());
+  const statementId = mockStatementId('RevocationStmt');
+  const revocation = {
+    statement_id: statementId,
+    retroactive: fields.retroactive,
+    created_at: createdAt,
+  };
+  // Heads are shared objects across both indices; most-
+  // restrictive wins, so a retroactive revocation is sticky.
+  for (const head of heads.concat(Object.values(registry.capabilitiesFromGrantor).flat())) {
+    if (head.statement_id === revokedGrant && head.revocation?.retroactive !== true) {
+      head.revocation = revocation;
+    }
+  }
+
+  const revocationBody: Record<string, unknown> = {
+    revoked_grant: revokedGrant,
+    retroactive: fields.retroactive,
+  };
+  if (typeof fields.reason === 'string' && fields.reason.length > 0) {
+    revocationBody.reason = fields.reason;
+  }
+  registry.statements[statementId] = {
+    type: 'ActorCapabilityRevocation',
+    version: 1,
+    actor: byActor,
+    subject: `statement:${revokedGrant}`,
+    created_at: createdAt,
+    body: revocationBody,
+    signature: mockSignature(byActor),
+  };
+  const result: components['schemas']['PutStatementResult'] = {
+    statement_id: statementId,
+    statement: registry.statements[statementId],
+  };
+  return HttpResponse.json(successEnvelope(result));
 }
 
 function handleSessionObjectVersionTag(byActor: string, body: unknown, registry: MockRegistry) {

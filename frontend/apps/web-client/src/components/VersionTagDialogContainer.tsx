@@ -15,7 +15,6 @@ import {
   useSession,
   useSetVersionTag,
   useVersionTags,
-  type KairoApiClientError,
   type SetVersionTagVars,
 } from '@kairo/api-client';
 import {
@@ -23,6 +22,7 @@ import {
   type VersionTagDialogError,
   type VersionTagDialogRevision,
 } from '@kairo/ui';
+import { toDialogError } from './dialogError';
 
 export interface VersionTagDialogContainerProps {
   open: boolean;
@@ -109,15 +109,4 @@ export function VersionTagDialogContainer(props: VersionTagDialogContainerProps)
       onSubmit={handleSubmit}
     />
   );
-}
-
-function toDialogError(error: KairoApiClientError): VersionTagDialogError {
-  const detail = error.detail;
-  if (detail.kind === 'daemon') {
-    return { code: detail.code, message: detail.message };
-  }
-  if (detail.kind === 'network') {
-    return { code: 'network', message: detail.message };
-  }
-  return { code: 'decode', message: detail.message };
 }

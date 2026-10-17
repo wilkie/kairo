@@ -11,8 +11,9 @@
 // between trigger click and dialog mount).
 
 import { useState } from 'react';
-import { useCreateTrustOpinion, useSession, type KairoApiClientError } from '@kairo/api-client';
+import { useCreateTrustOpinion, useSession } from '@kairo/api-client';
 import { TrustOpinionDialog, type TrustOpinionDialogError } from '@kairo/ui';
+import { toDialogError } from './dialogError';
 
 export interface TrustOpinionDialogContainerProps {
   open: boolean;
@@ -82,15 +83,4 @@ export function TrustOpinionDialogContainer(props: TrustOpinionDialogContainerPr
       onSubmit={handleSubmit}
     />
   );
-}
-
-function toDialogError(error: KairoApiClientError): TrustOpinionDialogError {
-  const detail = error.detail;
-  if (detail.kind === 'daemon') {
-    return { code: detail.code, message: detail.message };
-  }
-  if (detail.kind === 'network') {
-    return { code: 'network', message: detail.message };
-  }
-  return { code: 'decode', message: detail.message };
 }

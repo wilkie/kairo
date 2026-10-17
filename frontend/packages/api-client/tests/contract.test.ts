@@ -317,6 +317,68 @@ describe('session writes: ObjectVersionTag', () => {
   });
 });
 
+describe('session writes: capabilities', () => {
+  afterEach(() => {
+    resetMockSessions();
+  });
+
+  // Non-mutating paths only, as for version tags.
+
+  async function expectDaemonError(promise: Promise<unknown>, code: string, status: number) {
+    const error = await promise.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(KairoApiClientError);
+    expect((error as KairoApiClientError).detail).toMatchObject({ kind: 'daemon', code, status });
+  }
+
+  it('refuses granting onward a kind not held with delegable', async () => {
+    // Bob holds ObjectVersionTag on Alpha (delegable), but not ObjectBranch.
+    await client.openSession(mockIds.bob);
+    await expectDaemonError(
+      client.writeViaSession('ActorCapabilityGrant', {
+        grantee: mockIds.carol,
+        capability: {
+          scope: { object: mockIds.alpha },
+          statement_kinds: ['ObjectBranch'],
+          delegable: false,
+          constraints: [],
+        },
+      }),
+      'not_authorized',
+      403,
+    );
+  });
+
+  it('refuses a second chain on an existing (grantor, grantee, scope) triple', async () => {
+    // Alice → Bob on Alpha already exists; omitting supersedes is a shape violation.
+    await client.openSession(mockIds.alice);
+    await expectDaemonError(
+      client.writeViaSession('ActorCapabilityGrant', {
+        grantee: mockIds.bob,
+        capability: {
+          scope: { object: mockIds.alpha },
+          statement_kinds: ['ObjectVersionTag'],
+          delegable: true,
+          constraints: [],
+        },
+      }),
+      'bad_request',
+      400,
+    );
+  });
+
+  it('refuses a revocation from anyone but the grantor', async () => {
+    await client.openSession(mockIds.bob);
+    await expectDaemonError(
+      client.writeViaSession('ActorCapabilityRevocation', {
+        revoked_grant: mockIds.aliceGrantsBobStmt,
+        retroactive: false,
+      }),
+      'not_authorized',
+      403,
+    );
+  });
+});
+
 describe('envelope round-trip', () => {
   it('successEnvelope wraps a value the client can unwrap', async () => {
     server.use(

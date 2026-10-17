@@ -4,18 +4,20 @@
 //!   capability heads issued by the grantor. Mirrors
 //!   `kairo capability list --grantor` in direct mode.
 //! - `/capabilities/for-object/{object}` — capability heads
-//!   scoped to the given object, hydrated with each head's
-//!   scope (a per-row follow-up read against the underlying
-//!   `ActorCapabilityGrant` statement). N+1 by design — the
-//!   per-object index intentionally stays light, and inspector
-//!   workloads have small N. Add a richer materialized index
-//!   if a real workload demands it.
+//!   scoped to the given object.
+//!
+//! Both hydrate each head from its `ActorCapabilityGrant`
+//! (scope, statement kinds, delegable, constraints) and attach
+//! the grantor's revocation of it, if any — two per-row
+//! follow-up reads. N+1 by design: the indices intentionally
+//! stay light, and inspector workloads have small N. Add a
+//! richer materialized index if a real workload demands it.
 
 use axum::extract::{Path, State};
-use kairo_core::{ActorId, ObjectId};
-use kairo_daemon_client::dto::CapabilityHeadDto;
-use kairo_statement::json::CapabilityScopeJson;
-use kairo_store::{CapabilityResolver, StatementStore};
+use kairo_core::{ActorId, ObjectId, StatementId, Timestamp};
+use kairo_daemon_client::dto::{CapabilityHeadDto, CapabilityRevocationDto};
+use kairo_statement::json::ActorCapabilityGrantBodyJson;
+use kairo_store::{CapabilityResolver, FilesystemStore, StatementStore};
 
 use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
@@ -43,21 +45,25 @@ pub async fn list_from_handler(
     })?;
 
     let store = state.store.clone();
-    let heads = tokio::task::spawn_blocking(move || store.list_capabilities_from(&grantor_id))
-        .await
-        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
-        .map_err(|error| map_store_error(error, "list_capabilities_from"))?;
-
-    let dtos = heads
-        .into_iter()
-        .map(|head| CapabilityHeadDto {
-            grantor: head.grantor.to_string(),
-            grantee: head.grantee.to_string(),
-            scope: CapabilityScopeJson::from_scope(&head.scope),
-            statement_id: head.statement_id.to_string(),
-            created_at: head.created_at.to_string(),
-        })
-        .collect();
+    let dtos = tokio::task::spawn_blocking(move || -> Result<Vec<CapabilityHeadDto>, ApiError> {
+        let heads = store
+            .list_capabilities_from(&grantor_id)
+            .map_err(|error| map_store_error(error, "list_capabilities_from"))?;
+        heads
+            .into_iter()
+            .map(|head| {
+                hydrate_head(
+                    &store,
+                    &head.grantor,
+                    &head.grantee,
+                    &head.statement_id,
+                    head.created_at,
+                )
+            })
+            .collect()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))??;
 
     Ok(ApiResult(dtos))
 }
@@ -92,18 +98,13 @@ pub async fn list_for_object_handler(
         heads
             .into_iter()
             .map(|head| {
-                let signed = store
-                    .get_actor_capability_grant(&head.statement_id)
-                    .map_err(|error| map_store_error(error, "get_actor_capability_grant"))?;
-                Ok(CapabilityHeadDto {
-                    grantor: head.grantor.to_string(),
-                    grantee: head.grantee.to_string(),
-                    scope: CapabilityScopeJson::from_scope(
-                        signed.unsigned().body().capability().scope(),
-                    ),
-                    statement_id: head.statement_id.to_string(),
-                    created_at: head.created_at.to_string(),
-                })
+                hydrate_head(
+                    &store,
+                    &head.grantor,
+                    &head.grantee,
+                    &head.statement_id,
+                    head.created_at,
+                )
             })
             .collect()
     })
@@ -111,4 +112,39 @@ pub async fn list_for_object_handler(
     .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))??;
 
     Ok(ApiResult(dtos))
+}
+
+/// Build a [`CapabilityHeadDto`] for one chain head: read its
+/// grant for the capability fields, and the grantor's
+/// most-restrictive revocation of it, if any.
+fn hydrate_head(
+    store: &FilesystemStore,
+    grantor: &ActorId,
+    grantee: &ActorId,
+    statement_id: &StatementId,
+    created_at: Timestamp,
+) -> Result<CapabilityHeadDto, ApiError> {
+    let grant = store
+        .get_actor_capability_grant(statement_id)
+        .map_err(|error| map_store_error(error, "get_actor_capability_grant"))?;
+    let capability = ActorCapabilityGrantBodyJson::from_body(grant.unsigned().body()).capability;
+    let revocation = store
+        .latest_capability_revocation(grantor, statement_id)
+        .map_err(|error| map_store_error(error, "latest_capability_revocation"))?
+        .map(|signed| CapabilityRevocationDto {
+            statement_id: signed.statement_id().to_string(),
+            retroactive: signed.unsigned().body().retroactive(),
+            created_at: signed.unsigned().created_at().to_string(),
+        });
+    Ok(CapabilityHeadDto {
+        grantor: grantor.to_string(),
+        grantee: grantee.to_string(),
+        scope: capability.scope,
+        statement_id: statement_id.to_string(),
+        created_at: created_at.to_string(),
+        statement_kinds: capability.statement_kinds,
+        delegable: capability.delegable,
+        constraints: capability.constraints,
+        revocation,
+    })
 }

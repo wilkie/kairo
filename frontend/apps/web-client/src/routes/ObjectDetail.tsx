@@ -55,6 +55,8 @@ import { IdLink, IdText } from '../components/IdLink';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 import { BranchUpdateDialogContainer } from '../components/BranchUpdateDialogContainer';
 import { VersionTagDialogContainer } from '../components/VersionTagDialogContainer';
+import { CapabilityGrantDialogContainer } from '../components/CapabilityGrantDialogContainer';
+import { CapabilityRevokeDialogContainer } from '../components/CapabilityRevokeDialogContainer';
 
 export interface ObjectDetailProps {
   id: string;
@@ -75,6 +77,8 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
   const sessionQ = useSession();
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
+  const [grantDialogOpen, setGrantDialogOpen] = useState(false);
+  const [revoking, setRevoking] = useState<CapabilityHeadDto | null>(null);
   const session = sessionQ.data ?? null;
 
   // Trust panel is keyed off the genesis signer; we can only
@@ -223,13 +227,44 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
 
       <Panel
         title="Capability heads"
-        description="Cross-actor grants scoped to this object."
-        actions={<LocalityBadge state="local" />}
+        description="Cross-actor grants scoped to this object; one row per (grantor, grantee) chain leaf."
+        actions={
+          <Stack direction="row" spacing={1} alignItems="center">
+            {session !== null && (
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => setGrantDialogOpen(true)}
+                data-testid="grant-capability"
+              >
+                Grant capability
+              </Button>
+            )}
+            <LocalityBadge state="local" />
+          </Stack>
+        }
       >
         <QueryStatusBoundary query={capsQ}>
-          {(rows) => <CapabilitiesTable rows={rows} />}
+          {(rows) => (
+            <CapabilitiesTable
+              rows={rows}
+              signedInActor={session?.actor_id ?? null}
+              onRevoke={setRevoking}
+            />
+          )}
         </QueryStatusBoundary>
       </Panel>
+
+      <CapabilityGrantDialogContainer
+        open={grantDialogOpen}
+        onClose={() => setGrantDialogOpen(false)}
+        objectId={id}
+      />
+      <CapabilityRevokeDialogContainer
+        head={revoking}
+        onClose={() => setRevoking(null)}
+        objectId={id}
+      />
 
       <Panel
         title="Authority chains"
@@ -429,7 +464,15 @@ function RevisionsTable({ rows }: { rows: ReadonlyArray<RevisionHeadDto> }) {
   );
 }
 
-function CapabilitiesTable({ rows }: { rows: ReadonlyArray<CapabilityHeadDto> }) {
+function CapabilitiesTable({
+  rows,
+  signedInActor,
+  onRevoke,
+}: {
+  rows: ReadonlyArray<CapabilityHeadDto>;
+  signedInActor: string | null;
+  onRevoke: (head: CapabilityHeadDto) => void;
+}) {
   const columns: ReadonlyArray<TableColumn<CapabilityHeadDto>> = [
     { key: 'grantor', header: 'Grantor', cell: (r) => <IdLink kind="actor" id={r.grantor} /> },
     { key: 'grantee', header: 'Grantee', cell: (r) => <IdLink kind="actor" id={r.grantee} /> },
@@ -439,11 +482,29 @@ function CapabilitiesTable({ rows }: { rows: ReadonlyArray<CapabilityHeadDto> })
       cell: (r) => <ScopeCell scope={r.scope} />,
     },
     {
+      key: 'kinds',
+      header: 'Kinds',
+      cell: (r) => (r.statement_kinds ?? []).join(', '),
+    },
+    { key: 'delegable', header: 'Delegable', cell: (r) => (r.delegable === true ? 'Yes' : 'No') },
+    { key: 'expires', header: 'Expires', cell: (r) => expiresAt(r) ?? '—' },
+    { key: 'status', header: 'Status', cell: (r) => <RevocationBadge head={r} /> },
+    {
       key: 'statement',
       header: 'Statement',
       cell: (r) => <IdLink kind="statement" id={r.statement_id} />,
     },
     { key: 'created_at', header: 'Created', cell: (r) => r.created_at },
+    {
+      key: 'actions',
+      header: '',
+      cell: (r) =>
+        signedInActor === r.grantor && (r.revocation ?? null) === null ? (
+          <Button size="small" onClick={() => onRevoke(r)} data-testid="revoke-capability">
+            Revoke
+          </Button>
+        ) : null,
+    },
   ];
   return (
     <Table
@@ -548,6 +609,27 @@ function ScopeCell({ scope }: { scope: CapabilityHeadDto['scope'] }) {
   }
   // Fallback — render as JSON-y key/value for unknown shapes.
   return <code>{`${variant}: ${JSON.stringify(payload)}`}</code>;
+}
+
+function expiresAt(head: CapabilityHeadDto): string | undefined {
+  for (const constraint of head.constraints ?? []) {
+    if ('expires_at' in constraint) return constraint.expires_at;
+  }
+  return undefined;
+}
+
+/** Whether the grantor has revoked this head. A head with no
+ * revocation is not thereby *effective* — expiry and the chain
+ * above the grantor still apply; the daemon's capability check
+ * is the authority. */
+function RevocationBadge({ head }: { head: CapabilityHeadDto }) {
+  const revocation = head.revocation ?? null;
+  if (revocation === null) return <span>—</span>;
+  return revocation.retroactive ? (
+    <StatusBadge tone="error">Revoked (retroactive)</StatusBadge>
+  ) : (
+    <StatusBadge tone="warn">Revoked</StatusBadge>
+  );
 }
 
 function DecisionBadge({ decision }: { decision: TrustHeadDto['decision'] }) {

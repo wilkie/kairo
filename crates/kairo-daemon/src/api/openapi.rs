@@ -89,6 +89,7 @@ entirely and streams `application/octet-stream` bytes.\
         kairo_daemon_client::dto::StatusInfo,
         kairo_daemon_client::dto::BranchTipDto,
         kairo_daemon_client::dto::CapabilityHeadDto,
+        kairo_daemon_client::dto::CapabilityRevocationDto,
         kairo_daemon_client::dto::VersionTagHeadDto,
         kairo_daemon_client::dto::RevisionHeadDto,
         kairo_daemon_client::dto::TrustHeadDto,

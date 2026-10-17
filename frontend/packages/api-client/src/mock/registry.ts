@@ -441,7 +441,7 @@ const aliceGrantsBobStmt: unknown = {
     grantee: mockIds.bob,
     capability: {
       scope: { object: mockIds.alpha },
-      kinds: ['ObjectVersionTag'],
+      statement_kinds: ['ObjectVersionTag'],
       delegable: true,
       constraints: [],
     },
@@ -462,7 +462,7 @@ const bobGrantsCarolStmt: unknown = {
     grantee: mockIds.carol,
     capability: {
       scope: { object: mockIds.alpha },
-      kinds: ['ObjectVersionTag'],
+      statement_kinds: ['ObjectVersionTag'],
       delegable: false,
       constraints: [],
     },
@@ -476,6 +476,10 @@ const aliceCapabilityHead: Schemas['CapabilityHeadDto'] = {
   scope: { object: mockIds.alpha },
   statement_id: mockIds.aliceGrantsBobStmt,
   created_at: T,
+  statement_kinds: ['ObjectVersionTag'],
+  delegable: true,
+  constraints: [],
+  revocation: null,
 };
 
 const bobCapabilityHead: Schemas['CapabilityHeadDto'] = {
@@ -484,6 +488,10 @@ const bobCapabilityHead: Schemas['CapabilityHeadDto'] = {
   scope: { object: mockIds.alpha },
   statement_id: mockIds.bobGrantsCarolStmt,
   created_at: '2026-01-02T00:00:00Z',
+  statement_kinds: ['ObjectVersionTag'],
+  delegable: false,
+  constraints: [],
+  revocation: null,
 };
 
 // ---------------------------------------------------------------------------

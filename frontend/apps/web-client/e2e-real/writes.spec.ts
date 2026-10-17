@@ -2,10 +2,11 @@
 // daemon for the session actor, passes the daemon's real
 // capability evaluation, and persists in the store across a
 // reload. Tests share the seeded store and run serially; each
-// writes names no other test reads.
+// writes names no other test reads. The capability tests come
+// last because they change what Bob and Carol may do.
 
 import { expect, test } from '@playwright/test';
-import { seed, signInAs, tagRow } from './helpers';
+import { capRow, seed, signInAs, tagRow } from './helpers';
 
 const ids = seed();
 
@@ -94,4 +95,76 @@ test('signed-in actor records a trust opinion', async ({ page }) => {
 
   await page.reload();
   await expect(page.getByRole('cell', { name: 'Trusted', exact: true })).toBeVisible();
+});
+
+test('owner extends a grant with a derived supersedes', async ({ page }) => {
+  await page.goto(`/objects/${ids.alpha}`);
+  await signInAs(page, ids.alice);
+
+  await page.getByTestId('grant-capability').click();
+  await page.getByTestId('capability-grantee-input').fill(ids.bob);
+  // Pre-filled from the seeded Alice → Bob grant.
+  await expect(page.getByTestId('capability-kind-ObjectVersionTag')).toBeChecked();
+  await expect(page.getByTestId('capability-delegable')).toBeChecked();
+  await page.getByTestId('capability-kind-ObjectBranch').check();
+  await page.getByTestId('capability-grant-submit').click();
+  await expect(page.getByTestId('capability-grant-form')).toHaveCount(0);
+
+  await page.reload();
+  await expect(capRow(page, ids.alice, ids.bob)).toContainText('ObjectBranch');
+});
+
+test('grantee can now write the newly granted kind', async ({ page }) => {
+  await page.goto(`/objects/${ids.alpha}`);
+  await signInAs(page, ids.bob);
+
+  await page.getByTestId('update-branch').click();
+  await page.getByTestId('branch-name-input').fill('bob-granted');
+  await page.getByTestId('branch-update-submit').click();
+  await expect(page.getByTestId('branch-update-form')).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByRole('row').filter({ hasText: 'bob-granted' })).toBeVisible();
+});
+
+test('delegate without delegable cannot grant onward', async ({ page }) => {
+  // Carol holds ObjectVersionTag from Bob, delegable = false.
+  await page.goto(`/objects/${ids.alpha}`);
+  await signInAs(page, ids.carol);
+
+  await page.getByTestId('grant-capability').click();
+  await page.getByTestId('capability-grantee-input').fill(ids.alice);
+  await page.getByTestId('capability-kind-ObjectVersionTag').check();
+  await page.getByTestId('capability-grant-submit').click();
+
+  await expect(page.getByTestId('capability-grant-error')).toBeVisible();
+  await expect(page.getByTestId('capability-grant-form')).toBeVisible();
+});
+
+test('grantor revokes, and the revoked delegate is refused', async ({ page }) => {
+  await page.goto(`/objects/${ids.alpha}`);
+  await signInAs(page, ids.bob);
+
+  const row = capRow(page, ids.bob, ids.carol);
+  await row.getByTestId('revoke-capability').click();
+  await page.getByTestId('capability-revoke-reason').fill('real-stack e2e');
+  await page.getByTestId('capability-revoke-submit').click();
+  await expect(page.getByTestId('capability-revoke-form')).toHaveCount(0);
+
+  await page.reload();
+  await expect(row).toContainText('Revoked');
+  await expect(row.getByTestId('revoke-capability')).toHaveCount(0);
+});
+
+test('revoked delegate can no longer tag', async ({ page }) => {
+  await page.goto(`/objects/${ids.alpha}`);
+  await signInAs(page, ids.carol);
+
+  await page.getByTestId('tag-version').click();
+  await page.getByTestId('version-tag-input').fill('1.3.0');
+  await page.getByTestId('version-tag-submit').click();
+  await expect(page.getByTestId('version-tag-error')).toBeVisible();
+
+  await page.reload();
+  await expect(tagRow(page, '1.3.0', ids.carol)).toHaveCount(0);
 });

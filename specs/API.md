@@ -801,10 +801,16 @@ statements index):
 - `GET /api/v1/version-tags/{object_id}/{version}` —
   ObjectVersionTag statement for that version
 - `GET /api/v1/trust/{by}/{of}` — ActorTrust statement
-- `GET /api/v1/capabilities/{grantor}` — capability statements
-  signed by the grantor
+- `GET /api/v1/capabilities/{grantor}` and
+  `GET /api/v1/capabilities/for-object/{object_id}` — capability
+  head summaries (`CapabilityHeadDto`), one per `(grantor, grantee,
+  scope)` chain leaf, carrying the grant's `statement_kinds`,
+  `delegable`, and `constraints` plus the grantor's revocation of it
+  (`statement_id`, `retroactive`, `created_at`) when one exists.
+  These are stored facts, not an evaluation; `evaluate_capability`
+  remains the authority on whether a head authorizes anything.
 
-Each returns the underlying statement envelope; clients that
+The others return the underlying statement envelope; clients that
 want the body decode it themselves.
 
 ### 14.1 List statements for object

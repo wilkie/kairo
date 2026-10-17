@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–5 and 8 shipped; 6–7 open.
+Draft, locked 2026-10-16. Slices 1–6 and 8 shipped; 7 open.
 
 Slice plan for `PHASE_2.md` §16: turning the signed-in web
 inspector into a write surface. The locked shape is
@@ -163,13 +163,53 @@ path.
 `supersedes`) — needs a per-row action in the Tags table rather
 than the form.
 
-### Slice 6 — Capability grant / revoke dialogs
+### Slice 6 — Capability grant / revoke dialogs *(shipped)*
 
-`<CapabilityGrantDialog />` (grantee, statement kinds, delegable)
-and a revoke action on the capability-heads panel. Grant UI shows
-only kinds the signed-in actor can re-grant; the daemon's
-`evaluate_capability_for_regrant` remains the check. Revoke is
-offered only on grants the signed-in actor issued.
+**Daemon:** `CapabilityHeadDto` gains `statement_kinds`,
+`delegable`, `constraints`, and `revocation` (`statement_id`,
+`retroactive`, `created_at`), all `#[serde(default)]`. Both
+capability list endpoints hydrate each head from its grant and the
+grantor's most-restrictive revocation through one helper (N+1, as
+before). These are stored facts, not an evaluation.
+
+**Grant:** `<CapabilityGrantDialog />` + `useGrantCapability`
+behind a "Grant capability" action on the Capability heads panel.
+Fields: grantee (keystore actors suggested, free text accepted),
+statement kinds (the three object-scoped kinds), delegable, and an
+optional expiry date (`expires_at` at 00:00 UTC);
+`MaxDelegationDepth` / `KeyPinned` are not exposed. Because each
+`(grantor, grantee, scope)` triple has one chain whose leaf's kind
+list is complete (`CAPABILITIES.md` §5.1.1), a grantee who already
+holds a grant from the signer switches the dialog to "Update",
+pre-fills that grant, and the container derives `supersedes`. All
+three kinds are always offered — computing which the signer may
+grant onward client-side would duplicate
+`evaluate_capability_for_regrant`; the daemon refuses and the
+dialog shows it inline.
+
+**Revoke:** `<CapabilityRevokeDialog />` + `useRevokeCapability`,
+offered per row only on heads the signer issued that carry no
+revocation (the daemon still enforces grantor-only). Forward-only
+by default; `retroactive` (`CAPABILITIES.md` §6.3) sits behind a
+checkbox with a warning and requires a reason.
+
+**Panel:** the table adds Kinds, Delegable, Expires, and a Status
+badge (Revoked / Revoked (retroactive)). No badge does not mean
+effective — the daemon's check is the authority.
+
+**Mock:** seeded grants used `kinds` instead of `statement_kinds`;
+fixed. MSW handles grant (root authority or held-with-delegable;
+an existing triple requires `supersedes`) and revocation
+(grantor-only); `mockMayWrite` now reads head fields and skips
+revoked heads.
+
+**Tests:** daemon `capability_heads_carry_grant_fields_and_revocation`
+(both endpoints); Vitest per dialog; mock-contract tests for the
+regrant, missing-`supersedes`, and non-grantor refusals; MSW e2e
+`capabilities.spec.ts`; real-stack: extend Alice → Bob with
+`ObjectBranch` via derived `supersedes`, Bob then writes a branch,
+Carol (non-delegable) is refused an onward grant, Bob revokes his
+grant to Carol, and Carol's next tag is refused.
 
 ### Slice 7 — Session-mode `ObjectGenesis` + create-object flow
 

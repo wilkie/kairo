@@ -33,8 +33,9 @@ use kairo_core::{ActorId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_daemon::{serve_with_shutdown, Config, Error};
 use kairo_identity::SecretSigningKey;
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorTrustBody, Capability, CapabilityScope, ObjectVersionTagBody,
-    SemverVersion, Signature, SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, Capability,
+    CapabilityConstraint, CapabilityScope, ObjectVersionTagBody, SemverVersion, Signature,
+    SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
 };
 use kairo_store::{FilesystemStore, StatementStore};
 use kairo_test_support::store::{CreatedActor, CreatedObject, StoreFixture};
@@ -1039,6 +1040,101 @@ async fn capabilities_list_for_object_returns_hydrated_heads() {
         Some(object.object_id.as_str()),
         "scope must be hydrated from the underlying grant"
     );
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+#[tokio::test]
+async fn capability_heads_carry_grant_fields_and_revocation() {
+    // Alice grants Bob two kinds, delegable, with an expiry, then
+    // revokes it; she also grants Carol one kind and leaves it.
+    // Both list endpoints must surface the grant's fields and
+    // attach the revocation only to Bob's head.
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let carol = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+
+    let cap = Capability::new(
+        CapabilityScope::Object(object.object_id.clone()),
+        vec![StatementKind::ObjectBranch, StatementKind::ObjectVersionTag],
+        true,
+        vec![CapabilityConstraint::ExpiresAt(Timestamp::from_seconds(
+            FIXTURE_TIMESTAMP + 86_400,
+        ))],
+    )
+    .expect("capability");
+    let body = ActorCapabilityGrantBody::new(bob.actor_id.clone(), cap, None);
+    let subject: KairoRef = format!("actor:{}", bob.actor_id).parse().expect("subject");
+    let bob_grant = fixture
+        .store
+        .put_actor_capability_grant(&sign(&alice, subject, body))
+        .expect("put bob grant");
+    put_capability_grant(
+        &fixture.store,
+        &alice,
+        &carol.actor_id,
+        &object.object_id,
+        StatementKind::ObjectVersionTag,
+    );
+    let revocation =
+        ActorCapabilityRevocationBody::new(bob_grant.clone(), false, Some("rotating".to_owned()));
+    let subject: KairoRef = format!("statement:{bob_grant}").parse().expect("subject");
+    let revocation_id = fixture
+        .store
+        .put_actor_capability_revocation(&sign(&alice, subject, revocation))
+        .expect("put revocation");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    for path in [
+        format!("/api/v1/capabilities/for-object/{}", object.object_id),
+        format!("/api/v1/capabilities/{}", alice.actor_id),
+    ] {
+        let (status, body) = http_get(handle.socket_path(), &path).await;
+        assert_eq!(status, hyper::StatusCode::OK, "{path}");
+        let json: Value = serde_json::from_slice(&body).expect("parse");
+        let heads = json["result"].as_array().expect("array");
+        let head_for = |grantee: &ActorId| {
+            heads
+                .iter()
+                .find(|head| head["grantee"].as_str() == Some(grantee.as_str()))
+                .unwrap_or_else(|| panic!("{path}: no head for {grantee}: {heads:#?}"))
+        };
+
+        let bob_head = head_for(&bob.actor_id);
+        assert_eq!(
+            bob_head["statement_kinds"],
+            serde_json::json!(["ObjectBranch", "ObjectVersionTag"]),
+            "{path}"
+        );
+        assert_eq!(bob_head["delegable"], true, "{path}");
+        assert!(
+            bob_head["constraints"][0]["expires_at"].is_string(),
+            "{path}: {bob_head:#?}"
+        );
+        assert_eq!(
+            bob_head["revocation"]["statement_id"].as_str(),
+            Some(revocation_id.as_str()),
+            "{path}"
+        );
+        assert_eq!(bob_head["revocation"]["retroactive"], false, "{path}");
+
+        let carol_head = head_for(&carol.actor_id);
+        assert_eq!(
+            carol_head["statement_kinds"],
+            serde_json::json!(["ObjectVersionTag"]),
+            "{path}"
+        );
+        assert_eq!(carol_head["delegable"], false, "{path}");
+        assert!(
+            carol_head["revocation"].is_null(),
+            "{path}: {carol_head:#?}"
+        );
+    }
 
     handle.shutdown().await;
     drop(dir);

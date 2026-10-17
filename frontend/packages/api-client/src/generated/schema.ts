@@ -468,19 +468,43 @@ export interface components {
          *     per `(grantee, scope)` chain leaf — mirrors the shape
          *     produced by `kairo capability list --grantor` in direct
          *     mode.
+         *
+         *     `statement_kinds`, `delegable`, and `constraints` are copied
+         *     from the head's `ActorCapabilityGrant` body; `revocation` is
+         *     the grantor's most-restrictive revocation of it, if any. These
+         *     are stored facts, not an evaluation: a head with no revocation
+         *     can still fail `evaluate_capability` (expiry, a broken chain
+         *     above the grantor). The four fields are `#[serde(default)]`
+         *     so clients built before they existed keep decoding.
          */
         CapabilityHeadDto: {
+            constraints?: components["schemas"]["CapabilityConstraintJson"][];
             created_at: string;
+            delegable?: boolean;
             grantee: string;
             grantor: string;
+            revocation?: null | components["schemas"]["CapabilityRevocationDto"];
             scope: components["schemas"]["CapabilityScopeJson"];
             statement_id: string;
+            statement_kinds?: string[];
         };
         CapabilityJson: {
             constraints?: components["schemas"]["CapabilityConstraintJson"][];
             delegable: boolean;
             scope: components["schemas"]["CapabilityScopeJson"];
             statement_kinds: string[];
+        };
+        /** @description The revocation attached to a [`CapabilityHeadDto`]. */
+        CapabilityRevocationDto: {
+            /** @description RFC 3339 UTC seconds. */
+            created_at: string;
+            /**
+             * @description `true` invalidates the grant from inception
+             *     (`CAPABILITIES.md` §6.3), not just from the revocation on.
+             */
+            retroactive: boolean;
+            /** @description Statement id of the `ActorCapabilityRevocation`. */
+            statement_id: string;
         };
         CapabilityScopeJson: {
             object: string;

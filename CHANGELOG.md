@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **Capability grant / revoke dialogs in the web inspector
+  (`PHASE_2_WEB_WRITES.md` slice 6).** "Grant capability" on the
+  object page's Capability heads panel writes an object-scoped
+  `ActorCapabilityGrant` (kinds, delegable, optional expiry); a grant
+  to someone who already holds one from the signer updates that chain
+  with a derived `supersedes`. A per-row Revoke on grants the signer
+  issued writes `ActorCapabilityRevocation`, forward-only unless the
+  warned, reason-required retroactive option is chosen. The table now
+  shows kinds, delegable, expiry, and revocation status.
+
 - **Real-stack e2e suite (`PHASE_2_WEB_WRITES.md` slice 8).**
   `pnpm -F @kairo/web-client e2e:real` runs Playwright against the
   built SPA served by a real `kairo-web` + `kairo-daemon` over a
@@ -232,6 +242,13 @@ rather than per-commit.
 
 ### Changed
 
+- **`CapabilityHeadDto` carries the grant's facts.** Both
+  `GET /api/v1/capabilities/{grantor}` and
+  `.../for-object/{object}` now return `statement_kinds`,
+  `delegable`, `constraints`, and the grantor's `revocation` (if any)
+  per head. Additive and `#[serde(default)]`; older clients keep
+  decoding.
+
 - **Rust toolchain pinned to 1.99.1.** `rust-toolchain.toml` and
   the CI workflow move from floating `stable` to `1.99.1`, so new
   releases can't break `fmt --check` / `clippy -D warnings` without a
@@ -301,6 +318,10 @@ or otherwise alter the on-the-wire shape. Each is a `0.x.0` bump.
   a different StatementId.
 
 ### Fixed
+
+- **Mock capability grants used `kinds`.** The MSW registry seeded
+  grant bodies with `kinds` instead of the wire field
+  `statement_kinds`.
 
 - **`@kairo/ui` Vitest suite.** jest-dom matchers registered on
   the workspace's vitest 2.x `expect` rather than `@kairo/ui`'s

@@ -38,3 +38,12 @@ export function tagRow(page: Page, version: string, actorId: string) {
     .filter({ has: page.getByRole('cell', { name: version, exact: true }) })
     .filter({ hasText: actorId.slice(0, 8) });
 }
+
+/** A Capability heads row for `grantor → grantee`, matched on the
+ * actor links. */
+export function capRow(page: Page, grantor: string, grantee: string) {
+  return page
+    .getByRole('row')
+    .filter({ has: page.locator(`a[href="/actors/${grantor}"]`) })
+    .filter({ has: page.locator(`a[href="/actors/${grantee}"]`) });
+}
