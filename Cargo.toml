@@ -8,6 +8,7 @@ members = [
     "crates/kairo-keystore",
     "crates/kairo-git",
     "crates/kairo-bundle",
+    "crates/kairo-federation-core",
     "crates/kairo-cli",
     "crates/kairo-daemon",
     "crates/kairo-daemon-client",

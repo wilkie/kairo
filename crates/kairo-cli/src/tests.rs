@@ -5885,3 +5885,164 @@ fn store_rebuild_indexes_after_seed_reports_per_kind_counts(
     assert!(rebuild_output.contains("ObjectRevision = 1"));
     Ok(())
 }
+
+// --- kairo federation -------------------------------------------------
+
+fn run_in(store: &std::path::Path, command: Command) -> Result<String, CliError> {
+    run(Cli {
+        store: Some(store.to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(command),
+    })
+}
+
+fn federation(command: FederationCommand) -> Command {
+    Command::Federation { command }
+}
+
+/// Create one actor and one object through the CLI; return the
+/// object id.
+fn create_cli_object(store: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
+    let actor_output = run_in(
+        store,
+        Command::Actor {
+            command: ActorCommand::Create {
+                kind: "person".to_owned(),
+                attestation_keys: vec![],
+                generate_attestation_keys: 1,
+                attestation_threshold: 1,
+            },
+        },
+    )?;
+    let actor = parse_field(&actor_output, "actor = ")?;
+    let object_output = run_in(
+        store,
+        Command::Object {
+            command: ObjectSubcommand::Create {
+                actor,
+                kind: "software".to_owned(),
+                initial_revision: None,
+            },
+        },
+    )?;
+    parse_field(&object_output, "object = ")
+}
+
+#[test]
+fn parses_federation_commands() {
+    assert!(matches!(
+        Cli::try_parse_from(["kairo", "federation", "publish", "--object", OBJECT_ID]),
+        Ok(Cli {
+            command: Some(Command::Federation {
+                command: FederationCommand::Publish { object },
+            }),
+            ..
+        }) if object == OBJECT_ID
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["kairo", "federation", "unpublish", "--object", OBJECT_ID]),
+        Ok(Cli {
+            command: Some(Command::Federation {
+                command: FederationCommand::Unpublish { .. },
+            }),
+            ..
+        })
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["kairo", "federation", "published"]),
+        Ok(Cli {
+            command: Some(Command::Federation {
+                command: FederationCommand::Published,
+            }),
+            ..
+        })
+    ));
+}
+
+#[test]
+fn federation_publish_list_unpublish_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let store = store_dir.path();
+    let object = create_cli_object(store)?;
+
+    let listed = run_in(store, federation(FederationCommand::Published))?;
+    assert_eq!(listed, "published = 0\n");
+
+    let published = run_in(
+        store,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    assert_eq!(
+        published,
+        format!("object = {object}\nstatus = published\n")
+    );
+
+    let again = run_in(
+        store,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    assert!(again.contains("status = already_published"), "{again}");
+
+    let listed = run_in(store, federation(FederationCommand::Published))?;
+    assert!(listed.starts_with("published = 1\n"), "{listed}");
+    assert!(
+        listed.contains(&format!("  object={object} published_at=")),
+        "{listed}"
+    );
+
+    let unpublished = run_in(
+        store,
+        federation(FederationCommand::Unpublish {
+            object: object.clone(),
+        }),
+    )?;
+    assert!(
+        unpublished.contains("status = unpublished"),
+        "{unpublished}"
+    );
+    assert!(unpublished.contains("keep their copy"), "{unpublished}");
+
+    let not_published = run_in(store, federation(FederationCommand::Unpublish { object }))?;
+    assert!(
+        not_published.contains("status = not_published"),
+        "{not_published}"
+    );
+    assert_eq!(
+        run_in(store, federation(FederationCommand::Published))?,
+        "published = 0\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn federation_publish_refuses_objects_not_in_the_store() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let error = run_in(
+        store_dir.path(),
+        federation(FederationCommand::Publish {
+            object: OBJECT_ID.to_owned(),
+        }),
+    )
+    .err()
+    .ok_or("publishing an absent object succeeded")?;
+    assert!(
+        error.to_string().contains("is not in the local store"),
+        "{error}"
+    );
+
+    let bad_id = run_in(
+        store_dir.path(),
+        federation(FederationCommand::Publish {
+            object: "object:not-bare".to_owned(),
+        }),
+    );
+    assert!(bad_id.is_err());
+    Ok(())
+}

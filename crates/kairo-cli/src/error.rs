@@ -50,6 +50,17 @@ pub(crate) enum CliError {
     RebuildIndexes {
         source: kairo_store::StoreError,
     },
+    PublishObject {
+        object: ObjectId,
+        source: kairo_store::StoreError,
+    },
+    UnpublishObject {
+        object: ObjectId,
+        source: kairo_store::StoreError,
+    },
+    ListPublishedObjects {
+        source: kairo_store::StoreError,
+    },
     OpenKeystore {
         path: PathBuf,
         source: kairo_keystore::KeystoreError,
@@ -460,6 +471,22 @@ impl fmt::Display for CliError {
             Self::RebuildIndexes { source } => {
                 write!(f, "failed to rebuild indexes: {source}")
             }
+            Self::PublishObject {
+                object,
+                source: kairo_store::StoreError::Missing,
+            } => write!(
+                f,
+                "object {object} is not in the local store; only local objects can be published"
+            ),
+            Self::PublishObject { object, source } => {
+                write!(f, "failed to publish object {object}: {source}")
+            }
+            Self::UnpublishObject { object, source } => {
+                write!(f, "failed to unpublish object {object}: {source}")
+            }
+            Self::ListPublishedObjects { source } => {
+                write!(f, "failed to read the publish list: {source}")
+            }
             Self::OpenKeystore { path, source } => {
                 write!(f, "failed to open keystore at {}: {source}", path.display())
             }
@@ -849,6 +876,9 @@ impl Error for CliError {
             Self::VerifyStatementSignature(error) => Some(error),
             Self::OpenStore { source, .. }
             | Self::RebuildIndexes { source, .. }
+            | Self::PublishObject { source, .. }
+            | Self::UnpublishObject { source, .. }
+            | Self::ListPublishedObjects { source, .. }
             | Self::WriteActor { source, .. }
             | Self::ReadActor { source, .. }
             | Self::WriteObjectGenesis { source, .. }

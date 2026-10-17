@@ -1455,6 +1455,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-federation-core"
+version = "0.1.0"
+dependencies = [
+ "kairo-core",
+ "kairo-identity",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kairo-git"
 version = "0.1.0"
 dependencies = [

@@ -131,6 +131,32 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WebCommand,
     },
+    /// Federation controls for this node (`specs/DECISIONS.md` §16).
+    /// Publishing marks an object as servable to peers; nothing is
+    /// served until it is published.
+    Federation {
+        #[command(subcommand)]
+        command: FederationCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum FederationCommand {
+    /// Mark an object as servable to federation peers. The object
+    /// must be in the local store. Publishing is effectively
+    /// irreversible: peers that fetch it keep their copy.
+    Publish {
+        #[arg(long)]
+        object: String,
+    },
+    /// Stop serving an object to federation peers. Copies peers
+    /// already fetched are unaffected.
+    Unpublish {
+        #[arg(long)]
+        object: String,
+    },
+    /// List the objects this node serves to federation peers.
+    Published,
 }
 
 #[derive(Debug, Subcommand)]

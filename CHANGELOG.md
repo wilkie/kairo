@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **Federation publish list and wire types (`PHASE_2_FEDERATION.md`
+  slice 1).** New `kairo-federation-core` crate with the object-pull
+  wire types (node document, published-object, object and actor
+  listings, pagination, `fed_*` error envelope), which validate at
+  parse time. `kairo federation publish --object <id>`,
+  `unpublish`, and `published` manage the node's opt-in publish
+  list at `<store>/federation/published.json` (`DECISIONS.md` §16).
+  Nothing serves it yet; that is slice 2. `ActorKind::node()` names
+  a federation node's own actor.
+
 - **Create objects from the web inspector (`PHASE_2_WEB_WRITES.md`
   slice 7).** Cookie-mode `POST /api/v1/statements` now accepts
   `ObjectGenesis` with a body of just `{ object_kind,

@@ -1294,8 +1294,8 @@ Subcommands:
 kairo federation status
 kairo federation peers
 kairo federation search <query>
-kairo federation publish <object-ref>
-kairo federation unpublish <object-ref>
+kairo federation publish --object <id>
+kairo federation unpublish --object <id>
 kairo federation published
 kairo federation provenance <statement-or-blob-ref>
 ```

@@ -50,6 +50,7 @@ pub mod error;
 mod keys;
 mod lock;
 mod objects_by_actor;
+mod published;
 mod shard;
 mod statements_by_actor;
 mod tags;
@@ -88,6 +89,7 @@ pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
 pub use objects_by_actor::ObjectByActor;
+pub use published::{PublishedObject, PublishedObjectStore};
 pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
@@ -6552,6 +6554,170 @@ mod tests {
         let summaries = store.list_objects_by_actor(&actor)?;
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].object_id, object_id);
+        Ok(())
+    }
+
+    // --- federation publish list ---------------------------------
+
+    /// Persist a distinct object (the nonce varies the id) and
+    /// return its id.
+    fn put_published_test_object(
+        store: &FilesystemStore,
+        nonce: u8,
+    ) -> Result<ObjectId, Box<dyn std::error::Error>> {
+        let actor = fresh_genesis().actor_id();
+        let body = ObjectGenesisBody::new(
+            ObjectKind::software(),
+            actor.clone(),
+            timestamp(),
+            [nonce; 32],
+            None,
+        );
+        let signature_bytes = signing_key().sign(&body.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(store.put_object_genesis(&ObjectGenesisStatement::new(body, signature))?)
+    }
+
+    #[test]
+    fn publish_list_starts_empty() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        assert!(store.list_published_objects()?.is_empty());
+        let object = put_published_test_object(&store, 1)?;
+        assert!(!store.is_object_published(&object)?);
+        Ok(())
+    }
+
+    #[test]
+    fn publish_and_unpublish_round_trip_sorted() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let mut objects = Vec::new();
+        for nonce in 1..=3 {
+            objects.push(put_published_test_object(&store, nonce)?);
+        }
+        for (offset, object) in (0_i64..).zip(&objects) {
+            let at = Timestamp::from_seconds(1_700_000_000 + offset);
+            assert!(store.publish_object(object, at)?);
+        }
+
+        let listed = store.list_published_objects()?;
+        let mut expected = objects.clone();
+        expected.sort();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|entry| entry.object_id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(store.is_object_published(&objects[1])?);
+
+        // The file on disk is sorted too, at the documented path.
+        let on_disk: Vec<serde_json::Value> = serde_json::from_slice(&fs::read(
+            dir.path().join("federation").join("published.json"),
+        )?)?;
+        let disk_ids: Vec<&str> = on_disk
+            .iter()
+            .filter_map(|entry| entry["object_id"].as_str())
+            .collect();
+        assert_eq!(
+            disk_ids,
+            expected.iter().map(ObjectId::as_str).collect::<Vec<_>>()
+        );
+
+        assert!(store.unpublish_object(&objects[1])?);
+        assert!(!store.is_object_published(&objects[1])?);
+        assert_eq!(store.list_published_objects()?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn publish_is_idempotent_and_keeps_first_timestamp() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let object = put_published_test_object(&store, 1)?;
+        let first = Timestamp::from_seconds(1_700_000_000);
+        assert!(store.publish_object(&object, first)?);
+        assert!(!store.publish_object(&object, Timestamp::from_seconds(1_800_000_000))?);
+        let listed = store.list_published_objects()?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].published_at, first);
+        Ok(())
+    }
+
+    #[test]
+    fn publish_refuses_object_not_in_store() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let absent = ObjectId::new(OBJECT_ID)?;
+        assert!(matches!(
+            store.publish_object(&absent, timestamp()),
+            Err(StoreError::Missing)
+        ));
+        assert!(store.list_published_objects()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn unpublish_of_unpublished_object_is_false() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let object = put_published_test_object(&store, 1)?;
+        assert!(!store.unpublish_object(&object)?);
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_publish_list_is_reported_not_ignored() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        let path = dir.path().join("federation").join("published.json");
+        fs::create_dir_all(path.parent().ok_or("no parent")?)?;
+        fs::write(
+            &path,
+            br#"[{"object_id":"not an id","published_at":"2023-11-14T22:13:20Z"}]"#,
+        )?;
+        assert!(matches!(
+            store.list_published_objects(),
+            Err(StoreError::Corrupt { .. })
+        ));
+        fs::write(&path, b"{")?;
+        assert!(matches!(
+            store.list_published_objects(),
+            Err(StoreError::Corrupt { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_publishes_do_not_lose_entries() -> TestResult {
+        const THREADS: u8 = 8;
+        let (_dir, store) = open_temp_store()?;
+        let mut objects = Vec::new();
+        for nonce in 1..=THREADS {
+            objects.push(put_published_test_object(&store, nonce)?);
+        }
+        std::thread::scope(|scope| {
+            for object in &objects {
+                let store = store.clone();
+                scope.spawn(move || {
+                    store
+                        .publish_object(object, timestamp())
+                        .expect("publish_object");
+                });
+            }
+        });
+        assert_eq!(store.list_published_objects()?.len(), objects.len());
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_indexes_leaves_publish_list_alone() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let object = put_published_test_object(&store, 1)?;
+        store.publish_object(&object, timestamp())?;
+        store.rebuild_indexes()?;
+        assert!(store.is_object_published(&object)?);
         Ok(())
     }
 }

@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. No slices shipped yet.
+Draft, locked 2026-10-16. Slice 1 shipped.
 
 Slice plan for the first federation milestone in `PHASE_2.md` §4:
 pulling a published object's signed history from one node into
@@ -30,10 +30,10 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 
 | Location | Change |
 |----------|--------|
-| `crates/kairo-federation-core` (new) | Wire types: `NodeDocument`, `ObjectListing`, `ActorListing`, `PublishedObjects`, `Page<T>` / cursor, `FedErrorCode`. Serde only; depends on `kairo-core` and `kairo-identity`. No I/O. |
-| `crates/kairo-federation-http` (new) | `server` (closure computation, axum router), `client` (fetch + verify + ingest), `publish` (the `published.json` list). Depends on `kairo-federation-core`, `kairo-store`, `kairo-statement`. `kairo-federation-http` binary. |
-| `crates/kairo-store` | `provenance` module: `ProvenanceStore` trait + `FilesystemStore` impl over `<store>/provenance/` (slice 3). Lives here, not in the federation crate, so the daemon can read it (slice 5) without depending on federation. |
-| `crates/kairo-cli` | `kairo fetch <object-ref> --from <url>`; `kairo federation publish \| unpublish \| published \| provenance \| status` |
+| `crates/kairo-federation-core` (new) | Wire types: `NodeDocument`, `ObjectListing`, `ActorListing`, `PublishedObjects`, `Cursor` / `PageRequest`, `FedErrorEnvelope` / `FedErrorCode`. Serde only; depends on `kairo-core` and `kairo-identity`. No I/O. |
+| `crates/kairo-federation-http` (new) | `server` (closure computation, axum router), `client` (fetch + verify + ingest). Depends on `kairo-federation-core`, `kairo-store`, `kairo-statement`. `kairo-federation-http` binary. |
+| `crates/kairo-store` | `published` module: `PublishedObjectStore` trait + `FilesystemStore` impl over `<store>/federation/published.json` (slice 1). `provenance` module: `ProvenanceStore` trait + `FilesystemStore` impl over `<store>/provenance/` (slice 3). Both live here, not in the federation crate: they need the store's index lock and atomic write, and the daemon reads provenance (slice 5) without depending on federation. |
+| `crates/kairo-cli` | `kairo fetch <object-ref> --from <url>`; `kairo federation publish \| unpublish --object <id>`, `published`, `provenance`, `status` |
 | `crates/kairo-daemon` | Slice 5 only: provenance on read DTOs |
 | `frontend/` | Slice 5 only: "Fetched from" badge |
 
@@ -104,6 +104,7 @@ served.
 | 404 | `fed_not_found` | missing *or* unpublished; deliberately indistinguishable |
 | 400 | `fed_bad_id` | path segment isn't a valid id of that type |
 | 400 | `fed_bad_cursor` | cursor didn't decode |
+| 400 | `fed_bad_limit` | `limit` isn't an integer from 1 to 1000 (refused, not clamped) |
 | 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD` |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
 
@@ -130,16 +131,28 @@ Exceeding one fails the pull with what was stored so far kept.
 
 ## 3. Slice Sequence
 
-### Slice 1 — Wire types and publish list
+### Slice 1 — Wire types and publish list *(shipped)*
 
-- `kairo-federation-core` with the §2.2 types, round-trip serde
-  tests, and `deny_unknown_fields` on every top-level type.
-- `publish` module: read/modify/write
-  `<store>/federation/published.json` (sorted object ids) under
-  the store's index lock.
-- `kairo federation publish <object-ref>` (object must exist
-  locally), `unpublish` (prints "peers that already fetched it
-  keep their copy"), `published`.
+- `kairo-federation-core` with the §2.2 types. Ids parse into
+  their `kairo-core` newtypes, every top-level document is
+  `deny_unknown_fields`, and each `schema` field accepts only its
+  exact string. `NodeDocument::validate` checks the base URL,
+  `kairo-fed/1`, that `node_actor` derives from `actor_genesis`,
+  and kind `node` (`ActorKind::node()` added to
+  `kairo-identity`). `ActorListing::validate` does the
+  derivation check. Unknown error codes from newer nodes parse as
+  `Unknown`.
+- `kairo-store` `published` module: read/modify/write of
+  `<store>/federation/published.json` (`[{ object_id,
+  published_at }]`, sorted by id) under the store's index lock.
+  It is primary state, which `rebuild_indexes` leaves alone.
+  Publishing requires the object's genesis locally and is
+  idempotent; the first `published_at` is kept.
+- `kairo federation publish --object <id>` (the object must exist
+  locally), `unpublish --object <id>` (prints "peers that already
+  fetched this object keep their copy"), and `published`. These
+  use `--object` like the other v1 subtrees, not `CLI.md` §25's
+  positional `<object-ref>`.
 
 ### Slice 2 — Serving
 
@@ -147,7 +160,8 @@ Exceeding one fails the pull with what was stored so far kept.
   object and capability indexes for the §16 sub-decision 4 set.
   Unit-tested on its own, including: `ActorTrust` never appears;
   grants scoped to *other* objects don't appear; a grantee who
-  signed a branch appears with key events.
+  signed a branch appears in `actors`, and the actor endpoint
+  serves that grantee's key events.
 - axum router for §2.1 (except `/git`), `kairo-federation-http`
   binary with `--store`, `--bind` (default `127.0.0.1:7880`),
   `--base-url`, `--node-actor`. Non-loopback bind logs a warning

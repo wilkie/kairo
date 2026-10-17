@@ -181,6 +181,13 @@ impl ActorKind {
         Self("service".to_owned())
     }
 
+    /// A federation node's own actor (`specs/DECISIONS.md` §16
+    /// sub-decision 1). Self-declared like every kind: a display
+    /// hint and lint target, never an authority input.
+    pub fn node() -> Self {
+        Self("node".to_owned())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
