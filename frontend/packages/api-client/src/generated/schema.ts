@@ -679,6 +679,18 @@ export interface components {
             idle_expires_at: string;
         };
         /**
+         * @description `body` of a [`SessionWriteRequest`] with `body_kind =
+         *     "ObjectGenesis"`. Genesis has no envelope: its signature
+         *     covers the body itself, and the body carries the fields an
+         *     envelope would — so the daemon fills `created_by` (the session
+         *     actor), `created_at` (now), and a fresh 32-byte `nonce`, which
+         *     together with `object_kind` derive the new `ObjectId`.
+         */
+        SessionObjectGenesisBody: {
+            initial_revision?: string | null;
+            object_kind: string;
+        };
+        /**
          * @description Session-mode payload for `POST /api/v1/statements` (per
          *     `PHASE_2_WEB_CLIENT_AUTH.md` §2.3 "two payload shapes on
          *     one endpoint"). Used when the request carries a

@@ -445,6 +445,8 @@ async function handleSessionWrite(request: Request, registry: MockRegistry) {
       return handleSessionObjectBranch(session.actorId, payload.body, registry);
     case 'ObjectVersionTag':
       return handleSessionObjectVersionTag(session.actorId, payload.body, registry);
+    case 'ObjectGenesis':
+      return handleSessionObjectGenesis(session.actorId, payload.body, registry);
     case 'ActorCapabilityGrant':
       return handleSessionActorCapabilityGrant(session.actorId, payload.body, registry);
     case 'ActorCapabilityRevocation':
@@ -705,6 +707,54 @@ function mockSignature(actor: string) {
 }
 
 const OBJECT_SCOPED_KINDS = ['ObjectRevision', 'ObjectBranch', 'ObjectVersionTag'];
+
+function handleSessionObjectGenesis(byActor: string, body: unknown, registry: MockRegistry) {
+  if (typeof body !== 'object' || body === null) {
+    return badRequest('invalid ObjectGenesis body shape');
+  }
+  const fields = body as { object_kind?: unknown; initial_revision?: unknown };
+  if (typeof fields.object_kind !== 'string' || fields.object_kind.trim().length === 0) {
+    return badRequest('invalid ObjectGenesis body: object_kind must be non-empty');
+  }
+  if (
+    fields.initial_revision !== undefined &&
+    fields.initial_revision !== null &&
+    typeof fields.initial_revision !== 'string'
+  ) {
+    return badRequest('invalid ObjectGenesis body: initial_revision must be a string or null');
+  }
+
+  // The daemon fills created_by / created_at / nonce and derives
+  // the id from them; the mock just mints a unique id.
+  const objectId = mockStatementId('Object');
+  const createdAt = rfc3339(new Date());
+  const genesis: components['schemas']['ObjectGenesisStatementJson'] = {
+    type: 'ObjectGenesis',
+    version: 1,
+    body: {
+      object_kind: fields.object_kind,
+      created_by: byActor,
+      created_at: createdAt,
+      nonce: '0'.repeat(64),
+      initial_revision:
+        typeof fields.initial_revision === 'string' ? fields.initial_revision : null,
+    },
+    signature: mockSignature(byActor),
+  };
+  registry.objects[objectId] = genesis;
+  registry.objectsByActor[byActor] = [
+    ...(registry.objectsByActor[byActor] ?? []),
+    { actor: byActor, object_id: objectId, object_kind: fields.object_kind, created_at: createdAt },
+  ];
+  // Genesis-only objects verify `valid`, like the seeded Beta.
+  registry.verifyObject[objectId] = { object_id: objectId, status: 'valid', issues: [] };
+
+  const result: components['schemas']['PutStatementResult'] = {
+    statement_id: objectId,
+    statement: genesis,
+  };
+  return HttpResponse.json(successEnvelope(result));
+}
 
 function handleSessionActorCapabilityGrant(byActor: string, body: unknown, registry: MockRegistry) {
   if (typeof body !== 'object' || body === null) {

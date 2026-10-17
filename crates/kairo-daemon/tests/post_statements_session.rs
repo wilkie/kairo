@@ -463,8 +463,13 @@ async fn session_mode_with_expired_cookie_returns_401() {
     handle.shutdown().await;
 }
 
+/// Session-mode `ObjectGenesis` (`PHASE_2_WEB_WRITES.md` slice 7):
+/// the client sends only `object_kind`; the daemon fills
+/// `created_by`, `created_at`, and a fresh nonce, signs the body
+/// itself (no envelope), and the stored genesis verifies and
+/// resolves by the returned id.
 #[tokio::test]
-async fn session_mode_object_genesis_returns_415() {
+async fn session_mode_object_genesis_creates_object() {
     let (dir, fixture) = StoreFixture::temp();
     let alice = fixture.make_actor();
     let store_path = dir.path().to_path_buf();
@@ -478,19 +483,50 @@ async fn session_mode_object_genesis_returns_415() {
         .await
         .expect("open session");
 
-    match client
+    let created = client
         .write_via_session(
             &cookie,
             "ObjectGenesis",
-            json!({ "object_kind": "kairo/object" }),
+            json!({ "object_kind": "software" }),
         )
+        .await
+        .expect("create object");
+    assert_eq!(
+        created.statement["body"]["created_by"],
+        alice.actor_id.to_string()
+    );
+    assert_eq!(created.statement["body"]["object_kind"], "software");
+    assert_eq!(
+        created.statement["signature"]["actor"],
+        alice.actor_id.to_string()
+    );
+
+    let stored = client
+        .object(&created.statement_id)
+        .await
+        .expect("object resolves by the returned id");
+    assert_eq!(stored.body.created_by, alice.actor_id.to_string());
+
+    // Same kind, same actor, fresh nonce: a distinct object.
+    let second = client
+        .write_via_session(
+            &cookie,
+            "ObjectGenesis",
+            json!({ "object_kind": "software" }),
+        )
+        .await
+        .expect("create second object");
+    assert_ne!(second.statement_id, created.statement_id);
+
+    match client
+        .write_via_session(&cookie, "ObjectGenesis", json!({ "object_kind": "  " }))
         .await
     {
         Err(ClientError::Http { status, code, .. }) => {
-            assert_eq!(status, 415);
-            assert_eq!(code, "unsupported_statement_kind");
+            assert_eq!(status, 400);
+            assert_eq!(code, "bad_request");
         }
-        other => panic!("expected 415 unsupported_statement_kind, got {other:?}"),
+        other => panic!("expected 400 for an empty object_kind, got {other:?}"),
     }
 
     handle.shutdown().await;

@@ -366,6 +366,15 @@ describe('session writes: capabilities', () => {
     );
   });
 
+  it('refuses an ObjectGenesis with an empty kind', async () => {
+    await client.openSession(mockIds.alice);
+    await expectDaemonError(
+      client.writeViaSession('ObjectGenesis', { object_kind: '  ' }),
+      'bad_request',
+      400,
+    );
+  });
+
   it('refuses a revocation from anyone but the grantor', async () => {
     await client.openSession(mockIds.bob);
     await expectDaemonError(

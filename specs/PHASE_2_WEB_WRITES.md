@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–6 and 8 shipped; 7 open.
+Draft, locked 2026-10-16. All eight slices shipped; §4 lists what stays deferred.
 
 Slice plan for `PHASE_2.md` §16: turning the signed-in web
 inspector into a write surface. The locked shape is
@@ -70,7 +70,7 @@ automatically; the frontend sets no auth headers.
 | 403 | `web_forbidden_host` | proxy — non-loopback `Host` |
 | 403 | `web_cross_origin` | proxy — write without matching `Origin` |
 | 405 | `web_method_not_allowed` | proxy — method/path not on the allowlist |
-| 415 | `unsupported_statement_kind` | daemon — e.g. cookie-mode `ObjectGenesis` |
+| 415 | `unsupported_statement_kind` | daemon — a `body_kind` the dispatcher doesn't accept |
 
 Proxy errors use the daemon's `kairo.api.error.v1` envelope so the
 frontend has one error parser. Dialogs map `not_authorized` to an
@@ -106,7 +106,7 @@ no `Authorization` header it dispatches the unsigned body through
 `dispatch_session_unsigned`. Covers `ActorTrust`,
 `ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`,
 `ActorCapabilityGrant`, `ActorCapabilityRevocation`.
-`ObjectGenesis` returns `415` (slice 7). OpenAPI regenerated.
+`ObjectGenesis` returned `415` until slice 7. OpenAPI regenerated.
 
 ### Slice 2 — Trust-opinion dialog *(shipped)*
 
@@ -211,11 +211,33 @@ regrant, missing-`supersedes`, and non-grantor refusals; MSW e2e
 Carol (non-delegable) is refused an onward grant, Bob revokes his
 grant to Carol, and Carol's next tag is refused.
 
-### Slice 7 — Session-mode `ObjectGenesis` + create-object flow
+### Slice 7 — Session-mode `ObjectGenesis` + create-object flow *(shipped)*
 
-Daemon helper for genesis's asymmetric envelope (signature over
-`body.canonical_bytes()`, no envelope wrapping); remove the `415`
-branch; then a "New object" flow from the objects list.
+**Daemon:** the cookie-mode body is `SessionObjectGenesisBody {
+object_kind, initial_revision? }` (empty kind → `400`).
+`sign_object_genesis` loads the session actor's key, fills
+`created_by`, `created_at = now`, and a `getrandom` nonce, and signs
+`body.canonical_bytes()` — genesis has no envelope, unlike
+`sign_envelope`. Signed and session modes now share
+`persist_object_genesis` (store verification + put). No capability
+check: the signer becomes the object's root authority.
+
+**UI:** `<CreateObjectDialog />` + `useCreateObject`. "New object"
+appears on the Objects page and on the signed-in actor's own
+Created objects panel (not on other actors' pages, since genesis is
+signed as the session actor). The kind is free text — the specs fix
+no vocabulary — defaulting to `software` and suggesting kinds the
+actor already uses; `initial_revision` is not exposed. On success
+the SPA navigates to the new object. `useObjectsByActor` gained an
+optional `{ enabled }`.
+
+**Tests:** daemon `session_mode_object_genesis_creates_object`
+(replaces the old `415` test: created object resolves, a second
+create gets a distinct id, empty kind is refused); Vitest; a
+mock-contract test for the empty kind; MSW e2e
+`create-object.spec.ts`; real-stack `objects.spec.ts` (Bob creates
+an object, lands on it, issues a grant on it as root authority, and
+finds it under Created objects).
 
 ### Slice 8 — Real-stack e2e *(shipped, pulled ahead of 6–7)*
 

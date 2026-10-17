@@ -81,11 +81,15 @@ export function useStatementsByActor(actorId: string): QueryResult<StatementByAc
   });
 }
 
-export function useObjectsByActor(actorId: string): QueryResult<ObjectByActorDto[]> {
+export function useObjectsByActor(
+  actorId: string,
+  opts: { enabled?: boolean } = {},
+): QueryResult<ObjectByActorDto[]> {
   const client = useKairoClient();
   return useQuery<ObjectByActorDto[], KairoApiClientError>({
     queryKey: kairoKeys.actorObjects(actorId),
     queryFn: () => client.listObjectsByActor(actorId),
+    enabled: opts.enabled ?? true,
   });
 }
 
@@ -416,6 +420,39 @@ export function useSetVersionTag(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: kairoKeys.actorStatements(vars.byActor),
       });
+    },
+  });
+}
+
+/**
+ * Variables accepted by [`useCreateObject`]. Only the kind is
+ * caller-supplied: the daemon fills `created_by` (the session
+ * actor), `created_at`, and a fresh nonce, which derive the new
+ * `ObjectId`.
+ */
+export interface CreateObjectVars {
+  byActor: string;
+  objectKind: string;
+}
+
+/**
+ * Mutation: cookie-mode write of an `ObjectGenesis`. The result's
+ * `statement_id` is the new object's id. Genesis needs no
+ * capability — the signer becomes the object's root authority.
+ * On success invalidates the creator's Created objects list.
+ */
+export function useCreateObject(): UseMutationResult<
+  PutStatementResult,
+  KairoApiClientError,
+  CreateObjectVars
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<PutStatementResult, KairoApiClientError, CreateObjectVars>({
+    mutationFn: ({ objectKind }) =>
+      client.writeViaSession('ObjectGenesis', { object_kind: objectKind }),
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({ queryKey: kairoKeys.actorObjects(vars.byActor) });
     },
   });
 }

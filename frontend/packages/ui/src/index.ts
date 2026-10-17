@@ -66,3 +66,8 @@ export {
   type CapabilityRevokeDialogError,
   type CapabilityRevokeDialogGrant,
 } from './CapabilityRevokeDialog';
+export {
+  CreateObjectDialog,
+  type CreateObjectDialogProps,
+  type CreateObjectDialogError,
+} from './CreateObjectDialog';

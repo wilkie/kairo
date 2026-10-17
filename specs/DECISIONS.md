@@ -988,10 +988,12 @@ Seven sub-decisions, locked together:
    `~/.kairo/keys/` the CLI on that host already reads, so the
    set of principals that can sign as a local actor does not
    grow. Signed mode keeps sub-decision 3 as written.
-   `ObjectGenesis` is excluded from cookie mode until its
-   asymmetric envelope gets a dedicated helper; the
-   four attestation-surface kinds stay CLI-only (§14
-   sub-decision 8).
+   `ObjectGenesis` has no envelope (its signature covers the body),
+   so in cookie mode the client sends only `{ object_kind,
+   initial_revision? }` and the daemon fills `created_by` (the
+   session actor), `created_at`, and a fresh 32-byte nonce before
+   signing the body. The four attestation-surface kinds stay
+   CLI-only (§14 sub-decision 8).
 
 2. **Proxy write allowlist is exact `(method, path)` pairs.**
    `kairo-web` forwards `GET` and `HEAD` on every `/api/v1/*`
@@ -1047,10 +1049,9 @@ Seven sub-decisions, locked together:
    invariant is what makes 3 and 4 sufficient — revisit both if
    it changes), CSRF tokens (redundant with 4 under the loopback
    model), browser-held keys, passphrase-protected sign-in,
-   persisted sessions, `ObjectGenesis` and `ObjectRevision` web
-   UIs (genesis waits on 1's helper; revisions need a design for
-   naming a Git tree the browser cannot build), and federation
-   peer auth.
+   persisted sessions, an `ObjectRevision` web UI (revisions need
+   a design for naming a Git tree the browser cannot build), and
+   federation peer auth.
 
 Rationale: the cookie path is the smallest change that gives the
 inspector real writes without inventing a second auth stack —

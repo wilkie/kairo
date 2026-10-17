@@ -45,6 +45,7 @@ import { useState, type ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 import { TrustOpinionDialogContainer } from '../components/TrustOpinionDialogContainer';
+import { CreateObjectDialogContainer } from '../components/CreateObjectDialogContainer';
 
 export interface ActorDetailProps {
   id: string;
@@ -60,6 +61,7 @@ export function ActorDetail({ id }: ActorDetailProps) {
   const trustQ = useTrustAbout(id);
   const sessionQ = useSession();
   const [trustDialogOpen, setTrustDialogOpen] = useState(false);
+  const [createDialogOpen, setCreateDialogOpen] = useState(false);
 
   const session = sessionQ.data ?? null;
 
@@ -115,7 +117,23 @@ export function ActorDetail({ id }: ActorDetailProps) {
       <Panel
         title="Created objects"
         description="Every object whose ObjectGenesis names this actor as `created_by`. Sorted oldest first."
-        actions={<LocalityBadge state="local" />}
+        actions={
+          <Stack direction="row" spacing={1} alignItems="center">
+            {/* Genesis is signed as the session actor, so offer it
+                only on that actor's own page. */}
+            {session?.actor_id === id && (
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => setCreateDialogOpen(true)}
+                data-testid="create-object"
+              >
+                New object
+              </Button>
+            )}
+            <LocalityBadge state="local" />
+          </Stack>
+        }
       >
         <QueryStatusBoundary query={objectsQ}>
           {(rows) => <CreatedObjectsTable rows={rows} />}
@@ -131,6 +149,11 @@ export function ActorDetail({ id }: ActorDetailProps) {
           {(rows) => <StatementsTable rows={rows} />}
         </QueryStatusBoundary>
       </Panel>
+
+      <CreateObjectDialogContainer
+        open={createDialogOpen}
+        onClose={() => setCreateDialogOpen(false)}
+      />
 
       <TrustOpinionDialogContainer
         open={trustDialogOpen}

@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **Create objects from the web inspector (`PHASE_2_WEB_WRITES.md`
+  slice 7).** Cookie-mode `POST /api/v1/statements` now accepts
+  `ObjectGenesis` with a body of just `{ object_kind,
+  initial_revision? }`; the daemon fills `created_by`, `created_at`,
+  and a fresh nonce and signs the body (genesis has no envelope).
+  A "New object" action on the Objects page and the signed-in
+  actor's own page creates one and opens it. This completes the
+  browser write surface planned in `PHASE_2.md` §16.
+
 - **Capability grant / revoke dialogs in the web inspector
   (`PHASE_2_WEB_WRITES.md` slice 6).** "Grant capability" on the
   object page's Capability heads panel writes an object-scoped
@@ -43,8 +52,8 @@ rather than per-commit.
   /api/v1/statements` accepts an unsigned `{ body_kind, body }`
   under a `kairo_session` cookie; the daemon signs as the session
   actor and runs the same verification and capability checks as
-  signed mode (`ObjectGenesis` excluded for now; both
-  credentials at once is `400 ambiguous_auth`). The web inspector
+  signed mode (both credentials at once is `400
+  ambiguous_auth`). The web inspector
   gains trust-opinion and branch create/update dialogs on top of
   it.
 

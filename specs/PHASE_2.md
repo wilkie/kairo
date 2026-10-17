@@ -1248,8 +1248,10 @@ Bullets, by slice (see `PHASE_2_WEB_WRITES.md` §3):
       (`ActorCapabilityGrant`, `ActorCapabilityRevocation`);
       `CapabilityHeadDto` carries the grant's kinds, delegable,
       constraints, and revocation.
-- [ ] Slice 7 — Session-mode `ObjectGenesis` helper + create-
-      object flow.
+- [x] Slice 7 — Session-mode `ObjectGenesis` helper (daemon fills
+      `created_by`, `created_at`, nonce and signs the body) +
+      "New object" flow on the Objects page and the actor's own
+      page.
 - [x] Slice 8 — Real-stack Playwright suite (daemon + `kairo-web`
       + built SPA over a `smoke-seed.sh` store, no MSW) covering
       sessions, every shipped write dialog, a capability refusal,

@@ -390,3 +390,16 @@ pub struct SessionWriteRequest {
     #[schema(value_type = Object)]
     pub body: serde_json::Value,
 }
+
+/// `body` of a [`SessionWriteRequest`] with `body_kind =
+/// "ObjectGenesis"`. Genesis has no envelope: its signature
+/// covers the body itself, and the body carries the fields an
+/// envelope would — so the daemon fills `created_by` (the session
+/// actor), `created_at` (now), and a fresh 32-byte `nonce`, which
+/// together with `object_kind` derive the new `ObjectId`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SessionObjectGenesisBody {
+    pub object_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_revision: Option<String>,
+}

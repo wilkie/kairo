@@ -75,6 +75,8 @@ export {
   type UpdateBranchVars,
   useSetVersionTag,
   type SetVersionTagVars,
+  useCreateObject,
+  type CreateObjectVars,
   useGrantCapability,
   type GrantCapabilityVars,
   useRevokeCapability,

@@ -21,7 +21,7 @@ use axum::body::{Body, Bytes};
 use axum::extract::{Path, Request, State};
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{ActorId, KairoRef, StatementId, Timestamp};
-use kairo_daemon_client::dto::{PutStatementResult, SessionWriteRequest};
+use kairo_daemon_client::dto::{PutStatementResult, SessionObjectGenesisBody, SessionWriteRequest};
 use kairo_identity::{verify_signature, ActorResolveError, ActorResolver};
 use kairo_keystore::Keystore;
 use kairo_statement::json::{
@@ -36,8 +36,9 @@ use kairo_statement::verify::{
 };
 use kairo_statement::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ObjectBranchBody,
-    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, Signature, SignedStatement,
-    StatementBody, StatementKind, UnsignedStatement,
+    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    ObjectVersionTagBody, RevisionId, Signature, SignedStatement, StatementBody, StatementKind,
+    UnsignedStatement,
 };
 use kairo_store::{FilesystemStore, ObjectStore, StatementStore, StoreError};
 use serde::de::DeserializeOwned;
@@ -270,10 +271,11 @@ async fn dispatch_signed_envelope(
 /// envelope, and dispatches through the same per-kind path the
 /// signed-envelope mode uses.
 ///
-/// `ObjectGenesis` is intentionally out of scope here: its
-/// envelope shape is asymmetric (signature covers
-/// `body.canonical_bytes()`, no envelope wrapping) so it needs
-/// its own session-mode helper. Land it in a follow-up slice.
+/// `ObjectGenesis` has no envelope (its signature covers
+/// `body.canonical_bytes()`), so it takes its own path:
+/// [`sign_object_genesis`] fills the body's `created_by`,
+/// `created_at`, and nonce, then [`persist_object_genesis`] runs
+/// the same verification and store write as signed mode.
 async fn dispatch_session_unsigned(
     state: AppState,
     session_id: crate::sessions::SessionId,
@@ -354,10 +356,19 @@ async fn dispatch_session_unsigned(
             let signed = sign_envelope(&state, &actor, subject, now, body).await?;
             persist_actor_capability_revocation(state, &actor, signed).await
         }
-        "ObjectGenesis" => Err(ApiError::unsupported_statement_kind(
-            "session-mode does not yet accept ObjectGenesis; \
-             see PHASE_2_WEB_CLIENT_AUTH.md §8 for the follow-up",
-        )),
+        "ObjectGenesis" => {
+            let request_body: SessionObjectGenesisBody = serde_json::from_value(request.body)
+                .map_err(|error| {
+                    ApiError::bad_request(format!("invalid ObjectGenesis body shape: {error}"))
+                })?;
+            if request_body.object_kind.trim().is_empty() {
+                return Err(ApiError::bad_request(
+                    "invalid ObjectGenesis body: object_kind must be non-empty",
+                ));
+            }
+            let statement = sign_object_genesis(&state, &actor, now, request_body).await?;
+            persist_object_genesis(state, statement).await
+        }
         other => Err(ApiError::unsupported_statement_kind(format!(
             "statement kind {other:?} is not accepted by Phase A's current dispatcher",
         ))),
@@ -587,6 +598,46 @@ where
     Ok(SignedStatement::new(unsigned, signature))
 }
 
+/// Build and sign a session-mode `ObjectGenesis` for `actor`:
+/// `created_at = now`, a fresh 32-byte nonce, and the signature
+/// over `body.canonical_bytes()` (no envelope, unlike
+/// [`sign_envelope`]).
+async fn sign_object_genesis(
+    state: &AppState,
+    actor: &ActorId,
+    now: Timestamp,
+    request: SessionObjectGenesisBody,
+) -> Result<ObjectGenesisStatement, ApiError> {
+    let keystore = state.keystore.clone();
+    let actor_for_keystore = actor.clone();
+    let secret = tokio::task::spawn_blocking(move || keystore.get_signing_key(&actor_for_keystore))
+        .await
+        .map_err(|error| ApiError::internal(format!("keystore fetch task: {error}")))?
+        .map_err(|error| {
+            ApiError::internal(format!("could not load signing key for {actor}: {error}"))
+        })?;
+
+    let mut nonce = [0_u8; 32];
+    getrandom::getrandom(&mut nonce).map_err(|error| {
+        ApiError::internal(format!("could not generate genesis nonce: {error}"))
+    })?;
+
+    let body = ObjectGenesisBody::new(
+        ObjectKind::new(request.object_kind),
+        actor.clone(),
+        now,
+        nonce,
+        request.initial_revision.map(RevisionId::new),
+    );
+    let signature = Signature::new(
+        actor.clone(),
+        secret.public_key().key_id().to_string(),
+        "ed25519",
+        secret.sign(&body.canonical_bytes()).bytes().to_vec(),
+    );
+    Ok(ObjectGenesisStatement::new(body, signature))
+}
+
 /// Read the entire request body into memory, capped at
 /// `MAX_WRITE_BODY_BYTES`. Returns 413 `bad_request` on
 /// over-cap bodies, 400 on hyper transport failure. The cap
@@ -636,7 +687,17 @@ async fn put_object_genesis(
     let statement = dto
         .to_statement()
         .map_err(|error| ApiError::bad_request(format!("invalid ObjectGenesis body: {error}")))?;
+    persist_object_genesis(state, statement).await
+}
 
+/// Verify a genesis against the store (signature actor, active
+/// key at `created_at`) and persist it. Shared by signed and
+/// session modes; genesis needs no capability check — the signer
+/// is the new object's root authority by construction.
+async fn persist_object_genesis(
+    state: AppState,
+    statement: ObjectGenesisStatement,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
     verify_object_genesis_against_store(&state, &statement).await?;
 
     let store = state.store.clone();
