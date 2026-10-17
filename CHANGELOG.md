@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **Real-stack e2e suite (`PHASE_2_WEB_WRITES.md` slice 8).**
+  `pnpm -F @kairo/web-client e2e:real` runs Playwright against the
+  built SPA served by a real `kairo-web` + `kairo-daemon` over a
+  store seeded by `scripts/smoke-seed.sh` (which now also writes
+  `seed-ids.json`): sessions, every shipped write dialog, a daemon
+  capability refusal, and the proxy guards. New CI job `e2e-real`.
+  The Playwright configs force software compositing under WSL2,
+  where headless Chromium otherwise never fires
+  `requestAnimationFrame`.
+
 - **Browser write path (`PHASE_2.md` §16,
   `PHASE_2_WEB_WRITES.md`, `DECISIONS.md §15`).** `POST
   /api/v1/statements` accepts an unsigned `{ body_kind, body }`

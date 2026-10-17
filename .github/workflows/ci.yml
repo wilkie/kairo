@@ -1,6 +1,6 @@
 # Slice 10 CI workflow.
 #
-# Three independent jobs run in parallel:
+# Four independent jobs run in parallel:
 #
 #   - rust       — `cargo fmt --check`, `cargo clippy -D
 #                  warnings`, `cargo test --workspace` across
@@ -12,6 +12,12 @@
 #                  the workspace via Turbo.
 #                  `generate:api` is wired as a Turbo dep so
 #                  the schema regenerates first automatically.
+#   - e2e-real   — Playwright suite against the built SPA served
+#                  by a real `kairo-web` + `kairo-daemon` over a
+#                  store seeded by `scripts/smoke-seed.sh`
+#                  (`playwright.real.config.ts`). Catches what
+#                  the MSW mocks can't: proxy guards, real
+#                  signing and capability checks, persistence.
 #   - e2e        — Playwright suite against the SPA in dev
 #                  mode with the MSW mock registry. The dev
 #                  server is started by Playwright's webServer
@@ -118,4 +124,48 @@ jobs:
         with:
           name: playwright-report
           path: frontend/apps/web-client/playwright-report/
+          retention-days: 7
+
+  e2e-real:
+    name: Frontend e2e against the real stack (Playwright)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in step with `rust-toolchain.toml`.
+      - name: Install rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+      - name: cargo build --bins
+        working-directory: .
+        run: cargo build --bins --locked
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: Build SPA (no mocks)
+        run: pnpm turbo run build --filter @kairo/web-client...
+      - name: Install Playwright browsers
+        run: pnpm -F @kairo/web-client e2e:install
+      - name: Playwright tests (real stack)
+        run: pnpm -F @kairo/web-client e2e:real
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-real-results
+          path: frontend/apps/web-client/test-results/
           retention-days: 7

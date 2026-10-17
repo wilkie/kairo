@@ -20,6 +20,15 @@ import { defineConfig, devices } from '@playwright/test';
 const PORT = 5173;
 const BASE_URL = `http://localhost:${PORT}`;
 
+// Headless Chromium under WSL2 never fires `requestAnimationFrame`
+// with its default GPU path, so every actionability check (and so
+// every `click()`) waits forever. Forcing software compositing
+// fixes it; all three flags are needed. Applied only under WSL so
+// CI's browser setup is unchanged.
+export const chromiumLaunchOptions = process.env['WSL_DISTRO_NAME']
+  ? { args: ['--disable-gpu', '--disable-gpu-compositing', '--disable-software-rasterizer'] }
+  : {};
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
@@ -34,7 +43,7 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: { ...devices['Desktop Chrome'], launchOptions: chromiumLaunchOptions },
     },
   ],
   webServer: {

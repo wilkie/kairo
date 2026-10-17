@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–5 shipped; 6–8 open.
+Draft, locked 2026-10-16. Slices 1–5 and 8 shipped; 6–7 open.
 
 Slice plan for `PHASE_2.md` §16: turning the signed-in web
 inspector into a write surface. The locked shape is
@@ -177,12 +177,38 @@ Daemon helper for genesis's asymmetric envelope (signature over
 `body.canonical_bytes()`, no envelope wrapping); remove the `415`
 branch; then a "New object" flow from the objects list.
 
-### Slice 8 — Real-stack e2e + close-out
+### Slice 8 — Real-stack e2e *(shipped, pulled ahead of 6–7)*
 
-One Playwright project that boots daemon + `kairo-web
---spa-dir <dist>` (no MSW), signs in, writes one statement, and
-reads it back. Update `WEB_CLIENT.md` (no longer read-only),
-`CHANGELOG.md`, and flip `PHASE_2.md` §16.
+Landed before slices 6–7 so they are tested against the real daemon
+from the start.
+
+**Ships:** `playwright.real.config.ts` + `e2e-real/` in the web
+client. Global setup seeds a temp store with `scripts/smoke-seed.sh`
+(which now also writes `seed-ids.json`), starts `kairo-daemon` and
+`kairo-web --spa-dir dist` on `127.0.0.1:7979`
+(`KAIRO_E2E_REAL_PORT`), passes the generated IDs to tests via
+`KAIRO_E2E_SEED`, and tears both down. Binaries come from
+`KAIRO_BIN_DIR` (default `target/debug`). Serial, one worker — tests
+share the store. `pnpm -F @kairo/web-client e2e:real`; CI job
+`e2e-real`.
+
+**Covers:** seeded reads; session survives reload and ends on
+sign-out; tag create (persists across reload), tag retarget with
+derived `supersedes`, a two-hop delegate (Alice → Bob → Carol)
+tagging, a daemon `not_authorized` refusal for a branch write, an
+owner branch write, a trust opinion; proxy guards (cross-origin
+sign-in mints no cookie, rebound `Host`, `405` + `Allow`).
+Mutation-checked: re-blocking `POST /api/v1/statements` in the proxy
+fails the suite.
+
+**Convention for slices 6–7:** each new write dialog adds a
+real-stack test (happy path + daemon refusal) alongside its MSW e2e.
+
+**Also:** `playwright.config.ts` exports `chromiumLaunchOptions`,
+which forces software compositing under WSL2, where headless
+Chromium otherwise never fires `requestAnimationFrame` and every
+click hangs. CI is unaffected. `WEB_CLIENT.md` §19 / §22 describe
+the shipped auth mechanism and the two e2e layers.
 
 ---
 

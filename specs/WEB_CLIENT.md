@@ -705,6 +705,14 @@ Potential modes:
 
 The exact mechanism is defined by the daemon/API spec.
 
+Current mechanism (local inspector): a daemon-side session behind an
+`HttpOnly; SameSite=Strict` `kairo_session` cookie, opened through the
+actor picker (`PHASE_2_WEB_CLIENT_AUTH.md`). Writes are unsigned
+`{ body_kind, body }` payloads that the daemon signs for the session
+actor; `kairo-web` forwards them only on an exact route allowlist with
+loopback-`Host` and same-origin `Origin` guards (`DECISIONS.md` §15).
+The client holds no key material and sets no auth headers.
+
 The web client must not store long-lived secrets insecurely in browser storage unless the daemon/API security model permits it.
 
 ---
@@ -749,6 +757,21 @@ The web client should include:
 4. Accessibility checks for major views.
 5. Playwright end-to-end tests for critical workflows.
 6. API-client contract tests against mock OpenAPI responses.
+
+Playwright runs in two layers:
+
+- **Mock layer** (`apps/web-client/e2e/`, `playwright.config.ts`): Vite
+  dev server with the MSW registry. Fast and deterministic; covers UI
+  states the seeded daemon data can't reach (invalid / conflicted
+  validation, empty states).
+- **Real-stack layer** (`apps/web-client/e2e-real/`,
+  `playwright.real.config.ts`): the built SPA served by a real
+  `kairo-web` in front of a real `kairo-daemon`, over a store seeded by
+  `scripts/smoke-seed.sh`. Required for every write surface: proxy
+  guards, daemon signing, capability evaluation, and persistence are
+  only real here. The mock layer can disagree with the daemon (it
+  approximates capability checks) and once hid a proxy that blocked
+  every write.
 
 Critical workflows:
 

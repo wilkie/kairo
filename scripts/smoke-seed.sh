@@ -26,8 +26,8 @@
 #                 - Signed Statements panel: just the trust-block
 #                   envelope.
 #   - **Alpha** — rich object: 3 revisions (linear), 2 branches
-#                 (head + experimental), 2 tags (v1.0.0,
-#                 v1.1.0), and a 2-hop delegation chain
+#                 (head + experimental), 2 tags (1.0.0,
+#                 1.1.0), and a 2-hop delegation chain
 #                 (Alice → Bob → Carol on ObjectVersionTag) so
 #                 the Authority chains panel renders a real
 #                 multi-step chain rather than a single hop.
@@ -43,8 +43,10 @@
 #   scripts/smoke-seed.sh [STORE_DIR]
 #
 # `STORE_DIR` defaults to `$(mktemp -d)/kairo-store`. The
-# script prints the path + canonical IDs at the end. Set
-# `KAIRO=/path/to/kairo` to point at a non-default binary.
+# script prints the path + canonical IDs at the end, and writes
+# the same IDs (bare payloads) to `$STORE_DIR/seed-ids.json` for
+# the real-stack e2e suite (`frontend/apps/web-client/e2e-real/`).
+# Set `KAIRO=/path/to/kairo` to point at a non-default binary.
 
 set -euo pipefail
 
@@ -161,6 +163,22 @@ BETA=$("$KAIRO" object create --actor "$ALICE" --kind software 2>/dev/null | ext
 echo "  bob trusts alice; carol blocks alice…"
 "$KAIRO" trust grant --by "$BOB" --of "$ALICE" --reason "smoke-seed: bob trusts alice" >/dev/null 2>&1
 "$KAIRO" trust block --by "$CAROL" --of "$ALICE" --reason "smoke-seed: carol blocks alice" >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# Machine-readable IDs
+
+cat >"$STORE_DIR/seed-ids.json" <<EOF
+{
+  "alice": "$ALICE",
+  "bob": "$BOB",
+  "carol": "$CAROL",
+  "alpha": "$ALPHA",
+  "beta": "$BETA",
+  "alphaR1": "$ALPHA_R1",
+  "alphaR2": "$ALPHA_R2",
+  "alphaR3": "$ALPHA_R3"
+}
+EOF
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -1248,9 +1248,11 @@ Bullets, by slice (see `PHASE_2_WEB_WRITES.md` §3):
       (`ActorCapabilityGrant`, `ActorCapabilityRevocation`).
 - [ ] Slice 7 — Session-mode `ObjectGenesis` helper + create-
       object flow.
-- [ ] Slice 8 — Real-stack Playwright run (daemon + `kairo-web`
-      + built SPA, no MSW) covering sign-in and one write;
-      `CHANGELOG.md` / `WEB_CLIENT.md` close-out.
+- [x] Slice 8 — Real-stack Playwright suite (daemon + `kairo-web`
+      + built SPA over a `smoke-seed.sh` store, no MSW) covering
+      sessions, every shipped write dialog, a capability refusal,
+      and the proxy guards; CI job `e2e-real`. Pulled ahead of
+      slices 6–7.
 
 **Deliberately deferred:** `ObjectRevision` from the browser
 (needs a design for naming a Git tree the browser can't build),
