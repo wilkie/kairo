@@ -69,6 +69,19 @@ toolchain release. When bumping, document the reason in the `Changed`
 section of the CHANGELOG (e.g., "MSRV bumped to 1.97 to use let-chains
 in the verifier").
 
+## Toolchain
+
+The development and CI toolchain is pinned separately from the MSRV,
+in `rust-toolchain.toml` (currently `1.99.1`), and the CI workflow's
+`toolchain:` input must match it. New stable releases add lints and
+formatter changes, so a floating `stable` can turn `cargo fmt --check`
+or `clippy -D warnings` red with no code change.
+
+Bump the pin deliberately: update both places, fix whatever new lints
+or formatting the release brings in the same change, and note it in
+the CHANGELOG. A toolchain bump is not an MSRV bump and is not a
+breaking change.
+
 ## Going to 1.0
 
 `1.0.0` is reserved for the point at which:

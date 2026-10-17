@@ -1448,9 +1448,9 @@ fn decode_nonce_hex(value: &str) -> Result<[u8; 32], StatementJsonError> {
     }
 
     let mut bytes = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex_value(chunk[0]).ok_or(StatementJsonError::InvalidNonceHex)?;
-        let low = hex_value(chunk[1]).ok_or(StatementJsonError::InvalidNonceHex)?;
+    for (index, &[high, low]) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let high = hex_value(high).ok_or(StatementJsonError::InvalidNonceHex)?;
+        let low = hex_value(low).ok_or(StatementJsonError::InvalidNonceHex)?;
         bytes[index] = (high << 4) | low;
     }
 

@@ -222,6 +222,13 @@ rather than per-commit.
 
 ### Changed
 
+- **Rust toolchain pinned to 1.99.1.** `rust-toolchain.toml` and
+  the CI workflow move from floating `stable` to `1.99.1`, so new
+  releases can't break `fmt --check` / `clippy -D warnings` without a
+  code change; bump policy in `VERSIONING.md` ("Toolchain"). The three
+  hex decoders flagged by 1.99's new `chunks_exact`-with-constant lint
+  now use `as_chunks::<2>()`. MSRV is unchanged (1.95).
+
 - **`kairo-web` lifts its POST-block for an exact allowlist
   (`DECISIONS.md §15`).** The proxy now forwards `POST
   /api/v1/sessions`, `DELETE /api/v1/sessions/current`, and

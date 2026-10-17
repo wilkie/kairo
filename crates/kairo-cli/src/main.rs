@@ -319,9 +319,9 @@ fn decode_hex_32(value: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex_nibble(chunk[0])?;
-        let low = hex_nibble(chunk[1])?;
+    for (index, &[high, low]) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let high = hex_nibble(high)?;
+        let low = hex_nibble(low)?;
         out[index] = (high << 4) | low;
     }
     Some(out)

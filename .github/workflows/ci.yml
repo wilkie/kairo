@@ -46,9 +46,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
+      # Keep in step with `rust-toolchain.toml`.
+      - name: Install rust toolchain (1.99.1)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: 1.99.1
           components: rustfmt, clippy
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
