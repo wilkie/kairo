@@ -80,6 +80,49 @@ impl Peer {
         })
     }
 
+    /// `GET <base><path>` and hand the body to `consume` as a reader
+    /// capped at `limit` bytes, under `timeout` instead of the default
+    /// per-request one. A body over the cap ends in a read error,
+    /// which `consume` sees as truncated input.
+    pub(crate) fn with_reader<T>(
+        &self,
+        path: &str,
+        limit: u64,
+        timeout: std::time::Duration,
+        consume: impl FnOnce(&mut dyn std::io::Read) -> Result<T, PullError>,
+    ) -> Result<T, PullError> {
+        let url = format!("{}{path}", self.base_url);
+        let mut response = self
+            .agent
+            .get(&url)
+            .config()
+            .timeout_global(Some(timeout))
+            .build()
+            .call()
+            .map_err(|error| PullError::Transport {
+                url: url.clone(),
+                message: error.to_string(),
+            })?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response
+                .body_mut()
+                .with_config()
+                .limit(64 * 1024)
+                .read_to_vec()
+                .unwrap_or_default();
+            let envelope = serde_json::from_slice::<FedErrorEnvelope>(&body).ok();
+            return Err(PullError::Status {
+                url,
+                status,
+                code: envelope.as_ref().map(|e| e.error.code),
+                message: envelope.map(|e| e.error.message),
+            });
+        }
+        let mut reader = response.body_mut().with_config().limit(limit).reader();
+        consume(&mut reader)
+    }
+
     /// [`Peer::get_bytes`] parsed as JSON.
     pub(crate) fn get_json<T: DeserializeOwned>(
         &self,

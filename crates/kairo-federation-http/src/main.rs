@@ -15,9 +15,11 @@ use kairo_federation_http::{install_tracing, serve, Config, DEFAULT_BIND, DEFAUL
 // The bin only drives the lib's public API; these shims silence
 // `unused_crate_dependencies` for crates it doesn't name.
 use axum as _;
+use http_body as _;
 #[cfg(test)]
 use http_body_util as _;
 use kairo_federation_core as _;
+use kairo_git as _;
 use kairo_identity as _;
 #[cfg(feature = "client")]
 use kairo_object as _;

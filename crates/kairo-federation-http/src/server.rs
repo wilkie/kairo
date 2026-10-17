@@ -75,6 +75,16 @@ pub async fn serve_with_shutdown(
             addr: config.bind_addr,
             source,
         })?;
+    serve_on(node, listener, shutdown).await
+}
+
+/// Serve `node` on an already-bound `listener` until `shutdown`
+/// resolves. Lets a caller bind port 0 and learn the address first.
+pub async fn serve_on(
+    node: Node,
+    listener: TcpListener,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), Error> {
     let local = listener.local_addr().map_err(Error::Serve)?;
     if !local.ip().is_loopback() {
         tracing::warn!(

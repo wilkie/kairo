@@ -41,6 +41,8 @@ mod handlers;
 #[cfg(feature = "server")]
 mod node;
 #[cfg(feature = "server")]
+mod pack;
+#[cfg(feature = "server")]
 mod server;
 #[cfg(feature = "server")]
 mod view;
@@ -51,6 +53,12 @@ pub use error::Error;
 pub use node::Node;
 #[cfg(feature = "server")]
 pub use server::{
-    install_tracing, serve, serve_with_shutdown, Config, DEFAULT_BIND, DEFAULT_PORT,
+    install_tracing, serve, serve_on, serve_with_shutdown, Config, DEFAULT_BIND, DEFAULT_PORT,
     DEFAULT_VIEW_TTL,
 };
+
+/// The managed Git cache root for a store: `<store>/git`, the same
+/// layout the `kairo` CLI uses (`StorePaths::git_root`).
+pub fn git_root(store: &kairo_store::FilesystemStore) -> std::path::PathBuf {
+    store.root().join("git")
+}

@@ -43,6 +43,7 @@ pub(crate) fn router(node: Node) -> Router {
             &format!("{API_PREFIX}/objects/:id/genesis"),
             get(object_genesis),
         )
+        .route(&format!("{API_PREFIX}/objects/:id/git"), get(object_git))
         .route(&format!("{API_PREFIX}/actors/:id"), get(actor_listing))
         .route(&format!("{API_PREFIX}/statements/:id"), get(statement))
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
@@ -118,15 +119,22 @@ fn json_response<T: Serialize>(value: &T) -> Reply {
 }
 
 /// Run blocking store work off the async runtime.
-async fn blocking(work: impl FnOnce() -> Reply + Send + 'static) -> Response {
-    let reply = match tokio::task::spawn_blocking(work).await {
-        Ok(reply) => reply,
-        Err(join_error) => {
+async fn run_blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Fail> + Send + 'static,
+) -> Result<T, Fail> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|join_error| {
             tracing::error!(%join_error, "federation request handler panicked");
             Err(Fail::new(FedErrorCode::FedStoreError, "store read failed"))
-        }
-    };
-    reply.unwrap_or_else(IntoResponse::into_response)
+        })
+}
+
+/// [`run_blocking`] for work that produces the whole response.
+async fn blocking(work: impl FnOnce() -> Reply + Send + 'static) -> Response {
+    run_blocking(work)
+        .await
+        .unwrap_or_else(IntoResponse::into_response)
 }
 
 fn view(node: &Node) -> Result<Arc<PublishedView>, Fail> {
@@ -304,11 +312,9 @@ async fn object_listing(State(node): State<Node>, id: PathId, query: RawQuery) -
             authority: Vec::new(),
             actors: Vec::new(),
             blobs: Vec::new(),
-            // Git packs are served from slice 4.
-            git: page
-                .cursor()
-                .is_none()
-                .then_some(GitAvailability { available: false }),
+            git: page.cursor().is_none().then(|| GitAvailability {
+                available: crate::pack::has_pack(&crate::git_root(&node.store), object.as_str()),
+            }),
             next_cursor: None,
         };
         // The ids came from typed sets, so re-parsing can't fail; if
@@ -356,6 +362,38 @@ async fn object_genesis(State(node): State<Node>, id: PathId) -> Response {
         Ok(bytes_response(StatusCode::OK, JSON, bytes))
     })
     .await
+}
+
+/// The object's Git pack, streamed from the managed cache. `404` when
+/// the object isn't published or the cache holds nothing for it.
+async fn object_git(State(node): State<Node>, id: PathId) -> Response {
+    let object = match parse_id(id, ObjectId::new) {
+        Ok(object) => object,
+        Err(fail) => return fail.into_response(),
+    };
+    let check_node = node.clone();
+    let check_object = object.clone();
+    let available = run_blocking(move || {
+        let published = view(&check_node)?.closures.contains_key(&check_object);
+        let cached =
+            crate::pack::has_pack(&crate::git_root(&check_node.store), check_object.as_str());
+        if published && cached {
+            Ok(())
+        } else {
+            Err(Fail::not_found())
+        }
+    })
+    .await;
+    if let Err(fail) = available {
+        return fail.into_response();
+    }
+    let body = crate::pack::pack_body(&crate::git_root(&node.store), object.as_str());
+    let mut response = (StatusCode::OK, body).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/x-git-packed-objects"),
+    );
+    response
 }
 
 async fn actor_listing(State(node): State<Node>, id: PathId) -> Response {

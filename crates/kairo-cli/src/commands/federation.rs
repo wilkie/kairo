@@ -7,7 +7,7 @@
 //! direct; there is no daemon route for them.
 
 use kairo_core::{KairoRef, ObjectId, Timestamp};
-use kairo_federation_http::client::{pull_object, Limits, PullReport};
+use kairo_federation_http::client::{pull_object, GitOutcome, Limits, PullReport};
 use kairo_store::{ProvenanceStore, PublishedObject, PublishedObjectStore};
 
 use crate::cli::FederationCommand;
@@ -122,7 +122,35 @@ fn format_fetch(report: &PullReport) -> String {
             skipped.record, skipped.reason
         ));
     }
+    output.push_str(&format!("git = {}\n", describe_git(&report.git)));
     output
+}
+
+fn describe_git(git: &GitOutcome) -> String {
+    match git {
+        GitOutcome::NoGitRevisions => "no git revisions".to_owned(),
+        GitOutcome::AlreadyHeld { commits } => format!("already held ({commits} commits)"),
+        GitOutcome::Ingested { commits } => format!("ingested ({commits} commits)"),
+        GitOutcome::Unavailable { missing } => format!(
+            "unavailable from peer ({missing} commits missing; content verification stays \
+             indeterminate)"
+        ),
+    }
+}
+
+fn git_json(git: &GitOutcome) -> serde_json::Value {
+    match git {
+        GitOutcome::NoGitRevisions => serde_json::json!({ "status": "no_git_revisions" }),
+        GitOutcome::AlreadyHeld { commits } => {
+            serde_json::json!({ "status": "already_held", "commits": commits })
+        }
+        GitOutcome::Ingested { commits } => {
+            serde_json::json!({ "status": "ingested", "commits": commits })
+        }
+        GitOutcome::Unavailable { missing } => {
+            serde_json::json!({ "status": "unavailable", "missing": missing })
+        }
+    }
 }
 
 fn format_fetch_json(report: &PullReport) -> String {
@@ -137,6 +165,7 @@ fn format_fetch_json(report: &PullReport) -> String {
             .iter()
             .map(|s| serde_json::json!({ "record": s.record.to_string(), "reason": s.reason }))
             .collect::<Vec<_>>(),
+        "git": git_json(&report.git),
     });
     let mut output = serde_json::to_string_pretty(&value).unwrap_or_default();
     output.push('\n');

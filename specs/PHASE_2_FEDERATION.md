@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–3 shipped.
+Draft, locked 2026-10-16. Slices 1–4 shipped.
 
 Slice plan for the first federation milestone in `PHASE_2.md` §4:
 pulling a published object's signed history from one node into
@@ -52,7 +52,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/objects` | `Page<ObjectId>` of published objects |
 | `GET` | `/federation/v1/objects/{id}` | `ObjectListing` (paged) |
 | `GET` | `/federation/v1/objects/{id}/genesis` | `ObjectGenesis` JSON, exactly as stored |
-| `GET` | `/federation/v1/objects/{id}/git` | Git pack bytes (slice 4) |
+| `GET` | `/federation/v1/objects/{id}/git` | Git pack, streamed, `application/x-git-packed-objects` |
 | `GET` | `/federation/v1/actors/{id}` | `ActorListing` |
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
@@ -119,7 +119,8 @@ Envelope is `API.md` §7.2.
 
 Defaults, overridable per invocation and later in `[federation]`
 config: 1 MiB per statement or listing page, 256 MiB per blob,
-1 GiB per Git pack, 100 000 records per pull, 30 s per request.
+1 GiB per Git pack, 100 000 records per pull, 30 s per request
+(30 min for the Git pack request).
 Exceeding one fails the pull with what was stored so far kept.
 
 ### 2.5 Test harness
@@ -251,14 +252,48 @@ Exceeding one fails the pull with what was stored so far kept.
   Store tests cover provenance dedup, mismatched records,
   snapshot refs, and `rebuild-indexes` leaving it alone.
 
-### Slice 4 — Git pack transfer
+### Slice 4 — Git pack transfer *(shipped)*
 
-- `GET /federation/v1/objects/{id}/git`: the same pack `kairo
-  bundle export --include-git` produces from the managed cache.
-- Client ingests through the managed-cache path bundle import
-  uses, then checks every pulled `ObjectRevision`'s commit resolves.
-- Test: after a pull, `kairo verify object` on the second store
-  resolves revisions without a cwd repo (`--no-cwd-repo`).
+- `GET /federation/v1/objects/{id}/git` streams the same pack
+  `kairo bundle export --include-git` produces
+  (`GitCache::pack_for_object_to`). `pack-objects` runs on the
+  blocking pool and writes into a bounded channel the response body
+  drains, so the pack never sits in memory and a slow peer applies
+  backpressure. A failure partway through aborts the body; the
+  receiver's `index-pack` then rejects the truncated pack.
+- The listing's `git.available` is true when the managed cache
+  (`<store>/git`) has a per-object repo for the object. The server
+  checks this without opening the cache, so it never initializes
+  the pool. An unpublished object's pack is `404` like every other
+  record.
+- After blobs, the client gathers the `git:sha256:` commits of
+  every pulled revision. It fetches the pack only if some commit is
+  missing locally, and streams it straight into
+  `GitCache::ingest_pack_from`. Then it ensures the object's repo
+  exists, checks that every commit resolves, and pins each newly
+  ingested one under `refs/kairo/imported/<oid>` (as bundle
+  import does), so the node can serve the pack onward. The outcome
+  is reported as `git = no git revisions | already held | ingested
+  | unavailable from peer`:
+  - A peer without a pack still yields a successful pull, with
+    content verification left indeterminate.
+  - A pack lacking a signed commit fails the pull
+    (`GitIncomplete`), keeping the statements already stored.
+  - The `git` binary is only needed when a pack is actually
+    ingested.
+- Tests (`tests/git.rs`, skipped without `git`) cover:
+  - ingest and pin, re-pull (`already held`), and relaying the
+    ingested pack onward;
+  - a peer without a pack (`unavailable`, no local cache
+    created);
+  - streamed bytes equal the cached pack, and unpublish hides it;
+  - a pack from an unrelated repo (`GitIncomplete`);
+  - an oversize pack.
+
+  The CLI test `fetched_object_verifies_from_the_cache_alone` runs
+  the slice's acceptance check: after `kairo fetch`, `kairo verify
+  object --no-cwd-repo` on the second store is VALID with `commit
+  lookup: cache`.
 
 ### Slice 5 — Policy and visibility
 

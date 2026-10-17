@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **Federation Git transfer (`PHASE_2_FEDERATION.md` slice 4).**
+  `GET /federation/v1/objects/{id}/git` streams the object's Git pack
+  from the managed cache. `kairo fetch` ingests it when a pulled
+  revision's commit is missing locally, checks every commit resolves,
+  and pins them under `refs/kairo/imported/`. A fetched object now
+  passes `kairo verify object --no-cwd-repo` from the cache alone.
+  `kairo fetch` reports a `git =` outcome.
+
 - **Federation pull (`PHASE_2_FEDERATION.md` slice 3).** `kairo fetch
   --object <id> --from <url>` pulls a published object's closure from
   a peer: its actors and their key events, its genesis, its grants and

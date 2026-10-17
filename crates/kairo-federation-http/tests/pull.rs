@@ -28,8 +28,10 @@ use tempfile::TempDir;
 use common::{seed, sign, Seeded, Served};
 
 // Crates the lib or `common` depends on that this target doesn't name.
+use http_body as _;
 use http_body_util as _;
 use kairo_federation_core as _;
+use kairo_git as _;
 use kairo_object as _;
 use kairo_test_support as _;
 use serde as _;

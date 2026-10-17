@@ -1492,9 +1492,11 @@ name = "kairo-federation-http"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "http-body",
  "http-body-util",
  "kairo-core",
  "kairo-federation-core",
+ "kairo-git",
  "kairo-identity",
  "kairo-object",
  "kairo-statement",

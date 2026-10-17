@@ -6122,3 +6122,193 @@ fn fetch_refuses_plain_http_to_a_remote_host() -> Result<(), Box<dyn std::error:
     );
     Ok(())
 }
+
+/// A federation node over `store_root`, served on an ephemeral
+/// loopback port from a background thread until the returned sender
+/// is dropped. Returns the base URL.
+/// A running test federation server: its base URL, a sender whose
+/// drop stops it, and its thread.
+type ServedFederation = (
+    String,
+    std::sync::mpsc::Sender<()>,
+    std::thread::JoinHandle<()>,
+);
+
+fn serve_federation(
+    store_root: &std::path::Path,
+    node_actor: &str,
+) -> Result<ServedFederation, Box<dyn std::error::Error>> {
+    let store = kairo_store::FilesystemStore::open(store_root)?;
+    let node = kairo_federation_http::Node::from_store(
+        store,
+        &kairo_core::ActorId::new(node_actor)?,
+        "http://127.0.0.1:7880",
+        std::time::Duration::ZERO,
+    )?;
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let thread = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            addr_tx
+                .send(listener.local_addr().expect("addr"))
+                .expect("send addr");
+            let stop = async move {
+                let _ = tokio::task::spawn_blocking(move || stop_rx.recv()).await;
+            };
+            kairo_federation_http::serve_on(node, listener, stop)
+                .await
+                .expect("serve");
+        });
+    });
+    let addr = addr_rx.recv()?;
+    Ok((format!("http://{addr}"), stop_tx, thread))
+}
+
+#[test]
+fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::error::Error>> {
+    // PHASE_2_FEDERATION.md slice 4: after `kairo fetch`, the second
+    // store's `verify object --no-cwd-repo` reaches VALID through the
+    // Git history the pull ingested.
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let manifest_text = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "federated-fixture"
+
+            [content]
+            kind = "tree"
+        "#;
+    let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+
+    let node_output = run_in(
+        origin,
+        Command::Actor {
+            command: ActorCommand::Create {
+                kind: "node".to_owned(),
+                attestation_keys: vec![],
+                generate_attestation_keys: 1,
+                attestation_threshold: 1,
+            },
+        },
+    )?;
+    let node_actor = parse_field(&node_output, "actor = ")?;
+    let actor_output = run_in(
+        origin,
+        Command::Actor {
+            command: ActorCommand::Create {
+                kind: "person".to_owned(),
+                attestation_keys: vec![],
+                generate_attestation_keys: 1,
+                attestation_threshold: 1,
+            },
+        },
+    )?;
+    let actor = parse_field(&actor_output, "actor = ")?;
+    let object = parse_field(
+        &run_in(
+            origin,
+            Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            },
+        )?,
+        "object = ",
+    )?;
+    let revision = parse_field(
+        &run_in(
+            origin,
+            Command::Revision {
+                command: RevisionCommand::Create {
+                    actor: actor.clone(),
+                    object: object.clone(),
+                    revision: format!("git:sha256:{commit_oid}"),
+                    manifest: git_dir.path().join("kairo.toml"),
+                    parents: vec![],
+                    no_attests_reachable_history: false,
+                },
+            },
+        )?,
+        "statement = ",
+    )?;
+    run_in(
+        origin,
+        Command::Branch {
+            command: BranchCommand::Set {
+                actor,
+                object: object.clone(),
+                revision,
+                name: "head".to_owned(),
+            },
+        },
+    )?;
+    populate_cache(origin, git_dir.path(), &object, &commit_oid)?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    // The source repo stays around but must not be needed: verify
+    // runs with --no-cwd-repo against the second store.
+    let (base_url, stop, server) = serve_federation(origin, &node_actor)?;
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    let fetched = run_in(
+        local,
+        Command::Fetch {
+            object: object.clone(),
+            from: base_url,
+            json: false,
+        },
+    )?;
+    assert!(fetched.contains("git = ingested (1 commits)"), "{fetched}");
+
+    let verified = run_in(
+        local,
+        Command::Verify {
+            command: VerifyCommand::Object {
+                object: object.clone(),
+                statement: None,
+                actor: None,
+                name: "head".to_owned(),
+                repo: None,
+                no_repo: false,
+                no_cache: false,
+                no_cwd_repo: true,
+                r#as: None,
+                no_as: true,
+                manifest: None,
+                json: false,
+            },
+        },
+    )?;
+    assert!(verified.contains("verify object: VALID"), "{verified}");
+    assert!(
+        verified.contains("manifest_binding = VALID (bound)"),
+        "{verified}"
+    );
+    assert!(
+        verified.contains(&format!("commit lookup: cache (object {object})")),
+        "{verified}"
+    );
+
+    drop(stop);
+    server.join().map_err(|_| "server thread panicked")?;
+    Ok(())
+}

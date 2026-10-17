@@ -42,7 +42,7 @@ use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::StatementKind;
 use kairo_store::{
     ActorStore, BlobStore, FilesystemStore, ObjectStore, ProvenanceEntry, ProvenanceStore,
-    StoreError,
+    StatementStore, StoreError,
 };
 
 use self::http::Peer;
@@ -58,6 +58,10 @@ pub struct Limits {
     pub max_records: usize,
     /// Per request, connect to last byte.
     pub request_timeout: Duration,
+    /// Largest Git pack.
+    pub max_git_bytes: u64,
+    /// For the Git pack request, which can be large.
+    pub git_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -67,6 +71,8 @@ impl Default for Limits {
             max_blob_bytes: 256 * 1024 * 1024,
             max_records: 100_000,
             request_timeout: Duration::from_secs(30),
+            max_git_bytes: 1024 * 1024 * 1024,
+            git_timeout: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -89,6 +95,23 @@ pub struct PullReport {
     /// Listed records the store already held (not re-fetched).
     pub already_held: usize,
     pub skipped: Vec<SkippedRecord>,
+    pub git: GitOutcome,
+}
+
+/// What the pull did about the object's Git history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitOutcome {
+    /// No pulled revision names a `git:sha256:` commit.
+    NoGitRevisions,
+    /// Every revision's commit was already in the local cache.
+    AlreadyHeld { commits: usize },
+    /// The peer's pack was ingested; every revision's commit now
+    /// resolves locally and is pinned under `refs/kairo/imported/`.
+    Ingested { commits: usize },
+    /// The peer has no pack for the object. `missing` commits stay
+    /// unresolved, so `verify object` reports content as
+    /// indeterminate until they come from elsewhere.
+    Unavailable { missing: usize },
 }
 
 /// Why one record was refused.
@@ -167,6 +190,13 @@ pub enum PullError {
         reason: RecordRejection,
     },
     Store(StoreError),
+    /// Local Git cache operation failed (opening, `index-pack`,
+    /// pinning).
+    Git(String),
+    /// The peer's pack didn't contain every pulled revision's commit.
+    GitIncomplete {
+        missing: Vec<String>,
+    },
 }
 
 impl fmt::Display for PullError {
@@ -213,6 +243,13 @@ impl fmt::Display for PullError {
             Self::BadActor { actor, message } => write!(f, "actor {actor}: {message}"),
             Self::Record { record, reason } => write!(f, "refused {record}: {reason}"),
             Self::Store(error) => write!(f, "local store error: {error}"),
+            Self::Git(message) => write!(f, "local Git cache error: {message}"),
+            Self::GitIncomplete { missing } => write!(
+                f,
+                "the peer's Git pack lacks {} revision commit(s): {}",
+                missing.len(),
+                missing.join(", ")
+            ),
         }
     }
 }
@@ -274,6 +311,7 @@ pub fn pull_object(
         fetched: 0,
         already_held: 0,
         skipped: Vec::new(),
+        git: GitOutcome::NoGitRevisions,
     };
     let mut pull = Pull {
         store,
@@ -308,7 +346,103 @@ impl Pull<'_> {
         for blob in &listing.blobs {
             self.blob(blob)?;
         }
+
+        let git_available = listing.git.is_some_and(|git| git.available);
+        self.report.git = self.git(object, &listing.statements, git_available)?;
         Ok(())
+    }
+
+    /// Make every pulled revision's commit resolve in the local Git
+    /// cache. The pack is only fetched when some commit is missing,
+    /// and is streamed straight into `git index-pack`, never held in
+    /// memory. Git objects are content-addressed, so a commit that
+    /// resolves after ingest is the one the signed revision names.
+    fn git(
+        &mut self,
+        object: &ObjectId,
+        statements: &[StatementId],
+        available: bool,
+    ) -> Result<GitOutcome, PullError> {
+        let git_root = crate::git_root(self.store);
+        let mut commits: BTreeSet<String> = BTreeSet::new();
+        for id in statements {
+            let bytes = match self.store.get_statement_bytes(id) {
+                Ok(bytes) => bytes,
+                // Skipped for a revoked key.
+                Err(StoreError::Missing) => continue,
+                Err(error) => return Err(PullError::Store(error)),
+            };
+            if !matches!(peek(&bytes), Ok((StatementKind::ObjectRevision, _))) {
+                continue;
+            }
+            let revision = self
+                .store
+                .get_object_revision(id)
+                .map_err(PullError::Store)?;
+            if let Some(oid) = revision
+                .unsigned()
+                .body()
+                .revision()
+                .as_str()
+                .strip_prefix("git:sha256:")
+            {
+                commits.insert(oid.to_owned());
+            }
+        }
+        if commits.is_empty() {
+            return Ok(GitOutcome::NoGitRevisions);
+        }
+
+        let missing = |commits: &BTreeSet<String>| -> Result<Vec<String>, PullError> {
+            let mut missing = Vec::new();
+            for oid in commits {
+                if !local_has_commit(&git_root, object, oid)? {
+                    missing.push(oid.clone());
+                }
+            }
+            Ok(missing)
+        };
+        let before = missing(&commits)?;
+        if before.is_empty() {
+            return Ok(GitOutcome::AlreadyHeld {
+                commits: commits.len(),
+            });
+        }
+        if !available {
+            return Ok(GitOutcome::Unavailable {
+                missing: before.len(),
+            });
+        }
+
+        let cache =
+            kairo_git::GitCache::open(&git_root).map_err(|e| PullError::Git(e.to_string()))?;
+        self.peer.with_reader(
+            &format!("{API_PREFIX}/objects/{object}/git"),
+            self.limits.max_git_bytes,
+            self.limits.git_timeout,
+            |reader| {
+                cache
+                    .ingest_pack_from(reader)
+                    .map_err(|e| PullError::Git(e.to_string()))
+            },
+        )?;
+        // The pack lands in the shared pool; the object's own repo
+        // (which reaches the pool through alternates) may not exist yet.
+        cache
+            .ensure_repo(object.as_str())
+            .map_err(|e| PullError::Git(e.to_string()))?;
+        let after = missing(&commits)?;
+        if !after.is_empty() {
+            return Err(PullError::GitIncomplete { missing: after });
+        }
+        for oid in &before {
+            cache
+                .set_ref(object.as_str(), &format!("refs/kairo/imported/{oid}"), oid)
+                .map_err(|e| PullError::Git(e.to_string()))?;
+        }
+        Ok(GitOutcome::Ingested {
+            commits: before.len(),
+        })
     }
 
     fn check_budget(&self, records: usize) -> Result<(), PullError> {
@@ -537,4 +671,25 @@ fn dedup_ids(ids: &[StatementId]) -> Vec<StatementId> {
     let mut list = ids.to_vec();
     dedup(&mut list);
     list
+}
+
+/// Whether `oid` resolves in `object`'s per-object cache repo
+/// (including the shared pool through alternates). Probed without
+/// opening the cache, so a pull that needs no Git data never requires
+/// the `git` binary, the same rule `verify object` follows.
+fn local_has_commit(
+    git_root: &std::path::Path,
+    object: &ObjectId,
+    oid: &str,
+) -> Result<bool, PullError> {
+    let Ok(path) = kairo_git::object_repo_path(git_root, object.as_str()) else {
+        return Ok(false);
+    };
+    if !path.exists() {
+        return Ok(false);
+    }
+    let repo = kairo_git::open(&path).map_err(|e| PullError::Git(e.to_string()))?;
+    repo.find_commit(oid)
+        .map(|commit| commit.is_some())
+        .map_err(|e| PullError::Git(e.to_string()))
 }
