@@ -189,6 +189,29 @@ pub struct TrustHeadDto {
     pub decision: Option<String>,
 }
 
+/// One peer that served a record to this node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProvenanceEntryDto {
+    /// Base URL the record was fetched from.
+    pub peer_url: String,
+    /// Node actor the peer *claimed* in its unsigned node document.
+    pub peer_actor: String,
+    /// RFC 3339 UTC seconds.
+    pub fetched_at: String,
+}
+
+/// Response body for `GET /api/v1/provenance/{record}`: which
+/// federation peers served `record`, first-seen first
+/// (`specs/DECISIONS.md` §16 sub-decision 8). `entries` is empty for
+/// a record authored or imported locally. Provenance names only the
+/// immediate peer; authorship is the signature's job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProvenanceDto {
+    /// The typed reference, e.g. `statement:<id>`.
+    pub record: String,
+    pub entries: Vec<ProvenanceEntryDto>,
+}
+
 /// Response body for `GET /api/v1/version`.
 ///
 /// All four fields are crate-version strings (semver), drawn

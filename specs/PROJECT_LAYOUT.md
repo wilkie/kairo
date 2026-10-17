@@ -418,6 +418,16 @@ PeerRef
 
 ---
 
+### `kairo-config/`
+
+**Language:** Rust
+
+The node configuration file, `<store>/config.toml`
+(`DECISIONS.md` §17): strict parsing and validation into typed
+settings. Depends only on `kairo-core`.
+
+---
+
 ### `kairo-federation-http/`
 
 **Language:** Rust

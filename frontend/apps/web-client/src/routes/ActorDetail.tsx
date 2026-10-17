@@ -43,6 +43,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useState, type ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
+import { ProvenanceBadgeContainer } from '../components/ProvenanceBadgeContainer';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 import { TrustOpinionDialogContainer } from '../components/TrustOpinionDialogContainer';
 import { CreateObjectDialogContainer } from '../components/CreateObjectDialogContainer';
@@ -83,7 +84,12 @@ export function ActorDetail({ id }: ActorDetailProps) {
       <Panel
         title="Genesis"
         description="The signed statement that creates this actor."
-        actions={<LocalityBadge state="local" />}
+        actions={
+          <Stack direction="row" spacing={1}>
+            <LocalityBadge state="local" />
+            <ProvenanceBadgeContainer record={`actor:${id}`} />
+          </Stack>
+        }
       >
         <QueryStatusBoundary query={actorQ}>
           {(data) => <GenesisFields data={data} />}

@@ -70,6 +70,25 @@ pub(crate) enum CliError {
         source: kairo_store::StoreError,
     },
     Fetch(Box<kairo_federation_http::client::PullError>),
+    LoadConfig(kairo_config::ConfigError),
+    /// `[federation] enabled = false`.
+    FederationDisabled {
+        config: PathBuf,
+    },
+    /// `--offline` refuses network operations.
+    OfflineFetch,
+    /// The peer isn't under `[[federation.peers]]` and `--allow-peer`
+    /// wasn't given.
+    PeerNotAllowed {
+        url: String,
+        config: PathBuf,
+    },
+    ListPulls {
+        source: kairo_store::StoreError,
+    },
+    RecordPull {
+        source: kairo_store::StoreError,
+    },
     OpenKeystore {
         path: PathBuf,
         source: kairo_keystore::KeystoreError,
@@ -444,6 +463,9 @@ impl CliError {
     pub(crate) fn exit_code(&self) -> u8 {
         match self {
             Self::DaemonUnavailable { .. } => 9,
+            // A refusal by this node's own federation policy.
+            Self::PeerNotAllowed { .. } | Self::FederationDisabled { .. } | Self::OfflineFetch => 7,
+            Self::Fetch(_) => 11,
             _ => 1,
         }
     }
@@ -505,6 +527,21 @@ impl fmt::Display for CliError {
                 write!(f, "failed to read provenance for {record}: {source}")
             }
             Self::Fetch(error) => write!(f, "fetch failed: {error}"),
+            Self::LoadConfig(error) => write!(f, "invalid config: {error}"),
+            Self::FederationDisabled { config } => write!(
+                f,
+                "federation is disabled ([federation] enabled = false in {})",
+                config.display()
+            ),
+            Self::OfflineFetch => f.write_str("--offline refuses to fetch from federation peers"),
+            Self::PeerNotAllowed { url, config } => write!(
+                f,
+                "peer {url} is not listed in {}; add a [[federation.peers]] entry with \
+                 url = \"{url}\" (and node_actor to pin it), or pass --allow-peer for one run",
+                config.display()
+            ),
+            Self::ListPulls { source } => write!(f, "failed to read the pull log: {source}"),
+            Self::RecordPull { source } => write!(f, "failed to record the pull: {source}"),
             Self::OpenKeystore { path, source } => {
                 write!(f, "failed to open keystore at {}: {source}", path.display())
             }
@@ -898,6 +935,8 @@ impl Error for CliError {
             | Self::UnpublishObject { source, .. }
             | Self::ListPublishedObjects { source, .. }
             | Self::ReadProvenance { source, .. }
+            | Self::ListPulls { source, .. }
+            | Self::RecordPull { source, .. }
             | Self::WriteActor { source, .. }
             | Self::ReadActor { source, .. }
             | Self::WriteObjectGenesis { source, .. }
@@ -934,6 +973,7 @@ impl Error for CliError {
             Self::ListKeystore(error) => Some(error),
             Self::Bundle(error) => Some(error),
             Self::Fetch(error) => Some(error.as_ref()),
+            Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
             | Self::ParseStatementId { source, .. }
@@ -990,7 +1030,10 @@ impl Error for CliError {
             | Self::DaemonUnavailable { .. }
             | Self::InvalidPid { .. }
             | Self::DaemonStopTimeout { .. }
-            | Self::WebStopTimeout { .. } => None,
+            | Self::WebStopTimeout { .. }
+            | Self::FederationDisabled { .. }
+            | Self::OfflineFetch
+            | Self::PeerNotAllowed { .. } => None,
             Self::ChangeThresholdShape(error) => Some(error),
             Self::DaemonRuntime(error) | Self::WebRuntime(error) => Some(error),
             Self::DaemonServe { source } | Self::WebServe { source } => Some(source.as_ref()),

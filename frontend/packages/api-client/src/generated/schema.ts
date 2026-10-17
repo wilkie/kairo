@@ -169,6 +169,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/provenance/{record}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getProvenance"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/revisions/{object}": {
         parameters: {
             query?: never;
@@ -618,6 +634,27 @@ export interface components {
          */
         OpenSessionRequest: {
             actor_id: string;
+        };
+        /**
+         * @description Response body for `GET /api/v1/provenance/{record}`: which
+         *     federation peers served `record`, first-seen first
+         *     (`specs/DECISIONS.md` §16 sub-decision 8). `entries` is empty for
+         *     a record authored or imported locally. Provenance names only the
+         *     immediate peer; authorship is the signature's job.
+         */
+        ProvenanceDto: {
+            entries: components["schemas"]["ProvenanceEntryDto"][];
+            /** @description The typed reference, e.g. `statement:<id>`. */
+            record: string;
+        };
+        /** @description One peer that served a record to this node. */
+        ProvenanceEntryDto: {
+            /** @description RFC 3339 UTC seconds. */
+            fetched_at: string;
+            /** @description Node actor the peer *claimed* in its unsigned node document. */
+            peer_actor: string;
+            /** @description Base URL the record was fetched from. */
+            peer_url: string;
         };
         PublicKeyJson: {
             algorithm: string;
@@ -1206,6 +1243,36 @@ export interface operations {
             };
             /** @description Object not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getProvenance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Typed reference: statement:<id>, object:<id>, actor:<id>, or blob:<id> */
+                record: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Peers that served the record; empty if it is local */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvenanceDto"];
+                };
+            };
+            /** @description Malformed or unsupported reference */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

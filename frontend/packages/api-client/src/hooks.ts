@@ -31,6 +31,7 @@ import type {
   KeystoreActorDto,
   ObjectBranchStatementJson,
   ObjectByActorDto,
+  ProvenanceDto,
   ObjectGenesisStatementJson,
   ObjectVersionTagStatementJson,
   PutStatementResult,
@@ -98,6 +99,18 @@ export function useObject(objectId: string): QueryResult<ObjectGenesisStatementJ
   return useQuery<ObjectGenesisStatementJson, KairoApiClientError>({
     queryKey: kairoKeys.object(objectId),
     queryFn: () => client.getObject(objectId),
+  });
+}
+
+/**
+ * Which federation peers served `record` (a typed reference such as
+ * `statement:<id>`). Empty `entries` means the record is local.
+ */
+export function useProvenance(record: string): QueryResult<ProvenanceDto> {
+  const client = useKairoClient();
+  return useQuery<ProvenanceDto, KairoApiClientError>({
+    queryKey: kairoKeys.provenance(record),
+    queryFn: () => client.getProvenance(record),
   });
 }
 

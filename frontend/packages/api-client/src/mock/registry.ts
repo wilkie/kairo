@@ -784,6 +784,10 @@ export interface MockRegistry {
   /** `GET /api/v1/verify-object/:id`. */
   verifyObject: Record<string, Schemas['ValidationResult']>;
 
+  /** `GET /api/v1/provenance/:record`, keyed by typed reference.
+   * Records not listed are local (empty `entries`). */
+  provenance: Record<string, Schemas['ProvenanceEntryDto'][]>;
+
   /**
    * `GET /api/v1/keystore/actors` — actors the (mock) local
    * keystore can sign for. Seeded with Alice and Bob so the
@@ -921,4 +925,28 @@ export const mockRegistry: MockRegistry = {
   },
 
   keystoreActors: [{ actor_id: mockIds.alice }, { actor_id: mockIds.bob }],
+
+  // Beta was pulled from a federation peer; so was one of Alpha's
+  // revisions, seen from two peers.
+  provenance: {
+    [`object:${mockIds.beta}`]: [
+      {
+        peer_url: 'https://archive.example.org',
+        peer_actor: mockIds.carol,
+        fetched_at: '2026-10-01T12:00:00Z',
+      },
+    ],
+    [`statement:${mockIds.alphaRev2Stmt}`]: [
+      {
+        peer_url: 'https://archive.example.org',
+        peer_actor: mockIds.carol,
+        fetched_at: '2026-10-01T12:00:00Z',
+      },
+      {
+        peer_url: 'https://mirror.example.net',
+        peer_actor: mockIds.carol,
+        fetched_at: '2026-10-02T08:30:00Z',
+      },
+    ],
+  },
 };

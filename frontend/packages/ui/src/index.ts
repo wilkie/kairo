@@ -20,6 +20,12 @@ export { Panel, type PanelProps } from './Panel';
 export { Table, type TableProps, type TableColumn } from './Table';
 export { StatusBadge, type StatusBadgeProps, type StatusBadgeTone } from './StatusBadge';
 export { LocalityBadge, type LocalityBadgeProps, type LocalityState } from './LocalityBadge';
+export {
+  ProvenanceBadge,
+  peerLabel,
+  type ProvenanceBadgeProps,
+  type ProvenanceBadgeEntry,
+} from './ProvenanceBadge';
 export { Tabs, type TabsProps, type TabsTab } from './Tabs';
 export { Dialog, type DialogProps } from './Dialog';
 export { EmptyState, type EmptyStateProps } from './EmptyState';

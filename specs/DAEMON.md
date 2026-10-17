@@ -776,6 +776,12 @@ default_network_access = "deny"
 enabled = true
 ```
 
+The file is `<store>/config.toml` (`DECISIONS.md` §17). Only the
+`[federation]` section is implemented so far, and unknown keys are
+rejected, so the sketch above is the target, not what parses today.
+`[store] path` is not supported, because the file lives inside the
+store.
+
 Actual keys may differ, but configuration must support:
 
 - Store path

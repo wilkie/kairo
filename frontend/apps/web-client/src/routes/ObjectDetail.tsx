@@ -52,6 +52,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import { useState, type ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
+import { ProvenanceBadgeContainer } from '../components/ProvenanceBadgeContainer';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 import { BranchUpdateDialogContainer } from '../components/BranchUpdateDialogContainer';
 import { VersionTagDialogContainer } from '../components/VersionTagDialogContainer';
@@ -125,7 +126,12 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
       <Panel
         title="Genesis"
         description="The signed statement that creates this object."
-        actions={<LocalityBadge state="local" />}
+        actions={
+          <Stack direction="row" spacing={1}>
+            <LocalityBadge state="local" />
+            <ProvenanceBadgeContainer record={`object:${id}`} />
+          </Stack>
+        }
       >
         <QueryStatusBoundary query={objectQ}>
           {(data) => <GenesisFields data={data} />}

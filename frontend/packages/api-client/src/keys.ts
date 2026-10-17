@@ -47,6 +47,9 @@ export const kairoKeys = {
 
   blob: (id: string) => [...kairoKeys.all, 'blobs', id] as const,
 
+  /** Keyed by typed reference (`statement:<id>`, `object:<id>`, …). */
+  provenance: (record: string) => [...kairoKeys.all, 'provenance', record] as const,
+
   session: () => [...kairoKeys.all, 'session'] as const,
   sessionCurrent: () => [...kairoKeys.session(), 'current'] as const,
   keystoreActors: () => [...kairoKeys.session(), 'keystore-actors'] as const,

@@ -18,6 +18,22 @@ rather than per-commit.
 
 ### Added
 
+- **Federation policy and visibility (`PHASE_2_FEDERATION.md`
+  slice 5).**
+  - A node config file, `<store>/config.toml`, parsed strictly by
+    the new `kairo-config` crate (`DECISIONS.md` §17). It has a
+    `[federation]` section: `enabled`, limit overrides, and
+    `[[federation.peers]]` entries with optional `node_actor` pins.
+  - `kairo fetch` refuses unlisted peers unless `--allow-peer`. It
+    also refuses a pinned peer whose claimed node actor changed
+    (before fetching anything), and refuses under `--offline` or
+    `enabled = false`.
+  - New commands: `kairo federation status` (publish list, peers,
+    pins, last pull per peer) and `kairo config path | validate`.
+  - The daemon serves `GET /api/v1/provenance/{record}`, and the
+    inspector shows a "Fetched from <peer>" badge on statement,
+    object, and actor pages.
+
 - **Federation Git transfer (`PHASE_2_FEDERATION.md` slice 4).**
   `GET /federation/v1/objects/{id}/git` streams the object's Git pack
   from the managed cache. `kairo fetch` ingests it when a pulled

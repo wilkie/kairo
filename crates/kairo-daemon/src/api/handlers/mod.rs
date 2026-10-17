@@ -4,6 +4,7 @@ pub mod branches;
 pub mod capabilities;
 pub mod keystore;
 pub mod objects;
+pub mod provenance;
 pub mod revisions;
 pub mod sessions;
 pub mod statements;

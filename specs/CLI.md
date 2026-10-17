@@ -977,7 +977,9 @@ The CLI must return validation-specific exit codes.
 **[post-v1].** Depends on Phase 2 §4 federation. The Git-side
 of fetch (per-object Git mirror) ships in v1 as `kairo git
 fetch` (Phase 2 §1). The first federated form is `kairo fetch
---object <id> --from <url> [--json]`. It is a direct federation client that
+--object <id> --from <url> [--allow-peer] [--json]`. The peer must
+be listed in `<store>/config.toml` unless `--allow-peer` is given,
+and a pinned node actor must match (`DECISIONS.md` §17). It is a direct federation client that
 pulls a published object's closure from one peer
 (`DECISIONS.md` §16, `PHASE_2_FEDERATION.md` slice 3); the
 options below come later.
@@ -1298,13 +1300,16 @@ kairo federation publish --object <id>
 kairo federation unpublish --object <id>
 kairo federation published
 kairo federation provenance --ref <typed-ref>
+kairo federation status
 ```
 
 Federation commands require daemon/federation support unless a direct federation client is explicitly implemented.
 The object-pull MVP (`DECISIONS.md` §16) implements `publish`,
 `unpublish`, `published`, `provenance`, and `status` directly
 against the store; `peers` and `search` wait for the discovery
-phase.
+phase. Peers are configured in `<store>/config.toml`
+(`DECISIONS.md` §17), and `status` shows them with their pins and
+last pull.
 
 Search results must be labeled as unverified until core validation occurs.
 
@@ -1342,6 +1347,9 @@ kairo config show
 kairo config path
 kairo config validate
 ```
+
+**[v1]** `path` and `validate` ship against `<store>/config.toml`
+(`DECISIONS.md` §17); `show` comes later.
 
 Editing commands may be added later, but must avoid unsafe mutation without confirmation.
 

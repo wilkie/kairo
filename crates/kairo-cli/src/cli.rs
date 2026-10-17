@@ -135,15 +135,27 @@ pub(crate) enum Command {
     /// the local store (`specs/DECISIONS.md` §16). Every record is
     /// fixity- and signature-checked before it is stored, and records
     /// which peer served it. Requires `https://` except for loopback
-    /// hosts.
+    /// hosts. The peer must be listed under `[[federation.peers]]` in
+    /// `<store>/config.toml` unless `--allow-peer` is given; a listed
+    /// `node_actor` pin must match what the peer claims.
     Fetch {
         #[arg(long)]
         object: String,
         /// The peer's base URL, e.g. `https://archive.example.org`.
         #[arg(long)]
         from: String,
+        /// Pull from a peer that isn't listed in the config, for this
+        /// run only. The config is not edited.
+        #[arg(long)]
+        allow_peer: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Inspect the node configuration file, `<store>/config.toml`
+    /// (`specs/DECISIONS.md` §17).
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
     },
     /// Federation controls for this node (`specs/DECISIONS.md` §16).
     /// Publishing marks an object as servable to peers; nothing is
@@ -152,6 +164,14 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: FederationCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigCommand {
+    /// Print the config file's path and whether it exists.
+    Path,
+    /// Parse and validate the config file; non-zero exit if invalid.
+    Validate,
 }
 
 #[derive(Debug, Subcommand)]
@@ -171,6 +191,10 @@ pub(crate) enum FederationCommand {
     },
     /// List the objects this node serves to federation peers.
     Published,
+    /// Show federation state: enablement, the config in effect,
+    /// published objects, configured peers and their pins, and the
+    /// last successful pull from each peer.
+    Status,
     /// Show which federation peers served a record (immediate peer
     /// only; authorship is proven by the signature, not here).
     Provenance {

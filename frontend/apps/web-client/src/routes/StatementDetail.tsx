@@ -32,6 +32,7 @@ import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
 import type { ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
+import { ProvenanceBadgeContainer } from '../components/ProvenanceBadgeContainer';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 
 export interface StatementDetailProps {
@@ -60,13 +61,13 @@ export function StatementDetail({ id }: StatementDetailProps) {
       </Box>
 
       <QueryStatusBoundary query={stmtQ}>
-        {(value) => <StatementBody value={value} />}
+        {(value) => <StatementBody id={id} value={value} />}
       </QueryStatusBoundary>
     </>
   );
 }
 
-function StatementBody({ value }: { value: StatementValue }) {
+function StatementBody({ id, value }: { id: string; value: StatementValue }) {
   const kind = statementType(value);
   const kindLabel = kind === null ? 'Unknown' : statementKindLabel(kind);
 
@@ -87,6 +88,7 @@ function StatementBody({ value }: { value: StatementValue }) {
             <StatusBadge tone="info">{kind ?? 'unknown'}</StatusBadge>
             <ValidationBadge status="unverified" />
             <LocalityBadge state="local" />
+            <ProvenanceBadgeContainer record={`statement:${id}`} />
           </Stack>
         }
       >

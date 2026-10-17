@@ -6054,7 +6054,7 @@ fn parses_fetch_and_provenance_commands() {
             "kairo", "fetch", "--object", OBJECT_ID, "--from", "https://archive.example.org",
         ]),
         Ok(Cli {
-            command: Some(Command::Fetch { object, from, json: false }),
+            command: Some(Command::Fetch { object, from, allow_peer: false, json: false }),
             ..
         }) if object == OBJECT_ID && from == "https://archive.example.org"
     ));
@@ -6109,6 +6109,7 @@ fn fetch_refuses_plain_http_to_a_remote_host() -> Result<(), Box<dyn std::error:
         Command::Fetch {
             object: OBJECT_ID.to_owned(),
             from: "http://archive.example.org".to_owned(),
+            allow_peer: true,
             json: false,
         },
     )
@@ -6269,15 +6270,39 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
 
     let local_dir = tempfile::TempDir::new()?;
     let local = local_dir.path();
+    // The second node lists the peer and pins its node actor.
+    std::fs::write(
+        local.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{base_url}\"\nnode_actor = \"{node_actor}\"\n"),
+    )?;
     let fetched = run_in(
         local,
         Command::Fetch {
             object: object.clone(),
-            from: base_url,
+            from: base_url.clone(),
+            allow_peer: false,
             json: false,
         },
     )?;
     assert!(fetched.contains("git = ingested (1 commits)"), "{fetched}");
+    assert!(
+        fetched.contains(&format!("peer_actor = {node_actor} (pinned)")),
+        "{fetched}"
+    );
+
+    let status = run_in(local, federation(FederationCommand::Status))?;
+    assert!(status.contains("federation = enabled"), "{status}");
+    assert!(status.contains("peers = 1"), "{status}");
+    assert!(
+        status.contains(&format!(
+            "url={base_url} node_actor={node_actor} last_pull="
+        )),
+        "{status}"
+    );
+    assert!(
+        status.contains(&format!("object={object} fetched=")),
+        "{status}"
+    );
 
     let verified = run_in(
         local,
@@ -6310,5 +6335,145 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
 
     drop(stop);
     server.join().map_err(|_| "server thread panicked")?;
+    Ok(())
+}
+
+fn fetch_command(from: &str, allow_peer: bool) -> Command {
+    Command::Fetch {
+        object: OBJECT_ID.to_owned(),
+        // Port 9 (discard) on loopback: nothing should ever connect.
+        from: from.to_owned(),
+        allow_peer,
+        json: false,
+    }
+}
+
+#[test]
+fn fetch_refuses_unlisted_peers_before_connecting() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let error = run_in(store_dir.path(), fetch_command("http://127.0.0.1:9", false))
+        .err()
+        .ok_or("an unlisted peer was accepted")?;
+    assert_eq!(error.exit_code(), 7, "policy denied");
+    let message = error.to_string();
+    assert!(message.contains("is not listed in"), "{message}");
+    assert!(message.contains("--allow-peer"), "{message}");
+
+    // With --allow-peer the policy passes and the (closed) port is the
+    // failure: a federation error, exit 11.
+    let error = run_in(store_dir.path(), fetch_command("http://127.0.0.1:9", true))
+        .err()
+        .ok_or("fetch from a closed port succeeded")?;
+    assert_eq!(error.exit_code(), 11, "{error}");
+    Ok(())
+}
+
+#[test]
+fn fetch_honours_disabled_federation_and_offline() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    std::fs::write(
+        store_dir.path().join("config.toml"),
+        "[federation]\nenabled = false\n",
+    )?;
+    let error = run_in(store_dir.path(), fetch_command("http://127.0.0.1:9", true))
+        .err()
+        .ok_or("disabled federation fetched")?;
+    assert_eq!(error.exit_code(), 7);
+    assert!(
+        error.to_string().contains("federation is disabled"),
+        "{error}"
+    );
+
+    let offline = run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: true,
+        command: Some(fetch_command("http://127.0.0.1:9", true)),
+    })
+    .err()
+    .ok_or("--offline fetched")?;
+    assert!(offline.to_string().contains("--offline"), "{offline}");
+    Ok(())
+}
+
+#[test]
+fn config_path_and_validate() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let store = store_dir.path();
+    let path = run_in(
+        store,
+        Command::Config {
+            command: ConfigCommand::Path,
+        },
+    )?;
+    assert_eq!(
+        path,
+        format!(
+            "path = {}\nexists = no (defaults apply)\n",
+            store.join("config.toml").display()
+        )
+    );
+    let validate = run_in(
+        store,
+        Command::Config {
+            command: ConfigCommand::Validate,
+        },
+    )?;
+    assert!(validate.contains("(absent; defaults apply)"), "{validate}");
+    assert!(validate.contains("federation = enabled"), "{validate}");
+
+    std::fs::write(
+        store.join("config.toml"),
+        "[[federation.peers]]\nurl = \"https://a.example\"\n",
+    )?;
+    let validate = run_in(
+        store,
+        Command::Config {
+            command: ConfigCommand::Validate,
+        },
+    )?;
+    assert!(
+        validate.contains("(valid)") && validate.contains("federation_peers = 1"),
+        "{validate}"
+    );
+
+    std::fs::write(store.join("config.toml"), "[federation]\nenable = true\n")?;
+    let error = run_in(
+        store,
+        Command::Config {
+            command: ConfigCommand::Validate,
+        },
+    )
+    .err()
+    .ok_or("a misspelled key validated")?;
+    assert!(error.to_string().contains("enable"), "{error}");
+    Ok(())
+}
+
+#[test]
+fn federation_status_with_no_config_or_pulls() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let object = create_cli_object(store_dir.path())?;
+    run_in(
+        store_dir.path(),
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let status = run_in(store_dir.path(), federation(FederationCommand::Status))?;
+    assert!(
+        status.starts_with("federation = enabled\nconfig = "),
+        "{status}"
+    );
+    assert!(status.contains("(absent; defaults apply)"), "{status}");
+    assert!(status.contains("published = 1"), "{status}");
+    assert!(
+        status.contains(&format!("  object={object} published_at=")),
+        "{status}"
+    );
+    assert!(status.contains("peers = 0"), "{status}");
+    assert!(!status.contains("unlisted_peers"), "{status}");
     Ok(())
 }

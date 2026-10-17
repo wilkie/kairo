@@ -53,6 +53,7 @@ mod lock;
 mod objects_by_actor;
 mod provenance;
 mod published;
+mod pulls;
 mod shard;
 mod statements_by_actor;
 mod tags;
@@ -94,6 +95,7 @@ pub use federation::ObjectClosure;
 pub use objects_by_actor::ObjectByActor;
 pub use provenance::{ProvenanceEntry, ProvenanceStore};
 pub use published::{PublishedObject, PublishedObjectStore};
+pub use pulls::{PullLogStore, PullRecord};
 pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
@@ -6881,6 +6883,42 @@ mod tests {
         store.record_provenance(&record, &provenance_entry("https://a.example", 1))?;
         store.rebuild_indexes()?;
         assert_eq!(store.get_provenance(&record)?.len(), 1);
+        Ok(())
+    }
+
+    // --- federation pull log -------------------------------------
+
+    #[test]
+    fn pull_log_keeps_the_latest_pull_per_peer() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        assert!(store.list_pulls()?.is_empty());
+        let record = |peer: &str,
+                      seconds: i64,
+                      fetched: u64|
+         -> Result<PullRecord, Box<dyn std::error::Error>> {
+            Ok(PullRecord {
+                peer_url: peer.to_owned(),
+                object: ObjectId::new(OBJECT_ID)?,
+                peer_actor: fresh_genesis().actor_id(),
+                at: Timestamp::from_seconds(seconds),
+                fetched,
+                already_held: 0,
+            })
+        };
+        store.record_pull(&record("https://b.example", 1, 5)?)?;
+        store.record_pull(&record("https://a.example", 2, 3)?)?;
+        store.record_pull(&record("https://b.example", 3, 0)?)?;
+
+        let pulls = store.list_pulls()?;
+        assert_eq!(
+            pulls
+                .iter()
+                .map(|p| (p.peer_url.as_str(), p.at.seconds(), p.fetched))
+                .collect::<Vec<_>>(),
+            vec![("https://a.example", 2, 3), ("https://b.example", 3, 0)]
+        );
+        store.rebuild_indexes()?;
+        assert_eq!(store.list_pulls()?.len(), 2);
         Ok(())
     }
 }

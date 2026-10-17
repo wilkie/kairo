@@ -77,6 +77,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/capabilities/for-object/:object",
             get(handlers::capabilities::list_for_object_handler),
         )
+        .route(
+            "/api/v1/provenance/:record",
+            get(handlers::provenance::handler),
+        )
         .route("/api/v1/blobs/:id", get(handlers::blobs::handler))
         .route(
             "/api/v1/verify-object/:id",

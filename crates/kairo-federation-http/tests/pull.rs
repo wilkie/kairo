@@ -16,7 +16,7 @@ use axum::response::Response;
 use axum::Router;
 use kairo_core::{KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_federation_core::FedErrorCode;
-use kairo_federation_http::client::{pull_object, Limits, PullError, RecordRejection};
+use kairo_federation_http::client::{pull_object, Limits, PullError, PullOptions, RecordRejection};
 use kairo_statement::{ActorKeyRevocationBody, ObjectVersionTagBody, SemverVersion};
 use kairo_store::{
     ActorStore, BlobStore, BranchResolver, FilesystemStore, ObjectStore, ProvenanceStore,
@@ -90,7 +90,7 @@ fn pull(
     served: &Served,
     object: &ObjectId,
 ) -> Result<kairo_federation_http::client::PullReport, PullError> {
-    pull_object(store, &served.base_url, object, &Limits::default())
+    pull_object(store, &served.base_url, object, &PullOptions::default())
 }
 
 fn json(bytes: &[u8]) -> Value {
@@ -426,7 +426,15 @@ fn oversize_responses_fail_and_keep_what_was_stored() {
         max_blob_bytes: 8,
         ..Limits::default()
     };
-    let result = pull_object(&local, &served.base_url, &seeded.published, &limits);
+    let result = pull_object(
+        &local,
+        &served.base_url,
+        &seeded.published,
+        &PullOptions {
+            limits,
+            ..PullOptions::default()
+        },
+    );
     assert!(
         matches!(result, Err(PullError::TooLarge { limit: 8, .. })),
         "{result:?}"
@@ -447,7 +455,15 @@ fn closures_over_the_record_limit_are_refused() {
         max_records: 3,
         ..Limits::default()
     };
-    let result = pull_object(&local, &served.base_url, &seeded.published, &limits);
+    let result = pull_object(
+        &local,
+        &served.base_url,
+        &seeded.published,
+        &PullOptions {
+            limits,
+            ..PullOptions::default()
+        },
+    );
     assert!(
         matches!(result, Err(PullError::TooManyRecords { limit: 3 })),
         "{result:?}"
@@ -478,11 +494,38 @@ fn plain_http_to_a_remote_host_is_refused_before_connecting() {
         &local,
         "http://archive.example.org",
         &object,
-        &Limits::default(),
+        &PullOptions::default(),
     );
     assert!(
         matches!(result, Err(PullError::InvalidPeerUrl { .. })),
         "{result:?}"
     );
     let _ = Timestamp::now();
+}
+
+#[test]
+fn a_pinned_node_actor_must_match_before_anything_is_fetched() {
+    let seeded = seed();
+    let served = serve(&seeded);
+    let (_dir, local) = local_store();
+
+    let wrong = PullOptions {
+        expected_node_actor: Some(seeded.alice.clone()),
+        ..PullOptions::default()
+    };
+    match pull_object(&local, &served.base_url, &seeded.published, &wrong) {
+        Err(PullError::NodeActorMismatch { expected, claimed }) => {
+            assert_eq!(expected, seeded.alice);
+            assert_eq!(claimed, seeded.node_actor);
+        }
+        other => panic!("expected NodeActorMismatch, got {other:?}"),
+    }
+    assert!(local.get_actor(&seeded.alice).is_err(), "nothing stored");
+    assert!(local.get_object_genesis(&seeded.published).is_err());
+
+    let pinned = PullOptions {
+        expected_node_actor: Some(seeded.node_actor.clone()),
+        ..PullOptions::default()
+    };
+    pull_object(&local, &served.base_url, &seeded.published, &pinned).expect("pinned pull");
 }

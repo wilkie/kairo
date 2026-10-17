@@ -6,11 +6,19 @@
 //! All of it is local store state, so these commands always run
 //! direct; there is no daemon route for them.
 
+use std::time::Duration;
+
+use kairo_config::ConfigSource;
 use kairo_core::{KairoRef, ObjectId, Timestamp};
-use kairo_federation_http::client::{pull_object, GitOutcome, Limits, PullReport};
-use kairo_store::{ProvenanceStore, PublishedObject, PublishedObjectStore};
+use kairo_federation_http::client::{
+    normalize_peer_url, pull_object, GitOutcome, Limits, PullOptions, PullReport,
+};
+use kairo_store::{
+    ProvenanceStore, PublishedObject, PublishedObjectStore, PullLogStore, PullRecord,
+};
 
 use crate::cli::FederationCommand;
+use crate::commands::config::load_config;
 use crate::error::CliError;
 use crate::store_paths::{open_store, StorePaths};
 
@@ -26,6 +34,7 @@ pub(crate) fn run_federation_command(
         FederationCommand::Publish { object } => run_publish(&parse_object(object)?, paths),
         FederationCommand::Unpublish { object } => run_unpublish(&parse_object(object)?, paths),
         FederationCommand::Published => run_published(paths),
+        FederationCommand::Status => run_status(paths),
         FederationCommand::Provenance { record } => run_provenance(record, paths),
     }
 }
@@ -86,32 +95,229 @@ fn format_published(objects: &[PublishedObject]) -> String {
     output
 }
 
+pub(crate) struct FetchArgs<'a> {
+    pub(crate) object: &'a str,
+    pub(crate) from: &'a str,
+    pub(crate) allow_peer: bool,
+    pub(crate) json: bool,
+    /// The global `--offline` flag.
+    pub(crate) offline: bool,
+}
+
 /// `kairo fetch --object <id> --from <url>`: pull one published
-/// object's closure (`specs/PHASE_2_FEDERATION.md` slice 3). Always
-/// direct: the pull writes the local store, like `bundle import`.
-pub(crate) fn run_fetch(
-    object: &str,
-    from: &str,
-    json: bool,
-    paths: &StorePaths,
-) -> Result<String, CliError> {
-    let object = parse_object(object.to_owned())?;
+/// object's closure (`specs/PHASE_2_FEDERATION.md` slices 3 and 5).
+/// Always direct: the pull writes the local store, like `bundle
+/// import`.
+///
+/// Policy comes from `<store>/config.toml` and is checked before any
+/// network I/O: federation must be enabled, `--offline` refuses, and
+/// the peer must be listed unless `--allow-peer`. A listed peer's
+/// `node_actor` pin is passed to the pull, which refuses a different
+/// claim before fetching anything.
+pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
+    let object = parse_object(args.object.to_owned())?;
+    if args.offline {
+        return Err(CliError::OfflineFetch);
+    }
+    let (config, source) = load_config(paths)?;
+    if !config.federation.enabled {
+        return Err(CliError::FederationDisabled {
+            config: source.path().to_path_buf(),
+        });
+    }
+    let url = normalize_peer_url(args.from).map_err(|error| CliError::Fetch(Box::new(error)))?;
+    let peer = config.federation.peer(&url);
+    if peer.is_none() && !args.allow_peer {
+        return Err(CliError::PeerNotAllowed {
+            url,
+            config: source.path().to_path_buf(),
+        });
+    }
+    let pinned = peer.and_then(|peer| peer.node_actor.clone());
+    let options = PullOptions {
+        limits: limits_from(&config.federation.limits),
+        expected_node_actor: pinned.clone(),
+    };
+
     let store = open_store(paths)?;
-    let report = pull_object(&store, from, &object, &Limits::default())
+    let report = pull_object(&store, &url, &object, &options)
         .map_err(|error| CliError::Fetch(Box::new(error)))?;
-    Ok(if json {
-        format_fetch_json(&report)
+    store
+        .record_pull(&PullRecord {
+            peer_url: report.peer_url.clone(),
+            object: report.object.clone(),
+            peer_actor: report.peer_actor.clone(),
+            at: Timestamp::now(),
+            fetched: report.fetched as u64,
+            already_held: report.already_held as u64,
+        })
+        .map_err(|source| CliError::RecordPull { source })?;
+
+    let pin = Pin {
+        listed: peer.is_some(),
+        pinned: pinned.is_some(),
+    };
+    Ok(if args.json {
+        format_fetch_json(&report, pin)
     } else {
-        format_fetch(&report)
+        format_fetch(&report, pin)
     })
 }
 
-fn format_fetch(report: &PullReport) -> String {
+/// How the peer stood in the config for this pull.
+#[derive(Debug, Clone, Copy)]
+struct Pin {
+    listed: bool,
+    pinned: bool,
+}
+
+impl Pin {
+    fn describe(self, report: &PullReport) -> String {
+        match (self.listed, self.pinned) {
+            (_, true) => "pinned".to_owned(),
+            (true, false) => format!(
+                "claimed, unpinned; add node_actor = \"{}\" to its [[federation.peers]] entry \
+                 to pin it",
+                report.peer_actor
+            ),
+            (false, false) => "claimed; peer not in config (--allow-peer)".to_owned(),
+        }
+    }
+
+    fn json(self) -> &'static str {
+        match (self.listed, self.pinned) {
+            (_, true) => "pinned",
+            (true, false) => "unpinned",
+            (false, false) => "unlisted",
+        }
+    }
+}
+
+/// Config overrides on top of the client's defaults.
+fn limits_from(config: &kairo_config::LimitsConfig) -> Limits {
+    let defaults = Limits::default();
+    let secs = |value: Option<u64>, default: Duration| value.map_or(default, Duration::from_secs);
+    Limits {
+        max_json_bytes: config.max_json_bytes.unwrap_or(defaults.max_json_bytes),
+        max_blob_bytes: config.max_blob_bytes.unwrap_or(defaults.max_blob_bytes),
+        max_git_bytes: config.max_git_bytes.unwrap_or(defaults.max_git_bytes),
+        max_records: config.max_records.map_or(defaults.max_records, |n| {
+            usize::try_from(n).unwrap_or(usize::MAX)
+        }),
+        request_timeout: secs(config.request_timeout_secs, defaults.request_timeout),
+        git_timeout: secs(config.git_timeout_secs, defaults.git_timeout),
+    }
+}
+
+/// `kairo federation status`.
+fn run_status(paths: &StorePaths) -> Result<String, CliError> {
+    let (config, source) = load_config(paths)?;
+    let store = open_store(paths)?;
+    let published = store
+        .list_published_objects()
+        .map_err(|source| CliError::ListPublishedObjects { source })?;
+    let pulls = store
+        .list_pulls()
+        .map_err(|source| CliError::ListPulls { source })?;
+
     let mut output = format!(
-        "object = {}\npeer = {}\npeer_actor = {} (claimed)\nfetched = {}\nalready_held = {}\nskipped = {}\n",
+        "federation = {}
+",
+        if config.federation.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    output.push_str(&match &source {
+        ConfigSource::File(path) => format!(
+            "config = {}
+",
+            path.display()
+        ),
+        ConfigSource::Defaults(path) => {
+            format!(
+                "config = {} (absent; defaults apply)
+",
+                path.display()
+            )
+        }
+    });
+    output.push_str(&format!(
+        "published = {}
+",
+        published.len()
+    ));
+    for entry in &published {
+        output.push_str(&format!(
+            "  object={} published_at={}
+",
+            entry.object_id, entry.published_at
+        ));
+    }
+
+    let last_pull = |url: &str| pulls.iter().find(|pull| pull.peer_url == url);
+    let describe_pull = |pull: Option<&PullRecord>| match pull {
+        Some(pull) => format!(
+            "{} object={} fetched={} already_held={} claimed={}",
+            pull.at, pull.object, pull.fetched, pull.already_held, pull.peer_actor
+        ),
+        None => "never".to_owned(),
+    };
+    output.push_str(&format!(
+        "peers = {}
+",
+        config.federation.peers.len()
+    ));
+    for peer in &config.federation.peers {
+        let pin = peer
+            .node_actor
+            .as_ref()
+            .map_or_else(|| "unpinned".to_owned(), ToString::to_string);
+        // Compare with the normalized URL the pull log uses.
+        let key = normalize_peer_url(&peer.url).unwrap_or_else(|_| peer.url.clone());
+        output.push_str(&format!(
+            "  url={} node_actor={pin} last_pull={}
+",
+            peer.url,
+            describe_pull(last_pull(&key))
+        ));
+    }
+    let unlisted: Vec<&PullRecord> = pulls
+        .iter()
+        .filter(|pull| {
+            !config
+                .federation
+                .peers
+                .iter()
+                .any(|peer| normalize_peer_url(&peer.url).is_ok_and(|url| url == pull.peer_url))
+        })
+        .collect();
+    if !unlisted.is_empty() {
+        output.push_str(&format!(
+            "unlisted_peers = {}
+",
+            unlisted.len()
+        ));
+        for pull in unlisted {
+            output.push_str(&format!(
+                "  url={} last_pull={}
+",
+                pull.peer_url,
+                describe_pull(Some(pull))
+            ));
+        }
+    }
+    Ok(output)
+}
+
+fn format_fetch(report: &PullReport, pin: Pin) -> String {
+    let mut output = format!(
+        "object = {}\npeer = {}\npeer_actor = {} ({})\nfetched = {}\nalready_held = {}\nskipped = {}\n",
         report.object,
         report.peer_url,
         report.peer_actor,
+        pin.describe(report),
         report.fetched,
         report.already_held,
         report.skipped.len(),
@@ -153,11 +359,12 @@ fn git_json(git: &GitOutcome) -> serde_json::Value {
     }
 }
 
-fn format_fetch_json(report: &PullReport) -> String {
+fn format_fetch_json(report: &PullReport, pin: Pin) -> String {
     let value = serde_json::json!({
         "object": report.object.to_string(),
         "peer_url": report.peer_url,
         "peer_actor": report.peer_actor.to_string(),
+        "peer_pin": pin.json(),
         "fetched": report.fetched,
         "already_held": report.already_held,
         "skipped": report

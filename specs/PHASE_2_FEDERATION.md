@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–4 shipped.
+Draft, locked 2026-10-16. Slices 1–5 shipped.
 
 Slice plan for the first federation milestone in `PHASE_2.md` §4:
 pulling a published object's signed history from one node into
@@ -34,7 +34,8 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `crates/kairo-federation-http` (new) | `server` (closure computation, axum router), `client` (fetch + verify + ingest). Depends on `kairo-federation-core`, `kairo-store`, `kairo-statement`. `kairo-federation-http` binary. |
 | `crates/kairo-store` | `published` module: `PublishedObjectStore` trait + `FilesystemStore` impl over `<store>/federation/published.json` (slice 1). `provenance` module: `ProvenanceStore` trait + `FilesystemStore` impl over `<store>/provenance/` (slice 3). Both live here, not in the federation crate: they need the store's index lock and atomic write, and the daemon reads provenance (slice 5) without depending on federation. |
 | `crates/kairo-cli` | `kairo fetch --object <id> --from <url>`; `kairo federation publish \| unpublish --object <id>`, `published`, `provenance`, `status` |
-| `crates/kairo-daemon` | Slice 5 only: provenance on read DTOs |
+| `crates/kairo-config` (new, slice 5) | `<store>/config.toml` parsing (`DECISIONS.md` §17) |
+| `crates/kairo-daemon` | Slice 5 only: `GET /api/v1/provenance/{record}` |
 | `frontend/` | Slice 5 only: "Fetched from" badge |
 
 `kairo-federation-dht` and `kairo-federation-service` from
@@ -295,16 +296,48 @@ Exceeding one fails the pull with what was stored so far kept.
   object --no-cwd-repo` on the second store is VALID with `commit
   lookup: cache`.
 
-### Slice 5 — Policy and visibility
+### Slice 5 — Policy and visibility *(shipped)*
 
-- `[federation]` config: peer allow list by URL (pull refuses
-  others unless `--allow-peer`), pinned `node_actor` per URL
-  (pull fails if the document's claim changes), the §2.4 limits.
-- `kairo federation status`: publish list, configured peers, last
-  pull per peer.
-- Daemon read DTOs gain optional `provenance`; the inspector
-  shows a "Fetched from <peer_url>" badge on statements that have
-  it.
+- `<store>/config.toml` with a strict `[federation]` section
+  (`DECISIONS.md` §17), parsed by the new `kairo-config` crate:
+  `enabled`, `[federation.limits]` overrides, and `[[federation.peers]]`
+  entries with a `url` and an optional `node_actor` pin.
+  `kairo config path | validate`.
+- `kairo fetch` checks policy before any network I/O. `--offline`
+  and `enabled = false` refuse. An unlisted peer needs
+  `--allow-peer` (one run, config untouched). A pin goes to the
+  pull as `PullOptions::expected_node_actor`, which refuses a
+  mismatched claim before fetching anything
+  (`PullError::NodeActorMismatch`). The output says whether the
+  peer was pinned, unpinned (with the line to pin it), or
+  unlisted. Exit codes are 7 for policy refusals and 11 for pull
+  failures.
+- `kairo-store` `pulls` module: the last successful pull per peer
+  at `<store>/federation/pulls.json`. `kairo federation status`
+  shows enablement, the config in effect, the publish list,
+  configured peers with pins and last pull, and any unlisted peers
+  pulled with `--allow-peer`.
+- Provenance reaches the inspector through a new read endpoint,
+  `GET /api/v1/provenance/{record}` (typed reference; empty
+  `entries` for local records). This replaces the planned
+  `provenance` field on read DTOs: the statement, object, and
+  actor detail responses are the signed records' JSON, and
+  provenance is local state that shouldn't be mixed into them.
+- Inspector: `<ProvenanceBadge />` in `@kairo/ui` ("Fetched from
+  <peer> [+N]"; the tooltip lists every peer and time and marks
+  the node actor as claimed), plus a `useProvenance` hook. The
+  badge shows on the statement, object, and actor detail pages and
+  renders nothing for local records. MSW seeds provenance for Beta
+  and one Alpha revision.
+- Tests:
+  - `kairo-config` parsing (strictness, validation, defaults);
+  - the pull log;
+  - the pin refusing before anything is stored;
+  - CLI policy refusals and exit codes, status, and config
+    commands;
+  - the end-to-end fetch, now through a pinned config entry;
+  - the daemon provenance endpoint;
+  - badge unit tests and an MSW Playwright spec.
 
 ### Slice 6 — Two-node real-stack check
 

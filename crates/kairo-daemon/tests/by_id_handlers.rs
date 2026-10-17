@@ -326,3 +326,67 @@ async fn statements_endpoint_returns_400_for_malformed_id() {
     handle.shutdown().await;
     drop(dir);
 }
+
+#[tokio::test]
+async fn provenance_endpoint_lists_peers_and_is_empty_for_local_records() {
+    use kairo_core::{KairoRef, Timestamp};
+    use kairo_store::{ProvenanceEntry, ProvenanceStore};
+
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    fixture
+        .store
+        .record_provenance(
+            &KairoRef::Object(object.object_id.clone()),
+            &ProvenanceEntry {
+                peer_url: "https://archive.example.org".to_owned(),
+                peer_actor: actor.actor_id.clone(),
+                fetched_at: Timestamp::from_seconds(1_700_000_000),
+            },
+        )
+        .expect("record provenance");
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+    let handle = spawn_daemon(store_path).await;
+
+    let (status, body) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/provenance/object:{}", object.object_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(
+        value["result"]["record"],
+        format!("object:{}", object.object_id)
+    );
+    assert_eq!(
+        value["result"]["entries"],
+        serde_json::json!([{
+            "peer_url": "https://archive.example.org",
+            "peer_actor": actor.actor_id.to_string(),
+            "fetched_at": "2023-11-14T22:13:20Z",
+        }])
+    );
+
+    // A local record has an empty list, not a 404.
+    let (status, body) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/provenance/actor:{}", actor.actor_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::OK);
+    let value: Value = serde_json::from_slice(&body).expect("json");
+    assert_eq!(value["result"]["entries"], serde_json::json!([]));
+
+    // A bare id is not a typed reference.
+    let (status, _) = http_get(
+        handle.socket_path(),
+        &format!("/api/v1/provenance/{}", actor.actor_id),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::BAD_REQUEST);
+
+    handle.shutdown().await;
+}

@@ -394,6 +394,40 @@
         }
       }
     },
+    "/api/v1/provenance/{record}": {
+      "get": {
+        "tags": [
+          "provenance"
+        ],
+        "operationId": "getProvenance",
+        "parameters": [
+          {
+            "name": "record",
+            "in": "path",
+            "description": "Typed reference: statement:<id>, object:<id>, actor:<id>, or blob:<id>",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Peers that served the record; empty if it is local",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvenanceDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed or unsupported reference"
+          }
+        }
+      }
+    },
     "/api/v1/revisions/{object}": {
       "get": {
         "tags": [
@@ -1479,6 +1513,49 @@
           }
         }
       },
+      "ProvenanceDto": {
+        "type": "object",
+        "description": "Response body for `GET /api/v1/provenance/{record}`: which\nfederation peers served `record`, first-seen first\n(`specs/DECISIONS.md` §16 sub-decision 8). `entries` is empty for\na record authored or imported locally. Provenance names only the\nimmediate peer; authorship is the signature's job.",
+        "required": [
+          "record",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceEntryDto"
+            }
+          },
+          "record": {
+            "type": "string",
+            "description": "The typed reference, e.g. `statement:<id>`."
+          }
+        }
+      },
+      "ProvenanceEntryDto": {
+        "type": "object",
+        "description": "One peer that served a record to this node.",
+        "required": [
+          "peer_url",
+          "peer_actor",
+          "fetched_at"
+        ],
+        "properties": {
+          "fetched_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC seconds."
+          },
+          "peer_actor": {
+            "type": "string",
+            "description": "Node actor the peer *claimed* in its unsigned node document."
+          },
+          "peer_url": {
+            "type": "string",
+            "description": "Base URL the record was fetched from."
+          }
+        }
+      },
       "PublicKeyJson": {
         "type": "object",
         "required": [
@@ -1911,6 +1988,10 @@
     {
       "name": "capabilities",
       "description": "Capability head listings"
+    },
+    {
+      "name": "provenance",
+      "description": "Which federation peers served a record"
     },
     {
       "name": "blobs",

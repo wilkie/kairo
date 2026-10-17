@@ -1397,6 +1397,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "kairo-bundle",
+ "kairo-config",
  "kairo-core",
  "kairo-daemon",
  "kairo-daemon-client",
@@ -1413,6 +1414,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "kairo-config"
+version = "0.1.0"
+dependencies = [
+ "kairo-core",
+ "serde",
+ "toml",
 ]
 
 [[package]]

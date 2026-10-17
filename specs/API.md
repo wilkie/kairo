@@ -838,7 +838,19 @@ Statements returned by this endpoint are not necessarily valid or authoritative.
 GET /api/v1/statements/{statement_id}
 ```
 
-Returns statement record and provenance if known.
+Returns the statement record exactly as signed. Provenance (which
+federation peers served it) is local state and is served separately
+(`DECISIONS.md` §17):
+
+```http
+GET /api/v1/provenance/{record}
+```
+
+`record` is a typed reference (`statement:<id>`, `object:<id>`,
+`actor:<id>`, `blob:<id>`). The result is `{ record, entries: [{
+peer_url, peer_actor, fetched_at }] }`, first-seen first. `entries` is
+empty for a record authored or imported locally. `peer_actor` is the
+node actor the peer claimed.
 
 ### 14.3 Get statement graph
 

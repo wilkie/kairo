@@ -1298,3 +1298,75 @@ Affected specs:
   `kairo federation` subcommands the MVP implements.
 - `OBJECT_STORE.md`: federation endpoint examples use the
   `/federation/v1/` paths.
+
+---
+
+## 17. Node Configuration File
+
+Decision: a node reads its configuration from **`<store>/config.toml`**,
+which is `~/.kairo/config.toml` for the default store. Parsing is
+**strict**, and the file accepts **only keys that are implemented**. It
+starts with the `[federation]` section that `PHASE_2_FEDERATION.md`
+slice 5 needs. A missing file means every default applies.
+
+Sub-decisions:
+
+1. **Location: inside the store root.** The store root is already
+   the node's home (keys default to `<store>/keys`, the Git cache is
+   `<store>/git`). Putting the config there keeps `--store` the one
+   switch that selects a node, so tests and multiple local nodes
+   stay isolated. It also means the config can't relocate its own
+   store, so `DAEMON.md` §15's `[store] path` key is not supported.
+   The global `--config <path>` flag (`CLI.md` §3) and a daemon-side
+   `ConfigService` (`DAEMON.md` §5.8) come later and must keep this
+   file as the default.
+
+2. **Strict and incremental.** Unknown sections and keys are errors,
+   so a misspelled `node_actor` can't quietly turn pinning off.
+   `[api]`, `[policy]`, `[runtime]`, and the rest of `DAEMON.md` §15
+   are added as their features land; until then they are rejected,
+   not ignored. `kairo config validate` reports errors and `kairo
+   config path` shows the location (`CLI.md` §27). The CLI never
+   edits the file.
+
+3. **`[federation]` keys.**
+   - `enabled` (default `true`). `false` is local-only mode
+     (`DAEMON.md` §10.1): `kairo fetch` refuses to run.
+   - `[federation.limits]`: optional overrides of the pull client's
+     limits (`max_json_bytes`, `max_blob_bytes`, `max_git_bytes`,
+     `max_records`, `request_timeout_secs`, `git_timeout_secs`).
+     Zero is invalid.
+   - `[[federation.peers]]` entries, each with a `url` and an
+     optional `node_actor` (a bare actor id).
+
+4. **Fetch policy.** `kairo fetch` checks policy before any network
+   I/O. `--offline` refuses. The peer must be listed under
+   `[[federation.peers]]` unless `--allow-peer` is given for that one
+   run. A listed `node_actor` is a pin: the pull compares it with the
+   node document's claim before fetching anything, and refuses on a
+   mismatch. An unpinned peer's claim is reported along with the
+   line that would pin it. Policy refusals exit 7 (policy denied)
+   and pull failures exit 11 (federation error), per `CLI.md` §7.
+
+5. **State is not config.** What a node has done goes in the store,
+   not the config file: the publish list (§16 sub-decision 3), per-record
+   provenance (§16 sub-decision 8), and the last successful pull per
+   peer (`<store>/federation/pulls.json`, shown by `kairo federation
+   status`).
+
+Rationale: federation policy has to live somewhere before discovery
+or push widen who a node talks to. A strict file with only real keys
+is the smallest form that won't need a compatibility parser later.
+Keeping it in the store root follows the precedent of the keystore
+and the Git cache.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` slice 5 — implemented against this.
+- `CLI.md` §15, §25, §27 — `kairo fetch --allow-peer`,
+  `kairo federation status`, `kairo config path | validate`.
+- `DAEMON.md` §15 — the file's location and the keys implemented
+  so far.
+- `API.md` §14.2 — provenance is served at `GET
+  /api/v1/provenance/{record}`, not inside the statement response,
+  so that response stays exactly the signed record.

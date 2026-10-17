@@ -141,7 +141,7 @@ impl Peer {
 /// the host is loopback (tests, and a client on the serving machine).
 /// A trailing `/` is dropped; any other path, query, or fragment is
 /// refused, since endpoint paths are joined onto the result.
-fn normalize_base_url(raw: &str) -> Result<String, PullError> {
+pub(crate) fn normalize_base_url(raw: &str) -> Result<String, PullError> {
     let refuse = |reason: &str| PullError::InvalidPeerUrl {
         url: raw.to_owned(),
         reason: reason.to_owned(),

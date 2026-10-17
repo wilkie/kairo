@@ -77,6 +77,24 @@ impl Default for Limits {
     }
 }
 
+/// How to run a pull.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullOptions {
+    pub limits: Limits,
+    /// The node actor the peer must claim (a pin from the node's
+    /// config). `None` accepts any valid claim; the report carries
+    /// it so the operator can pin it.
+    pub expected_node_actor: Option<ActorId>,
+}
+
+/// Normalize a peer base URL the way [`pull_object`] does: `https://`
+/// anywhere, `http://` only on loopback, origin only, trailing `/`
+/// dropped. Callers use it to match config entries against
+/// `--from`.
+pub fn normalize_peer_url(raw: &str) -> Result<String, PullError> {
+    http::normalize_base_url(raw)
+}
+
 /// A record the pull verified but did not store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedRecord {
@@ -174,6 +192,12 @@ pub enum PullError {
     NodeDocument(NodeDocumentError),
     /// The node doesn't advertise `object-pull`.
     Unsupported,
+    /// The peer claims a different node actor than the one pinned
+    /// for its URL.
+    NodeActorMismatch {
+        expected: ActorId,
+        claimed: ActorId,
+    },
     /// A listing named a different object than requested.
     ListingMismatch {
         expected: ObjectId,
@@ -237,6 +261,11 @@ impl fmt::Display for PullError {
             Self::Parse { url, message } => write!(f, "unexpected response from {url}: {message}"),
             Self::NodeDocument(error) => write!(f, "peer's node document is invalid: {error}"),
             Self::Unsupported => write!(f, "peer does not support {SUPPORTS_OBJECT_PULL}"),
+            Self::NodeActorMismatch { expected, claimed } => write!(
+                f,
+                "peer claims node actor {claimed}, but this node pins {expected} for it; \
+                 nothing was fetched"
+            ),
             Self::ListingMismatch { expected, found } => {
                 write!(f, "asked for object {expected}, peer listed {found}")
             }
@@ -289,14 +318,25 @@ pub fn pull_object(
     store: &FilesystemStore,
     peer_url: &str,
     object: &ObjectId,
-    limits: &Limits,
+    options: &PullOptions,
 ) -> Result<PullReport, PullError> {
+    let limits = &options.limits;
     let peer = Peer::new(peer_url, limits)?;
 
     let document: NodeDocument = peer.get_json(WELL_KNOWN_PATH, limits.max_json_bytes)?;
     document.validate().map_err(PullError::NodeDocument)?;
     if !document.supports(SUPPORTS_OBJECT_PULL) {
         return Err(PullError::Unsupported);
+    }
+    // Checked before anything is fetched or stored, so a peer whose
+    // claimed identity changed contributes nothing.
+    if let Some(expected) = &options.expected_node_actor {
+        if expected != &document.node_actor {
+            return Err(PullError::NodeActorMismatch {
+                expected: expected.clone(),
+                claimed: document.node_actor.clone(),
+            });
+        }
     }
 
     let provenance = ProvenanceEntry {

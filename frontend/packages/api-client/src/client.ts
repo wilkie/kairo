@@ -34,6 +34,8 @@ export type VersionTagHeadDto = components['schemas']['VersionTagHeadDto'];
 export type RevisionHeadDto = components['schemas']['RevisionHeadDto'];
 export type TrustHeadDto = components['schemas']['TrustHeadDto'];
 export type StatementByActorDto = components['schemas']['StatementByActorDto'];
+export type ProvenanceDto = components['schemas']['ProvenanceDto'];
+export type ProvenanceEntryDto = components['schemas']['ProvenanceEntryDto'];
 export type ObjectByActorDto = components['schemas']['ObjectByActorDto'];
 export type ValidationResult = components['schemas']['ValidationResult'];
 export type ValidationStatus = components['schemas']['ValidationStatus'];
@@ -70,6 +72,11 @@ export interface KairoApiClient {
   listObjectsByActor(actorId: string): Promise<ObjectByActorDto[]>;
   /** `GET /api/v1/objects/{id}`. */
   getObject(objectId: string): Promise<ObjectGenesisStatementJson>;
+  /** `GET /api/v1/provenance/{record}` — which federation peers served
+   * a record. `record` is a typed reference (`statement:<id>`,
+   * `object:<id>`, `actor:<id>`, `blob:<id>`); `entries` is empty
+   * for local records. */
+  getProvenance(record: string): Promise<ProvenanceDto>;
   /** `GET /api/v1/statements/{id}` — polymorphic by kind. */
   getStatement(statementId: string): Promise<StatementValue>;
   /** `GET /api/v1/branches/{object}` — list of `(actor, name)` heads. */
@@ -171,6 +178,9 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
     },
     async getActor(actorId) {
       return getJson<ActorGenesisJson>(http, `api/v1/actors/${encodeURIComponent(actorId)}`);
+    },
+    async getProvenance(record) {
+      return getJson<ProvenanceDto>(http, `api/v1/provenance/${encodeURIComponent(record)}`);
     },
     async listStatementsByActor(actorId) {
       return getJson<StatementByActorDto[]>(

@@ -186,6 +186,17 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
         : HttpResponse.json(successEnvelope(object));
     }),
 
+    http.get('*/api/v1/provenance/:record', ({ params }) => {
+      const record = pathParam(params['record']);
+      if (record === null) return badRequest('missing record reference');
+      if (!/^(statement|object|actor|blob):[^:]+$/.test(record)) {
+        return badRequest(`invalid record reference ${JSON.stringify(record)}`);
+      }
+      return HttpResponse.json(
+        successEnvelope({ record, entries: registry.provenance[record] ?? [] }),
+      );
+    }),
+
     http.get('*/api/v1/statements/:id', ({ params }) => {
       const id = pathParam(params['id']);
       if (id === null) return badRequest('missing statement id');

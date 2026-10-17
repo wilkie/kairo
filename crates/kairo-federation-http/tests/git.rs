@@ -10,7 +10,7 @@ mod common;
 
 use kairo_core::{ObjectId, StatementId, Timestamp};
 use kairo_federation_core::ObjectListing;
-use kairo_federation_http::client::{pull_object, GitOutcome, Limits, PullError};
+use kairo_federation_http::client::{pull_object, GitOutcome, Limits, PullError, PullOptions};
 use kairo_git::GitCache;
 use kairo_statement::RevisionId;
 use kairo_store::{FilesystemStore, PublishedObjectStore};
@@ -137,8 +137,13 @@ fn pull_ingests_the_pack_and_pins_each_commit() {
     );
 
     let (_dir, local) = local_store();
-    let report =
-        pull_object(&local, &served.base_url, &origin.object, &Limits::default()).expect("pull");
+    let report = pull_object(
+        &local,
+        &served.base_url,
+        &origin.object,
+        &PullOptions::default(),
+    )
+    .expect("pull");
     assert_eq!(report.git, GitOutcome::Ingested { commits: 1 });
     assert!(local_has_commit(&local, &origin.object, &origin.commit));
 
@@ -161,8 +166,13 @@ fn pull_ingests_the_pack_and_pins_each_commit() {
         .is_ok());
 
     // A second pull has nothing to fetch.
-    let again =
-        pull_object(&local, &served.base_url, &origin.object, &Limits::default()).expect("re-pull");
+    let again = pull_object(
+        &local,
+        &served.base_url,
+        &origin.object,
+        &PullOptions::default(),
+    )
+    .expect("re-pull");
     assert_eq!(again.git, GitOutcome::AlreadyHeld { commits: 1 });
 }
 
@@ -179,8 +189,13 @@ fn a_peer_without_the_pack_reports_unavailable() {
     );
 
     let (_dir, local) = local_store();
-    let report = pull_object(&local, &served.base_url, &origin.object, &Limits::default())
-        .expect("pull still succeeds");
+    let report = pull_object(
+        &local,
+        &served.base_url,
+        &origin.object,
+        &PullOptions::default(),
+    )
+    .expect("pull still succeeds");
     assert_eq!(report.git, GitOutcome::Unavailable { missing: 1 });
     // The signed history arrived regardless.
     assert!(local.get_statement_bytes(&origin.revision).is_ok());
@@ -271,7 +286,12 @@ fn a_pack_missing_the_revision_commit_fails_the_pull() {
     let served = serve(&origin);
 
     let (_dir, local) = local_store();
-    match pull_object(&local, &served.base_url, &origin.object, &Limits::default()) {
+    match pull_object(
+        &local,
+        &served.base_url,
+        &origin.object,
+        &PullOptions::default(),
+    ) {
         Err(PullError::GitIncomplete { missing }) => {
             assert_eq!(missing, vec![origin.commit.clone()])
         }
@@ -293,7 +313,15 @@ fn an_oversize_pack_fails_the_pull() {
         max_git_bytes: 16,
         ..Limits::default()
     };
-    let result = pull_object(&local, &served.base_url, &origin.object, &limits);
+    let result = pull_object(
+        &local,
+        &served.base_url,
+        &origin.object,
+        &PullOptions {
+            limits,
+            ..PullOptions::default()
+        },
+    );
     assert!(matches!(result, Err(PullError::Git(_))), "{result:?}");
     assert!(!local_has_commit(&local, &origin.object, &origin.commit));
     // The signed history before the Git step stays.
