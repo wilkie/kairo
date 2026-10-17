@@ -39,8 +39,8 @@ test('renders every panel of the object-detail page for the rich Alpha fixture',
   // appears elsewhere on the page.
   await expect(page.getByRole('cell', { name: 'head', exact: true })).toBeVisible();
   await expect(page.getByRole('cell', { name: 'experimental', exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'v1.0.0', exact: true })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'v1.1.0', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '1.0.0', exact: true })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '1.1.0', exact: true })).toBeVisible();
 
   // Validation badge — Alpha's verifyObject fixture is
   // `indeterminate` (matches the daemon's behavior on a

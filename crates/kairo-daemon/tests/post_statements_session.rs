@@ -210,6 +210,148 @@ async fn session_mode_capability_grant_round_trips() {
     handle.shutdown().await;
 }
 
+/// The web inspector's version-tag dialog (`PHASE_2_WEB_WRITES.md`
+/// slice 5) sends exactly these bodies: a first bind with no
+/// `supersedes`, then a retarget that supersedes the actor's
+/// prior head; plus a capability grantee tagging an object it
+/// doesn't own.
+#[tokio::test]
+async fn session_mode_version_tag_bind_retarget_and_grantee() {
+    let (dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
+    let object = fixture.make_object(&alice, "kairo/object");
+    let manifest_text = r#"
+        [kairo]
+        schema = 1
+        kind = "kairo/object"
+        name = "fixture"
+
+        [content]
+        kind = "tree"
+    "#;
+    let rev1 = fixture.make_revision(
+        &alice,
+        &object,
+        kairo_statement::RevisionId::new("git:sha256:r1"),
+        manifest_text,
+        Vec::new(),
+    );
+    let rev2 = fixture.make_revision(
+        &alice,
+        &object,
+        kairo_statement::RevisionId::new("git:sha256:r2"),
+        manifest_text,
+        vec![kairo_statement::RevisionId::new("git:sha256:r1")],
+    );
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let client = Client::new(handle.socket_path());
+    let object_id = object.object_id.to_string();
+
+    let (_info, alice_cookie) = client
+        .open_session(&alice.actor_id.to_string(), None)
+        .await
+        .expect("open alice session");
+
+    let first = client
+        .write_via_session(
+            &alice_cookie,
+            "ObjectVersionTag",
+            json!({
+                "object": object_id,
+                "version": "1.0.0",
+                "target": rev1.statement_id.to_string(),
+            }),
+        )
+        .await
+        .expect("first bind");
+    assert_eq!(first.statement["body"]["version"], "1.0.0");
+
+    let retarget = client
+        .write_via_session(
+            &alice_cookie,
+            "ObjectVersionTag",
+            json!({
+                "object": object_id,
+                "version": "1.0.0",
+                "target": rev2.statement_id.to_string(),
+                "supersedes": first.statement_id,
+            }),
+        )
+        .await
+        .expect("retarget");
+    assert_eq!(retarget.statement["body"]["supersedes"], first.statement_id);
+
+    let latest = client
+        .latest_version_tag(&object_id, "1.0.0", None)
+        .await
+        .expect("latest 1.0.0");
+    assert_eq!(
+        latest.body.target.as_deref(),
+        Some(rev2.statement_id.to_string().as_str()),
+        "retarget is the chain leaf"
+    );
+
+    // Alice grants Bob the kind; Bob can then tag Alice's object.
+    client
+        .write_via_session(
+            &alice_cookie,
+            "ActorCapabilityGrant",
+            json!({
+                "grantee": bob.actor_id.to_string(),
+                "capability": {
+                    "scope": { "object": object_id },
+                    "statement_kinds": ["ObjectVersionTag"],
+                    "delegable": false,
+                    "constraints": [],
+                },
+            }),
+        )
+        .await
+        .expect("grant");
+    let (_info, bob_cookie) = client
+        .open_session(&bob.actor_id.to_string(), None)
+        .await
+        .expect("open bob session");
+    let bob_tag = client
+        .write_via_session(
+            &bob_cookie,
+            "ObjectVersionTag",
+            json!({
+                "object": object_id,
+                "version": "1.1.0-rc.1",
+                "target": rev2.statement_id.to_string(),
+            }),
+        )
+        .await
+        .expect("grantee tag");
+    assert_eq!(bob_tag.statement["actor"], bob.actor_id.to_string());
+
+    // A leading `v` is not strict semver; the daemon rejects it.
+    match client
+        .write_via_session(
+            &alice_cookie,
+            "ObjectVersionTag",
+            json!({
+                "object": object_id,
+                "version": "v2.0.0",
+                "target": rev2.statement_id.to_string(),
+            }),
+        )
+        .await
+    {
+        Err(ClientError::Http { status, .. }) => {
+            assert!((400..500).contains(&status), "status={status}");
+        }
+        other => panic!("expected a 4xx for a non-semver version, got {other:?}"),
+    }
+
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn session_mode_capability_denied_for_object_revision_returns_403() {
     let (dir, fixture) = StoreFixture::temp();

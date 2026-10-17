@@ -1241,7 +1241,9 @@ Bullets, by slice (see `PHASE_2_WEB_WRITES.md` §3):
       same-origin `Origin` guard on writes; real-daemon
       round-trip test through the proxy; `kairo web status`
       probe sends a loopback `Host`.
-- [ ] Slice 5 — Version-tag dialog (`ObjectVersionTag`).
+- [x] Slice 5 — Version-tag dialog (`ObjectVersionTag`):
+      create + retarget with auto-derived `supersedes`;
+      revocation deferred.
 - [ ] Slice 6 — Capability grant / revoke dialogs
       (`ActorCapabilityGrant`, `ActorCapabilityRevocation`).
 - [ ] Slice 7 — Session-mode `ObjectGenesis` helper + create-

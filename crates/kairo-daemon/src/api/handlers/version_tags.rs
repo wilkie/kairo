@@ -70,7 +70,7 @@ pub async fn list_handler(
     operation_id = "getLatestVersionTag",
     params(
         ("object" = String, Path, description = "Object id (kairo:object:...)"),
-        ("version" = String, Path, description = "Version label (e.g., \"v1.0.0\")"),
+        ("version" = String, Path, description = "Version label (strict semver, e.g., \"1.0.0\")"),
         ("actor" = Option<String>, Query, description = "Actor whose tag chain to resolve; defaults to the object's `created_by`"),
     ),
     responses(

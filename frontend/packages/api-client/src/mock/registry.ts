@@ -4,8 +4,8 @@
 // extremes the spec calls out:
 //
 // - **Alpha** — created by Alice, multi-revision (3),
-//   multi-branch (head + experimental), multi-tag (v1.0.0,
-//   v1.1.0), one cross-actor capability head
+//   multi-branch (head + experimental), multi-tag (1.0.0,
+//   1.1.0), one cross-actor capability head
 //   (Alice → Bob, ObjectVersionTag), and trust opinions about
 //   Alice from Bob (trusted) and Carol (untrusted). Hits every
 //   populated panel.
@@ -376,7 +376,7 @@ const alphaBranchTips: Schemas['BranchTipDto'][] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Tags (Alpha): v1.0.0, v1.1.0
+// Tags (Alpha): 1.0.0, 1.1.0
 
 const alphaV1Stmt: Schemas['ObjectVersionTagStatementJson'] = {
   type: 'ObjectVersionTag',
@@ -386,7 +386,7 @@ const alphaV1Stmt: Schemas['ObjectVersionTagStatementJson'] = {
   created_at: '2026-01-02T00:00:00Z',
   body: {
     object: mockIds.alpha,
-    version: 'v1.0.0',
+    version: '1.0.0',
     target: mockIds.alphaRev2Stmt,
   },
   signature: signatureFor(mockIds.alice),
@@ -400,7 +400,7 @@ const alphaV1_1Stmt: Schemas['ObjectVersionTagStatementJson'] = {
   created_at: '2026-01-03T00:00:00Z',
   body: {
     object: mockIds.alpha,
-    version: 'v1.1.0',
+    version: '1.1.0',
     target: mockIds.alphaRev3Stmt,
   },
   signature: signatureFor(mockIds.alice),
@@ -410,14 +410,14 @@ const alphaVersionTagHeads: Schemas['VersionTagHeadDto'][] = [
   {
     actor: mockIds.alice,
     object: mockIds.alpha,
-    version: 'v1.0.0',
+    version: '1.0.0',
     statement_id: mockIds.alphaV1Stmt,
     created_at: '2026-01-02T00:00:00Z',
   },
   {
     actor: mockIds.alice,
     object: mockIds.alpha,
-    version: 'v1.1.0',
+    version: '1.1.0',
     statement_id: mockIds.alphaV1_1Stmt,
     created_at: '2026-01-03T00:00:00Z',
   },
@@ -851,8 +851,8 @@ export const mockRegistry: MockRegistry = {
   },
 
   versionTagLatest: {
-    [`${mockIds.alpha}:v1.0.0:${mockIds.alice}`]: alphaV1Stmt,
-    [`${mockIds.alpha}:v1.1.0:${mockIds.alice}`]: alphaV1_1Stmt,
+    [`${mockIds.alpha}:1.0.0:${mockIds.alice}`]: alphaV1Stmt,
+    [`${mockIds.alpha}:1.1.0:${mockIds.alice}`]: alphaV1_1Stmt,
   },
 
   revisionHeads: {

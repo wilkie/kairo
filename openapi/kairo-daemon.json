@@ -817,7 +817,7 @@
           {
             "name": "version",
             "in": "path",
-            "description": "Version label (e.g., \"v1.0.0\")",
+            "description": "Version label (strict semver, e.g., \"1.0.0\")",
             "required": true,
             "schema": {
               "type": "string"

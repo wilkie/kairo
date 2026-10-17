@@ -79,8 +79,8 @@ describe('typed read methods unwrap the success envelope', () => {
   });
 
   it('getLatestVersionTag returns the chain-leaf tag statement', async () => {
-    const result = await client.getLatestVersionTag(mockIds.object, 'v1.0.0');
-    expect(result.body.version).toBe('v1.0.0');
+    const result = await client.getLatestVersionTag(mockIds.object, '1.0.0');
+    expect(result.body.version).toBe('1.0.0');
   });
 
   it('getTrust returns the trust statement', async () => {
@@ -97,7 +97,7 @@ describe('typed read methods unwrap the success envelope', () => {
   it('listVersionTags returns the version-tag head array', async () => {
     const result = await client.listVersionTags(mockIds.object);
     expect(result.length).toBeGreaterThan(0);
-    expect(result.map((tag) => tag.version)).toContain('v1.0.0');
+    expect(result.map((tag) => tag.version)).toContain('1.0.0');
   });
 
   it('listRevisions returns the revision head array', async () => {
@@ -270,6 +270,50 @@ describe('session endpoints', () => {
 
   it('closeSession succeeds even with no active session', async () => {
     await expect(client.closeSession()).resolves.toBeUndefined();
+  });
+});
+
+describe('session writes: ObjectVersionTag', () => {
+  afterEach(() => {
+    resetMockSessions();
+  });
+
+  // Non-mutating paths only: a successful write would mutate the
+  // shared mock registry other tests read.
+
+  it('rejects an actor with neither root authority nor a grant', async () => {
+    // Beta is Alice-created with no capability heads.
+    await client.openSession(mockIds.bob);
+    const error = await client
+      .writeViaSession('ObjectVersionTag', {
+        object: mockIds.beta,
+        version: '1.0.0',
+        target: mockIds.alphaRev3Stmt,
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(KairoApiClientError);
+    expect((error as KairoApiClientError).detail).toMatchObject({
+      kind: 'daemon',
+      code: 'not_authorized',
+      status: 403,
+    });
+  });
+
+  it('rejects a non-strict semver version', async () => {
+    await client.openSession(mockIds.alice);
+    const error = await client
+      .writeViaSession('ObjectVersionTag', {
+        object: mockIds.alpha,
+        version: 'v1.0.0',
+        target: mockIds.alphaRev3Stmt,
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(KairoApiClientError);
+    expect((error as KairoApiClientError).detail).toMatchObject({
+      kind: 'daemon',
+      code: 'bad_request',
+      status: 400,
+    });
   });
 });
 

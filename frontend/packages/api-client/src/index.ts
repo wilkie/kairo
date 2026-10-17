@@ -78,6 +78,8 @@ export {
   type CreateTrustOpinionVars,
   useUpdateBranch,
   type UpdateBranchVars,
+  useSetVersionTag,
+  type SetVersionTagVars,
 } from './hooks';
 
 // Generated path/component types — exposed so callers can

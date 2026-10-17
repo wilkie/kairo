@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–4 shipped; 5–8 open.
+Draft, locked 2026-10-16. Slices 1–5 shipped; 6–8 open.
 
 Slice plan for `PHASE_2.md` §16: turning the signed-in web
 inspector into a write surface. The locked shape is
@@ -134,14 +134,34 @@ off-allowlist refusals; `kairo web status` probe `Host` fix.
 cross-origin `POST /api/v1/sessions` returns `403` with no
 `Set-Cookie`.
 
-### Slice 5 — Version-tag dialog
+### Slice 5 — Version-tag dialog *(shipped)*
 
-`<VersionTagDialog />` + `useSetVersionTag` on the object page's
-Tags panel. Container offers revisions from the revisions query,
-validates semver client-side for UX only (the daemon is
-authoritative), and derives `supersedes` from the actor's
-current tag of that name. e2e: create, retarget, capability
-denied.
+**Ships:** `<VersionTagDialog />` in `@kairo/ui` (stories +
+Vitest) and `useSetVersionTag` in `@kairo/api-client`, mounted as
+a "Tag version" action on the object page's Tags panel when
+signed in. The container offers revisions newest-first and
+derives `supersedes` from the signed-in actor's current head for
+the typed version, so one form covers create and retarget. The
+version field checks strict semver 2.0.0 client-side for UX only
+(and suggests dropping a leading `v`); the daemon's
+`SemverVersion::parse` stays authoritative. The MSW mock accepts
+`ObjectVersionTag` and authorizes the object's creator *or* a
+grantee of a seeded capability head whose grant lists the kind
+(no chain walk). Mock tag seeds changed from `v1.0.0` / `v1.1.0`
+to `1.0.0` / `1.1.0` — the daemon would reject the old spellings.
+Daemon test `session_mode_version_tag_bind_retarget_and_grantee`
+drives the exact bodies the hook sends against a real daemon.
+
+**Tests:** Vitest per dialog state; mock-contract tests for the
+capability-denied and non-semver paths (every keystore actor
+holds `ObjectVersionTag` on Alpha, the only seeded object with
+revisions, so denial is not reachable through the UI); Playwright
+`tag-version.spec.ts` covers retarget, create, and the grantee
+path.
+
+**Deferred:** revocation (a tag with no `target`, which requires
+`supersedes`) — needs a per-row action in the Tags table rather
+than the form.
 
 ### Slice 6 — Capability grant / revoke dialogs
 

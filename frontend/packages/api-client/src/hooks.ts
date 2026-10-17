@@ -352,6 +352,75 @@ export function useUpdateBranch(): UseMutationResult<
 }
 
 /**
+ * Variables accepted by [`useSetVersionTag`]. The mutation
+ * sends a binding `ObjectVersionTag` body (`target` set) — the
+ * daemon's capability gate decides whether the session actor
+ * may tag the named object. `supersedes` is optional: pass the
+ * actor's current head for this version when retargeting; omit
+ * it for the version's first tag.
+ */
+export interface SetVersionTagVars {
+  byActor: string;
+  objectId: string;
+  /** Strict semver 2.0.0 string (no leading `v`). */
+  version: string;
+  /** Statement id of the revision the tag should point at.
+   * Resolves to `ObjectVersionTagBody.target` on the daemon
+   * side. */
+  revisionStatementId: string;
+  /** Statement id of the prior tag for `(byActor, version)`
+   * this one supersedes. Omit for a first tag. */
+  supersedes?: string;
+}
+
+/**
+ * Mutation: cookie-mode write of a binding `ObjectVersionTag`
+ * statement. On success invalidates the tag list and the
+ * per-version resolution for the object, plus the by-actor
+ * signed-statements list.
+ *
+ * Revocations (`target` omitted) are not exposed here yet; see
+ * `PHASE_2_WEB_WRITES.md` slice 5.
+ */
+export function useSetVersionTag(): UseMutationResult<
+  PutStatementResult,
+  KairoApiClientError,
+  SetVersionTagVars
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<PutStatementResult, KairoApiClientError, SetVersionTagVars>({
+    mutationFn: ({ objectId, version, revisionStatementId, supersedes }) => {
+      const body: Record<string, unknown> = {
+        object: objectId,
+        version,
+        target: revisionStatementId,
+      };
+      if (supersedes !== undefined) {
+        body.supersedes = supersedes;
+      }
+      return client.writeViaSession('ObjectVersionTag', body);
+    },
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.versionTags(vars.objectId),
+      });
+      // The per-version key defaults its actor to the object's
+      // creator when unset, so invalidate both spellings.
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.versionTag(vars.objectId, vars.version),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.versionTag(vars.objectId, vars.version, vars.byActor),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.actorStatements(vars.byActor),
+      });
+    },
+  });
+}
+
+/**
  * Mutation: cookie-mode write of an `ActorTrust` statement
  * (the simplest body kind — no capability check). Wraps
  * `client.writeViaSession("ActorTrust", body)`; on success,

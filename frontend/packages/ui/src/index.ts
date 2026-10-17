@@ -44,3 +44,10 @@ export {
   type BranchUpdateDialogError,
   type BranchUpdateDialogRevision,
 } from './BranchUpdateDialog';
+export {
+  VersionTagDialog,
+  isStrictSemver,
+  type VersionTagDialogProps,
+  type VersionTagDialogError,
+  type VersionTagDialogRevision,
+} from './VersionTagDialog';

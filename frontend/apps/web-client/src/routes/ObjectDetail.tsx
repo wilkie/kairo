@@ -54,6 +54,7 @@ import { useState, type ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
 import { BranchUpdateDialogContainer } from '../components/BranchUpdateDialogContainer';
+import { VersionTagDialogContainer } from '../components/VersionTagDialogContainer';
 
 export interface ObjectDetailProps {
   id: string;
@@ -73,6 +74,7 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
   const capsQ = useCapabilitiesForObject(id);
   const sessionQ = useSession();
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
+  const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const session = sessionQ.data ?? null;
 
   // Trust panel is keyed off the genesis signer; we can only
@@ -154,12 +156,32 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
       <Panel
         title="Tags"
         description="Semver release pointers; one row per (actor, version) chain leaf."
-        actions={<LocalityBadge state="local" />}
+        actions={
+          <Stack direction="row" spacing={1} alignItems="center">
+            {session !== null && (
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => setTagDialogOpen(true)}
+                data-testid="tag-version"
+              >
+                Tag version
+              </Button>
+            )}
+            <LocalityBadge state="local" />
+          </Stack>
+        }
       >
         <QueryStatusBoundary query={tagsQ}>
           {(rows) => <TagsTable rows={rows} />}
         </QueryStatusBoundary>
       </Panel>
+
+      <VersionTagDialogContainer
+        open={tagDialogOpen}
+        onClose={() => setTagDialogOpen(false)}
+        objectId={id}
+      />
 
       <Panel
         title="Revisions"

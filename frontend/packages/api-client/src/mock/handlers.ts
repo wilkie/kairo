@@ -452,6 +452,8 @@ async function handleSessionWrite(
       return handleSessionActorTrust(session.actorId, payload.body, registry);
     case 'ObjectBranch':
       return handleSessionObjectBranch(session.actorId, payload.body, registry);
+    case 'ObjectVersionTag':
+      return handleSessionObjectVersionTag(session.actorId, payload.body, registry);
     default:
       return HttpResponse.json(
         errorEnvelope(
@@ -652,6 +654,134 @@ function handleSessionObjectBranch(
   registry.branchLatest[latestKey] = registry.statements[
     statementId
   ] as components['schemas']['ObjectBranchStatementJson'];
+
+  const result: components['schemas']['PutStatementResult'] = {
+    statement_id: statementId,
+    statement: registry.statements[statementId],
+  };
+  return HttpResponse.json(successEnvelope(result));
+}
+
+// Strict semver 2.0.0 (semver.org's pattern) — mirrors the
+// daemon's `SemverVersion::parse`, which rejects a leading `v`.
+const STRICT_SEMVER =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/;
+
+/** Whether `actor` may write `kind` on `objectId` in the mock:
+ * the object's creator (root authority), or the grantee of a
+ * seeded capability head on the object whose grant lists the
+ * kind. The real daemon also walks the grant chain back to the
+ * root and checks `delegable`; the mock trusts the seeds. */
+function mockMayWrite(
+  registry: MockRegistry,
+  actor: string,
+  objectId: string,
+  kind: string,
+): boolean {
+  if (registry.objects[objectId]?.body.created_by === actor) return true;
+  return (registry.capabilitiesForObject[objectId] ?? []).some((head) => {
+    if (head.grantee !== actor) return false;
+    const grant = registry.statements[head.statement_id] as
+      | { body?: { capability?: { kinds?: unknown; statement_kinds?: unknown } } }
+      | undefined;
+    const kinds = grant?.body?.capability?.statement_kinds ?? grant?.body?.capability?.kinds;
+    return Array.isArray(kinds) && kinds.includes(kind);
+  });
+}
+
+function handleSessionObjectVersionTag(
+  byActor: string,
+  body: unknown,
+  registry: MockRegistry,
+) {
+  if (typeof body !== 'object' || body === null) {
+    return badRequest('invalid ObjectVersionTag body shape');
+  }
+  const fields = body as {
+    object?: unknown;
+    version?: unknown;
+    target?: unknown;
+    supersedes?: unknown;
+  };
+  if (typeof fields.object !== 'string') {
+    return badRequest('invalid ObjectVersionTag body: object must be a string');
+  }
+  if (typeof fields.version !== 'string' || !STRICT_SEMVER.test(fields.version)) {
+    return badRequest(
+      `invalid ObjectVersionTag body: version ${JSON.stringify(fields.version)} is not strict semver`,
+    );
+  }
+  // The inspector only binds; revocations (no `target`) aren't
+  // modelled by the mock yet.
+  if (typeof fields.target !== 'string') {
+    return badRequest('invalid ObjectVersionTag body: target must be a string');
+  }
+  if (
+    fields.supersedes !== undefined &&
+    fields.supersedes !== null &&
+    typeof fields.supersedes !== 'string'
+  ) {
+    return badRequest('invalid ObjectVersionTag body: supersedes must be a string or null');
+  }
+
+  const objectId = fields.object;
+  if (registry.objects[objectId] === undefined) {
+    return HttpResponse.json(
+      errorEnvelope('not_found', `object not found: ${objectId}`),
+      { status: 404 },
+    );
+  }
+  if (!mockMayWrite(registry, byActor, objectId, 'ObjectVersionTag')) {
+    return HttpResponse.json(
+      errorEnvelope(
+        'not_authorized',
+        `actor ${byActor} lacks an ObjectVersionTag capability for object ${objectId}`,
+      ),
+      { status: 403 },
+    );
+  }
+
+  const version = fields.version;
+  const target = fields.target;
+  const supersedes =
+    typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
+  const createdAt = rfc3339(new Date());
+  const statementId = `zMockSessionTagStmt${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+
+  // Latest-wins per `(actor, version)`, like the daemon's tag
+  // resolver: replace the matching head, otherwise append.
+  const priorHeads = registry.versionTagHeads[objectId] ?? [];
+  const head: components['schemas']['VersionTagHeadDto'] = {
+    actor: byActor,
+    object: objectId,
+    version,
+    statement_id: statementId,
+    created_at: createdAt,
+  };
+  const others = priorHeads.filter(
+    (entry) => !(entry.actor === byActor && entry.version === version),
+  );
+  registry.versionTagHeads[objectId] = [...others, head];
+
+  const statementBody: Record<string, unknown> = { object: objectId, version, target };
+  if (supersedes !== undefined) statementBody.supersedes = supersedes;
+  registry.statements[statementId] = {
+    type: 'ObjectVersionTag',
+    version: 1,
+    actor: byActor,
+    subject: `object:${objectId}`,
+    created_at: createdAt,
+    body: statementBody,
+    signature: {
+      actor: byActor,
+      key_id: 'mock-key-1',
+      algorithm: 'ed25519',
+      bytes: 'A'.repeat(88),
+    },
+  };
+  registry.versionTagLatest[`${objectId}:${version}:${byActor}`] = registry.statements[
+    statementId
+  ] as components['schemas']['ObjectVersionTagStatementJson'];
 
   const result: components['schemas']['PutStatementResult'] = {
     statement_id: statementId,

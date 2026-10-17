@@ -1587,7 +1587,7 @@ export interface operations {
             path: {
                 /** @description Object id (kairo:object:...) */
                 object: string;
-                /** @description Version label (e.g., "v1.0.0") */
+                /** @description Version label (strict semver, e.g., "1.0.0") */
                 version: string;
             };
             cookie?: never;

@@ -28,6 +28,13 @@ rather than per-commit.
   gains trust-opinion and branch create/update dialogs on top of
   it.
 
+- **Version-tag dialog in the web inspector (`PHASE_2_WEB_WRITES.md`
+  slice 5).** A "Tag version" action on the object page's Tags
+  panel writes `ObjectVersionTag` via the session; one form covers
+  creating a tag and retargeting the signed-in actor's existing
+  one (`supersedes` is derived automatically). Revocation is not
+  exposed yet.
+
 - **Daemon write-path Phase B — signed-request auth +
   capability authz (`PHASE_2.md` §15.1,
   `PHASE_2_DAEMON_AUTH.md`, `DECISIONS.md §14`).** The daemon's
@@ -228,6 +235,12 @@ rather than per-commit.
   JSON error envelope instead of plain text. `kairo web status`
   now sends the dialed loopback address as `Host`.
 
+- **Mock version tags use strict semver.** The MSW registry seeded
+  `v1.0.0` / `v1.1.0`, which the daemon's strict-semver parser
+  rejects; seeds are now `1.0.0` / `1.1.0`, and the
+  `GET /api/v1/version-tags/{object}/{version}` OpenAPI example
+  matches.
+
 - Renamed `kairo actor recover-key import` and `kairo actor
   add-attestation-key import` to `submit` for symmetry with
   `prepare` / `co-sign`. The same verb finalizes an envelope
@@ -272,7 +285,10 @@ or otherwise alter the on-the-wire shape. Each is a `0.x.0` bump.
 
 ### Fixed
 
-- *(none recorded — defects fixed during initial development are
-  squashed into the implementing slice's entry above.)*
+- **`@kairo/ui` Vitest suite.** jest-dom matchers registered on
+  the workspace's vitest 2.x `expect` rather than `@kairo/ui`'s
+  4.x, so 24 of the package's existing tests failed with
+  `Invalid Chai property`. The setup file now extends its own
+  `expect`.
 
 [Unreleased]: https://example.invalid/kairo
