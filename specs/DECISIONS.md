@@ -1370,3 +1370,93 @@ Affected specs:
 - `API.md` §14.2 — provenance is served at `GET
   /api/v1/provenance/{record}`, not inside the statement response,
   so that response stays exactly the signed record.
+
+---
+
+## 18. Bootstrap Peers, Learned Peers, and Node Trust
+
+Decision: discovery separates **bootstrap nodes** (asked where other
+nodes are) from **allowed peers** (pulled from or pushed to). Peers
+learned through discovery are **hints stored as state, never
+permissions**. Trust between nodes is **`ActorTrust` signed by the
+node actor** about the peer's node actor, and `ActorTrust` gains a
+**scope**, so trusting a node's discovery hints is not trusting it
+for anything else. This settles `PHASE_2_FEDERATION.md` §4.1 ahead of
+the discovery phase. Nothing here is implemented yet.
+
+Sub-decisions:
+
+1. **Two roles in config.** Bootstrap nodes and allowed peers are
+   both operator policy in `<store>/config.toml` (§17). One node may
+   hold both roles, but they are separate settings: being asked for
+   peers grants nothing else. The exact keys are set by the
+   discovery slice plan. Today's `[[federation.peers]]` keeps its
+   meaning as the allow list, with optional `node_actor` pins.
+
+2. **Learned peers are state with provenance.** A peer learned
+   through discovery is recorded under `<store>/federation/` with
+   the node that advertised it and when, following the
+   immediate-peer rule of §16 sub-decision 8. A learned peer may not
+   be pulled from or pushed to until the operator allows it or a
+   policy rule does. Such a rule may only be stated in terms of
+   scoped trust (sub-decision 4), for example "advertised by a node
+   I trust for `federation:index`".
+
+3. **The node actor signs node trust.** A node's opinion of a peer
+   is an `ActorTrust` statement signed by the node's own actor about
+   the peer's node actor. That makes it what other nodes read when
+   they follow hints transitively. A trust opinion is speech, not
+   authority, so this does not conflict with the §16 sub-decision 1
+   rule that a node actor holds no capabilities and never signs
+   object history. It does mean the node's signing key, which sits
+   on a networked server, now signs statements. Key compromise is
+   handled by the existing actor machinery: operational rotation,
+   plus emergency revocation through the node actor's cold
+   attestation keys (`ACTORS.md` §5.5). Operators should give node
+   actors real attestation keys, not throwaway ones.
+
+4. **`ActorTrust` gains a scope.** The chain key becomes
+   `(by_actor, trusted_actor, scope)`. Each statement names exactly
+   one scope, and a successor must keep its predecessor's scope.
+   This mirrors capability chains, which are keyed by
+   `(grantor, grantee, scope)` (`CAPABILITIES.md` §5.1.1).
+   - Existing unscoped opinions mean scope `general`: today's
+     informational actor trust shown by `verify object`.
+   - Federation scopes are named by the features that consume them.
+     Discovery defines `federation:index` ("this node's hints are
+     worth following"); push defines `federation:push` ("accept
+     pushes from this node").
+   - A query asks about one scope and reads only that scope's chain.
+     There is no fallback between scopes in either direction, so
+     `general` trust never satisfies `federation:index`.
+   - The scope is added to `ActorTrust v1` in place, with no v2
+     bump. Nothing is deployed yet, so no stored `StatementId`
+     needs migrating. This is the precedent `ObjectBranch`'s
+     `supersedes` set (`PHASE_2.md` §12). If trust statements are in
+     deployed stores before this lands, it reverts to a v2 bump.
+
+5. **Propagation stays opt-in and bounded.** "Peers that nodes I
+   trust for `federation:index` trust for `federation:index`" uses
+   the same per-truster resolution the actor graph already has. A
+   node follows it only when its policy enables it, with a depth
+   limit. Importing another node's trust statements never makes
+   them this node's opinions (§16 sub-decision 4, `PHASE_2.md` §4).
+
+Rationale: once nodes are actors, node-to-node trust is
+actor-to-actor trust, so reusing `ActorTrust` gets chains,
+withdrawal, the reverse index, and the "importing is not trusting"
+rule without a parallel system. Having the node actor sign makes the
+opinion portable to other nodes. That is the point of
+node-to-node trust, and the reason it can't be the operator's
+personal actor. Scope is the one missing piece: without it, a node
+trusted to point at other nodes would also count as trusted for
+pushes and, later, build results.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` §4.1 — now records this decision; the
+  sequencing note says scoped trust comes before discovery.
+- `STATEMENTS.md` §4.2c and `schemas/canonical/actor-trust-v1.md`
+  — gain the scope in place when it is implemented
+  (sub-decision 4).
+- `PHASE_2.md` §12 — new item for scoped `ActorTrust`.

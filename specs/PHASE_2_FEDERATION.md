@@ -360,6 +360,24 @@ In rough order, each needing its own decision:
 4. **Discovery** — token advertisements, indexes, query protocol
    — once `PHASE_2.md` §7 / §8 statement types exist.
 
+### 4.1 Bootstrap peers, learned peers, node trust
+
+Decided in `DECISIONS.md` §18:
+
+- bootstrap nodes and allowed peers are separate config roles;
+- learned peers are state recorded with who advertised them, and
+  are never permissions on their own;
+- node-to-node trust is `ActorTrust` signed by the node actor;
+- `ActorTrust` gains a single scope per chain (`general` for
+  today's opinions; `federation:index` and `federation:push`
+  defined by the features that use them), with no fallback
+  between scopes;
+- propagation is opt-in and depth-limited.
+
+Sequencing consequence: scoped `ActorTrust` lands before discovery,
+which needs `federation:index` to decide which learned peers to
+follow. Push needs `federation:push`.
+
 ## 5. Risk Notes
 
 - **Publishing is irreversible.** Opt-in and absence ambiguity

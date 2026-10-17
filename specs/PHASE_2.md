@@ -583,6 +583,13 @@ Statement-type evolution that Phase 1 explicitly deferred.
       `list_version_tags` per `specs/CAPABILITIES.md` §6.2.
 - [ ] `ActorTrust` `forget` operation (federation concern — flush peer
       opinions from the local node without re-publishing a withdrawal).
+- [ ] Scoped `ActorTrust` (`DECISIONS.md` §18 sub-decision 4): the
+      chain key becomes `(by_actor, trusted_actor, scope)`, existing
+      opinions read as `general`, and federation scopes such as
+      `federation:index` are added by the features that use them.
+      It is an in-place `ActorTrust v1` edit, since nothing is
+      deployed yet. This is a prerequisite for federation discovery
+      and push.
 - [ ] Schema bump migration tooling for the v1 → v2 transitions (still
       needed for any *future* schema evolution that lands post-deployment).
 
