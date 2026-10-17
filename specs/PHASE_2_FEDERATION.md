@@ -429,22 +429,72 @@ two-node check runs against the corrected behavior:
 
 ## 4. After This Plan
 
-In rough order, each needing its own decision:
+In rough order, each needing its own decision. Items 1, 2, 6's
+inventory step, and 7 come from comparing this design with Radicle
+(§4.2).
 
 0. ~~**Incremental fetch**~~ — done by `DECISIONS.md` §22 (Git smart
    HTTP v2). Next on the content plane: reachability bitmaps, then
    bundle or packfile URIs for static hosting, both Git
    configuration now.
-1. **Push** with node authentication (signed node document,
-   `KairoActor1` on requests) and a receiver acceptance policy.
-2. **Trust transport** (opt-in, never auto-trusted) and `forget`.
-3. **Daemon `FederationService`**: background sync, on-demand
-   fetch of missing closure data (`DAEMON.md` §9).
-4. **Discovery** — token advertisements, indexes, query protocol
-   — once `PHASE_2.md` §7 / §8 statement types exist. Also needs
-   scoped trust (`DECISIONS.md` §18), trust transport (item 2), and
-   node authentication (`DECISIONS.md` §16 sub-decision 9), which
-   push (item 1) brings.
+1. **Signed statement heads.** Each actor signs a small head
+   statement per object committing to the set of statements they
+   have made about it (for example a hash over their sorted statement
+   ids), chained to their previous head. This is Radicle's
+   `rad/sigrefs` applied to statements. A puller holding a head knows
+   exactly which of that actor's statements it lacks, so a peer that
+   withholds a revocation or a branch update is detected instead of
+   silently yielding `Indeterminate` (`THREAT_MODEL.md` §5.15), and
+   the chain stops a relay from replaying an older head. Open points:
+   - whether heads are per actor per object or per actor;
+   - how they interact with the closure (heads are published with
+     it) and with ingest (a missing committed statement fails the
+     pull);
+   - what to do about actors who never sign a head (their
+     statements stay verifiable, only withholding detection is
+     lost).
+2. **Batch record fetch.** One request names many record ids and
+   returns them together, each still verified on its own. A pull
+   today costs one round trip per statement, actor, and blob, which
+   for a long history is thousands of requests; Radicle syncs a
+   repository in one fetch. The batch keeps the per-record trust
+   model and the publish filter (an id outside every published
+   closure is simply absent from the response).
+3. **Push** with node authentication and a receiver acceptance
+   policy. Node identity should be proven on every request from the
+   first one, signed by the node actor's key (`KairoActor1`), as
+   Radicle authenticates every connection by its node key. A signed
+   node document alone is not enough.
+4. **Trust transport** (opt-in, never auto-trusted) and `forget`.
+5. **Daemon `FederationService`**: background sync, on-demand
+   fetch of missing closure data (`DAEMON.md` §9). The operator
+   surface follows Radicle's seeding and follow policies: which
+   objects to keep in sync, and from all peers or only followed
+   ones. Scoped `ActorTrust` (`DECISIONS.md` §18) is underneath, but
+   the controls should be that simple.
+6. **Discovery**, in two steps:
+   - **Inventory announcements first.** A node signs and gossips
+     which published objects it holds, timestamped, and peers
+     record them as learned-peer hints (`DECISIONS.md` §18). That
+     answers "who has object X?" with no index, as Radicle's
+     inventory gossip does.
+   - **Then** token advertisements, indexes, and the query protocol,
+     once `PHASE_2.md` §7 / §8 statement types exist.
+
+   Both need scoped trust (`DECISIONS.md` §18), and the second needs
+   trust transport (item 4). Both need node authentication
+   (`DECISIONS.md` §16 sub-decision 9), which push (item 3) brings.
+7. **`git-remote-kairo`.** A Git remote helper so `git clone
+   kairo://<node>/<object>` fetches over §22 and verifies every
+   commit against the object's signed revisions, the way
+   `git-remote-rad` makes Radicle usable with ordinary Git.
+
+Also, as a review rather than a feature: wherever statement order
+decides correctness rather than display, prefer explicit predecessor
+references over signer-asserted `created_at`, as Radicle's
+collaborative objects order operations by their parents. Branch
+supersession already works this way; key-event ordering on ingest
+and the revision log's heap order by `created_at` today.
 
 ### 4.1 Bootstrap peers, learned peers, node trust
 
@@ -470,6 +520,78 @@ signed refs are the closest prior art. `DECISIONS.md` §22 deferred it,
 because statements form an independently appended set, not one
 history, their ids are not Git ids, and moving them changes the
 store backend.
+
+Current assessment: keep statements on Kairo's own sync. Signed
+statement heads and batch fetch (§4 items 1 and 2) bring the two main
+gains a Git-driven statement sync would, withholding detection and
+few round trips, and chained heads allow "everything since head H".
+Git would add little beyond those:
+- **It adds transport, not trust.** Git refs are unsigned, and Git
+  commit signing knows nothing of Kairo keys, so Kairo-signed heads
+  are needed either way.
+- **Relayed views need their own namespaces.** A relay's merged view
+  of an actor can't carry that actor's signature, which forces
+  per-peer namespaces.
+- **Publish filtering moves to per-actor-per-object refs.**
+- **Per-record rejection becomes all-or-nothing per tree.**
+- **The ids differ.** Git blob ids aren't statement ids.
+- **`forget` fights append-only history.**
+- **The `git` binary becomes mandatory** even for pulls with no Git
+  content.
+
+What Git would uniquely add is relaying through ordinary Git hosts
+and Git bundles for offline transfer. To keep that open cheaply,
+item 1's commitment should be considered as a Merkle tree keyed by
+statement id and shaped like a Git tree, so a Git projection of
+statements could be generated later without a new commitment
+format. Decide when item 1 is designed.
+
+### 4.2 Comparison with Radicle
+
+Radicle (Heartwood) is the closest prior art: peer-to-peer Git
+replication with per-peer ref namespaces, signed refs, a
+delegate-quorum identity document per repository, and collaborative
+objects (issues, patches) stored as signed operation DAGs in Git.
+Its goal is narrower: code collaboration where a Git repository is
+the unit. Kairo's statements also cover builds, runs, capabilities,
+and trust, and Git is one content backend.
+
+Taken from Radicle (§4 items 1, 2, 3, 5, 6, 7):
+
+- signed commitments to a whole set, so withholding is detectable;
+- node identity proven by the node key on every exchange;
+- simple seeding and follow policies as the operator surface;
+- inventory gossip as the first discovery step;
+- syncing in few round trips;
+- plain Git workflows through a remote helper;
+- causal ordering by predecessor references.
+
+Kept deliberately different:
+
+- **Identity lifecycle.** A Radicle identity is its key. Kairo actors
+  separate genesis from operational keys and support rotation,
+  attestation keys with a threshold, emergency revocation, and
+  time-aware revocation (revoked-key statements stored and flagged).
+- **Authority.** Kairo has capability grants scoped by object and
+  statement kind, with revocation and a policy resolver, rather than
+  delegates plus a threshold per repository.
+- **Trust.** Kairo's `ActorTrust` is first-person and scoped, with no
+  fallback between scopes and opt-in, depth-limited propagation,
+  rather than binary follows.
+- **Verification outcomes.** Kairo distinguishes `Valid`, `Invalid`,
+  and `Indeterminate` (data missing), which is what makes partial
+  federation safe to reason about.
+- **Content independent of Git.** Object ids don't derive from Git,
+  revisions may name SHA-1 or SHA-256 commits, and manifests and
+  blobs are first-class.
+- **Opt-in publishing.** Only a published object's closure is served,
+  "missing" and "unpublished" look the same, and the §22 filter
+  keeps the shared pool from leaking unpublished objects.
+- **Deployment.** Plain HTTPS behind a reverse proxy and standard Git
+  smart HTTP, rather than a dedicated peer-to-peer port and protocol.
+  Radicle's network is more censorship-resistant; Kairo's is easier
+  to run inside ordinary infrastructure.
+- **Provenance.** Kairo records which peer every record came from.
 
 ## 5. Risk Notes
 
