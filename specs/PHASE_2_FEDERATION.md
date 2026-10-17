@@ -2,7 +2,8 @@
 
 ## Status
 
-Draft, locked 2026-10-16. Slices 1–5 shipped.
+Draft, locked 2026-10-16. All six slices and the post-slice-5 fix-up
+shipped; §4 lists what comes next.
 
 Slice plan for the first federation milestone in `PHASE_2.md` §4:
 pulling a published object's signed history from one node into
@@ -382,12 +383,36 @@ two-node check runs against the corrected behavior:
   Fixtures now use valid-shaped ids, with real fixture repos labeled
   `git:sha1:`.
 
-### Slice 6 — Two-node real-stack check
+### Slice 6 — Two-node real-stack check *(shipped)*
 
-- `scripts/federation-smoke.sh`: two stores, publish, serve,
-  pull, verify. Runs in CI next to `e2e-real`.
-- One `e2e-real` Playwright spec: inspector over the pulled store
-  shows the object and the provenance badge.
+- `scripts/federation-smoke.sh [TARGET_STORE]` builds an origin node
+  with real binaries:
+  - a node actor;
+  - a person actor whose object has a revision bound to a real Git
+    commit (`OBJECT_FORMAT=sha1|sha256`);
+  - that commit in the origin's managed cache;
+  - the object published.
+
+  It serves the origin with `kairo-federation-http`, writes the
+  target's `config.toml` with the peer and its pinned node actor,
+  and runs `kairo fetch`. It then checks:
+  - the peer is pinned and the Git pack is ingested;
+  - `kairo verify object --no-cwd-repo` is VALID with `commit
+    lookup: cache`;
+  - provenance names the origin;
+  - a re-fetch fetches nothing and finds Git already held.
+
+  It writes `federation-ids.json` for the e2e suite, and refuses a
+  target that already has a `config.toml`.
+- CI's `e2e-real` job runs the script for SHA-1 and SHA-256 before
+  Playwright.
+- The real-stack global setup runs it into the e2e store after
+  `smoke-seed.sh`, so the inspector has a pulled object.
+  `e2e-real/federation.spec.ts` checks:
+  - the pulled object's page shows "Fetched from <origin>", with the
+    node actor marked as claimed;
+  - so does the pulled revision's statement page;
+  - a locally created object shows no badge.
 
 ---
 

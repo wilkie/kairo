@@ -1,8 +1,10 @@
 // Global setup for the real-stack e2e suite: seed a throwaway
-// store, start `kairo-daemon` on it, start `kairo-web` serving
-// the built SPA in front of it, and hand the seeded IDs to the
-// tests via `KAIRO_E2E_SEED` (env set here is visible to
-// workers). Returns the teardown.
+// store, pull a federated object into it from a second node
+// (`scripts/federation-smoke.sh`), start `kairo-daemon` on it,
+// start `kairo-web` serving the built SPA in front of it, and hand
+// the IDs to the tests via `KAIRO_E2E_SEED` and
+// `KAIRO_E2E_FEDERATION` (env set here is visible to workers).
+// Returns the teardown.
 //
 // Binaries come from `$KAIRO_BIN_DIR` (default
 // `<repo>/target/debug`); nothing here builds them, so a stale
@@ -48,7 +50,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   const kairo = join(binDir, 'kairo');
   const daemonBin = join(binDir, 'kairo-daemon');
   const webBin = join(binDir, 'kairo-web');
-  for (const bin of [kairo, daemonBin, webBin]) {
+  const federationBin = join(binDir, 'kairo-federation-http');
+  for (const bin of [kairo, daemonBin, webBin, federationBin]) {
     requireFile(bin, 'run `cargo build --bins` from the repo root, or set KAIRO_BIN_DIR');
   }
   requireFile(
@@ -66,6 +69,21 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     throw new Error(`real-stack e2e: smoke-seed.sh failed\n${seed.stdout}\n${seed.stderr}`);
   }
   process.env['KAIRO_E2E_SEED'] = readFileSync(join(store, 'seed-ids.json'), 'utf8');
+
+  // A second node publishes a Git-backed object; this store pulls it,
+  // so the inspector has a record with provenance to show. The smoke
+  // script checks the pull itself (VALID from the cache, provenance,
+  // incremental re-fetch) and stops its server before returning.
+  const federation = spawnSync(join(repoRoot, 'scripts/federation-smoke.sh'), [store], {
+    env: { ...process.env, KAIRO_BIN_DIR: binDir },
+    encoding: 'utf8',
+  });
+  if (federation.status !== 0) {
+    throw new Error(
+      `real-stack e2e: federation-smoke.sh failed\n${federation.stdout}\n${federation.stderr}`,
+    );
+  }
+  process.env['KAIRO_E2E_FEDERATION'] = readFileSync(join(store, 'federation-ids.json'), 'utf8');
 
   const log: string[] = [];
   const socket = join(store, 'daemon.sock');

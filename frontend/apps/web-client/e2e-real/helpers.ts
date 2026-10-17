@@ -15,6 +15,23 @@ export interface SeedIds {
   alphaR3: string;
 }
 
+/** What `scripts/federation-smoke.sh` pulled into the store. */
+export interface FederationIds {
+  object: string;
+  revision: string;
+  peerUrl: string;
+  nodeActor: string;
+  objectFormat: string;
+}
+
+export function federation(): FederationIds {
+  const raw = process.env['KAIRO_E2E_FEDERATION'];
+  if (raw === undefined) {
+    throw new Error('KAIRO_E2E_FEDERATION unset; run via playwright.real.config.ts');
+  }
+  return JSON.parse(raw) as FederationIds;
+}
+
 export function seed(): SeedIds {
   const raw = process.env['KAIRO_E2E_SEED'];
   if (raw === undefined) throw new Error('KAIRO_E2E_SEED unset; run via playwright.real.config.ts');

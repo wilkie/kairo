@@ -46,6 +46,16 @@ rather than per-commit.
 
 ### Added
 
+- **Two-node federation check in CI (`PHASE_2_FEDERATION.md`
+  slice 6).** `scripts/federation-smoke.sh` builds an origin node
+  with a real Git-backed revision, serves it, and pulls it into a
+  second store through a pinned config entry. It checks that
+  `verify object --no-cwd-repo` is VALID from the cache alone, that
+  provenance names the origin, and that a re-fetch is incremental.
+  CI runs it for SHA-1 and SHA-256 histories. The real-stack
+  Playwright suite pulls an object the same way and checks the
+  inspector's "Fetched from" badges.
+
 - **Federation policy and visibility (`PHASE_2_FEDERATION.md`
   slice 5).**
   - A node config file, `<store>/config.toml`, parsed strictly by

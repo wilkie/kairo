@@ -12,12 +12,16 @@
 #                  the workspace via Turbo.
 #                  `generate:api` is wired as a Turbo dep so
 #                  the schema regenerates first automatically.
-#   - e2e-real   — Playwright suite against the built SPA served
-#                  by a real `kairo-web` + `kairo-daemon` over a
-#                  store seeded by `scripts/smoke-seed.sh`
-#                  (`playwright.real.config.ts`). Catches what
-#                  the MSW mocks can't: proxy guards, real
-#                  signing and capability checks, persistence.
+#   - e2e-real   — two-node federation smoke
+#                  (`scripts/federation-smoke.sh`, SHA-1 and
+#                  SHA-256 Git histories), then the Playwright
+#                  suite against the built SPA served by a real
+#                  `kairo-web` + `kairo-daemon` over a store
+#                  seeded by `scripts/smoke-seed.sh` plus one
+#                  federated pull (`playwright.real.config.ts`).
+#                  Catches what the MSW mocks can't: proxy
+#                  guards, real signing and capability checks,
+#                  persistence, and node-to-node pull.
 #   - e2e        — Playwright suite against the SPA in dev
 #                  mode with the MSW mock registry. The dev
 #                  server is started by Playwright's webServer
@@ -144,6 +148,11 @@ jobs:
       - name: cargo build --bins
         working-directory: .
         run: cargo build --bins --locked
+      - name: Federation smoke (SHA-1 and SHA-256)
+        working-directory: .
+        run: |
+          scripts/federation-smoke.sh
+          OBJECT_FORMAT=sha256 scripts/federation-smoke.sh
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
