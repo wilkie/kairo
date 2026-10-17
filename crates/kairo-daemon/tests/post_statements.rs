@@ -67,6 +67,7 @@ use hyper_util::rt::TokioIo;
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{KairoRef, Timestamp};
 use kairo_daemon::{serve_with_shutdown, Config, Error};
+use kairo_object::ObjectManifest;
 use kairo_statement::json::{
     ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,
     ActorTrustStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
@@ -78,7 +79,6 @@ use kairo_statement::{
     ObjectGenesisStatement, ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, RevisionId,
     SemverVersion, Signature, SignedStatement, StatementKind, TrustDecision, UnsignedStatement,
 };
-use kairo_object::ObjectManifest;
 use kairo_store::{BlobStore, BranchResolver, TrustResolver, VersionTagResolver};
 use kairo_test_support::store::{CreatedActor, CreatedObject, CreatedRevision, StoreFixture};
 use serde_json::{json, Value};
@@ -443,8 +443,7 @@ async fn accepts_signature_valid_trust_grant_and_persists_it() {
     // just POSTed. Open a fresh handle because the daemon owns
     // the in-process one.
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     let head = store_reread
         .latest_trust(&alice.actor_id, &bob.actor_id)
         .expect("read latest trust")
@@ -478,8 +477,8 @@ async fn rejects_signature_invalid_body_with_422_bad_signature() {
         bad_bytes,
     );
     let bad_signed = SignedStatement::new(signed.unsigned().clone(), bad_signature);
-    let body =
-        serde_json::to_value(ActorTrustStatementJson::from_statement(&bad_signed)).expect("serialize");
+    let body = serde_json::to_value(ActorTrustStatementJson::from_statement(&bad_signed))
+        .expect("serialize");
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(
@@ -494,8 +493,7 @@ async fn rejects_signature_invalid_body_with_422_bad_signature() {
     // Side effect: head still absent — the daemon refused the
     // write before reaching the store.
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     assert!(
         store_reread
             .latest_trust(&alice.actor_id, &bob.actor_id)
@@ -663,7 +661,10 @@ async fn byte_identical_redelivery_is_idempotent() {
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status1, hyper::StatusCode::OK);
     let env1: Value = serde_json::from_slice(&body1).expect("parse");
-    let id1 = env1["result"]["statement_id"].as_str().expect("id1").to_owned();
+    let id1 = env1["result"]["statement_id"]
+        .as_str()
+        .expect("id1")
+        .to_owned();
 
     // POST the same envelope a second time — same canonical
     // bytes, same statement_id, store overwrites with byte-
@@ -673,9 +674,15 @@ async fn byte_identical_redelivery_is_idempotent() {
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(status2, hyper::StatusCode::OK, "body: {body2:?}");
     let env2: Value = serde_json::from_slice(&body2).expect("parse");
-    let id2 = env2["result"]["statement_id"].as_str().expect("id2").to_owned();
+    let id2 = env2["result"]["statement_id"]
+        .as_str()
+        .expect("id2")
+        .to_owned();
 
-    assert_eq!(id1, id2, "byte-identical re-delivery must yield the same id");
+    assert_eq!(
+        id1, id2,
+        "byte-identical re-delivery must yield the same id"
+    );
 
     handle.shutdown().await;
     drop(dir);
@@ -710,8 +717,8 @@ async fn accepts_object_revision_and_persists_it() {
         manifest_hash.clone(),
         1_700_001_000,
     );
-    let body =
-        serde_json::to_value(ObjectRevisionStatementJson::from_statement(&signed)).expect("serialize");
+    let body = serde_json::to_value(ObjectRevisionStatementJson::from_statement(&signed))
+        .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
@@ -726,13 +733,10 @@ async fn accepts_object_revision_and_persists_it() {
     assert_eq!(envelope["result"]["statement"]["type"], "ObjectRevision");
 
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
-    let persisted: SignedStatement<ObjectRevisionBody> = kairo_store::StatementStore::get_object_revision(
-        &store_reread,
-        &signed.statement_id(),
-    )
-    .expect("get_object_revision");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let persisted: SignedStatement<ObjectRevisionBody> =
+        kairo_store::StatementStore::get_object_revision(&store_reread, &signed.statement_id())
+            .expect("get_object_revision");
     assert_eq!(persisted.statement_id(), signed.statement_id());
 
     drop(dir);
@@ -770,8 +774,8 @@ async fn rejects_object_revision_with_bad_signature() {
         bad_bytes,
     );
     let bad_signed = SignedStatement::new(signed.unsigned().clone(), bad_signature);
-    let body =
-        serde_json::to_value(ObjectRevisionStatementJson::from_statement(&bad_signed)).expect("serialize");
+    let body = serde_json::to_value(ObjectRevisionStatementJson::from_statement(&bad_signed))
+        .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
@@ -802,8 +806,8 @@ async fn accepts_object_branch_set_and_persists_head() {
 
     let handle = spawn_daemon(store_path.clone()).await;
     let signed = sign_branch(&alice, &object, &revision, "head", None, 1_700_001_100);
-    let body =
-        serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed)).expect("serialize");
+    let body = serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed))
+        .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
@@ -813,8 +817,7 @@ async fn accepts_object_branch_set_and_persists_head() {
     assert_eq!(envelope["result"]["statement"]["type"], "ObjectBranch");
 
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     let head = store_reread
         .latest_branch(&alice.actor_id, &object.object_id, "head")
         .expect("latest_branch")
@@ -850,8 +853,8 @@ async fn rejects_object_branch_with_bad_signature() {
         bad_bytes,
     );
     let bad_signed = SignedStatement::new(signed.unsigned().clone(), bad_signature);
-    let body =
-        serde_json::to_value(ObjectBranchStatementJson::from_statement(&bad_signed)).expect("serialize");
+    let body = serde_json::to_value(ObjectBranchStatementJson::from_statement(&bad_signed))
+        .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
@@ -893,8 +896,7 @@ async fn accepts_version_tag_bind_and_persists_head() {
     assert_eq!(envelope["result"]["statement"]["type"], "ObjectVersionTag");
 
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     let head = store_reread
         .latest_version_tag(&alice.actor_id, &object.object_id, "1.0.0")
         .expect("latest_version_tag")
@@ -930,8 +932,10 @@ async fn version_tag_byte_identical_redelivery_is_idempotent() {
     let body = serde_json::to_value(ObjectVersionTagStatementJson::from_statement(&signed))
         .expect("serialize");
 
-    let (s1, b1) = signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
-    let (s2, b2) = signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
+    let (s1, b1) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
+    let (s2, b2) =
+        signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
     assert_eq!(s1, hyper::StatusCode::OK);
     assert_eq!(s2, hyper::StatusCode::OK);
     let env1: Value = serde_json::from_slice(&b1).expect("parse");
@@ -1002,10 +1006,10 @@ async fn accepts_object_genesis_and_persists_it() {
     assert_eq!(envelope["result"]["statement"]["type"], "ObjectGenesis");
 
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
-    let persisted = kairo_store::ObjectStore::get_object_genesis(&store_reread, &expected_object_id)
-        .expect("get_object_genesis");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let persisted =
+        kairo_store::ObjectStore::get_object_genesis(&store_reread, &expected_object_id)
+            .expect("get_object_genesis");
     assert_eq!(persisted.body(), statement.body());
 
     drop(dir);
@@ -1132,11 +1136,13 @@ async fn accepts_capability_grant_and_persists_head() {
     assert_eq!(status, hyper::StatusCode::OK, "body: {response_body:?}");
 
     let envelope: Value = serde_json::from_slice(&response_body).expect("parse");
-    assert_eq!(envelope["result"]["statement"]["type"], "ActorCapabilityGrant");
+    assert_eq!(
+        envelope["result"]["statement"]["type"],
+        "ActorCapabilityGrant"
+    );
 
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     let scope = CapabilityScope::Object(object.object_id.clone());
     let head = kairo_store::CapabilityResolver::latest_capability(
         &store_reread,
@@ -1241,9 +1247,10 @@ async fn accepts_capability_revocation_and_persists_it() {
     );
     let revocation = SignedStatement::new(rev_unsigned, rev_sig);
 
-    let body =
-        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&revocation))
-            .expect("serialize");
+    let body = serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(
+        &revocation,
+    ))
+    .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
@@ -1256,8 +1263,7 @@ async fn accepts_capability_revocation_and_persists_it() {
     );
 
     handle.shutdown().await;
-    let store_reread =
-        kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
+    let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     let head = kairo_store::CapabilityResolver::latest_capability_revocation(
         &store_reread,
         &alice.actor_id,
@@ -1547,8 +1553,7 @@ fn persist_revocation(
     retroactive: bool,
     created_at_seconds: i64,
 ) -> kairo_core::StatementId {
-    let body =
-        ActorCapabilityRevocationBody::new(grant_id.clone(), retroactive, None);
+    let body = ActorCapabilityRevocationBody::new(grant_id.clone(), retroactive, None);
     let subject: KairoRef = format!("statement:{grant_id}")
         .parse()
         .expect("subject parse");
@@ -1689,8 +1694,8 @@ async fn rejects_cross_actor_branch_with_revoked_grant_with_403() {
 
     let handle = spawn_daemon(store_path).await;
     let signed = sign_branch(&bob, &object, &revision, "head", None, 1_700_003_400);
-    let body =
-        serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed)).expect("serialize");
+    let body = serde_json::to_value(ObjectBranchStatementJson::from_statement(&signed))
+        .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &bob).await;
@@ -1854,8 +1859,7 @@ async fn accepts_delegable_regrant_by_holder() {
     drop(fixture);
 
     let handle = spawn_daemon(store_path).await;
-    let signed =
-        sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_100);
+    let signed = sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_100);
     let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
         .expect("serialize");
 
@@ -1892,8 +1896,7 @@ async fn rejects_non_delegable_regrant_with_403() {
     drop(fixture);
 
     let handle = spawn_daemon(store_path).await;
-    let signed =
-        sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_300);
+    let signed = sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_300);
     let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
         .expect("serialize");
 
@@ -1925,8 +1928,7 @@ async fn rejects_grant_by_non_holder_with_403() {
     drop(fixture);
 
     let handle = spawn_daemon(store_path).await;
-    let signed =
-        sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_400);
+    let signed = sign_capability_grant(&bob, &carol, &object.object_id, 1_700_004_400);
     let body = serde_json::to_value(ActorCapabilityGrantStatementJson::from_statement(&signed))
         .expect("serialize");
 
@@ -1981,9 +1983,10 @@ async fn accepts_revocation_by_original_grantor() {
         signature_bytes.bytes().to_vec(),
     );
     let signed = SignedStatement::new(unsigned, signature);
-    let body =
-        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&signed))
-            .expect("serialize");
+    let body = serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(
+        &signed,
+    ))
+    .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;
@@ -2035,9 +2038,10 @@ async fn rejects_revocation_by_non_grantor_with_403() {
         signature_bytes.bytes().to_vec(),
     );
     let signed = SignedStatement::new(unsigned, signature);
-    let body =
-        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&signed))
-            .expect("serialize");
+    let body = serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(
+        &signed,
+    ))
+    .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &carol).await;
@@ -2071,8 +2075,9 @@ async fn rejects_revocation_of_unknown_grant_with_403() {
 
     let fake_grant_id = kairo_core::StatementId::from_sha256_digest([0xCD; 32]);
     let body_rev = ActorCapabilityRevocationBody::new(fake_grant_id.clone(), false, None);
-    let subject: KairoRef =
-        format!("statement:{fake_grant_id}").parse().expect("subject");
+    let subject: KairoRef = format!("statement:{fake_grant_id}")
+        .parse()
+        .expect("subject");
     let unsigned = UnsignedStatement::new(
         alice.actor_id.clone(),
         subject,
@@ -2087,9 +2092,10 @@ async fn rejects_revocation_of_unknown_grant_with_403() {
         signature_bytes.bytes().to_vec(),
     );
     let signed = SignedStatement::new(unsigned, signature);
-    let body =
-        serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(&signed))
-            .expect("serialize");
+    let body = serde_json::to_value(ActorCapabilityRevocationStatementJson::from_statement(
+        &signed,
+    ))
+    .expect("serialize");
 
     let (status, response_body) =
         signed_post_json(handle.socket_path(), "/api/v1/statements", &body, &alice).await;

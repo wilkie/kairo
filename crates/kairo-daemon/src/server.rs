@@ -70,9 +70,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let store_path = config.store_path;
-    let keys_path = config
-        .keys_path
-        .unwrap_or_else(|| store_path.join("keys"));
+    let keys_path = config.keys_path.unwrap_or_else(|| store_path.join("keys"));
     let paths = Paths::for_store(&store_path);
 
     let store = open_store(&store_path)?;

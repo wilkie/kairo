@@ -686,8 +686,10 @@ fn revision_create_daemon_mode_persists_through_dispatch() {
         create_out.contains("created revision"),
         "create: {create_out}"
     );
-    let statement_id =
-        create_out.lines().find_map(|l| l.strip_prefix("statement = ")).expect("statement id");
+    let statement_id = create_out
+        .lines()
+        .find_map(|l| l.strip_prefix("statement = "))
+        .expect("statement id");
 
     // Read back through direct mode — daemon and direct must
     // converge on the same persisted revision.
@@ -755,23 +757,13 @@ fn branch_set_daemon_mode_advances_head_through_dispatch() {
     );
     let set_out = String::from_utf8(set.stdout).expect("utf-8");
     assert!(set_out.contains("set branch"), "set: {set_out}");
-    assert!(
-        set_out.contains("supersedes = (genesis)"),
-        "set: {set_out}"
-    );
+    assert!(set_out.contains("supersedes = (genesis)"), "set: {set_out}");
 
     // Both modes should resolve to the same head.
     assert_modes_agree(
         &store_path,
         &[
-            "branch",
-            "show",
-            "--object",
-            &object_id,
-            "--actor",
-            &actor_id,
-            "--name",
-            "head",
+            "branch", "show", "--object", &object_id, "--actor", &actor_id, "--name", "head",
         ],
     );
 
@@ -823,10 +815,7 @@ fn tag_bind_daemon_mode_persists_head_through_dispatch() {
     );
     let bind_out = String::from_utf8(bind.stdout).expect("utf-8");
     assert!(bind_out.contains("bind tag"), "bind: {bind_out}");
-    assert!(
-        bind_out.contains("version = 1.0.0"),
-        "bind: {bind_out}"
-    );
+    assert!(bind_out.contains("version = 1.0.0"), "bind: {bind_out}");
 
     assert_modes_agree(
         &store_path,
@@ -950,10 +939,7 @@ fn capability_grant_daemon_mode_persists_and_revoke_chains() {
         String::from_utf8_lossy(&grant.stderr)
     );
     let grant_out = String::from_utf8(grant.stdout).expect("utf-8");
-    assert!(
-        grant_out.contains("grant capability"),
-        "grant: {grant_out}"
-    );
+    assert!(grant_out.contains("grant capability"), "grant: {grant_out}");
     let grant_statement = grant_out
         .lines()
         .find_map(|l| l.strip_prefix("statement = "))
@@ -1200,10 +1186,7 @@ fn tag_revoke_daemon_mode_chains_on_prior_bind() {
         String::from_utf8_lossy(&revoke.stderr)
     );
     let revoke_out = String::from_utf8(revoke.stdout).expect("utf-8");
-    assert!(
-        revoke_out.contains("revoke tag"),
-        "revoke: {revoke_out}"
-    );
+    assert!(revoke_out.contains("revoke tag"), "revoke: {revoke_out}");
     assert!(
         revoke_out.contains("target = (revoked)"),
         "revoke: {revoke_out}"

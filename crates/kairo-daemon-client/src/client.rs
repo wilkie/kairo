@@ -39,8 +39,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::dto::{
-    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
-    KeystoreActorDto, KeystoreActorsResponse, ObjectBranchStatementJson, ObjectByActorDto,
+    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto, KeystoreActorDto,
+    KeystoreActorsResponse, ObjectBranchStatementJson, ObjectByActorDto,
     ObjectGenesisStatementJson, ObjectVersionTagStatementJson, OpenSessionRequest,
     PutStatementResult, SessionInfo, StatementByActorDto, StatementValue, StatusInfo,
     ValidationResult, VersionInfo,
@@ -274,9 +274,7 @@ impl Client {
         let body = serde_json::to_vec(&OpenSessionRequest {
             actor_id: actor_id.to_owned(),
         })
-        .map_err(|error| {
-            ClientError::Decode(format!("serialize OpenSessionRequest: {error}"))
-        })?;
+        .map_err(|error| ClientError::Decode(format!("serialize OpenSessionRequest: {error}")))?;
         let work = async move {
             let (status, bytes, set_cookie) = self
                 .send_post_with_cookie("/api/v1/sessions", body, prior_session_id)
@@ -436,8 +434,9 @@ impl Client {
         secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsObjectBranchStatementJson::from_statement(signed);
-        let body = serde_json::to_vec(&dto)
-            .map_err(|error| ClientError::Decode(format!("serialize ObjectBranch body: {error}")))?;
+        let body = serde_json::to_vec(&dto).map_err(|error| {
+            ClientError::Decode(format!("serialize ObjectBranch body: {error}"))
+        })?;
         self.post_signed_statement(body, signed.signature().actor().clone(), secret)
             .await
     }
@@ -468,8 +467,9 @@ impl Client {
         secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
         let dto = KsObjectGenesisStatementJson::from_statement(statement);
-        let body = serde_json::to_vec(&dto)
-            .map_err(|error| ClientError::Decode(format!("serialize ObjectGenesis body: {error}")))?;
+        let body = serde_json::to_vec(&dto).map_err(|error| {
+            ClientError::Decode(format!("serialize ObjectGenesis body: {error}"))
+        })?;
         self.post_signed_statement(body, statement.signature().actor().clone(), secret)
             .await
     }
@@ -517,8 +517,7 @@ impl Client {
         actor: kairo_core::ActorId,
         secret: &SecretSigningKey,
     ) -> ClientResult<PutStatementResult> {
-        let nonce = random_nonce()
-            .map_err(|error| ClientError::Transport(Box::new(error)))?;
+        let nonce = random_nonce().map_err(|error| ClientError::Transport(Box::new(error)))?;
         let timestamp = Timestamp::now().seconds();
         let envelope = sign_request(
             "POST",

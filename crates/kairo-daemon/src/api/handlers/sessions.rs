@@ -56,20 +56,16 @@ pub async fn open_handler(
     Json(body): Json<OpenSessionRequest>,
 ) -> Result<Response, ApiError> {
     let actor_id = ActorId::from_str(&body.actor_id).map_err(|error| {
-        ApiError::bad_request(format!(
-            "invalid actor id {:?}: {error}",
-            body.actor_id
-        ))
+        ApiError::bad_request(format!("invalid actor id {:?}: {error}", body.actor_id))
     })?;
 
     let keystore = state.keystore.clone();
     let actor_for_keystore = actor_id.clone();
-    let has_key = tokio::task::spawn_blocking(move || {
-        keystore.has_signing_key(&actor_for_keystore)
-    })
-    .await
-    .map_err(|join| ApiError::internal(format!("keystore probe task: {join}")))?
-    .map_err(|error| ApiError::internal(format!("keystore probe: {error}")))?;
+    let has_key =
+        tokio::task::spawn_blocking(move || keystore.has_signing_key(&actor_for_keystore))
+            .await
+            .map_err(|join| ApiError::internal(format!("keystore probe task: {join}")))?
+            .map_err(|error| ApiError::internal(format!("keystore probe: {error}")))?;
 
     if !has_key {
         return Err(ApiError::actor_not_in_keystore(format!(
@@ -85,29 +81,21 @@ pub async fn open_handler(
     let now = Timestamp::now();
     let store = state.store.clone();
     let actor_for_resolver = actor_id.clone();
-    let active_key = tokio::task::spawn_blocking(move || {
-        store.active_key_at(&actor_for_resolver, now)
-    })
-    .await
-    .map_err(|join| ApiError::internal(format!("active-key task: {join}")))?
-    .map_err(|error| ApiError::internal(format!("active-key lookup: {error}")))?
-    .ok_or_else(|| {
-        ApiError::actor_not_found(format!(
-            "actor {} has no genesis in the store",
-            actor_id
-        ))
-    })?;
+    let active_key =
+        tokio::task::spawn_blocking(move || store.active_key_at(&actor_for_resolver, now))
+            .await
+            .map_err(|join| ApiError::internal(format!("active-key task: {join}")))?
+            .map_err(|error| ApiError::internal(format!("active-key lookup: {error}")))?
+            .ok_or_else(|| {
+                ApiError::actor_not_found(format!("actor {} has no genesis in the store", actor_id))
+            })?;
 
     let key_id = active_key.key_id();
     let store_for_revocation = state.store.clone();
     let actor_for_revocation = actor_id.clone();
     let key_id_for_revocation = key_id.clone();
     let revoked = tokio::task::spawn_blocking(move || {
-        store_for_revocation.is_key_revoked_at(
-            &actor_for_revocation,
-            &key_id_for_revocation,
-            now,
-        )
+        store_for_revocation.is_key_revoked_at(&actor_for_revocation, &key_id_for_revocation, now)
     })
     .await
     .map_err(|join| ApiError::internal(format!("revocation task: {join}")))?
@@ -141,10 +129,9 @@ pub async fn open_handler(
 
     let mut response = ApiResult(body).into_response();
     *response.status_mut() = StatusCode::CREATED;
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        set_cookie_for(&new_id, idle_timeout),
-    );
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, set_cookie_for(&new_id, idle_timeout));
     Ok(response)
 }
 
@@ -194,10 +181,7 @@ pub async fn current_handler(
         (status = 204, description = "Session terminated (or already gone)"),
     ),
 )]
-pub async fn delete_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Response {
+pub async fn delete_handler(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(cookie) = parse_session_cookie(&headers) {
         state.sessions.delete(&cookie);
     }
@@ -265,7 +249,5 @@ fn set_cookie_for(id: &SessionId, idle_timeout: Duration) -> HeaderValue {
 }
 
 fn clear_cookie() -> HeaderValue {
-    HeaderValue::from_static(
-        "kairo_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
-    )
+    HeaderValue::from_static("kairo_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
 }

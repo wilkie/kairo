@@ -383,8 +383,15 @@ async fn session_mode_capability_denied_for_object_revision_returns_403() {
         "attests_reachable_history": false,
     });
 
-    match client.write_via_session(&cookie, "ObjectRevision", body).await {
-        Err(ClientError::Http { status, code, message }) => {
+    match client
+        .write_via_session(&cookie, "ObjectRevision", body)
+        .await
+    {
+        Err(ClientError::Http {
+            status,
+            code,
+            message,
+        }) => {
             assert_eq!(status, 403, "code={code}, message={message}");
             assert_eq!(code, "not_authorized");
         }
@@ -472,7 +479,11 @@ async fn session_mode_object_genesis_returns_415() {
         .expect("open session");
 
     match client
-        .write_via_session(&cookie, "ObjectGenesis", json!({ "object_kind": "kairo/object" }))
+        .write_via_session(
+            &cookie,
+            "ObjectGenesis",
+            json!({ "object_kind": "kairo/object" }),
+        )
         .await
     {
         Err(ClientError::Http { status, code, .. }) => {

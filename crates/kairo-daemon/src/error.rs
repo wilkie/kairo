@@ -51,11 +51,9 @@ impl fmt::Display for Error {
             Self::OpenStore { path, source } => {
                 write!(f, "failed to open store at {}: {source}", path.display())
             }
-            Self::OpenKeystore { path, source } => write!(
-                f,
-                "failed to open keystore at {}: {source}",
-                path.display()
-            ),
+            Self::OpenKeystore { path, source } => {
+                write!(f, "failed to open keystore at {}: {source}", path.display())
+            }
             Self::AlreadyRunning { socket } => write!(
                 f,
                 "another daemon is listening at {}; refusing to start a second one",

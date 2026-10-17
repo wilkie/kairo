@@ -31,7 +31,10 @@ pub async fn handler(State(state): State<AppState>) -> ApiResult<StatusInfo> {
         store_schema_version: kairo_store::SCHEMA_VERSION.to_owned(),
         pid: state.pid,
         daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
-        write_surface: SUPPORTED_WRITE_KINDS.iter().map(|k| (*k).to_owned()).collect(),
+        write_surface: SUPPORTED_WRITE_KINDS
+            .iter()
+            .map(|k| (*k).to_owned())
+            .collect(),
         // Comma-separated set of auth modes accepted by the
         // write surface:
         // - `signed-request` — Phase B `Authorization:

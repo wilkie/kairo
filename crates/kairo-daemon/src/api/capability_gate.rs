@@ -23,8 +23,8 @@
 
 use kairo_core::{ActorId, ObjectId, StatementId, Timestamp};
 use kairo_statement::verify::{
-    evaluate_capability, evaluate_capability_for_regrant, CapabilityEvaluation,
-    CapabilityResolver, ResolutionTarget,
+    evaluate_capability, evaluate_capability_for_regrant, CapabilityEvaluation, CapabilityResolver,
+    ResolutionTarget,
 };
 use kairo_statement::{ActorCapabilityGrantBody, CapabilityScope, StatementKind};
 use kairo_store::StatementStore;
@@ -59,9 +59,7 @@ pub async fn require_object_write_authority(
     let root_authority =
         tokio::task::spawn_blocking(move || store.object_root_authority(&object_for_root))
             .await
-            .map_err(|error| {
-                ApiError::internal(format!("spawn_blocking join failed: {error}"))
-            })?
+            .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
             .map_err(|error| {
                 ApiError::store(format!(
                     "object root-authority lookup failed for {object_for_root_display}: {error}",
@@ -163,9 +161,7 @@ pub async fn require_grant_authority(
     let root_authority =
         tokio::task::spawn_blocking(move || store.object_root_authority(&object_for_root))
             .await
-            .map_err(|error| {
-                ApiError::internal(format!("spawn_blocking join failed: {error}"))
-            })?
+            .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
             .map_err(|error| {
                 ApiError::store(format!(
                     "object root-authority lookup failed for {object_id}: {error}",
@@ -259,9 +255,7 @@ pub async fn require_revocation_authority(
     let grant_result =
         tokio::task::spawn_blocking(move || store.get_actor_capability_grant(&id_for_lookup))
             .await
-            .map_err(|error| {
-                ApiError::internal(format!("spawn_blocking join failed: {error}"))
-            })?;
+            .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?;
 
     let grant = match grant_result {
         Ok(grant) => grant,

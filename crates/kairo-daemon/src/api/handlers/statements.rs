@@ -26,18 +26,18 @@ use kairo_identity::{verify_signature, ActorResolveError, ActorResolver};
 use kairo_keystore::Keystore;
 use kairo_statement::json::{
     ActorCapabilityGrantBodyJson, ActorCapabilityGrantStatementJson,
-    ActorCapabilityRevocationBodyJson, ActorCapabilityRevocationStatementJson,
-    ActorTrustBodyJson, ActorTrustStatementJson, ObjectBranchBodyJson,
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionBodyJson,
-    ObjectRevisionStatementJson, ObjectVersionTagBodyJson, ObjectVersionTagStatementJson,
+    ActorCapabilityRevocationBodyJson, ActorCapabilityRevocationStatementJson, ActorTrustBodyJson,
+    ActorTrustStatementJson, ObjectBranchBodyJson, ObjectBranchStatementJson,
+    ObjectGenesisStatementJson, ObjectRevisionBodyJson, ObjectRevisionStatementJson,
+    ObjectVersionTagBodyJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, VerificationReport,
 };
 use kairo_statement::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ObjectBranchBody,
-    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, Signature,
-    SignedStatement, StatementBody, StatementKind, UnsignedStatement,
+    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, Signature, SignedStatement,
+    StatementBody, StatementKind, UnsignedStatement,
 };
 use kairo_store::{FilesystemStore, ObjectStore, StatementStore, StoreError};
 use serde::de::DeserializeOwned;
@@ -216,9 +216,7 @@ async fn dispatch_signed_envelope(
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| {
-            ApiError::bad_request(
-                "statement body missing required string field `type`".to_string(),
-            )
+            ApiError::bad_request("statement body missing required string field `type`".to_string())
         })?
         .to_owned();
 
@@ -511,33 +509,39 @@ where
 }
 
 fn build_subject_for_actor(target_actor: &ActorId, body_kind: &str) -> Result<KairoRef, ApiError> {
-    format!("actor:{target_actor}").parse::<KairoRef>().map_err(|error| {
-        ApiError::internal(format!(
-            "could not construct subject reference for {body_kind}: {error}"
-        ))
-    })
+    format!("actor:{target_actor}")
+        .parse::<KairoRef>()
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "could not construct subject reference for {body_kind}: {error}"
+            ))
+        })
 }
 
 fn build_subject_for_object(
     object_id: &kairo_core::ObjectId,
     body_kind: &str,
 ) -> Result<KairoRef, ApiError> {
-    format!("object:{object_id}").parse::<KairoRef>().map_err(|error| {
-        ApiError::internal(format!(
-            "could not construct subject reference for {body_kind}: {error}"
-        ))
-    })
+    format!("object:{object_id}")
+        .parse::<KairoRef>()
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "could not construct subject reference for {body_kind}: {error}"
+            ))
+        })
 }
 
 fn build_subject_for_statement(
     statement_id: &StatementId,
     body_kind: &str,
 ) -> Result<KairoRef, ApiError> {
-    format!("statement:{statement_id}").parse::<KairoRef>().map_err(|error| {
-        ApiError::internal(format!(
-            "could not construct subject reference for {body_kind}: {error}"
-        ))
-    })
+    format!("statement:{statement_id}")
+        .parse::<KairoRef>()
+        .map_err(|error| {
+            ApiError::internal(format!(
+                "could not construct subject reference for {body_kind}: {error}"
+            ))
+        })
 }
 
 /// Daemon-side signing: fetch the session actor's secret key,
@@ -626,8 +630,9 @@ async fn put_object_genesis(
     state: AppState,
     body: Value,
 ) -> Result<ApiResult<PutStatementResult>, ApiError> {
-    let dto: ObjectGenesisStatementJson = serde_json::from_value(body)
-        .map_err(|error| ApiError::bad_request(format!("invalid ObjectGenesis body shape: {error}")))?;
+    let dto: ObjectGenesisStatementJson = serde_json::from_value(body).map_err(|error| {
+        ApiError::bad_request(format!("invalid ObjectGenesis body shape: {error}"))
+    })?;
     let statement = dto
         .to_statement()
         .map_err(|error| ApiError::bad_request(format!("invalid ObjectGenesis body: {error}")))?;
@@ -636,10 +641,11 @@ async fn put_object_genesis(
 
     let store = state.store.clone();
     let statement_for_put = statement.clone();
-    let object_id = tokio::task::spawn_blocking(move || store.put_object_genesis(&statement_for_put))
-        .await
-        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
-        .map_err(|error| map_store_error(error, "put_object_genesis"))?;
+    let object_id =
+        tokio::task::spawn_blocking(move || store.put_object_genesis(&statement_for_put))
+            .await
+            .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+            .map_err(|error| map_store_error(error, "put_object_genesis"))?;
 
     let echo = ObjectGenesisStatementJson::from_statement(&statement);
     let statement_value = serde_json::to_value(&echo).map_err(|error| {
@@ -702,7 +708,9 @@ async fn verify_object_genesis_against_store(
     let signature_bytes = statement
         .signature()
         .to_signature_bytes()
-        .map_err(|error| ApiError::bad_signature(format!("genesis signature malformed: {error}")))?;
+        .map_err(|error| {
+            ApiError::bad_signature(format!("genesis signature malformed: {error}"))
+        })?;
     verify_signature(&active_key, &statement.signed_bytes(), &signature_bytes)
         .map_err(|error| ApiError::bad_signature(format!("genesis signature invalid: {error}")))?;
 
@@ -724,9 +732,8 @@ where
     B: StatementBody,
     Err: std::fmt::Display,
 {
-    let dto: TDto = serde_json::from_value(body).map_err(|error| {
-        ApiError::bad_request(format!("invalid {kind} body shape: {error}"))
-    })?;
+    let dto: TDto = serde_json::from_value(body)
+        .map_err(|error| ApiError::bad_request(format!("invalid {kind} body shape: {error}")))?;
     to_statement(&dto)
         .map_err(|error| ApiError::bad_request(format!("invalid {kind} body: {error}")))
 }
@@ -748,7 +755,9 @@ where
     SignedStatement<B>: Clone + Send,
     TDto: Serialize,
     FromFn: FnOnce(&SignedStatement<B>) -> TDto,
-    PutFn: Send + 'static + FnOnce(&FilesystemStore, &SignedStatement<B>) -> Result<StatementId, StoreError>,
+    PutFn: Send
+        + 'static
+        + FnOnce(&FilesystemStore, &SignedStatement<B>) -> Result<StatementId, StoreError>,
 {
     verify_signed_against_store(&state, &signed).await?;
 

@@ -100,26 +100,25 @@ pub async fn verify_request_auth(
     let resolver = state.store.clone();
     let actor_for_lookup = envelope.actor.clone();
     let lookup_at = Timestamp::from_seconds(envelope.timestamp);
-    let resolved =
-        tokio::task::spawn_blocking(move || -> Result<KeyLookup, ActorResolveError> {
-            let resolver_ref: &FilesystemStore = resolver.as_ref();
-            let genesis = resolver_ref.actor_genesis(&actor_for_lookup)?;
-            if genesis.is_none() {
-                return Ok(KeyLookup::ActorAbsent);
-            }
-            match resolver_ref.active_key_at(&actor_for_lookup, lookup_at)? {
-                Some(key) => Ok(KeyLookup::Found(key)),
-                None => Ok(KeyLookup::NoActiveKey),
-            }
-        })
-        .await
-        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
-        .map_err(|error| {
-            ApiError::store(format!(
-                "actor resolver unavailable for {}: {error}",
-                envelope.actor,
-            ))
-        })?;
+    let resolved = tokio::task::spawn_blocking(move || -> Result<KeyLookup, ActorResolveError> {
+        let resolver_ref: &FilesystemStore = resolver.as_ref();
+        let genesis = resolver_ref.actor_genesis(&actor_for_lookup)?;
+        if genesis.is_none() {
+            return Ok(KeyLookup::ActorAbsent);
+        }
+        match resolver_ref.active_key_at(&actor_for_lookup, lookup_at)? {
+            Some(key) => Ok(KeyLookup::Found(key)),
+            None => Ok(KeyLookup::NoActiveKey),
+        }
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+    .map_err(|error| {
+        ApiError::store(format!(
+            "actor resolver unavailable for {}: {error}",
+            envelope.actor,
+        ))
+    })?;
 
     let active_key = match resolved {
         KeyLookup::ActorAbsent => {

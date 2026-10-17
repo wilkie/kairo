@@ -2304,12 +2304,12 @@ fn run_object_command(
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
-                    store
-                        .put_object_genesis(&statement)
-                        .map_err(|error| CliError::WriteObjectGenesis {
+                    store.put_object_genesis(&statement).map_err(|error| {
+                        CliError::WriteObjectGenesis {
                             object: object_id.clone(),
                             source: error,
-                        })?;
+                        }
+                    })?;
                 }
             }
 
@@ -2468,12 +2468,12 @@ fn run_revision_command(
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
-                    store
-                        .put_object_revision(&signed)
-                        .map_err(|error| CliError::WriteRevision {
+                    store.put_object_revision(&signed).map_err(|error| {
+                        CliError::WriteRevision {
                             statement: statement_id.clone(),
                             source: error,
-                        })?;
+                        }
+                    })?;
                 }
             }
 
@@ -2895,12 +2895,12 @@ fn run_tag_command(
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
-                    store
-                        .put_object_version_tag(&signed)
-                        .map_err(|error| CliError::WriteVersionTag {
+                    store.put_object_version_tag(&signed).map_err(|error| {
+                        CliError::WriteVersionTag {
                             statement: statement_id.clone(),
                             source: error,
-                        })?;
+                        }
+                    })?;
                 }
             }
 
@@ -2978,12 +2978,12 @@ fn run_tag_command(
                         .map_err(CliError::DaemonRequestFailed)?;
                 }
                 dispatch::Mode::Direct => {
-                    store
-                        .put_object_version_tag(&signed)
-                        .map_err(|error| CliError::WriteVersionTag {
+                    store.put_object_version_tag(&signed).map_err(|error| {
+                        CliError::WriteVersionTag {
                             statement: statement_id.clone(),
                             source: error,
-                        })?;
+                        }
+                    })?;
                 }
             }
 
@@ -3809,12 +3809,12 @@ fn run_capability_grant(
                 .map_err(CliError::DaemonRequestFailed)?;
         }
         dispatch::Mode::Direct => {
-            store
-                .put_actor_capability_grant(&signed)
-                .map_err(|error| CliError::WriteCapabilityGrant {
+            store.put_actor_capability_grant(&signed).map_err(|error| {
+                CliError::WriteCapabilityGrant {
                     statement: statement_id.clone(),
                     source: error,
-                })?;
+                }
+            })?;
         }
     }
 

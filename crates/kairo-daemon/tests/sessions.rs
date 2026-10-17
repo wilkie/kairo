@@ -227,10 +227,7 @@ async fn second_sign_in_replaces_prior_session() {
     let client = Client::new(daemon.socket_path());
 
     let actor = alice.actor_id.to_string();
-    let (_first_info, first_cookie) = client
-        .open_session(&actor, None)
-        .await
-        .expect("first open");
+    let (_first_info, first_cookie) = client.open_session(&actor, None).await.expect("first open");
     // Simulate the browser's automatic cookie attachment by
     // forwarding the prior session id to the daemon. The handler
     // deletes the prior session before creating the new one.

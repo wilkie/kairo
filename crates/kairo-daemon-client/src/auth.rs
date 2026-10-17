@@ -277,31 +277,25 @@ impl AuthEnvelope {
             }
         }
 
-        let actor_str = actor.ok_or_else(|| {
-            AuthHeaderError::Malformed("missing `actor` parameter".to_owned())
-        })?;
-        let key_id_str = key_id.ok_or_else(|| {
-            AuthHeaderError::Malformed("missing `key_id` parameter".to_owned())
-        })?;
+        let actor_str = actor
+            .ok_or_else(|| AuthHeaderError::Malformed("missing `actor` parameter".to_owned()))?;
+        let key_id_str = key_id
+            .ok_or_else(|| AuthHeaderError::Malformed("missing `key_id` parameter".to_owned()))?;
         let timestamp = timestamp.ok_or_else(|| {
             AuthHeaderError::Malformed("missing `timestamp` parameter".to_owned())
         })?;
-        let nonce_hex = nonce_hex.ok_or_else(|| {
-            AuthHeaderError::Malformed("missing `nonce` parameter".to_owned())
-        })?;
+        let nonce_hex = nonce_hex
+            .ok_or_else(|| AuthHeaderError::Malformed("missing `nonce` parameter".to_owned()))?;
         let signature_b64 = signature_b64.ok_or_else(|| {
             AuthHeaderError::Malformed("missing `signature` parameter".to_owned())
         })?;
 
         let actor = ActorId::new(actor_str.clone()).map_err(|error| {
-            AuthHeaderError::Malformed(format!(
-                "invalid actor id {actor_str:?}: {error}"
-            ))
+            AuthHeaderError::Malformed(format!("invalid actor id {actor_str:?}: {error}"))
         })?;
         let key_id = KeyId::new(key_id_str);
-        let nonce = decode_hex_array::<NONCE_LEN_BYTES>(&nonce_hex).map_err(|error| {
-            AuthHeaderError::Malformed(format!("nonce decode: {error}"))
-        })?;
+        let nonce = decode_hex_array::<NONCE_LEN_BYTES>(&nonce_hex)
+            .map_err(|error| AuthHeaderError::Malformed(format!("nonce decode: {error}")))?;
         let signature_bytes = BASE64.decode(&signature_b64).map_err(|error| {
             AuthHeaderError::Malformed(format!("signature base64 decode: {error}"))
         })?;
@@ -504,7 +498,8 @@ mod tests {
     fn signing_string_empty_body_uses_sha256_of_empty() {
         let signing = build_signing_string("POST", "/x", &[], 0, &[0; NONCE_LEN_BYTES]);
         assert!(
-            signing.contains("\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"),
+            signing
+                .contains("\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"),
             "expected empty-body SHA-256 in signing string: {signing}",
         );
     }
@@ -547,16 +542,10 @@ mod tests {
         // Pinning the canonical field order keeps the format
         // diffable across builds; parsing tolerates reorders.
         let after_scheme = &header["KairoActor1 ".len()..];
-        let positions = [
-            "actor=",
-            "key_id=",
-            "timestamp=",
-            "nonce=",
-            "signature=",
-        ]
-        .iter()
-        .map(|needle| after_scheme.find(needle).expect("needle"))
-        .collect::<Vec<_>>();
+        let positions = ["actor=", "key_id=", "timestamp=", "nonce=", "signature="]
+            .iter()
+            .map(|needle| after_scheme.find(needle).expect("needle"))
+            .collect::<Vec<_>>();
         let sorted = {
             let mut s = positions.clone();
             s.sort();
