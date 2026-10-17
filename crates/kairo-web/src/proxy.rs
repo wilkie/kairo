@@ -14,12 +14,16 @@
 //! - Inspect or rewrite payloads. The web client consumes the
 //!   daemon's wire shapes verbatim; the typed `kairo-daemon-client`
 //!   crate is for Rust callers, not for kairo-web.
-//! - Authenticate. v1 trust model is loopback-only (DECISIONS.md
-//!   §12.3); browser-side auth lands post-v1.
+//! - Authenticate. Session cookies and `Authorization` headers
+//!   pass through to the daemon, which is the only auth
+//!   authority. The proxy's own guards (loopback `Host`, write
+//!   allowlist, same-origin writes) are request-shape checks;
+//!   see [`handler`] and `DECISIONS.md §15`.
 //! - Pool connections. One TCP request = one Unix-socket connect.
 //!   Modest overhead at v1 traffic levels; pooling is a follow-up
 //!   if it becomes load-bearing.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -51,52 +55,156 @@ impl ProxyState {
 /// browser's request to the daemon's Unix socket and streams the
 /// response back.
 ///
-/// During the daemon write-path Phase A (DECISIONS.md §13), this
-/// proxy refuses every method other than `GET` and `HEAD` with a
-/// `405 Method Not Allowed`. The short-circuit happens before any
-/// daemon connection is opened, so an XSS or DNS-rebind that
-/// reaches the loopback port cannot tunnel a write through to the
-/// daemon's unauthenticated Phase A write surface.
+/// Three request guards run before any daemon connection is
+/// opened (`DECISIONS.md §15`):
+///
+/// 1. **Loopback `Host`.** Every request must name a loopback
+///    host (`localhost`, `127.0.0.0/8`, `[::1]`); anything else is
+///    a `403 web_forbidden_host`. This is the DNS-rebind defense:
+///    a rebound page carries its own hostname in `Host`.
+/// 2. **Method/path allowlist.** `GET` and `HEAD` pass on every
+///    path. Writes pass only on the exact routes in
+///    [`WRITE_ROUTES`]; any other method is a `405`.
+/// 3. **Same-origin writes.** An allowlisted write must carry an
+///    `Origin` equal to `http://<Host>`; otherwise `403
+///    web_cross_origin`. `SameSite=Strict` alone doesn't cover
+///    this — every `localhost` port is the same *site*.
+///
+/// The proxy does not authenticate: cookies and `Authorization`
+/// headers pass through untouched and the daemon decides.
 pub(crate) async fn handler(
     State(state): State<ProxyState>,
     request: Request<Body>,
 ) -> Result<Response<Body>, ProxyError> {
-    if !is_phase_a_allowed_method(request.method()) {
-        return Ok(method_not_allowed_response());
+    let Some(host) = request_host(&request) else {
+        return Ok(json_error_response(
+            StatusCode::FORBIDDEN,
+            "web_forbidden_host",
+            "request carries no Host header; kairo-web serves loopback hosts only",
+        ));
+    };
+    if !is_loopback_host(&host) {
+        return Ok(json_error_response(
+            StatusCode::FORBIDDEN,
+            "web_forbidden_host",
+            &format!("Host {host:?} is not a loopback host; kairo-web serves loopback hosts only"),
+        ));
     }
+
+    let method = request.method();
+    if method != Method::GET && method != Method::HEAD {
+        if !is_write_route(method, request.uri().path()) {
+            return Ok(method_not_allowed_response(request.uri().path()));
+        }
+        if !is_same_origin(request.headers(), &host) {
+            return Ok(json_error_response(
+                StatusCode::FORBIDDEN,
+                "web_cross_origin",
+                &format!("write requests must carry Origin: http://{host}"),
+            ));
+        }
+    }
+
     let socket_path = Arc::clone(&state.daemon_socket);
     forward(socket_path.as_path(), request).await
 }
 
-/// Phase A method allowlist. Exactly `GET` and `HEAD`. Pinned to
-/// these two by `DECISIONS.md §13` sub-decision 5; widening this
-/// set lifts the POST-block invariant.
-fn is_phase_a_allowed_method(method: &Method) -> bool {
-    method == Method::GET || method == Method::HEAD
+/// The browser write surface: exact `(method, path)` pairs the
+/// proxy forwards beyond `GET`/`HEAD`. Pinned by `DECISIONS.md
+/// §15` sub-decision 2; widening this list widens what a browser
+/// can ask the daemon to do.
+const WRITE_ROUTES: &[(Method, &str)] = &[
+    (Method::POST, "/api/v1/sessions"),
+    (Method::DELETE, "/api/v1/sessions/current"),
+    (Method::POST, "/api/v1/statements"),
+];
+
+fn is_write_route(method: &Method, path: &str) -> bool {
+    WRITE_ROUTES
+        .iter()
+        .any(|(route_method, route_path)| route_method == method && *route_path == path)
 }
 
-/// Build the `405 Method Not Allowed` response returned for any
-/// non-`GET`/`HEAD` method during Phase A.
-fn method_not_allowed_response() -> Response<Body> {
-    let body = concat!(
-        "kairo-web rejects this method during the daemon write-path Phase A.\n",
-        "\n",
-        "The browser proxy forwards GET and HEAD only. The daemon's write\n",
-        "surface is reachable over the local Unix socket; signed-request\n",
-        "auth (Phase B) is the prerequisite for any browser write path.\n",
-        "\n",
-        "For local writes, use the CLI: e.g., `kairo trust grant`, `kairo\n",
-        "revision create`, `kairo capability grant`.\n",
+/// The request's authority: the `Host` header on HTTP/1.1, the
+/// URI authority (`:authority`) on HTTP/2.
+fn request_host(request: &Request<Body>) -> Option<String> {
+    request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .or_else(|| request.uri().authority().map(|a| a.as_str().to_owned()))
+}
+
+/// Whether an authority (`host[:port]`) names a loopback host.
+/// Any port is accepted: the Vite dev server forwards its own
+/// `Host` (`localhost:5173`) through to this proxy.
+fn is_loopback_host(authority: &str) -> bool {
+    let host = if let Some(rest) = authority.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((v6, port)) if port.is_empty() || port.starts_with(':') => v6,
+            _ => return false,
+        }
+    } else {
+        authority
+            .rsplit_once(':')
+            .map_or(authority, |(host, _port)| host)
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Whether the request's `Origin` is exactly `http://<host>`.
+/// Missing, `null`, and `https://` origins all fail: kairo-web is
+/// loopback HTTP only, so a legitimate same-origin page can only
+/// be served from `http://<host>`.
+fn is_same_origin(headers: &axum::http::HeaderMap, host: &str) -> bool {
+    headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|origin| origin.strip_prefix("http://"))
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+}
+
+/// Build the `405 Method Not Allowed` response for a method the
+/// proxy doesn't forward on `path`. `Allow` lists `GET, HEAD`
+/// plus whichever write methods [`WRITE_ROUTES`] opens on it.
+fn method_not_allowed_response(path: &str) -> Response<Body> {
+    let mut allow = String::from("GET, HEAD");
+    for (method, _) in WRITE_ROUTES.iter().filter(|(_, p)| *p == path) {
+        allow.push_str(", ");
+        allow.push_str(method.as_str());
+    }
+    let mut resp = json_error_response(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "web_method_not_allowed",
+        &format!(
+            "kairo-web forwards GET and HEAD on every path, and writes only on \
+             POST /api/v1/sessions, DELETE /api/v1/sessions/current, and \
+             POST /api/v1/statements; this path allows {allow}"
+        ),
+    );
+    if let Ok(value) = HeaderValue::from_str(&allow) {
+        resp.headers_mut().insert(axum::http::header::ALLOW, value);
+    }
+    resp
+}
+
+/// Build a response carrying the daemon's error-envelope shape so
+/// browser clients have one error format to handle.
+fn json_error_response(status: StatusCode, code: &str, message: &str) -> Response<Body> {
+    let body = format!(
+        r#"{{"ok":false,"schema":"kairo.api.error.v1","error":{{"code":{},"message":{}}}}}"#,
+        json_string(code),
+        json_string(message)
     );
     let mut resp = Response::new(Body::from(body));
-    *resp.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
-    resp.headers_mut().insert(
-        axum::http::header::ALLOW,
-        HeaderValue::from_static("GET, HEAD"),
-    );
+    *resp.status_mut() = status;
     resp.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
-        HeaderValue::from_static("text/plain; charset=utf-8"),
+        HeaderValue::from_static("application/json"),
     );
     resp
 }
@@ -167,19 +275,7 @@ impl IntoResponse for ProxyError {
                 (StatusCode::BAD_REQUEST, self.to_string())
             }
         };
-        // JSON envelope mirrors the daemon's error shape so
-        // browser clients have one error format to handle.
-        let body = format!(
-            r#"{{"ok":false,"schema":"kairo.api.error.v1","error":{{"code":"web_proxy_error","message":{}}}}}"#,
-            json_string(&message)
-        );
-        let mut resp = Response::new(Body::from(body));
-        *resp.status_mut() = status;
-        resp.headers_mut().insert(
-            axum::http::header::CONTENT_TYPE,
-            axum::http::HeaderValue::from_static("application/json"),
-        );
-        resp
+        json_error_response(status, "web_proxy_error", &message)
     }
 }
 
@@ -208,10 +304,8 @@ async fn forward(socket_path: &Path, request: Request<Body>) -> Result<Response<
     let (parts, body) = request.into_parts();
 
     // Drain the browser's body into bytes before opening the
-    // daemon connection. The Phase A allowlist (GET, HEAD) means
-    // this is empty in practice; the buffer lives here so the
-    // forwarder stays method-agnostic when Phase B widens the
-    // allowlist.
+    // daemon connection. Write bodies are small statement JSON;
+    // the daemon enforces its own write-body cap.
     let body_bytes = body
         .collect()
         .await
@@ -323,108 +417,220 @@ fn is_hop_by_hop(name: &str) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
-    //! Phase A POST-block invariant.
+    //! Request-guard invariants (`DECISIONS.md §15`).
     //!
     //! These tests drive `handler` directly with a deliberately
-    //! invalid daemon-socket path. A 405 short-circuit means the
-    //! handler never tries to `connect(2)`; if the filter
-    //! regressed, the bogus path would surface as a `Connect`
-    //! error and the assertion below would fail loudly.
-    //!
-    //! When Phase B lifts the POST-block, the allowlist will
-    //! widen — this test fixture pins `[GET, HEAD]` exactly so any
-    //! widening must update the test.
+    //! invalid daemon-socket path. A guard short-circuit means the
+    //! handler never tries to `connect(2)`; a request that passes
+    //! every guard surfaces as a `Connect` error instead. The
+    //! write allowlist is pinned exactly so any widening must
+    //! update a test.
     use super::*;
     use axum::extract::State;
     use http_body_util::BodyExt;
     use std::path::PathBuf;
 
+    const HOST: &str = "127.0.0.1:7878";
+    const ORIGIN: &str = "http://127.0.0.1:7878";
+
     fn state() -> State<ProxyState> {
         State(ProxyState::new(PathBuf::from(
-            "/nonexistent/phase-a-post-block.sock",
+            "/nonexistent/kairo-web-guard.sock",
         )))
     }
 
-    fn req(method: Method, path: &str) -> Request<Body> {
-        Request::builder()
-            .method(method)
-            .uri(path)
-            .body(Body::empty())
-            .expect("build req")
+    fn req(method: Method, path: &str, host: Option<&str>, origin: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(host) = host {
+            builder = builder.header(axum::http::header::HOST, host);
+        }
+        if let Some(origin) = origin {
+            builder = builder.header(axum::http::header::ORIGIN, origin);
+        }
+        builder.body(Body::empty()).expect("build req")
     }
 
-    #[tokio::test]
-    async fn allows_get() {
-        // GET passes the filter and proceeds to `forward`, which
-        // fails to connect to the bogus socket. That's the
-        // happy-path signal: the filter did *not* short-circuit.
-        let response = handler(state(), req(Method::GET, "/api/v1/version")).await;
-        let err = response.expect_err("expected Connect error past the filter");
-        assert!(matches!(err, ProxyError::Connect { .. }), "got {err:?}");
-    }
-
-    #[tokio::test]
-    async fn allows_head() {
-        let response = handler(state(), req(Method::HEAD, "/api/v1/version")).await;
-        let err = response.expect_err("expected Connect error past the filter");
-        assert!(matches!(err, ProxyError::Connect { .. }), "got {err:?}");
-    }
-
-    async fn assert_method_not_allowed(method: Method) {
-        let response = handler(state(), req(method.clone(), "/api/v1/anything"))
+    /// The request passed every guard and reached `forward`.
+    async fn assert_forwarded(request: Request<Body>) {
+        let label = format!("{} {}", request.method(), request.uri());
+        let err = handler(state(), request)
             .await
-            .unwrap_or_else(|err| panic!("{method} unexpectedly produced ProxyError: {err:?}"));
-
-        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{method}");
-        assert_eq!(
-            response.headers().get(axum::http::header::ALLOW).map(|v| v.to_str().unwrap_or("")),
-            Some("GET, HEAD"),
-            "{method}",
+            .expect_err("expected Connect error past the guards");
+        assert!(
+            matches!(err, ProxyError::Connect { .. }),
+            "{label}: got {err:?}"
         );
-        assert_eq!(
-            response
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .map(|v| v.to_str().unwrap_or("")),
-            Some("text/plain; charset=utf-8"),
-            "{method}",
-        );
+    }
 
-        let body_bytes = response
-            .into_body()
-            .collect()
+    /// The request was short-circuited with `status` and `code`.
+    async fn assert_rejected(
+        request: Request<Body>,
+        status: StatusCode,
+        code: &str,
+    ) -> Response<Body> {
+        let label = format!("{} {}", request.method(), request.uri());
+        let response = handler(state(), request)
             .await
-            .expect("collect body")
-            .to_bytes();
+            .unwrap_or_else(|err| panic!("{label} unexpectedly produced ProxyError: {err:?}"));
+        assert_eq!(response.status(), status, "{label}");
+        let (parts, body) = response.into_parts();
+        let body_bytes = body.collect().await.expect("collect body").to_bytes();
         let body_text = std::str::from_utf8(&body_bytes).expect("utf-8 body");
         assert!(
-            body_text.contains("Phase A"),
-            "{method} body missing Phase A explanation: {body_text}",
+            body_text.contains(&format!(r#""code":"{code}""#)),
+            "{label} body missing code {code}: {body_text}",
+        );
+        Response::from_parts(parts, Body::empty())
+    }
+
+    #[tokio::test]
+    async fn forwards_reads_without_origin() {
+        assert_forwarded(req(Method::GET, "/api/v1/version", Some(HOST), None)).await;
+        assert_forwarded(req(Method::HEAD, "/api/v1/version", Some(HOST), None)).await;
+    }
+
+    #[tokio::test]
+    async fn forwards_allowlisted_writes_with_same_origin() {
+        for (method, path) in WRITE_ROUTES {
+            assert_forwarded(req(method.clone(), path, Some(HOST), Some(ORIGIN))).await;
+        }
+    }
+
+    #[test]
+    fn write_allowlist_is_pinned() {
+        let routes: Vec<(&str, &str)> = WRITE_ROUTES
+            .iter()
+            .map(|(method, path)| (method.as_str(), *path))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("POST", "/api/v1/sessions"),
+                ("DELETE", "/api/v1/sessions/current"),
+                ("POST", "/api/v1/statements"),
+            ]
         );
     }
 
     #[tokio::test]
-    async fn blocks_post() {
-        assert_method_not_allowed(Method::POST).await;
+    async fn accepts_every_loopback_host_spelling() {
+        for host in [
+            "localhost:5173",
+            "LOCALHOST",
+            "127.0.0.1",
+            "127.9.9.9:80",
+            "[::1]:7878",
+            "[::1]",
+        ] {
+            let origin = format!("http://{host}");
+            assert_forwarded(req(Method::GET, "/api/v1/version", Some(host), None)).await;
+            assert_forwarded(req(
+                Method::POST,
+                "/api/v1/statements",
+                Some(host),
+                Some(&origin),
+            ))
+            .await;
+        }
     }
 
     #[tokio::test]
-    async fn blocks_put() {
-        assert_method_not_allowed(Method::PUT).await;
+    async fn rejects_non_loopback_host() {
+        for host in [
+            "evil.example:7878",
+            "evil.example",
+            "localhost.evil.example",
+            "192.168.1.10:7878",
+            "[::2]:7878",
+            "[::1]x",
+            "",
+        ] {
+            assert_rejected(
+                req(Method::GET, "/api/v1/version", Some(host), None),
+                StatusCode::FORBIDDEN,
+                "web_forbidden_host",
+            )
+            .await;
+        }
     }
 
     #[tokio::test]
-    async fn blocks_patch() {
-        assert_method_not_allowed(Method::PATCH).await;
+    async fn rejects_missing_host() {
+        assert_rejected(
+            req(Method::GET, "/api/v1/version", None, None),
+            StatusCode::FORBIDDEN,
+            "web_forbidden_host",
+        )
+        .await;
     }
 
     #[tokio::test]
-    async fn blocks_delete() {
-        assert_method_not_allowed(Method::DELETE).await;
+    async fn rejects_writes_without_matching_origin() {
+        for origin in [
+            None,
+            Some("null"),
+            Some("http://localhost:3000"),
+            Some("http://127.0.0.1:7879"),
+            Some("https://127.0.0.1:7878"),
+            Some("http://evil.example"),
+        ] {
+            assert_rejected(
+                req(Method::POST, "/api/v1/statements", Some(HOST), origin),
+                StatusCode::FORBIDDEN,
+                "web_cross_origin",
+            )
+            .await;
+        }
     }
 
     #[tokio::test]
-    async fn blocks_options() {
-        assert_method_not_allowed(Method::OPTIONS).await;
+    async fn rejects_methods_off_the_allowlist() {
+        let cases = [
+            (Method::PUT, "/api/v1/statements", "GET, HEAD, POST"),
+            (Method::DELETE, "/api/v1/statements", "GET, HEAD, POST"),
+            (
+                Method::POST,
+                "/api/v1/sessions/current",
+                "GET, HEAD, DELETE",
+            ),
+            (Method::DELETE, "/api/v1/sessions", "GET, HEAD, POST"),
+            (Method::POST, "/api/v1/statements/", "GET, HEAD"),
+            (Method::POST, "/api/v1/anything", "GET, HEAD"),
+            (Method::PATCH, "/api/v1/anything", "GET, HEAD"),
+            (Method::OPTIONS, "/api/v1/statements", "GET, HEAD, POST"),
+        ];
+        for (method, path, allow) in cases {
+            // Same-origin, so the 405 is the method guard, not the
+            // origin guard.
+            let response = assert_rejected(
+                req(method.clone(), path, Some(HOST), Some(ORIGIN)),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "web_method_not_allowed",
+            )
+            .await;
+            assert_eq!(
+                response
+                    .headers()
+                    .get(axum::http::header::ALLOW)
+                    .and_then(|v| v.to_str().ok()),
+                Some(allow),
+                "{method} {path}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn host_guard_runs_before_method_guard() {
+        assert_rejected(
+            req(
+                Method::POST,
+                "/api/v1/sessions",
+                Some("evil.example"),
+                Some("http://evil.example"),
+            ),
+            StatusCode::FORBIDDEN,
+            "web_forbidden_host",
+        )
+        .await;
     }
 }

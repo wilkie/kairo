@@ -381,6 +381,14 @@ WEB_CLIENT.md`) is load-bearing for the session threat model and
 must be reasserted by an integration test that boots `kairo-web`
 and verifies non-loopback binds still fail.
 
+**Write routes.** `POST /api/v1/sessions` and `DELETE
+/api/v1/sessions/current` (and cookie-mode `POST
+/api/v1/statements`) pass the proxy only under the exact route
+allowlist, loopback-`Host` check, and same-origin `Origin` check
+locked in `DECISIONS.md` §15. Until that lift, the proxy's
+method filter blocked them, so this slice's sign-in flow was
+exercised only against MSW mocks.
+
 ---
 
 ## 5. Frontend

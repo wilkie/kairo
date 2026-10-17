@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **Browser write path (`PHASE_2.md` §16,
+  `PHASE_2_WEB_WRITES.md`, `DECISIONS.md §15`).** `POST
+  /api/v1/statements` accepts an unsigned `{ body_kind, body }`
+  under a `kairo_session` cookie; the daemon signs as the session
+  actor and runs the same verification and capability checks as
+  signed mode (`ObjectGenesis` excluded for now; both
+  credentials at once is `400 ambiguous_auth`). The web inspector
+  gains trust-opinion and branch create/update dialogs on top of
+  it.
+
 - **Daemon write-path Phase B — signed-request auth +
   capability authz (`PHASE_2.md` §15.1,
   `PHASE_2_DAEMON_AUTH.md`, `DECISIONS.md §14`).** The daemon's
@@ -204,6 +214,19 @@ rather than per-commit.
 - **MSRV: Rust 1.95.** Pinned in `[workspace.package].rust-version`.
 
 ### Changed
+
+- **`kairo-web` lifts its POST-block for an exact allowlist
+  (`DECISIONS.md §15`).** The proxy now forwards `POST
+  /api/v1/sessions`, `DELETE /api/v1/sessions/current`, and
+  `POST /api/v1/statements` in addition to `GET`/`HEAD`, so
+  sign-in and browser writes reach a real daemon (previously they
+  worked only against MSW mocks). Every request must carry a
+  loopback `Host` (`403 web_forbidden_host` otherwise — DNS-rebind
+  defense); writes must carry `Origin: http://<Host>` (`403
+  web_cross_origin`). Off-allowlist methods are `405
+  web_method_not_allowed` with a per-path `Allow` header and a
+  JSON error envelope instead of plain text. `kairo web status`
+  now sends the dialed loopback address as `Host`.
 
 - Renamed `kairo actor recover-key import` and `kairo actor
   add-attestation-key import` to `submit` for symmetry with

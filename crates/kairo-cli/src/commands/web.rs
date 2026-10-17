@@ -181,7 +181,9 @@ async fn probe_version(addr: &SocketAddr) -> Result<VersionPair, ()> {
     let req = Request::builder()
         .method("GET")
         .uri("/api/v1/version")
-        .header("host", "kairo-web")
+        // kairo-web rejects non-loopback `Host` values
+        // (DECISIONS.md §15); name the address we dialed.
+        .header("host", addr.to_string())
         .body(Empty::<Bytes>::new())
         .map_err(|_| ())?;
     let resp = sender.send_request(req).await.map_err(|_| ())?;

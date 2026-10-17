@@ -7,6 +7,10 @@
 //! - An HTML5-route path (e.g., `/objects/abc`) falls back to
 //!   `index.html` instead of 404.
 //! - Binding to a non-loopback address errors at startup.
+//! - The browser write surface (`DECISIONS.md §15`): session
+//!   sign-in / cookie-mode write / sign-out round-trip through
+//!   the proxy to a real daemon, and rebound-`Host`,
+//!   cross-origin, and off-allowlist requests are refused.
 //!
 //! The harness spins up a kairo-daemon in-process over a tempdir
 //! and a kairo-web in-process on `127.0.0.1:0` (ephemeral port)
@@ -34,7 +38,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
@@ -153,14 +157,19 @@ async fn wait_for_tcp(addr: &SocketAddr, max: Duration) {
 }
 
 async fn http_get_tcp(addr: &SocketAddr, path: &str) -> (hyper::StatusCode, Bytes) {
-    let (status, _, body) = http_request_tcp(addr, "GET", path).await;
+    let (status, _, body) = http_request_tcp(addr, "GET", path, &[], Bytes::new()).await;
     (status, body)
 }
 
+/// Send one request to the web front-end. `Host` is always the
+/// dialed loopback address (the proxy rejects anything else);
+/// `extra_headers` may override it.
 async fn http_request_tcp(
     addr: &SocketAddr,
     method: &str,
     path: &str,
+    extra_headers: &[(&str, &str)],
+    body: Bytes,
 ) -> (hyper::StatusCode, hyper::HeaderMap, Bytes) {
     let stream = TcpStream::connect(addr).await.expect("connect");
     let io = TokioIo::new(stream);
@@ -170,12 +179,19 @@ async fn http_request_tcp(
     let conn_task = tokio::spawn(async move {
         let _ = conn.await;
     });
-    let req = Request::builder()
+    let mut builder = Request::builder()
         .method(method)
         .uri(path)
-        .header("host", "test")
-        .body(Empty::<Bytes>::new())
-        .expect("build req");
+        .header("host", addr.to_string());
+    if let Some(headers) = builder.headers_mut() {
+        for (name, value) in extra_headers {
+            headers.insert(
+                hyper::header::HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                hyper::header::HeaderValue::from_str(value).expect("header value"),
+            );
+        }
+    }
+    let req = builder.body(Full::new(body)).expect("build req");
     let resp = sender.send_request(req).await.expect("send");
     let status = resp.status();
     let headers = resp.headers().clone();
@@ -364,59 +380,201 @@ async fn refuses_non_loopback_bind() {
     drop(store_dir);
 }
 
+/// `kairo_session=<id>` from a `Set-Cookie` header, ready to
+/// send back as a `Cookie` header.
+fn session_cookie(headers: &hyper::HeaderMap) -> String {
+    headers
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find_map(|v| {
+            v.split(';')
+                .next()
+                .filter(|kv| kv.starts_with("kairo_session="))
+        })
+        .expect("kairo_session Set-Cookie")
+        .to_owned()
+}
+
 #[tokio::test]
-async fn rejects_post_with_405_during_phase_a() {
-    // Phase A POST-block invariant (DECISIONS.md §13 sub-decision 5):
-    // the proxy refuses every method other than GET/HEAD with a 405,
-    // so an XSS or DNS-rebind can't tunnel a write through to the
-    // daemon's filesystem-perms-only Phase A write surface.
-    let (store_dir, _fixture) = StoreFixture::temp();
+async fn browser_session_write_round_trips_through_proxy() {
+    // DECISIONS.md §15: the proxy forwards the session lifecycle
+    // and cookie-mode statement writes end-to-end to a real
+    // daemon, with the cookie riding through in both directions.
+    let (store_dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let bob = fixture.make_actor();
     let store_path = store_dir.path().to_path_buf();
-    drop(_fixture);
+    drop(fixture);
 
     let daemon_handle = spawn_daemon(store_path.clone()).await;
-    let spa_dir = write_spa_dir();
-
     let (web_addr, web_handle) = spawn_web(WebConfig {
         bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
-        spa_dir: Some(spa_dir.path().to_path_buf()),
+        spa_dir: None,
         daemon_socket: store_path.join("daemon.sock"),
         pid_file: None,
     })
     .await;
+    let origin = format!("http://{web_addr}");
+    let json_write = [
+        ("origin", origin.as_str()),
+        ("content-type", "application/json"),
+    ];
 
-    for method in ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"] {
-        let (status, headers, body) =
-            http_request_tcp(&web_addr, method, "/api/v1/statements").await;
-        assert_eq!(
-            status,
-            hyper::StatusCode::METHOD_NOT_ALLOWED,
-            "{method} should be 405"
-        );
-        assert_eq!(
-            headers
-                .get("allow")
-                .and_then(|v| v.to_str().ok()),
-            Some("GET, HEAD"),
-            "{method} Allow header"
-        );
-        let body_text = std::str::from_utf8(&body).expect("utf-8 body");
-        assert!(
-            body_text.contains("Phase A"),
-            "{method} body missing Phase A explanation: {body_text}"
-        );
-    }
+    // Sign in as Alice.
+    let sign_in = serde_json::json!({ "actor_id": alice.actor_id.to_string() });
+    let (status, headers, body) = http_request_tcp(
+        &web_addr,
+        "POST",
+        "/api/v1/sessions",
+        &json_write,
+        Bytes::from(sign_in.to_string()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        hyper::StatusCode::CREATED,
+        "sign-in: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let cookie = session_cookie(&headers);
 
-    // GET still works — the proxy is alive, the filter is method-
-    // scoped, and a real daemon read passes through unchanged.
-    let (status, body) = http_get_tcp(&web_addr, "/api/v1/version").await;
+    // The session reads back through the proxy.
+    let (status, _, body) = http_request_tcp(
+        &web_addr,
+        "GET",
+        "/api/v1/sessions/current",
+        &[("cookie", &cookie)],
+        Bytes::new(),
+    )
+    .await;
     assert_eq!(status, hyper::StatusCode::OK);
     let envelope: serde_json::Value = serde_json::from_slice(&body).expect("parse JSON");
-    assert_eq!(envelope["ok"], true, "envelope: {envelope}");
+    assert_eq!(envelope["result"]["actor_id"], alice.actor_id.to_string());
+
+    // Cookie-mode write: the daemon signs an ActorTrust as Alice.
+    let write = serde_json::json!({
+        "body_kind": "ActorTrust",
+        "body": {
+            "trusted_actor": bob.actor_id.to_string(),
+            "decision": "trusted",
+            "reason": "kairo-web proxy round trip",
+        },
+    });
+    let mut write_headers = json_write.to_vec();
+    write_headers.push(("cookie", &cookie));
+    let (status, _, body) = http_request_tcp(
+        &web_addr,
+        "POST",
+        "/api/v1/statements",
+        &write_headers,
+        Bytes::from(write.to_string()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        hyper::StatusCode::OK,
+        "write: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let envelope: serde_json::Value = serde_json::from_slice(&body).expect("parse JSON");
+    let statement = &envelope["result"]["statement"];
+    assert_eq!(statement["type"], "ActorTrust");
+    assert_eq!(statement["actor"], alice.actor_id.to_string());
+
+    // Sign out, then the same cookie can no longer write.
+    let (status, _, _) = http_request_tcp(
+        &web_addr,
+        "DELETE",
+        "/api/v1/sessions/current",
+        &[("origin", origin.as_str()), ("cookie", &cookie)],
+        Bytes::new(),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::NO_CONTENT);
+    let (status, _, _) = http_request_tcp(
+        &web_addr,
+        "POST",
+        "/api/v1/statements",
+        &write_headers,
+        Bytes::from(write.to_string()),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::UNAUTHORIZED);
 
     web_handle.shutdown().await;
     daemon_handle.shutdown().await;
-    drop(spa_dir);
+    drop(store_dir);
+}
+
+#[tokio::test]
+async fn rejects_rebound_cross_origin_and_off_allowlist_requests() {
+    let (store_dir, fixture) = StoreFixture::temp();
+    let alice = fixture.make_actor();
+    let store_path = store_dir.path().to_path_buf();
+    drop(fixture);
+
+    let daemon_handle = spawn_daemon(store_path.clone()).await;
+    let (web_addr, web_handle) = spawn_web(WebConfig {
+        bind_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        spa_dir: None,
+        daemon_socket: store_path.join("daemon.sock"),
+        pid_file: None,
+    })
+    .await;
+    let sign_in =
+        Bytes::from(serde_json::json!({ "actor_id": alice.actor_id.to_string() }).to_string());
+
+    // DNS rebind: the page's own hostname arrives in `Host`.
+    let (status, _, body) = http_request_tcp(
+        &web_addr,
+        "POST",
+        "/api/v1/sessions",
+        &[
+            ("host", "rebind.example"),
+            ("origin", "http://rebind.example"),
+        ],
+        sign_in.clone(),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("web_forbidden_host"));
+
+    // Another localhost port: same site, different origin.
+    let (status, headers, body) = http_request_tcp(
+        &web_addr,
+        "POST",
+        "/api/v1/sessions",
+        &[("origin", "http://localhost:3000")],
+        sign_in,
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("web_cross_origin"));
+    assert!(headers.get("set-cookie").is_none(), "no session minted");
+
+    // Off-allowlist method.
+    let origin = format!("http://{web_addr}");
+    let (status, headers, _) = http_request_tcp(
+        &web_addr,
+        "PUT",
+        "/api/v1/statements",
+        &[("origin", origin.as_str())],
+        Bytes::new(),
+    )
+    .await;
+    assert_eq!(status, hyper::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        headers.get("allow").and_then(|v| v.to_str().ok()),
+        Some("GET, HEAD, POST")
+    );
+
+    // Reads need no Origin and still pass.
+    let (status, _) = http_get_tcp(&web_addr, "/api/v1/version").await;
+    assert_eq!(status, hyper::StatusCode::OK);
+
+    web_handle.shutdown().await;
+    daemon_handle.shutdown().await;
     drop(store_dir);
 }
 

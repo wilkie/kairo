@@ -883,17 +883,19 @@ Authorization is a capability lookup against the existing
 The read surface remains unauthenticated regardless — its
 trust model is the Unix socket's filesystem permissions.
 
-**Post-Phase B.** The daemon stays a single-mechanism auth
-surface. JWT, OIDC, cookies, WebAuthn, and other browser-
-facing schemes belong in `kairo-web` (Phase 2 §5), which
-terminates them and forwards to the daemon over the Unix
-socket using its own actor key (or a delegated capability) —
-never a forwarded user token. This is the same auth mechanism
-federation peers will use, so the daemon, federation, and (via
-the web server) the browser share one identity model. The
-`kairo-web` POST-block stays in place during Phase B per
-`DECISIONS.md` §14 sub-decision 7; lifting it is a separate
-decision tied to the web inspector's login design.
+**Post-Phase B.** The daemon's authorization model stays
+single-mechanism: every write resolves to an `actor_id` and
+runs the same capability check. Two authentication front ends
+produce that `actor_id`: the `Authorization: KairoActor1`
+signed request (CLI today; federation peers and browser-held
+keys later) and the loopback-only `kairo_session` cookie, for
+which the daemon signs on the session actor's behalf
+(`DECISIONS.md` §15, `PHASE_2_WEB_CLIENT_AUTH.md`). Sessions
+live in the daemon, not `kairo-web`, so the proxy never holds
+key material (`PHASE_2_WEB_CLIENT_AUTH.md` §2.2). JWT, OIDC,
+WebAuthn, and other schemes for non-loopback, multi-user
+deployments stay out of the daemon. `kairo-web` forwards only
+the write routes `DECISIONS.md` §15 allowlists.
 
 ---
 

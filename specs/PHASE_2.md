@@ -1157,7 +1157,7 @@ The read surface stays unauthenticated (loopback Unix socket +
 filesystem perms is unchanged for reads). `kairo-web`'s
 POST-block stays in place for the duration of Phase B; lifting
 it is a separate decision-and-slice unit tied to the web
-inspector's login design.
+inspector's login design — now §16 / `DECISIONS.md` §15.
 
 Shape is locked in `DECISIONS.md` §14; slice plan in
 `specs/PHASE_2_DAEMON_AUTH.md`.
@@ -1204,7 +1204,8 @@ auth, federation peer auth, mutual TLS, server-side nonce cache,
 per-actor rate limiting, attestation-surface request signing,
 browser-side keystore. The `kairo-web` POST-block stays in
 place; lifting it is tied to the web inspector's login design
-(see `PHASE_2_DAEMON_AUTH.md §6` for the forward-pointer).
+(see `PHASE_2_DAEMON_AUTH.md §6` for the forward-pointer; done
+in §16).
 
 **Why it matters:** every downstream surface that needs a single
 coordination layer for writes (federation, multi-actor workflows,
@@ -1212,6 +1213,53 @@ the eventual browser-side write surface) wants the daemon to be
 the write authority — not parallel direct-mode CLIs racing each
 other through filesystem advisory locks. Phase A proves the
 data-plane sliver; Phase B layers trust on after.
+
+### 16. Web Client Writes
+
+§5 shipped a read-only inspector and `PHASE_2_WEB_CLIENT_AUTH.md`
+added daemon-side sessions plus an actor picker. This section
+turns the signed-in inspector into a write surface: the daemon
+signs cookie-mode statements for the session actor, and
+`kairo-web` lifts its POST-block for an exact route allowlist.
+
+Shape is locked in `DECISIONS.md` §15; slice plan in
+`specs/PHASE_2_WEB_WRITES.md`.
+
+Bullets, by slice (see `PHASE_2_WEB_WRITES.md` §3):
+
+- [x] Slice 1 — Daemon session-mode signing. `POST
+      /api/v1/statements` accepts `{ body_kind, body }` under a
+      `kairo_session` cookie for every Phase B kind except
+      `ObjectGenesis`; `400 ambiguous_auth` when both credentials
+      are present. `kairo-daemon-client::Client::write_via_session`.
+- [x] Slice 2 — Trust-opinion dialog on the actor page
+      (`useCreateTrustOpinion`, `<TrustOpinionDialog />`).
+- [x] Slice 3 — Branch create/update dialog on the object page
+      (`useUpdateBranch`, `<BranchUpdateDialog />`).
+- [x] Slice 4 — `kairo-web` POST-block lift: exact write-route
+      allowlist, loopback-`Host` guard on every request,
+      same-origin `Origin` guard on writes; real-daemon
+      round-trip test through the proxy; `kairo web status`
+      probe sends a loopback `Host`.
+- [ ] Slice 5 — Version-tag dialog (`ObjectVersionTag`).
+- [ ] Slice 6 — Capability grant / revoke dialogs
+      (`ActorCapabilityGrant`, `ActorCapabilityRevocation`).
+- [ ] Slice 7 — Session-mode `ObjectGenesis` helper + create-
+      object flow.
+- [ ] Slice 8 — Real-stack Playwright run (daemon + `kairo-web`
+      + built SPA, no MSW) covering sign-in and one write;
+      `CHANGELOG.md` / `WEB_CLIENT.md` close-out.
+
+**Deliberately deferred:** `ObjectRevision` from the browser
+(needs a design for naming a Git tree the browser can't build),
+browser-held keys, passphrase sign-in, persisted sessions, TLS /
+non-loopback exposure.
+
+**Why it matters:** the inspector becomes the first non-CLI
+client of the authorized write path, exercising capability
+enforcement from a second surface before federation adds a third.
+
+**Depends on:** §5, §15 / §15.1, `PHASE_2_WEB_CLIENT_AUTH.md`.
 
 ## After Phase 2
 

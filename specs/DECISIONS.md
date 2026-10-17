@@ -718,7 +718,9 @@ Eight sub-decisions for Phase A, locked together:
    key — the same path `kairo-statement::verify` uses — and
    refuses the write if verification fails. Keeps the daemon
    stateless w.r.t. key material; mirrors how federation peers
-   will sign in Phase B.
+   will sign in Phase B. *(Superseded for session-cookie writes
+   by §15 sub-decision 1; still holds for signed-envelope
+   writes.)*
 
 4. **Validation: re-run the data-model invariants the store
    already enforces.** Phase A's write handler runs the same
@@ -735,7 +737,7 @@ Eight sub-decisions for Phase A, locked together:
    Phase A. Lifts in Phase B when the signed-request envelope is
    in place. Without this guard, a browser-side XSS or DNS-rebind
    could reach the daemon's write surface through the loopback
-   TCP proxy.
+   TCP proxy. *(Lifted for an exact route allowlist by §15.)*
 
 6. **CLI dispatch: writes follow the same probe-and-fall-back
    rules as reads.** Once a write endpoint exists for a given
@@ -913,7 +915,8 @@ Eight sub-decisions for Phase B, locked together:
    Future "web inspector login + browser writes" lifts the
    POST-block as part of that work, not as a side effect of
    Phase B. This decision keeps Phase B's blast radius to one
-   crate boundary (the CLI ↔ daemon channel).
+   crate boundary (the CLI ↔ daemon channel). *(That work is
+   §15.)*
 
 8. **Out of scope for Phase B.** Web auth (per (7)); federation
    peer auth (Phase 2 §4 work; uses the same actor-signing
@@ -952,3 +955,121 @@ Affected specs:
   about the user-facing command shape changes.
 - `WEB_CLIENT.md` — the POST-block remains; cross-link to the
   future "web inspector login" decision.
+
+---
+
+## 15. Browser Write Path via `kairo-web`
+
+Decision: the web inspector writes statements through the daemon
+using **daemon-side session signing**, and `kairo-web` lifts its
+POST-block for an **exact route allowlist** guarded by a
+**loopback-`Host` check** and a **same-origin `Origin` check**.
+This is the "web inspector login + browser writes" decision that
+§13 sub-decision 5 and §14 sub-decision 7 deferred to. Session
+machinery itself (in-memory daemon sessions, `HttpOnly;
+SameSite=Strict` cookie, actor picker) is specified in
+`PHASE_2_WEB_CLIENT_AUTH.md`; the slice plan for this decision is
+`PHASE_2_WEB_WRITES.md`.
+
+Seven sub-decisions, locked together:
+
+1. **Daemon signs for session-mode writes.** `POST
+   /api/v1/statements` accepts two payload shapes
+   (`PHASE_2_WEB_CLIENT_AUTH.md` §2.3): a client-signed envelope
+   under `Authorization: KairoActor1` (Phase B, unchanged), or an
+   unsigned `{ body_kind, body }` under a `kairo_session` cookie.
+   In cookie mode the daemon loads the session actor's signing
+   key from the local keystore, stamps `created_at`, signs, and
+   dispatches through the same verification, capability check,
+   and `put_*` path as signed mode. Both credentials on one
+   request is `400 ambiguous_auth`; neither is `401`. This
+   **replaces §13 sub-decision 3 ("the daemon never holds private
+   keys") for cookie mode only**: the daemon reads the same
+   `~/.kairo/keys/` the CLI on that host already reads, so the
+   set of principals that can sign as a local actor does not
+   grow. Signed mode keeps sub-decision 3 as written.
+   `ObjectGenesis` is excluded from cookie mode until its
+   asymmetric envelope gets a dedicated helper; the
+   four attestation-surface kinds stay CLI-only (§14
+   sub-decision 8).
+
+2. **Proxy write allowlist is exact `(method, path)` pairs.**
+   `kairo-web` forwards `GET` and `HEAD` on every `/api/v1/*`
+   path, plus exactly:
+
+   | Method   | Path                        |
+   |----------|-----------------------------|
+   | `POST`   | `/api/v1/sessions`          |
+   | `DELETE` | `/api/v1/sessions/current`  |
+   | `POST`   | `/api/v1/statements`        |
+
+   Every other method/path is `405 web_method_not_allowed` with
+   an `Allow` header listing `GET, HEAD` plus any allowlisted
+   method on that path. No prefix matching, no trailing-slash
+   tolerance. A new browser write route is a change to this
+   table.
+
+3. **Loopback `Host` on every request.** Before the method check,
+   the proxy requires the request's `Host` (or HTTP/2
+   `:authority`) to name `localhost`, an address in
+   `127.0.0.0/8`, or `[::1]`, on any port; otherwise `403
+   web_forbidden_host`. This is the DNS-rebind defense: a
+   rebound page carries its own hostname in `Host`. It is
+   load-bearing for writes because `POST /api/v1/sessions` takes
+   no prior credential — without it a rebound page could mint a
+   session cookie scoped to its own origin and write as any
+   keystore actor. Applying it to reads also stops rebound pages
+   from reading the keystore actor list. Any port is accepted so
+   the Vite dev proxy (which forwards its own `Host`) keeps
+   working.
+
+4. **Same-origin `Origin` on writes.** An allowlisted write must
+   carry `Origin` equal to `http://<Host>` (ASCII
+   case-insensitive); missing, `null`, `https://`, or mismatched
+   origins are `403 web_cross_origin`. `SameSite=Strict` does not
+   cover this case: every `localhost` port is the same *site*, so
+   another local dev server could otherwise ride the cookie or
+   mint a session with a plain form post. Reads need no `Origin`.
+
+5. **The proxy stays auth-agnostic.** `kairo-web` does not read
+   the session cookie or `Authorization` header; both pass
+   through and the daemon is the only authentication and
+   authorization authority. The proxy's guards are request-shape
+   checks, not identity checks. This keeps the §11 two-process
+   split: no keystore or session state in `kairo-web`.
+
+6. **No CORS.** The proxy emits no `Access-Control-*` headers and
+   `OPTIONS` stays `405`, so cross-origin preflights fail closed.
+   The only supported browser origin is the one `kairo-web` (or
+   the Vite dev server in front of it) serves.
+
+7. **Out of scope.** TLS and non-loopback binds (the loopback
+   invariant is what makes 3 and 4 sufficient — revisit both if
+   it changes), CSRF tokens (redundant with 4 under the loopback
+   model), browser-held keys, passphrase-protected sign-in,
+   persisted sessions, `ObjectGenesis` and `ObjectRevision` web
+   UIs (genesis waits on 1's helper; revisions need a design for
+   naming a Git tree the browser cannot build), and federation
+   peer auth.
+
+Rationale: the cookie path is the smallest change that gives the
+inspector real writes without inventing a second auth stack —
+sessions produce the same `actor_id` the signed path does, and
+capability enforcement is shared. Lifting the POST-block wholesale
+would re-open the exact XSS/rebind tunnel §13 closed; the exact
+allowlist plus `Host`/`Origin` checks close it again for the three
+routes that need to be open, without a token protocol.
+
+Affected specs:
+
+- `PHASE_2_WEB_WRITES.md` — new slice plan.
+- `PHASE_2.md` — new §16 tracking the slices; §15.1's "POST-block
+  stays" note points here.
+- `PHASE_2_WEB_CLIENT_AUTH.md` §4 — the proxy section now cites
+  this decision for the write allowlist and guards.
+- `DAEMON.md` §18 — "Post-Phase B" paragraph no longer says the
+  POST-block stays or that browser auth terminates in
+  `kairo-web`; sessions are daemon-side per
+  `PHASE_2_WEB_CLIENT_AUTH.md` §2.2.
+- §13 sub-decision 3 and 5, §14 sub-decision 7 — annotated as
+  superseded by this section where they conflict.
