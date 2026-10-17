@@ -400,12 +400,11 @@ impl Pull<'_> {
     /// some commit is missing, and is streamed straight into `git
     /// index-pack` in the object's format, never held in memory.
     ///
-    /// Only after every commit's full closure (commit, ancestors,
-    /// trees, blobs) is present does the object's repo get created
-    /// and the commits pinned. A failed check leaves no repo behind,
-    /// so this node never advertises a pack it can't serve. Objects
-    /// the peer's pack added to the shared pool stay there until
-    /// cache GC.
+    /// The pack is indexed in quarantine and only moves into the pool
+    /// if every missing commit's full closure (commit, ancestors,
+    /// trees, blobs) is in it. Only then is the object's repo created
+    /// and the commits pinned, so a failed pull leaves neither a repo
+    /// to advertise nor stray objects in the pool.
     fn git(
         &mut self,
         object: &ObjectId,
@@ -478,20 +477,21 @@ impl Pull<'_> {
             &format!("{API_PREFIX}/objects/{object}/git"),
             self.limits.max_git_bytes,
             self.limits.git_timeout,
+            // Quarantined ingest: the download streams into a
+            // temporary object directory with no lock held, and only a
+            // pack carrying every missing commit's full closure reaches
+            // the pool (DECISIONS.md §21).
             |reader| {
                 cache
-                    .ingest_pack_from(format, reader)
-                    .map_err(|e| PullError::Git(e.to_string()))
+                    .ingest_pack_from(format, reader, &missing)
+                    .map_err(|e| match e {
+                        kairo_git::GitError::IncompletePack { missing } => {
+                            PullError::GitIncomplete { missing }
+                        }
+                        other => PullError::Git(other.to_string()),
+                    })
             },
         )?;
-        let incomplete = cache
-            .missing_objects(&missing)
-            .map_err(|e| PullError::Git(e.to_string()))?;
-        if !incomplete.is_empty() {
-            return Err(PullError::GitIncomplete {
-                missing: incomplete.iter().map(ToString::to_string).collect(),
-            });
-        }
         for commit in &missing {
             cache
                 .set_ref(

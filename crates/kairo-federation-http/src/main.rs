@@ -42,6 +42,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "\
 usage: kairo-federation-http --store <path> --node-actor <id>
                              [--bind <addr>] [--base-url <url>] [--view-ttl <secs>]
+                             [--max-concurrent-packs <n>]
        kairo-federation-http --version
 
 Serves this node's published objects to federation peers over plain
@@ -98,6 +99,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut bind_addr: SocketAddr = DEFAULT_BIND;
     let mut base_url: Option<String> = None;
     let mut view_ttl = DEFAULT_VIEW_TTL;
+    let mut max_concurrent_packs: Option<usize> = None;
 
     while let Some(arg) = iter.next() {
         let mut value = |flag: &str| {
@@ -128,6 +130,13 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                     .map_err(|error| format!("--view-ttl {raw:?}: {error}"))?;
                 view_ttl = Duration::from_secs(secs);
             }
+            "--max-concurrent-packs" => {
+                let raw = value("--max-concurrent-packs")?;
+                let max: usize = raw.parse().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    format!("--max-concurrent-packs {raw:?}: expected a positive integer")
+                })?;
+                max_concurrent_packs = Some(max);
+            }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -138,5 +147,6 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         base_url: base_url.unwrap_or_else(|| format!("http://{bind_addr}")),
         bind_addr,
         view_ttl,
+        max_concurrent_packs,
     })
 }

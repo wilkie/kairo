@@ -14,6 +14,7 @@ use kairo_store::{
 };
 
 use crate::error::Error;
+use crate::pack::PackService;
 use crate::view::ViewCache;
 use crate::Config;
 
@@ -24,6 +25,7 @@ pub struct Node {
     pub(crate) store: FilesystemStore,
     pub(crate) document: Arc<NodeDocument>,
     pub(crate) views: Arc<ViewCache>,
+    pub(crate) packs: Arc<PackService>,
 }
 
 impl Node {
@@ -41,7 +43,11 @@ impl Node {
             path: config.store.clone(),
             source,
         })?;
-        Self::from_store(store, &config.node_actor, &config.base_url, config.view_ttl)
+        let node = Self::from_store(store, &config.node_actor, &config.base_url, config.view_ttl)?;
+        Ok(match config.max_concurrent_packs {
+            Some(max) => node.with_max_concurrent_packs(max),
+            None => node,
+        })
     }
 
     /// [`Node::open`] over an already-open store.
@@ -88,7 +94,16 @@ impl Node {
             store,
             document: Arc::new(document),
             views: Arc::new(ViewCache::new(view_ttl)),
+            packs: Arc::new(PackService::new(PackService::default_concurrency())),
         })
+    }
+
+    /// Cap concurrent pack generation at `max` (default: half the
+    /// CPUs). Requests over the cap wait briefly, then get `503
+    /// fed_busy`.
+    pub fn with_max_concurrent_packs(mut self, max: usize) -> Self {
+        self.packs = Arc::new(PackService::new(max));
+        self
     }
 
     pub fn document(&self) -> &NodeDocument {

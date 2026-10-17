@@ -402,3 +402,45 @@ fn a_failed_git_step_leaves_no_repo_to_advertise() {
     );
     assert!(!cache.has_refs(origin.object.as_str()).expect("has_refs"));
 }
+
+#[test]
+fn packs_are_served_from_the_cache_with_length_and_etag() {
+    if skip_if_no_git() {
+        return;
+    }
+    let origin = origin(true);
+    let served = serve(&origin);
+    let url = format!(
+        "{}/federation/v1/objects/{}/git",
+        served.base_url, origin.object
+    );
+    let fetch = || {
+        let mut response = ureq::get(&url).call().expect("pack");
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        };
+        let (length, etag) = (header("content-length"), header("etag"));
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(u64::MAX)
+            .read_to_vec()
+            .expect("body");
+        (length, etag, body)
+    };
+    let (length, etag, body) = fetch();
+    assert_eq!(length, Some(body.len().to_string()));
+    let etag = etag.expect("etag");
+    assert!(etag.starts_with('"') && etag.ends_with('"'), "{etag}");
+
+    // The second request is the same cached file.
+    let (_, etag_again, body_again) = fetch();
+    assert_eq!(etag_again.as_deref(), Some(etag.as_str()));
+    assert_eq!(body_again, body);
+    let outgoing = origin.store.root().join("git").join("outgoing");
+    assert!(outgoing.exists(), "cache directory written");
+}

@@ -43,6 +43,163 @@ use crate::{open, shard, GitError, Repository};
 /// directory, which is exactly two base58 characters.
 const POOL_DIR_PREFIX: &str = "pool-";
 
+/// Cached outgoing packs: `<root>/outgoing/<XX>/<YY>/<object-id>/<snapshot-key>.pack`.
+const OUTGOING_DIR: &str = "outgoing";
+
+/// Quarantine object directories for packs being ingested:
+/// `<root>/incoming/<unique>/`.
+const INCOMING_DIR: &str = "incoming";
+
+/// An object repo's refs at one moment, and the key its cached pack is
+/// filed under: a SHA-256 over the sorted `<ref> <oid>` lines, so any
+/// ref change yields a new key.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RefSnapshot {
+    refs: Vec<(String, String)>,
+    key: String,
+}
+
+impl RefSnapshot {
+    fn new(mut refs: Vec<(String, String)>) -> Self {
+        use sha2::{Digest, Sha256};
+        refs.sort();
+        let mut hasher = Sha256::new();
+        for (name, oid) in &refs {
+            hasher.update(name.as_bytes());
+            hasher.update(b" ");
+            hasher.update(oid.as_bytes());
+            hasher.update(b"\n");
+        }
+        let key = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        Self { refs, key }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.refs.is_empty()
+    }
+
+    /// `(ref name, object id)`, sorted.
+    pub fn refs(&self) -> &[(String, String)] {
+        &self.refs
+    }
+
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn oids(&self) -> impl Iterator<Item = &str> {
+        self.refs.iter().map(|(_, oid)| oid.as_str())
+    }
+}
+
+/// A complete pack on disk, ready to stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedPack {
+    pub path: PathBuf,
+    pub len: u64,
+    /// The [`RefSnapshot::key`] it was built from; stable for as long
+    /// as the object's refs don't change, so usable as an `ETag`.
+    pub key: String,
+}
+
+/// A temporary object directory a pack is indexed into before it is
+/// trusted. Removed on drop, whether or not it was migrated.
+struct Quarantine {
+    path: PathBuf,
+}
+
+impl Quarantine {
+    fn create(root: &Path, pool: &Path, format: GitObjectFormat) -> Result<Self, GitError> {
+        let incoming = root.join(INCOMING_DIR);
+        std::fs::create_dir_all(&incoming).map_err(|source| GitError::CacheIo {
+            path: incoming.clone(),
+            source,
+        })?;
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = format!(
+            "{}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        let path = incoming.join(unique);
+        git_init_bare(&path, format)?;
+        let quarantine = Self { path };
+        // Absolute alternates: the quarantine is temporary and never
+        // moves, so a relative path buys nothing.
+        let pool_objects =
+            std::fs::canonicalize(pool.join("objects")).map_err(|source| GitError::CacheIo {
+                path: pool.join("objects"),
+                source,
+            })?;
+        let info = quarantine.path.join("objects").join("info");
+        std::fs::create_dir_all(&info).map_err(|source| GitError::CacheIo {
+            path: info.clone(),
+            source,
+        })?;
+        let mut content = pool_objects.into_os_string();
+        content.push("\n");
+        std::fs::write(info.join("alternates"), content.as_encoded_bytes()).map_err(|source| {
+            GitError::CacheIo {
+                path: info.join("alternates"),
+                source,
+            }
+        })?;
+        Ok(quarantine)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Move the quarantine's pack files into `pool`. Caller holds the
+    /// pool lock.
+    fn migrate_into(&self, pool: &Path) -> Result<(), GitError> {
+        let from = self.path.join("objects").join("pack");
+        let to = pool.join("objects").join("pack");
+        std::fs::create_dir_all(&to).map_err(|source| GitError::CacheIo {
+            path: to.clone(),
+            source,
+        })?;
+        let entries = match std::fs::read_dir(&from) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => return Err(GitError::CacheIo { path: from, source }),
+        };
+        // Move the `.pack` before its `.idx`, as Git does, so a reader
+        // never sees an index whose pack is missing.
+        let mut files: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        files.sort_by_key(|path| path.extension().is_some_and(|ext| ext == "idx"));
+        for file in files {
+            let Some(name) = file.file_name() else {
+                continue;
+            };
+            let dest = to.join(name);
+            if dest.exists() {
+                continue;
+            }
+            std::fs::rename(&file, &dest).map_err(|source| GitError::CacheIo {
+                path: dest.clone(),
+                source,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Quarantine {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Filesystem-backed Git cache.
 ///
 /// Created via [`GitCache::open`]. Pools are initialized on first use
@@ -160,21 +317,145 @@ impl GitCache {
         open(&repo_path)?.has_refs()
     }
 
-    /// Stream a Git pack containing every object reachable from the
-    /// per-object cache repo's refs into `sink`. The canonical
-    /// streaming primitive — handles arbitrarily large packs without
-    /// holding the bytes in memory. Suitable for piping directly
-    /// into a bundle's `git/<object-id>.pack` file, into a HTTP
-    /// response body, or into a remote's `git index-pack --stdin`.
-    /// Errors if the per-object repo doesn't exist (caller hasn't
-    /// fetched or ingested for this object).
-    ///
-    /// Per-object scoped: takes the per-object lock for the
-    /// duration. Reads transparently include the pool via
-    /// alternates, so the pack covers every commit/tree/blob the
-    /// per-object refs reach, even though the bytes physically live
-    /// in the pool. The pack is in the repo's own object format.
+    /// The object repo's refs as a [`RefSnapshot`]: what a pack of the
+    /// object would contain right now, and the key its cached pack is
+    /// stored under. Read through gix, without the `git` binary.
+    pub fn ref_snapshot(&self, object_id: &str) -> Result<RefSnapshot, GitError> {
+        let repo_path = self.path_for(object_id)?;
+        if !repo_path.exists() {
+            return Ok(RefSnapshot::default());
+        }
+        let refs = open(&repo_path)?.ref_snapshot()?;
+        Ok(RefSnapshot::new(refs))
+    }
+
+    /// Stream a Git pack of everything reachable from `snapshot`'s
+    /// commits into `sink`, without holding any lock
+    /// (`specs/DECISIONS.md` §21). Git objects are immutable and the
+    /// commit ids were read up front, so ref updates during the run
+    /// can't change what goes in, and cache GC's grace period keeps
+    /// the objects in place. The pack is in the repo's object format.
+    pub fn pack_snapshot_to(
+        &self,
+        object_id: &str,
+        snapshot: &RefSnapshot,
+        sink: impl Write,
+    ) -> Result<(), GitError> {
+        let repo_path = self.require_repo(object_id)?;
+        git_pack_revs(&repo_path, snapshot.oids(), sink)
+    }
+
+    /// [`Self::pack_snapshot_to`] from the object's current refs.
     pub fn pack_for_object_to(&self, object_id: &str, sink: impl Write) -> Result<(), GitError> {
+        let snapshot = self.ref_snapshot(object_id)?;
+        self.pack_snapshot_to(object_id, &snapshot, sink)
+    }
+
+    /// Convenience wrapper over [`Self::pack_for_object_to`] that
+    /// returns the entire pack as a `Vec<u8>`. Useful for tests and
+    /// small packs; production paths use [`Self::cached_pack`] or
+    /// stream.
+    pub fn pack_for_object(&self, object_id: &str) -> Result<Vec<u8>, GitError> {
+        let mut buf = Vec::new();
+        self.pack_for_object_to(object_id, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// The object's pack for its current refs, as a file on disk under
+    /// `<root>/outgoing/`, generating it if this snapshot has no cached
+    /// pack yet. `None` if the object's repo has no refs.
+    ///
+    /// The cache follows the practice of Git hosts (Gitaly's
+    /// pack-objects cache): a pack is generated once per ref snapshot
+    /// and served from disk to every request for that snapshot, so a
+    /// slow reader costs an open file, not a lock or a `pack-objects`
+    /// process. The file is written under a temporary name and renamed
+    /// into place, so readers only ever see complete packs. Two
+    /// processes racing on one snapshot both produce valid packs and
+    /// the last rename wins. Packs for older snapshots of the object
+    /// are removed once a newer one is in place (an open reader keeps
+    /// its file).
+    pub fn cached_pack(&self, object_id: &str) -> Result<Option<CachedPack>, GitError> {
+        let snapshot = self.ref_snapshot(object_id)?;
+        if snapshot.is_empty() {
+            return Ok(None);
+        }
+        if let Some(cached) = self.find_cached_pack(object_id, &snapshot)? {
+            return Ok(Some(cached));
+        }
+        let dir = self.outgoing_dir(object_id)?;
+        let path = dir.join(format!("{}.pack", snapshot.key()));
+        std::fs::create_dir_all(&dir).map_err(|source| GitError::CacheIo {
+            path: dir.clone(),
+            source,
+        })?;
+        let tmp = dir.join(format!(".{}.{}.tmp", snapshot.key(), std::process::id()));
+        let file = std::fs::File::create(&tmp).map_err(|source| GitError::CacheIo {
+            path: tmp.clone(),
+            source,
+        })?;
+        let written = self
+            .pack_snapshot_to(object_id, &snapshot, std::io::BufWriter::new(file))
+            .and_then(|()| {
+                std::fs::rename(&tmp, &path).map_err(|source| GitError::CacheIo {
+                    path: path.clone(),
+                    source,
+                })
+            });
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        // Drop packs of older snapshots; ignore races with a concurrent
+        // generator doing the same.
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".pack") && entry.path() != path {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let len = std::fs::metadata(&path)
+            .map_err(|source| GitError::CacheIo {
+                path: path.clone(),
+                source,
+            })?
+            .len();
+        Ok(Some(CachedPack {
+            path,
+            len,
+            key: snapshot.key().to_owned(),
+        }))
+    }
+
+    /// The cached pack for `snapshot`, if one is already on disk.
+    /// Never generates; a server checks this before taking a
+    /// generation slot.
+    pub fn find_cached_pack(
+        &self,
+        object_id: &str,
+        snapshot: &RefSnapshot,
+    ) -> Result<Option<CachedPack>, GitError> {
+        if snapshot.is_empty() {
+            return Ok(None);
+        }
+        let path = self
+            .outgoing_dir(object_id)?
+            .join(format!("{}.pack", snapshot.key()));
+        Ok(std::fs::metadata(&path).ok().map(|metadata| CachedPack {
+            path,
+            len: metadata.len(),
+            key: snapshot.key().to_owned(),
+        }))
+    }
+
+    fn outgoing_dir(&self, object_id: &str) -> Result<PathBuf, GitError> {
+        shard::shard_path(&self.root.join(OUTGOING_DIR), object_id)
+    }
+
+    fn require_repo(&self, object_id: &str) -> Result<PathBuf, GitError> {
         let repo_path = self.path_for(object_id)?;
         if !repo_path.exists() {
             return Err(GitError::CacheGitInvocation {
@@ -186,45 +467,60 @@ impl GitCache {
                 exit_code: None,
             });
         }
-        with_path_lock(&repo_path, || git_pack_objects_stream(&repo_path, sink))
+        Ok(repo_path)
     }
 
-    /// Convenience wrapper over [`Self::pack_for_object_to`] that
-    /// returns the entire pack as a `Vec<u8>`. Useful for tests and
-    /// small packs; for production data paths, prefer the streaming
-    /// version so multi-GB packs don't sit in memory.
-    pub fn pack_for_object(&self, object_id: &str) -> Result<Vec<u8>, GitError> {
-        let mut buf = Vec::new();
-        self.pack_for_object_to(object_id, &mut buf)?;
-        Ok(buf)
-    }
-
-    /// Stream pack bytes from `source` into the `format` pool via
-    /// `git index-pack --stdin`, which writes the canonical
-    /// `objects/pack/pack-<hash>.{pack,idx}` pair. Handles
-    /// arbitrarily large packs without holding them in memory. A pack
-    /// in another format fails in `index-pack`. Pack contents are
-    /// content-addressed in the filename, so re-ingesting the same
-    /// bytes converges.
+    /// Ingest a pack from `source` into the `format` pool through a
+    /// quarantine, as Git's `receive-pack` does (`specs/DECISIONS.md`
+    /// §21):
     ///
-    /// Pool-scoped: takes the pool lock for the duration. Ingesting
-    /// does not create any per-object repo; call
-    /// [`Self::missing_objects`] to check the pack was complete, then
-    /// [`Self::set_ref`] to pin commits into an object's repo.
+    /// 1. `git index-pack --stdin` writes the pack into a fresh
+    ///    quarantine object directory under `<root>/incoming/`, whose
+    ///    alternates point at the pool so existing objects resolve. No
+    ///    lock is held, so a slow `source` (a network download) blocks
+    ///    nothing else.
+    /// 2. Every commit in `required` must have its full closure
+    ///    (commit, ancestors, trees, blobs) visible from the
+    ///    quarantine. Otherwise the quarantine is deleted and this is
+    ///    [`GitError::IncompletePack`]: the pool never sees a partial
+    ///    pack.
+    /// 3. Under the pool lock, briefly, the pack files move into the
+    ///    pool. Pack names are content-addressed, so a duplicate is
+    ///    simply dropped.
+    ///
+    /// A pack in another object format fails in `index-pack`.
+    /// Ingesting creates no per-object repo; pin commits with
+    /// [`Self::set_ref`] afterwards.
     pub fn ingest_pack_from(
         &self,
         format: GitObjectFormat,
         source: impl Read,
+        required: &[GitRevision],
     ) -> Result<(), GitError> {
         let pool = self.ensure_pool(format)?;
-        with_path_lock(&pool, || git_index_pack_stream(&pool, source))
+        let quarantine = Quarantine::create(&self.root, &pool, format)?;
+        git_index_pack_stream(quarantine.path(), source)?;
+
+        let mut missing = Vec::new();
+        for revision in required {
+            if revision.format() != format
+                || !git_rev_list_complete(quarantine.path(), revision.oid())?
+            {
+                missing.push(revision.to_string());
+            }
+        }
+        if !missing.is_empty() {
+            return Err(GitError::IncompletePack { missing });
+        }
+        with_path_lock(&pool, || quarantine.migrate_into(&pool))
     }
 
-    /// Convenience wrapper over [`Self::ingest_pack_from`] that
-    /// takes a byte slice. Useful for tests; production paths
-    /// (bundle import, federation pull) stream.
+    /// Convenience wrapper over [`Self::ingest_pack_from`] that takes a
+    /// byte slice and requires nothing. Useful for tests; production
+    /// paths (bundle import, federation pull) stream and name the
+    /// commits they need.
     pub fn ingest_pack(&self, format: GitObjectFormat, pack_bytes: &[u8]) -> Result<(), GitError> {
-        self.ingest_pack_from(format, std::io::Cursor::new(pack_bytes))
+        self.ingest_pack_from(format, std::io::Cursor::new(pack_bytes), &[])
     }
 
     /// Of `revisions`, those whose commit is absent from its format's
@@ -269,7 +565,7 @@ impl GitCache {
     ///
     /// 1. `ensure_repo(object_id, format)` — initialize the
     ///    per-object bare repo if absent.
-    /// 2. Under the pool lock, ask `transport` to fetch
+    /// 2. Ask `transport` to fetch (without holding the pool lock)
     ///    `refs/heads/<branch>` from `url` into the `format` pool,
     ///    landing it at `refs/kairo/<object-id>/<branch>`. A remote in
     ///    the other format fails in `git fetch`.
@@ -302,7 +598,14 @@ impl GitCache {
         let pool_dest_ref = format!("refs/kairo/{object_id}/{remote_branch}");
         let pool_refspec = format!("refs/heads/{remote_branch}:{pool_dest_ref}");
 
-        let pool_fetched = with_path_lock(&pool, || transport.fetch(&pool, url, &pool_refspec))?;
+        // No pool lock across the network: `git fetch` writes packs
+        // under temporary names and renames them in, and takes its own
+        // lock file per ref (this one is namespaced to the object), so
+        // concurrent fetches into the pool are safe, and objects are
+        // never deleted out from under them inside cache GC's grace
+        // period (`specs/DECISIONS.md` §21).
+        self.ensure_pool(format)?;
+        let pool_fetched = transport.fetch(&pool, url, &pool_refspec)?;
         // Defense in depth: the transport should have placed the
         // fetched ref at our requested destination. If it didn't,
         // something is structurally wrong with the impl.
@@ -479,19 +782,23 @@ fn git_index_pack_stream(pool: &Path, mut source: impl Read) -> Result<(), GitEr
     Ok(())
 }
 
-/// Stream `git -C <repo> pack-objects --all --stdout` into `sink`.
-/// `--all` means "pack everything reachable from refs"; `--stdout`
-/// skips the `pack-<sha>.{pack,idx}` filesystem write since callers
-/// consume the bytes directly. Drains stderr in a separate thread
-/// to avoid pipe-buffer deadlock when stdout is large.
-fn git_pack_objects_stream(repo_path: &Path, mut sink: impl Write) -> Result<(), GitError> {
+/// Stream `git -C <repo> pack-objects --revs --stdout` into `sink`,
+/// feeding `oids` on stdin: a pack of everything reachable from those
+/// commits, independent of what the refs say by the time it runs.
+/// Drains stderr in a separate thread to avoid pipe-buffer deadlock
+/// when stdout is large.
+fn git_pack_revs<'a>(
+    repo_path: &Path,
+    oids: impl Iterator<Item = &'a str>,
+    mut sink: impl Write,
+) -> Result<(), GitError> {
     use std::process::Stdio;
 
     let mut child = Command::new("git")
         .arg("-C")
         .arg(repo_path)
-        .args(["pack-objects", "--all", "--stdout"])
-        .stdin(Stdio::null())
+        .args(["pack-objects", "--revs", "--stdout"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -504,35 +811,40 @@ fn git_pack_objects_stream(repo_path: &Path, mut sink: impl Write) -> Result<(),
         })?;
 
     let stderr_bytes = drain_stderr(&mut child);
-
-    // Stream stdout to sink. Errors here can mean either the child
-    // misbehaved or the sink rejected bytes; we surface stdin/stdout
-    // I/O as `CacheIo` and exit-status failure as `CacheGitInvocation`.
-    let mut stdout = child.stdout.take().ok_or_else(|| GitError::CacheIo {
-        path: repo_path.to_path_buf(),
-        source: std::io::Error::new(
-            std::io::ErrorKind::BrokenPipe,
-            "git pack-objects stdout not captured",
-        ),
-    })?;
-    let copy_result = std::io::copy(&mut stdout, &mut sink);
-    drop(stdout);
-
-    let status = child.wait().map_err(|source| GitError::CacheIo {
+    let io_error = |source| GitError::CacheIo {
         path: repo_path.to_path_buf(),
         source,
-    })?;
-    let stderr_text = stderr_bytes.collect();
-
-    if let Err(source) = copy_result {
-        return Err(GitError::CacheIo {
-            path: repo_path.to_path_buf(),
-            source,
-        });
+    };
+    {
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            io_error(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "git pack-objects stdin not captured",
+            ))
+        })?;
+        for oid in oids {
+            writeln!(stdin, "{oid}").map_err(io_error)?;
+        }
+        // Dropping stdin sends EOF: the revision list is complete.
     }
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        io_error(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "git pack-objects stdout not captured",
+        ))
+    })?;
+    let copy_result = std::io::copy(&mut stdout, &mut sink).and_then(|_| sink.flush());
+    drop(stdout);
+
+    let status = child.wait().map_err(io_error)?;
+    let stderr_text = stderr_bytes.collect();
+    copy_result.map_err(io_error)?;
     if !status.success() {
         return Err(GitError::CacheGitInvocation {
-            command: format!("git -C {} pack-objects --all --stdout", repo_path.display()),
+            command: format!(
+                "git -C {} pack-objects --revs --stdout",
+                repo_path.display()
+            ),
             stderr: stderr_text,
             exit_code: status.code(),
         });
@@ -1395,7 +1707,7 @@ mod tests {
         let (_dir2, cache2) = open_temp();
         let file = std::fs::File::open(&pack_path).expect("open pack");
         cache2
-            .ingest_pack_from(GitObjectFormat::Sha1, file)
+            .ingest_pack_from(GitObjectFormat::Sha1, file, &[sha1(&head_oid)])
             .expect("ingest_pack_from");
         cache2
             .set_ref(SAMPLE_ID, "refs/heads/main", &sha1(&head_oid))
@@ -1544,6 +1856,224 @@ mod tests {
         assert_eq!(
             cache.missing_objects(&revisions).expect("check"),
             vec![&revisions[0]]
+        );
+    }
+
+    /// A pack of only `revision`'s commit object, without its tree.
+    fn commit_only_pack(src: &Path, revision: &GitRevision) -> Vec<u8> {
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(src)
+            .args(["pack-objects", "--stdout"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("pack-objects");
+        {
+            use std::io::Write as _;
+            let mut stdin = child.stdin.take().expect("stdin");
+            writeln!(stdin, "{}", revision.oid()).expect("write oid");
+        }
+        let output = child.wait_with_output().expect("pack");
+        assert!(output.status.success());
+        output.stdout
+    }
+
+    fn pool_pack_files(root: &Path, format: GitObjectFormat) -> usize {
+        std::fs::read_dir(
+            root.join(format!("pool-{format}"))
+                .join("objects")
+                .join("pack"),
+        )
+        .map(|entries| entries.flatten().count())
+        .unwrap_or(0)
+    }
+
+    #[test]
+    fn quarantine_keeps_an_incomplete_pack_out_of_the_pool() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, revision) = source_repo_in(GitObjectFormat::Sha1);
+        let (dir, cache) = open_temp();
+        let pack = commit_only_pack(src.path(), &revision);
+        let result = cache.ingest_pack_from(
+            GitObjectFormat::Sha1,
+            std::io::Cursor::new(pack),
+            std::slice::from_ref(&revision),
+        );
+        assert!(
+            matches!(result, Err(GitError::IncompletePack { ref missing }) if missing == &[revision.to_string()]),
+            "{result:?}"
+        );
+        assert_eq!(
+            pool_pack_files(dir.path(), GitObjectFormat::Sha1),
+            0,
+            "pool untouched"
+        );
+        let incoming = dir.path().join("incoming");
+        assert_eq!(
+            std::fs::read_dir(&incoming).map(|e| e.count()).unwrap_or(0),
+            0,
+            "quarantine removed"
+        );
+
+        // The complete pack goes through and lands in the pool.
+        cache
+            .ingest_pack_from(
+                GitObjectFormat::Sha1,
+                std::io::Cursor::new(build_pack_from(src.path())),
+                std::slice::from_ref(&revision),
+            )
+            .expect("complete pack");
+        assert!(pool_pack_files(dir.path(), GitObjectFormat::Sha1) > 0);
+        assert!(cache
+            .missing_objects(std::slice::from_ref(&revision))
+            .expect("check")
+            .is_empty());
+    }
+
+    #[test]
+    fn a_slow_pack_reader_does_not_block_writes_to_the_object() {
+        // The original bug: serving a pack held the object's lock for
+        // the whole transfer, so any write that took longer than the
+        // 2 s lock deadline failed. Packing now holds no lock.
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, revision) = source_repo_in(GitObjectFormat::Sha1);
+        let (_dir, cache) = open_temp();
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src.path()))
+            .expect("ingest");
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/main", &revision)
+            .expect("ref");
+
+        struct Slow(bool);
+        impl Write for Slow {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.0 {
+                    self.0 = true;
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                }
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let reader_cache = cache.clone();
+        let reader = std::thread::spawn(move || {
+            reader_cache
+                .pack_for_object_to(SAMPLE_ID, Slow(false))
+                .expect("slow pack");
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/other", &revision)
+            .expect("write during a slow read");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        reader.join().expect("reader");
+    }
+
+    #[test]
+    fn cached_packs_are_reused_per_snapshot_and_replaced_on_change() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, revision) = source_repo_in(GitObjectFormat::Sha1);
+        let (_dir, cache) = open_temp();
+        assert_eq!(cache.cached_pack(SAMPLE_ID).expect("none"), None);
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src.path()))
+            .expect("ingest");
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/main", &revision)
+            .expect("ref");
+
+        let first = cache.cached_pack(SAMPLE_ID).expect("pack").expect("some");
+        let modified = std::fs::metadata(&first.path)
+            .and_then(|m| m.modified())
+            .expect("mtime");
+        let again = cache.cached_pack(SAMPLE_ID).expect("pack").expect("some");
+        assert_eq!(again, first, "same snapshot, same file");
+        assert_eq!(
+            std::fs::metadata(&again.path)
+                .and_then(|m| m.modified())
+                .expect("mtime"),
+            modified,
+            "not regenerated"
+        );
+
+        // The cached pack carries the history into another cache.
+        let (_other_dir, other) = open_temp();
+        other
+            .ingest_pack_from(
+                GitObjectFormat::Sha1,
+                std::fs::File::open(&first.path).expect("open"),
+                std::slice::from_ref(&revision),
+            )
+            .expect("ingest cached pack");
+
+        // A ref change is a new snapshot: a new file, the old one gone.
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/second", &revision)
+            .expect("ref");
+        let second = cache.cached_pack(SAMPLE_ID).expect("pack").expect("some");
+        assert_ne!(second.key, first.key);
+        assert!(!first.path.exists(), "superseded pack removed");
+        assert!(second.path.exists());
+    }
+
+    #[test]
+    fn a_snapshot_pack_ignores_ref_changes_after_the_snapshot() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, first) = source_repo_in(GitObjectFormat::Sha1);
+        let (_dir, cache) = open_temp();
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src.path()))
+            .expect("ingest");
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/main", &first)
+            .expect("ref");
+        let snapshot = cache.ref_snapshot(SAMPLE_ID).expect("snapshot");
+        assert_eq!(snapshot.refs().len(), 1);
+
+        // A second, different commit arrives and a ref moves to it after
+        // the snapshot.
+        let (src2, second_oid) = kairo_test_support::git::init_git_repo_with_manifest(
+            "[kairo]\nschema = 1\nname = \"later\"\n",
+        )
+        .expect("second repo");
+        let second = sha1(&second_oid);
+        assert_ne!(second, first);
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src2.path()))
+            .expect("ingest");
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/later", &second)
+            .expect("ref");
+
+        let mut pack = Vec::new();
+        cache
+            .pack_snapshot_to(SAMPLE_ID, &snapshot, &mut pack)
+            .expect("pack");
+        let (_out_dir, out) = open_temp();
+        out.ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest");
+        assert!(out
+            .missing_objects(std::slice::from_ref(&first))
+            .expect("check")
+            .is_empty());
+        assert_eq!(
+            out.missing_objects(std::slice::from_ref(&second))
+                .expect("check"),
+            vec![&second],
+            "the snapshot's pack holds only what its refs reached"
         );
     }
 }

@@ -115,6 +115,7 @@ served.
 | 400 | `fed_bad_limit` | `limit` isn't an integer from 1 to 1000 (refused, not clamped) |
 | 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD` |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
+| 503 | `fed_busy` | pack generation at capacity; `Retry-After` says when to retry (`DECISIONS.md` §21) |
 
 Envelope is `API.md` §7.2.
 
@@ -421,6 +422,10 @@ two-node check runs against the corrected behavior:
 
 In rough order, each needing its own decision:
 
+0. **Incremental fetch** (`DECISIONS.md` §21 sub-decision 6): the
+   client names the commits it already has and the server packs only
+   the difference, as Git's negotiation does. Then reachability
+   bitmaps, and bundle or packfile URIs for static hosting.
 1. **Push** with node authentication (signed node document,
    `KairoActor1` on requests) and a receiver acceptance policy.
 2. **Trust transport** (opt-in, never auto-trusted) and `forget`.
@@ -469,20 +474,18 @@ follow. Push needs `federation:push`.
   not verify signatures, so the store has two entry points with
   different guarantees. Routing bundle import through the pull's
   verifier is tracked in `PHASE_2.md` §11.
-- **Serving a pack holds the object's lock for the whole
-  transfer.** A slow or stalled peer can block writes to that
-  object's cache repo for up to the 30-minute pack timeout, and
-  nothing caps concurrent `pack-objects` runs. Before real
-  deployment: pack to a temporary file under the lock, stream it
-  without the lock, and cap concurrent pack requests.
+- ~~**Serving a pack holds the object's lock for the whole
+  transfer.**~~ Resolved by `DECISIONS.md` §21: lock-free snapshot
+  packing, a pack cache, per-object single-flight, a generation cap
+  with `503 fed_busy`, and a transfer deadline. The pulling side's pool
+  lock during download is gone too (quarantined ingest).
 - ~~**Rebuilding the published view walks the store.**~~ Resolved
   by `DECISIONS.md` §20: closures walk each object's reachable
   history through the per-object revision index, so a rebuild costs
   the published histories, not the store.
-- **Pool junk from failed pulls.** Objects a peer's pack added to a
-  pool stay there after a failed completeness check. They are
-  content-addressed and harmless to correctness; reclaiming them is
-  cache GC's job (`STORE.md` §12).
+- ~~**Pool junk from failed pulls.**~~ Resolved by `DECISIONS.md`
+  §21: incoming packs are quarantined, and only a complete pack moves
+  into the pool.
 - **Strict config parsing on downgrade.** An older `kairo` rejects a
   config written for a newer one (`DECISIONS.md` §17). That is
   acceptable before 1.0.

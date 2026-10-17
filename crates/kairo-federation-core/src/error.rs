@@ -28,6 +28,9 @@ pub enum FedErrorCode {
     /// A store read failed. The message stays generic; details are
     /// logged server-side.
     FedStoreError,
+    /// The node is at its limit for concurrent pack generation; retry
+    /// after the response's `Retry-After`.
+    FedBusy,
     /// A code this client doesn't know, from a newer node.
     #[serde(other)]
     Unknown,
@@ -42,6 +45,7 @@ impl FedErrorCode {
             Self::FedBadId | Self::FedBadCursor | Self::FedBadLimit => 400,
             Self::FedMethodNotAllowed => 405,
             Self::FedStoreError | Self::Unknown => 500,
+            Self::FedBusy => 503,
         }
     }
 
@@ -53,6 +57,7 @@ impl FedErrorCode {
             Self::FedBadLimit => "fed_bad_limit",
             Self::FedMethodNotAllowed => "fed_method_not_allowed",
             Self::FedStoreError => "fed_store_error",
+            Self::FedBusy => "fed_busy",
             Self::Unknown => "unknown",
         }
     }

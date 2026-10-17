@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Changed
 
+- **Git transfer follows Git-host practice (`DECISIONS.md` §21).**
+  - Serving a pack holds no lock. It snapshots the refs, packs with
+    `pack-objects --revs`, and serves from an on-disk cache keyed by
+    the snapshot, with one generation per object and a cap on
+    concurrent generations (`--max-concurrent-packs`, `503 fed_busy`
+    with `Retry-After` past it). Responses carry `Content-Length` and
+    an `ETag`, and a server-side deadline drops stalled peers.
+  - Incoming packs (federation pull, bundle import) go through a
+    quarantine and only reach the pool when complete, with no lock
+    held during the download.
+  - `kairo git fetch` no longer holds the pool lock.
+
 - **Revision history is a Git-like log (`DECISIONS.md` §20).**
   - A per-object revision index (revision id → statements) lets
     history be walked along parent links, newest first.

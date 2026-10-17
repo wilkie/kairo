@@ -18,7 +18,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use cache::GitCache;
+pub use cache::{CachedPack, GitCache, RefSnapshot};
 pub use kairo_statement::{GitObjectFormat, GitRevision};
 pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 
@@ -96,6 +96,10 @@ pub enum GitError {
     /// Kairo IDs are always pure base58 ASCII so this is an
     /// invariant violation, not a transient failure.
     CacheInvalidObjectId { id: String, reason: &'static str },
+    /// An ingested pack did not contain the full closure (commit,
+    /// ancestors, trees, blobs) of these required commits, so nothing
+    /// was moved into the pool (`specs/DECISIONS.md` §21).
+    IncompletePack { missing: Vec<String> },
     /// A repository or revision is in a different Git object format
     /// than the operation requires (`specs/DECISIONS.md` §19).
     FormatMismatch {
@@ -143,6 +147,12 @@ impl fmt::Display for GitError {
             Self::CacheInvalidObjectId { id, reason } => {
                 write!(f, "invalid object id {id:?} for cache: {reason}")
             }
+            Self::IncompletePack { missing } => write!(
+                f,
+                "the pack lacks part of {} required commit(s): {}",
+                missing.len(),
+                missing.join(", ")
+            ),
             Self::FormatMismatch {
                 context,
                 expected,
@@ -166,6 +176,7 @@ impl Error for GitError {
             Self::CacheGitInvocation { .. }
             | Self::CacheLockTimeout { .. }
             | Self::CacheInvalidObjectId { .. }
+            | Self::IncompletePack { .. }
             | Self::FormatMismatch { .. } => None,
         }
     }
@@ -204,6 +215,28 @@ impl Repository {
                 format!("unsupported Git object format {other:?}").into(),
             )),
         }
+    }
+
+    /// Every direct reference and the object it points at, sorted by
+    /// name. Symbolic refs (`HEAD`) are skipped; they resolve to one of
+    /// the direct refs listed. Read without the `git` binary.
+    pub fn ref_snapshot(&self) -> Result<Vec<(String, String)>, GitError> {
+        let platform = self
+            .inner
+            .references()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let mut refs = Vec::new();
+        for reference in platform
+            .all()
+            .map_err(|error| GitError::Operation(Box::new(error)))?
+        {
+            let reference = reference.map_err(|error| GitError::Operation(Box::new(error)))?;
+            if let Some(id) = reference.try_id() {
+                refs.push((reference.name().as_bstr().to_string(), id.to_string()));
+            }
+        }
+        refs.sort();
+        Ok(refs)
     }
 
     /// Whether the repository has at least one reference.

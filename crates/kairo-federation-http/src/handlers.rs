@@ -364,8 +364,10 @@ async fn object_genesis(State(node): State<Node>, id: PathId) -> Response {
     .await
 }
 
-/// The object's Git pack, streamed from the managed cache. `404` when
-/// the object isn't published or the cache holds nothing for it.
+/// The object's Git pack, served from the node's pack cache
+/// (`crate::pack`, `DECISIONS.md` §21). `404` when the object isn't
+/// published or the cache holds nothing for it; `503 fed_busy` with
+/// `Retry-After` when no generation slot frees up in time.
 async fn object_git(State(node): State<Node>, id: PathId) -> Response {
     let object = match parse_id(id, ObjectId::new) {
         Ok(object) => object,
@@ -387,12 +389,40 @@ async fn object_git(State(node): State<Node>, id: PathId) -> Response {
     if let Err(fail) = available {
         return fail.into_response();
     }
-    let body = crate::pack::pack_body(&crate::git_root(&node.store), object.as_str());
-    let mut response = (StatusCode::OK, body).into_response();
-    response.headers_mut().insert(
+    let pack = match node
+        .packs
+        .pack(&crate::git_root(&node.store), object.as_str())
+        .await
+    {
+        Ok(pack) => pack,
+        Err(crate::pack::PackError::Empty) => return Fail::not_found().into_response(),
+        Err(crate::pack::PackError::Busy) => {
+            let mut response = Fail::new(
+                FedErrorCode::FedBusy,
+                "the node is generating as many packs as it allows; retry shortly",
+            )
+            .into_response();
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                HeaderValue::from(crate::pack::RETRY_AFTER_SECS),
+            );
+            return response;
+        }
+        Err(crate::pack::PackError::Git(message)) => {
+            tracing::error!(object = %object, %message, "generating a pack failed");
+            return Fail::new(FedErrorCode::FedStoreError, "store read failed").into_response();
+        }
+    };
+    let mut response = (StatusCode::OK, crate::pack::file_body(&pack)).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("application/x-git-packed-objects"),
     );
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(pack.len));
+    if let Ok(etag) = HeaderValue::from_str(&format!("\"{}\"", pack.key)) {
+        headers.insert(header::ETAG, etag);
+    }
     response
 }
 

@@ -179,21 +179,18 @@ fn ingest_bundle_git_data(
                 source,
             },
         })?;
+        // Quarantined: `index-pack` accepts a pack that carries a
+        // commit without its trees, so the pack only reaches the pool
+        // if every named commit's closure is in it (DECISIONS.md §21).
         cache
-            .ingest_pack_from(format, file)
-            .map_err(|source| CliError::GitOperation { source })?;
+            .ingest_pack_from(format, file, &commits)
+            .map_err(|source| match source {
+                kairo_git::GitError::IncompletePack { missing } => {
+                    CliError::BundleGitIncomplete { missing }
+                }
+                source => CliError::GitOperation { source },
+            })?;
         pack_object_ids.push(stem.to_owned());
-    }
-
-    // `index-pack` accepts a pack that carries a commit without its
-    // trees; refuse to pin until every commit's closure is present.
-    let incomplete = cache
-        .missing_objects(&commits)
-        .map_err(|source| CliError::GitOperation { source })?;
-    if !incomplete.is_empty() {
-        return Err(CliError::BundleGitIncomplete {
-            missing: incomplete.iter().map(ToString::to_string).collect(),
-        });
     }
 
     let mut refs_pinned = 0usize;

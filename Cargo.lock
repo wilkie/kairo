@@ -1762,6 +1762,7 @@ dependencies = [
  "gix",
  "kairo-statement",
  "kairo-test-support",
+ "sha2 0.10.9",
  "tempfile",
 ]
 

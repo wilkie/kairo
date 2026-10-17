@@ -340,6 +340,7 @@ fn error_codes_serialize_and_map_to_statuses() -> TestResult {
         (FedErrorCode::FedBadLimit, 400),
         (FedErrorCode::FedMethodNotAllowed, 405),
         (FedErrorCode::FedStoreError, 500),
+        (FedErrorCode::FedBusy, 503),
     ];
     for (code, status) in cases {
         assert_eq!(serde_json::to_value(code)?, json!(code.as_str()));

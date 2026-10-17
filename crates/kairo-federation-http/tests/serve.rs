@@ -537,6 +537,7 @@ async fn serve_binds_and_shuts_down() {
         base_url: BASE_URL.to_owned(),
         node_actor: seeded.node_actor.clone(),
         view_ttl: Duration::ZERO,
+        max_concurrent_packs: Some(1),
     };
     kairo_federation_http::serve_with_shutdown(config, async {})
         .await

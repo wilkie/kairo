@@ -1208,7 +1208,9 @@ Ten sub-decisions, locked together:
    computes closures itself; it does not proxy the daemon API,
    whose reads are unauthenticated and assume socket
    permissions, so exposing them would publish the whole store.
-   It serves plain HTTP and binds `127.0.0.1` by default. A
+   (Since §21 it also writes its own pack cache under the Git
+   cache's `outgoing/`, and nothing else.) It serves plain HTTP and
+   binds `127.0.0.1` by default. A
    non-loopback bind needs an explicit `--bind` with a
    non-loopback address and a startup warning. TLS is terminated
    by a reverse proxy (Caddy, nginx), and the node document's
@@ -1666,3 +1668,108 @@ Affected specs:
 - `crates/kairo-bundle/AGENTS.md` — the "goes in" list.
 - `CLI.md` §5.1 — `kairo revision log`.
 - `PHASE_2_FEDERATION.md` — the view-rebuild risk note is resolved.
+
+---
+
+## 21. Git Transfer Concurrency, Following Git Hosts
+
+Decision: the managed Git cache and the federation pack endpoint
+follow the practice of Git itself and large Git hosts (Gitaly,
+GitHub, Gerrit). **Readers take no locks**; cache GC uses a grace
+period instead. **Incoming packs are quarantined** until verified.
+**Outgoing packs are cached per ref snapshot**, with one generation
+per object at a time, a **cap on concurrent generation**, and a
+**server-side transfer deadline**. No lock is ever held across
+network I/O.
+
+This replaces the slice 4 behavior, which had three problems:
+- **Serving held the object's cache lock for the whole transfer.**
+  One slow or stalled peer made every other operation on that object
+  fail after the 2-second lock deadline.
+- **Pulling held the format pool's lock while downloading.** That
+  blocked all Git ingestion on the pulling node.
+- **Nothing capped concurrent `pack-objects` runs.**
+
+Sub-decisions:
+
+1. **Lock-free reads.** Packing reads the object repo's refs into a
+   `RefSnapshot`, then runs `git pack-objects --revs` with those
+   commit ids on stdin. Git objects are immutable and the ids were
+   read up front, so ref updates during the run can't change what
+   goes in. Locks remain only for short local writes: initializing a
+   pool or repo, `update-ref`, and moving quarantined packs into a
+   pool. `GitCache::fetch` no longer holds the pool lock across
+   `git fetch`, because Git writes fetched packs under temporary
+   names and takes its own per-ref lock files (the refs are
+   namespaced per object).
+
+2. **GC grace period, not reader locks.** When cache GC lands
+   (`STORE.md` §12), it may prune pool objects only after they have
+   been unreachable from every per-object repo's refs for longer than
+   a grace period. This is Git's own `gc.pruneExpire` model (two
+   weeks by default). A reader that resolved commit ids moments ago
+   never loses the objects it is reading, so readers never coordinate
+   with GC.
+
+3. **Quarantined ingest.** `GitCache::ingest_pack_from(format, source,
+   required)` follows Git's `receive-pack` quarantine:
+   - `git index-pack --stdin` writes into a fresh object directory
+     under `<git root>/incoming/`, whose alternates point at the pool.
+     No lock is held, so a slow download blocks nothing.
+   - Every `required` commit's full closure must be visible from the
+     quarantine; otherwise the quarantine is deleted
+     (`GitError::IncompletePack`).
+   - On success, the pack files move into the pool under a brief pool
+     lock, `.pack` before `.idx`.
+
+   Federation pull and bundle import both ingest this way. A failed
+   pull leaves no objects in the pool (this resolves the slice 4
+   "pool junk" note).
+
+4. **Pack cache per ref snapshot.** `GitCache::cached_pack` returns a
+   complete pack file at
+   `<git root>/outgoing/<XX>/<YY>/<object>/<snapshot-key>.pack`. The
+   key is a SHA-256 over the sorted `<ref> <oid>` lines. The pack is
+   generated if absent, written under a temporary name and renamed
+   into place, and packs for older snapshots are removed. This is the
+   shape of Gitaly's pack-objects cache, with our "request" being the
+   object's whole reachable history until incremental fetch exists.
+   The server streams the file with `Content-Length` and an `ETag` of
+   the snapshot key. The federation server therefore writes to its
+   store's Git cache directory (`outgoing/` only), amending §16
+   sub-decision 6's "read-only": it still never writes statements,
+   blobs, refs, or the pool.
+
+5. **Bounded serving.**
+   - Concurrent requests for one object wait for a single generation
+     and share its file.
+   - A semaphore caps concurrent generation across objects
+     (`--max-concurrent-packs`; default half the CPUs, at least one).
+     A request that can't get a slot within 10 seconds gets `503
+     fed_busy` with `Retry-After: 5`, and cache hits need no slot.
+   - Streaming has a server-side deadline of 30 seconds plus the pack
+     size at 64 KiB/s. A peer that hasn't taken the pack by then is
+     disconnected.
+
+6. **Next: incremental fetch.** Git hosts send only what the client
+   lacks: the client names commits it has, and the server packs the
+   difference. That is the largest remaining efficiency gap, and it
+   is tracked in `PHASE_2_FEDERATION.md` §4. Reachability bitmaps on
+   the pools and bundle or packfile URIs (serving prebuilt packs from
+   static hosting, as Git's protocol extensions do) follow it.
+
+Rationale: holding a lock across the network makes one slow client
+everyone's problem. Git solved this long ago with immutable objects,
+atomic refs, quarantine, and grace-period GC, and the hosts that
+serve Git at scale add caching, deduplication, and concurrency limits
+on top. Adopting the same shape keeps Kairo's behavior predictable to
+anyone who knows Git operations.
+
+Affected specs:
+
+- `STORE.md` §4 and §12 — `outgoing/` and `incoming/` in the cache
+  layout; the GC grace-period rule.
+- `PHASE_2_FEDERATION.md` — the pack endpoint's behavior and `fed_busy`
+  in §2.3; the pack-lock and pool-junk risk notes resolved;
+  incremental fetch added to §4.
+- `DECISIONS.md` §16 sub-decision 6 — the server writes its pack cache.
