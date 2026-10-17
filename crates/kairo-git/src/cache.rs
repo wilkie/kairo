@@ -28,6 +28,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::lock::with_path_lock;
 use crate::transport::{self, FetchedRef, GitCacheTransport};
@@ -43,39 +44,22 @@ use crate::{open, shard, GitError, Repository};
 /// directory, which is exactly two base58 characters.
 const POOL_DIR_PREFIX: &str = "pool-";
 
-/// Cached outgoing packs: `<root>/outgoing/<XX>/<YY>/<object-id>/<snapshot-key>.pack`.
-const OUTGOING_DIR: &str = "outgoing";
-
 /// Quarantine object directories for packs being ingested:
 /// `<root>/incoming/<unique>/`.
 const INCOMING_DIR: &str = "incoming";
 
-/// An object repo's refs at one moment, and the key its cached pack is
-/// filed under: a SHA-256 over the sorted `<ref> <oid>` lines, so any
-/// ref change yields a new key.
+/// An object repo's refs at one moment. Packing from a snapshot's
+/// commit ids, not the live refs, keeps ref updates during the run
+/// from changing what goes in.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RefSnapshot {
     refs: Vec<(String, String)>,
-    key: String,
 }
 
 impl RefSnapshot {
     fn new(mut refs: Vec<(String, String)>) -> Self {
-        use sha2::{Digest, Sha256};
         refs.sort();
-        let mut hasher = Sha256::new();
-        for (name, oid) in &refs {
-            hasher.update(name.as_bytes());
-            hasher.update(b" ");
-            hasher.update(oid.as_bytes());
-            hasher.update(b"\n");
-        }
-        let key = hasher
-            .finalize()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        Self { refs, key }
+        Self { refs }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -87,23 +71,9 @@ impl RefSnapshot {
         &self.refs
     }
 
-    pub fn key(&self) -> &str {
-        &self.key
-    }
-
     fn oids(&self) -> impl Iterator<Item = &str> {
         self.refs.iter().map(|(_, oid)| oid.as_str())
     }
-}
-
-/// A complete pack on disk, ready to stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CachedPack {
-    pub path: PathBuf,
-    pub len: u64,
-    /// The [`RefSnapshot::key`] it was built from; stable for as long
-    /// as the object's refs don't change, so usable as an `ETag`.
-    pub key: String,
 }
 
 /// A temporary object directory a pack is indexed into before it is
@@ -318,8 +288,8 @@ impl GitCache {
     }
 
     /// The object repo's refs as a [`RefSnapshot`]: what a pack of the
-    /// object would contain right now, and the key its cached pack is
-    /// stored under. Read through gix, without the `git` binary.
+    /// object would contain right now. Read through gix, without the
+    /// `git` binary.
     pub fn ref_snapshot(&self, object_id: &str) -> Result<RefSnapshot, GitError> {
         let repo_path = self.path_for(object_id)?;
         if !repo_path.exists() {
@@ -353,106 +323,11 @@ impl GitCache {
 
     /// Convenience wrapper over [`Self::pack_for_object_to`] that
     /// returns the entire pack as a `Vec<u8>`. Useful for tests and
-    /// small packs; production paths use [`Self::cached_pack`] or
-    /// stream.
+    /// small packs; production paths stream.
     pub fn pack_for_object(&self, object_id: &str) -> Result<Vec<u8>, GitError> {
         let mut buf = Vec::new();
         self.pack_for_object_to(object_id, &mut buf)?;
         Ok(buf)
-    }
-
-    /// The object's pack for its current refs, as a file on disk under
-    /// `<root>/outgoing/`, generating it if this snapshot has no cached
-    /// pack yet. `None` if the object's repo has no refs.
-    ///
-    /// The cache follows the practice of Git hosts (Gitaly's
-    /// pack-objects cache): a pack is generated once per ref snapshot
-    /// and served from disk to every request for that snapshot, so a
-    /// slow reader costs an open file, not a lock or a `pack-objects`
-    /// process. The file is written under a temporary name and renamed
-    /// into place, so readers only ever see complete packs. Two
-    /// processes racing on one snapshot both produce valid packs and
-    /// the last rename wins. Packs for older snapshots of the object
-    /// are removed once a newer one is in place (an open reader keeps
-    /// its file).
-    pub fn cached_pack(&self, object_id: &str) -> Result<Option<CachedPack>, GitError> {
-        let snapshot = self.ref_snapshot(object_id)?;
-        if snapshot.is_empty() {
-            return Ok(None);
-        }
-        if let Some(cached) = self.find_cached_pack(object_id, &snapshot)? {
-            return Ok(Some(cached));
-        }
-        let dir = self.outgoing_dir(object_id)?;
-        let path = dir.join(format!("{}.pack", snapshot.key()));
-        std::fs::create_dir_all(&dir).map_err(|source| GitError::CacheIo {
-            path: dir.clone(),
-            source,
-        })?;
-        let tmp = dir.join(format!(".{}.{}.tmp", snapshot.key(), std::process::id()));
-        let file = std::fs::File::create(&tmp).map_err(|source| GitError::CacheIo {
-            path: tmp.clone(),
-            source,
-        })?;
-        let written = self
-            .pack_snapshot_to(object_id, &snapshot, std::io::BufWriter::new(file))
-            .and_then(|()| {
-                std::fs::rename(&tmp, &path).map_err(|source| GitError::CacheIo {
-                    path: path.clone(),
-                    source,
-                })
-            });
-        if let Err(error) = written {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(error);
-        }
-        // Drop packs of older snapshots; ignore races with a concurrent
-        // generator doing the same.
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name.ends_with(".pack") && entry.path() != path {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
-        }
-        let len = std::fs::metadata(&path)
-            .map_err(|source| GitError::CacheIo {
-                path: path.clone(),
-                source,
-            })?
-            .len();
-        Ok(Some(CachedPack {
-            path,
-            len,
-            key: snapshot.key().to_owned(),
-        }))
-    }
-
-    /// The cached pack for `snapshot`, if one is already on disk.
-    /// Never generates; a server checks this before taking a
-    /// generation slot.
-    pub fn find_cached_pack(
-        &self,
-        object_id: &str,
-        snapshot: &RefSnapshot,
-    ) -> Result<Option<CachedPack>, GitError> {
-        if snapshot.is_empty() {
-            return Ok(None);
-        }
-        let path = self
-            .outgoing_dir(object_id)?
-            .join(format!("{}.pack", snapshot.key()));
-        Ok(std::fs::metadata(&path).ok().map(|metadata| CachedPack {
-            path,
-            len: metadata.len(),
-            key: snapshot.key().to_owned(),
-        }))
-    }
-
-    fn outgoing_dir(&self, object_id: &str) -> Result<PathBuf, GitError> {
-        shard::shard_path(&self.root.join(OUTGOING_DIR), object_id)
     }
 
     fn require_repo(&self, object_id: &str) -> Result<PathBuf, GitError> {
@@ -500,19 +375,7 @@ impl GitCache {
         let pool = self.ensure_pool(format)?;
         let quarantine = Quarantine::create(&self.root, &pool, format)?;
         git_index_pack_stream(quarantine.path(), source)?;
-
-        let mut missing = Vec::new();
-        for revision in required {
-            if revision.format() != format
-                || !git_rev_list_complete(quarantine.path(), revision.oid())?
-            {
-                missing.push(revision.to_string());
-            }
-        }
-        if !missing.is_empty() {
-            return Err(GitError::IncompletePack { missing });
-        }
-        with_path_lock(&pool, || quarantine.migrate_into(&pool))
+        admit(&pool, &quarantine, format, required)
     }
 
     /// Convenience wrapper over [`Self::ingest_pack_from`] that takes a
@@ -539,6 +402,81 @@ impl GitCache {
             }
         }
         Ok(missing)
+    }
+
+    /// `git upload-pack` serving `object_id`'s repo over smart HTTP,
+    /// protocol v2 (`specs/DECISIONS.md` §22): the capability
+    /// advertisement with `advertise`, otherwise one stateless request
+    /// read from stdin. The command is returned unspawned so an async
+    /// server can run it.
+    ///
+    /// **The caller filters requests.** Protocol v2 serves any object
+    /// the repo can read, and the repo reads the whole shared pool;
+    /// see [`crate::protocol`].
+    pub fn upload_pack(&self, object_id: &str, advertise: bool) -> Result<Command, GitError> {
+        let repo_path = self.require_repo(object_id)?;
+        Ok(crate::protocol::upload_pack(&repo_path, advertise))
+    }
+
+    /// Fetch `commits` (all in one object format) for `object_id` from
+    /// the Git smart-HTTP remote at `url`, through a quarantine
+    /// (`specs/DECISIONS.md` §22):
+    ///
+    /// 1. A fresh quarantine repo under `<root>/incoming/` borrows the
+    ///    pool through alternates, and its refs are seeded with the
+    ///    object repo's current ref tips. Git's negotiation sends those
+    ///    as `have`s, so the remote sends only what this cache lacks.
+    /// 2. `git fetch` runs with pinned settings ([`crate::protocol`])
+    ///    and no lock held. It is killed if the quarantine grows past
+    ///    `limits.max_bytes` or the fetch runs past `limits.timeout`.
+    /// 3. Every commit's full closure must be visible from the
+    ///    quarantine ([`GitError::IncompletePack`] otherwise); then the
+    ///    packs move into the pool under a brief pool lock.
+    ///
+    /// Like [`Self::ingest_pack_from`], this creates no per-object
+    /// repo; pin the commits with [`Self::set_ref`] afterwards.
+    pub fn fetch_commits(
+        &self,
+        object_id: &str,
+        url: &str,
+        commits: &[GitRevision],
+        limits: &FetchLimits,
+    ) -> Result<(), GitError> {
+        let Some(format) = commits.first().map(GitRevision::format) else {
+            return Ok(());
+        };
+        if let Some(other) = commits.iter().find(|commit| commit.format() != format) {
+            return Err(GitError::FormatMismatch {
+                context: format!("commit {other}"),
+                expected: format,
+                found: other.format(),
+            });
+        }
+        let pool = self.ensure_pool(format)?;
+        let quarantine = Quarantine::create(&self.root, &pool, format)?;
+
+        if self.repo_format(object_id)? == Some(format) {
+            let haves = self.ref_snapshot(object_id)?;
+            if !haves.is_empty() {
+                let mut updates = String::new();
+                for (index, oid) in haves.oids().enumerate() {
+                    updates.push_str(&format!("create refs/kairo/have/{index} {oid}\n"));
+                }
+                git_with_stdin(
+                    quarantine.path(),
+                    &["update-ref", "--stdin"],
+                    updates.as_bytes(),
+                )?;
+            }
+        }
+
+        let mut refspecs = String::new();
+        for commit in commits {
+            let oid = commit.oid();
+            refspecs.push_str(&format!("{oid}:refs/kairo/fetched/{oid}\n"));
+        }
+        run_watched_fetch(quarantine.path(), url, refspecs.as_bytes(), limits)?;
+        admit(&pool, &quarantine, format, commits)
     }
 
     /// Write `ref_name` → `revision`'s commit in the per-object repo
@@ -633,6 +571,178 @@ impl GitCache {
 
 fn pool_path(root: &Path, format: GitObjectFormat) -> PathBuf {
     root.join(format!("{POOL_DIR_PREFIX}{format}"))
+}
+
+/// Limits on one [`GitCache::fetch_commits`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FetchLimits {
+    /// Most bytes the fetch may write into its quarantine.
+    pub max_bytes: u64,
+    /// Longest the whole fetch may run.
+    pub timeout: Duration,
+}
+
+/// Admit a quarantine into `pool` if every `required` commit's full
+/// closure is visible from it; otherwise [`GitError::IncompletePack`]
+/// and the quarantine is dropped with nothing moved.
+fn admit(
+    pool: &Path,
+    quarantine: &Quarantine,
+    format: GitObjectFormat,
+    required: &[GitRevision],
+) -> Result<(), GitError> {
+    let mut missing = Vec::new();
+    for revision in required {
+        if revision.format() != format || !git_rev_list_complete(quarantine.path(), revision.oid())?
+        {
+            missing.push(revision.to_string());
+        }
+    }
+    if !missing.is_empty() {
+        return Err(GitError::IncompletePack { missing });
+    }
+    with_path_lock(pool, || quarantine.migrate_into(pool))
+}
+
+fn spawn_error(path: &Path) -> impl FnOnce(std::io::Error) -> GitError + '_ {
+    move |source| match source.kind() {
+        std::io::ErrorKind::NotFound => GitError::CacheGitMissing { source },
+        _ => GitError::CacheIo {
+            path: path.to_path_buf(),
+            source,
+        },
+    }
+}
+
+/// Run `git -C <repo> <args>` with `input` on stdin.
+fn git_with_stdin(repo: &Path, args: &[&str], input: &[u8]) -> Result<(), GitError> {
+    use std::process::Stdio;
+
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(spawn_error(repo))?;
+    let stderr = drain_stderr(&mut child);
+    let written = child
+        .stdin
+        .take()
+        .map(|mut stdin| stdin.write_all(input))
+        .transpose();
+    let status = child.wait().map_err(|source| GitError::CacheIo {
+        path: repo.to_path_buf(),
+        source,
+    })?;
+    let stderr = stderr.collect();
+    written.map_err(|source| GitError::CacheIo {
+        path: repo.to_path_buf(),
+        source,
+    })?;
+    if !status.success() {
+        return Err(GitError::CacheGitInvocation {
+            command: format!("git {}", args.join(" ")),
+            stderr,
+            exit_code: status.code(),
+        });
+    }
+    Ok(())
+}
+
+/// How often a running fetch is checked against its limits.
+const FETCH_POLL: Duration = Duration::from_millis(50);
+
+/// Run the pinned `git fetch` into `quarantine`, killing it if the
+/// quarantine's object directory outgrows `limits.max_bytes` or the
+/// fetch outlives `limits.timeout`. Git has no fetch-side size cap of
+/// its own (`receive.maxInputSize` is push-only), so this watches
+/// what lands on disk.
+fn run_watched_fetch(
+    quarantine: &Path,
+    url: &str,
+    refspecs: &[u8],
+    limits: &FetchLimits,
+) -> Result<(), GitError> {
+    use std::process::Stdio;
+
+    let mut child = crate::protocol::fetch(quarantine, url)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(spawn_error(quarantine))?;
+    let stderr = drain_stderr(&mut child);
+    // The refspec list is small next to a pipe buffer only for small
+    // fetches; write it from a thread so a long list can't deadlock
+    // against a child that is already writing.
+    let input = refspecs.to_vec();
+    let writer = child.stdin.take().map(|mut stdin| {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&input);
+        })
+    });
+
+    let started = std::time::Instant::now();
+    let objects = quarantine.join("objects");
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(source) => {
+                break Err(GitError::CacheIo {
+                    path: quarantine.to_path_buf(),
+                    source,
+                })
+            }
+        }
+        if started.elapsed() > limits.timeout {
+            break Err(GitError::TransferTimedOut {
+                after: limits.timeout,
+            });
+        }
+        if directory_size(&objects) > limits.max_bytes {
+            break Err(GitError::TransferTooLarge {
+                limit: limits.max_bytes,
+            });
+        }
+        std::thread::sleep(FETCH_POLL);
+    };
+    if outcome.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
+    let stderr = stderr.collect();
+    let status = outcome?;
+    if !status.success() {
+        return Err(GitError::CacheGitInvocation {
+            command: format!("git fetch {url}"),
+            stderr,
+            exit_code: status.code(),
+        });
+    }
+    Ok(())
+}
+
+/// Total size of the files under `dir`; unreadable entries count as
+/// empty (a file Git is renaming may vanish mid-walk).
+fn directory_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => directory_size(&entry.path()),
+            Ok(_) => entry.metadata().map(|m| m.len()).unwrap_or(0),
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 fn pool_objects_path(root: &Path, format: GitObjectFormat) -> PathBuf {
@@ -1976,55 +2086,6 @@ mod tests {
             .expect("write during a slow read");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         reader.join().expect("reader");
-    }
-
-    #[test]
-    fn cached_packs_are_reused_per_snapshot_and_replaced_on_change() {
-        if skip_if_no_git() {
-            return;
-        }
-        let (src, revision) = source_repo_in(GitObjectFormat::Sha1);
-        let (_dir, cache) = open_temp();
-        assert_eq!(cache.cached_pack(SAMPLE_ID).expect("none"), None);
-        cache
-            .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src.path()))
-            .expect("ingest");
-        cache
-            .set_ref(SAMPLE_ID, "refs/heads/main", &revision)
-            .expect("ref");
-
-        let first = cache.cached_pack(SAMPLE_ID).expect("pack").expect("some");
-        let modified = std::fs::metadata(&first.path)
-            .and_then(|m| m.modified())
-            .expect("mtime");
-        let again = cache.cached_pack(SAMPLE_ID).expect("pack").expect("some");
-        assert_eq!(again, first, "same snapshot, same file");
-        assert_eq!(
-            std::fs::metadata(&again.path)
-                .and_then(|m| m.modified())
-                .expect("mtime"),
-            modified,
-            "not regenerated"
-        );
-
-        // The cached pack carries the history into another cache.
-        let (_other_dir, other) = open_temp();
-        other
-            .ingest_pack_from(
-                GitObjectFormat::Sha1,
-                std::fs::File::open(&first.path).expect("open"),
-                std::slice::from_ref(&revision),
-            )
-            .expect("ingest cached pack");
-
-        // A ref change is a new snapshot: a new file, the old one gone.
-        cache
-            .set_ref(SAMPLE_ID, "refs/heads/second", &revision)
-            .expect("ref");
-        let second = cache.cached_pack(SAMPLE_ID).expect("pack").expect("some");
-        assert_ne!(second.key, first.key);
-        assert!(!first.path.exists(), "superseded pack removed");
-        assert!(second.path.exists());
     }
 
     #[test]

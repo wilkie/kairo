@@ -14,6 +14,7 @@ use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::Router;
+use flate2 as _;
 use kairo_core::{KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_federation_core::FedErrorCode;
 use kairo_federation_http::client::{pull_object, Limits, PullError, PullOptions, RecordRejection};

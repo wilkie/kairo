@@ -11,6 +11,7 @@
 
 mod cache;
 mod lock;
+mod protocol;
 mod shard;
 mod transport;
 
@@ -18,7 +19,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-pub use cache::{CachedPack, GitCache, RefSnapshot};
+pub use cache::{FetchLimits, GitCache, RefSnapshot};
 pub use kairo_statement::{GitObjectFormat, GitRevision};
 pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 
@@ -107,6 +108,12 @@ pub enum GitError {
         expected: GitObjectFormat,
         found: GitObjectFormat,
     },
+    /// A fetch wrote more than its byte limit and was stopped; nothing
+    /// was moved into the pool.
+    TransferTooLarge { limit: u64 },
+    /// A fetch ran past its time limit and was stopped; nothing was
+    /// moved into the pool.
+    TransferTimedOut { after: std::time::Duration },
 }
 
 impl fmt::Display for GitError {
@@ -161,6 +168,14 @@ impl fmt::Display for GitError {
                 f,
                 "{context} uses Git object format {found}, but {expected} is required"
             ),
+            Self::TransferTooLarge { limit } => {
+                write!(f, "the Git transfer exceeded its {limit}-byte limit")
+            }
+            Self::TransferTimedOut { after } => write!(
+                f,
+                "the Git transfer did not finish within {} seconds",
+                after.as_secs()
+            ),
         }
     }
 }
@@ -177,7 +192,9 @@ impl Error for GitError {
             | Self::CacheLockTimeout { .. }
             | Self::CacheInvalidObjectId { .. }
             | Self::IncompletePack { .. }
-            | Self::FormatMismatch { .. } => None,
+            | Self::FormatMismatch { .. }
+            | Self::TransferTooLarge { .. }
+            | Self::TransferTimedOut { .. } => None,
         }
     }
 }

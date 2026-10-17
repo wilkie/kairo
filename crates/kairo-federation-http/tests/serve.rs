@@ -26,6 +26,7 @@ use tower::ServiceExt;
 use common::{node_actor, seed, Seeded, BASE_URL};
 
 // Crates the lib or `common` depends on that this target doesn't name.
+use flate2 as _;
 use http_body as _;
 use kairo_federation_core as _;
 use kairo_git as _;

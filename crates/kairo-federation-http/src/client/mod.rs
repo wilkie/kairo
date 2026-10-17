@@ -58,9 +58,9 @@ pub struct Limits {
     pub max_records: usize,
     /// Per request, connect to last byte.
     pub request_timeout: Duration,
-    /// Largest Git pack.
+    /// Most bytes one Git fetch may write.
     pub max_git_bytes: u64,
-    /// For the Git pack request, which can be large.
+    /// For the whole Git fetch, which can be large.
     pub git_timeout: Duration,
 }
 
@@ -126,10 +126,10 @@ pub enum GitOutcome {
     NoGitRevisions,
     /// Every revision's commit was already in the local cache.
     AlreadyHeld { commits: usize },
-    /// The peer's pack was ingested; every revision's commit now
+    /// The missing commits were fetched; every revision's commit now
     /// resolves locally and is pinned under `refs/kairo/imported/`.
     Ingested { commits: usize },
-    /// The peer has no pack for the object. `missing` commits stay
+    /// The peer has no Git history for the object. `missing` commits stay
     /// unresolved, so `verify object` reports content as
     /// indeterminate until they come from elsewhere.
     Unavailable { missing: usize },
@@ -220,7 +220,7 @@ pub enum PullError {
     /// Local Git cache operation failed (opening, `index-pack`,
     /// pinning).
     Git(String),
-    /// The peer's pack didn't contain every pulled revision's commit.
+    /// The fetch didn't bring every pulled revision commit's closure.
     GitIncomplete {
         missing: Vec<String>,
     },
@@ -278,7 +278,7 @@ impl fmt::Display for PullError {
             Self::Git(message) => write!(f, "local Git cache error: {message}"),
             Self::GitIncomplete { missing } => write!(
                 f,
-                "the peer's Git pack lacks {} revision commit(s): {}",
+                "the Git fetch lacks part of {} revision commit(s): {}",
                 missing.len(),
                 missing.join(", ")
             ),
@@ -396,13 +396,13 @@ impl Pull<'_> {
     }
 
     /// Make every pulled revision's commit resolve in the local Git
-    /// cache (`specs/DECISIONS.md` §19). The pack is only fetched when
-    /// some commit is missing, and is streamed straight into `git
-    /// index-pack` in the object's format, never held in memory.
+    /// cache (`specs/DECISIONS.md` §19). Git is only fetched when some
+    /// commit is missing, with `git fetch` over the peer's smart-HTTP
+    /// endpoint (§22), in the object's format.
     ///
-    /// The pack is indexed in quarantine and only moves into the pool
-    /// if every missing commit's full closure (commit, ancestors,
-    /// trees, blobs) is in it. Only then is the object's repo created
+    /// The fetch lands in quarantine and only moves into the pool if
+    /// every missing commit's full closure (commit, ancestors, trees,
+    /// blobs) is in it. Only then is the object's repo created
     /// and the commits pinned, so a failed pull leaves neither a repo
     /// to advertise nor stray objects in the pool.
     fn git(
@@ -473,25 +473,32 @@ impl Pull<'_> {
                 )));
             }
         }
-        self.peer.with_reader(
-            &format!("{API_PREFIX}/objects/{object}/git"),
-            self.limits.max_git_bytes,
-            self.limits.git_timeout,
-            // Quarantined ingest: the download streams into a
-            // temporary object directory with no lock held, and only a
-            // pack carrying every missing commit's full closure reaches
-            // the pool (DECISIONS.md §21).
-            |reader| {
-                cache
-                    .ingest_pack_from(format, reader, &missing)
-                    .map_err(|e| match e {
-                        kairo_git::GitError::IncompletePack { missing } => {
-                            PullError::GitIncomplete { missing }
-                        }
-                        other => PullError::Git(other.to_string()),
-                    })
-            },
-        )?;
+        // Git's own smart HTTP (DECISIONS.md §22): negotiation sends
+        // the commits this cache already holds for the object as
+        // `have`s, so the peer sends only what's missing, and the
+        // fetch lands in a quarantine that reaches the pool only if
+        // every missing commit's full closure arrived (§21).
+        let url = format!("{}{API_PREFIX}/objects/{object}/git", self.peer.base_url());
+        let limits = kairo_git::FetchLimits {
+            max_bytes: self.limits.max_git_bytes,
+            timeout: self.limits.git_timeout,
+        };
+        cache
+            .fetch_commits(object.as_str(), &url, &missing, &limits)
+            .map_err(|error| match error {
+                kairo_git::GitError::IncompletePack { missing } => {
+                    PullError::GitIncomplete { missing }
+                }
+                kairo_git::GitError::TransferTooLarge { limit } => PullError::TooLarge {
+                    url: url.clone(),
+                    limit,
+                },
+                kairo_git::GitError::TransferTimedOut { .. } => PullError::Transport {
+                    url: url.clone(),
+                    message: error.to_string(),
+                },
+                other => PullError::Git(other.to_string()),
+            })?;
         for commit in &missing {
             cache
                 .set_ref(

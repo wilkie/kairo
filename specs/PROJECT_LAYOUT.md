@@ -438,8 +438,9 @@ Responsibilities:
 
 - `/.well-known/kairo-node`
 - `GET /federation/v1/objects/{id}`, `/objects/{id}/genesis`, `/actors/{id}`,
-  `/statements/{id}`, `/blobs/{id}`, `/objects/{id}/git` (the
-  object-pull MVP, `DECISIONS.md` §16)
+  `/statements/{id}`, `/blobs/{id}` (the object-pull MVP,
+  `DECISIONS.md` §16), and Git smart HTTP v2 under
+  `/objects/{id}/git/` (`DECISIONS.md` §22)
 - `POST /federation/v1/query`, `POST /federation/v1/announce`,
   `GET /federation/v1/tokens/{token}` (discovery phase)
 - The `kairo-federation-http` serve binary: a separate, read-only

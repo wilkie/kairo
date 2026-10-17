@@ -10,7 +10,6 @@ repository.workspace = true
 fs2 = "0.4"
 gix = { version = "0.89", default-features = false, features = ["max-performance-safe", "sha1", "sha256"] }
 kairo-statement = { path = "../kairo-statement" }
-sha2 = "0.10"
 
 [dev-dependencies]
 kairo-test-support = { path = "../kairo-test-support" }

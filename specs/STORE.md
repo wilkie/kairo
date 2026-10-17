@@ -148,9 +148,8 @@ characters from the record id's base58 payload:
                                          #   tree/blob, content-addressed;
                                          #   deduplicated across forked
                                          #   Kairo objects via alternates
-    outgoing/<XX>/<YY>/<object-id>/      # cached packs, one per ref snapshot
-      <snapshot-key>.pack                #   (DECISIONS.md §21)
-    incoming/<unique>/                   # quarantines for packs being ingested
+    incoming/<unique>/                   # quarantines for packs and fetches
+                                         #   being ingested (DECISIONS.md §21, §22)
     <XX>/<YY>/<object-id>/               # per-Kairo-object bare repo, in
       objects/info/alternates            #   one format → ../../../pool-<format>/objects
       refs/heads/<branch>                #   set by `kairo git fetch`
@@ -336,8 +335,8 @@ GC must:
   unreachable from every per-object repo's refs for longer than a grace
   period, as Git's `gc.pruneExpire` does (`DECISIONS.md` §21). Readers
   hold no locks, so the grace period is what keeps an in-flight
-  `pack-objects` from losing objects. Stale `outgoing/` packs and
-  abandoned `incoming/` quarantines are removable at any time.
+  `pack-objects` from losing objects. Abandoned `incoming/`
+  quarantines are removable at any time.
 
 ---
 

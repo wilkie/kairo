@@ -42,7 +42,7 @@ pub struct Config {
     pub node_actor: ActorId,
     /// See [`DEFAULT_VIEW_TTL`]. Zero recomputes on every request.
     pub view_ttl: Duration,
-    /// Cap on concurrent pack generation; `None` is half the CPUs.
+    /// Cap on concurrent Git fetches; `None` is half the CPUs.
     pub max_concurrent_packs: Option<usize>,
 }
 

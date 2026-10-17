@@ -37,13 +37,15 @@ pub mod client;
 #[cfg(feature = "server")]
 mod error;
 #[cfg(feature = "server")]
+mod git_protocol;
+#[cfg(feature = "server")]
 mod handlers;
 #[cfg(feature = "server")]
 mod node;
 #[cfg(feature = "server")]
-mod pack;
-#[cfg(feature = "server")]
 mod server;
+#[cfg(feature = "server")]
+mod upload;
 #[cfg(feature = "server")]
 mod view;
 

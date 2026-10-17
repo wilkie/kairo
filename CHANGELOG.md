@@ -18,13 +18,33 @@ rather than per-commit.
 
 ### Changed
 
+- **Git history federates over Git's smart HTTP protocol v2
+  (`DECISIONS.md` §22).**
+  - Each published object's Git history is served at
+    `/federation/v1/objects/{id}/git` (`info/refs`,
+    `git-upload-pack`), and a pull runs `git fetch` against it. A
+    re-pull negotiates and fetches only the new objects.
+  - The server filters every request. It answers `ls-refs` from the
+    published commits, refuses unpublished `want`s (`400
+    fed_bad_git_request`), drops unpublished `have`s, and refuses
+    other commands and protocol v0/v1. The shared pool's unpublished
+    commits stay unreachable.
+  - Both sides run Git with host config ignored and safety settings
+    pinned. The client caps a fetch's bytes and time by watching its
+    quarantine.
+  - The old single-pack endpoint and the server's pack cache are
+    removed, so the server writes nothing again.
+    `--max-concurrent-packs` still caps concurrent fetches, and a
+    30-second stall timeout replaces the size-based deadline.
+  - Any Git client can `git clone --mirror` a published object's
+    commits (content only; verification still needs the
+    statements).
+
 - **Git transfer follows Git-host practice (`DECISIONS.md` §21).**
-  - Serving a pack holds no lock. It snapshots the refs, packs with
-    `pack-objects --revs`, and serves from an on-disk cache keyed by
-    the snapshot, with one generation per object and a cap on
-    concurrent generations (`--max-concurrent-packs`, `503 fed_busy`
-    with `Retry-After` past it). Responses carry `Content-Length` and
-    an `ETag`, and a server-side deadline drops stalled peers.
+  - Packing holds no lock: it snapshots the refs and packs with
+    `pack-objects --revs`. Serving caps concurrent fetches
+    (`--max-concurrent-packs`, `503 fed_busy` with `Retry-After` past
+    it); see §22 above for the transport.
   - Incoming packs (federation pull, bundle import) go through a
     quarantine and only reach the pool when complete, with no lock
     held during the download.

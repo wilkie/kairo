@@ -5,16 +5,16 @@
 //! as an id the store doesn't hold (§16 sub-decision 3). Store reads
 //! are blocking filesystem I/O, so they run on the blocking pool.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::rejection::{PathRejection, QueryRejection};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_federation_core::{
@@ -43,7 +43,14 @@ pub(crate) fn router(node: Node) -> Router {
             &format!("{API_PREFIX}/objects/:id/genesis"),
             get(object_genesis),
         )
-        .route(&format!("{API_PREFIX}/objects/:id/git"), get(object_git))
+        .route(
+            &format!("{API_PREFIX}/objects/:id/git/info/refs"),
+            get(git_info_refs),
+        )
+        .route(
+            &format!("{API_PREFIX}/objects/:id/git/git-upload-pack"),
+            post(git_upload_pack),
+        )
         .route(&format!("{API_PREFIX}/actors/:id"), get(actor_listing))
         .route(&format!("{API_PREFIX}/statements/:id"), get(statement))
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
@@ -167,7 +174,10 @@ fn page_request(query: RawQuery) -> Result<PageRequest, Fail> {
 /// Only `GET` and `HEAD` exist; everything else is `405` with the
 /// federation envelope, on every path including unknown ones.
 async fn read_only(request: Request, next: Next) -> Response {
-    if request.method() == Method::GET || request.method() == Method::HEAD {
+    let method = request.method();
+    // The one `POST` is Git's upload-pack RPC, which only reads.
+    let upload_pack = method == Method::POST && request.uri().path().ends_with(UPLOAD_PACK_SUFFIX);
+    if method == Method::GET || method == Method::HEAD || upload_pack {
         return next.run(request).await;
     }
     let mut response = Fail::new(
@@ -313,7 +323,7 @@ async fn object_listing(State(node): State<Node>, id: PathId, query: RawQuery) -
             actors: Vec::new(),
             blobs: Vec::new(),
             git: page.cursor().is_none().then(|| GitAvailability {
-                available: crate::pack::has_pack(&crate::git_root(&node.store), object.as_str()),
+                available: crate::upload::has_git(&crate::git_root(&node.store), object.as_str()),
             }),
             next_cursor: None,
         };
@@ -364,66 +374,217 @@ async fn object_genesis(State(node): State<Node>, id: PathId) -> Response {
     .await
 }
 
-/// The object's Git pack, served from the node's pack cache
-/// (`crate::pack`, `DECISIONS.md` §21). `404` when the object isn't
-/// published or the cache holds nothing for it; `503 fed_busy` with
-/// `Retry-After` when no generation slot frees up in time.
-async fn object_git(State(node): State<Node>, id: PathId) -> Response {
-    let object = match parse_id(id, ObjectId::new) {
-        Ok(object) => object,
-        Err(fail) => return fail.into_response(),
-    };
-    let check_node = node.clone();
-    let check_object = object.clone();
-    let available = run_blocking(move || {
-        let published = view(&check_node)?.closures.contains_key(&check_object);
-        let cached =
-            crate::pack::has_pack(&crate::git_root(&check_node.store), check_object.as_str());
-        if published && cached {
-            Ok(())
-        } else {
-            Err(Fail::not_found())
+// --- Git smart HTTP (DECISIONS.md §22) -----------------------------
+
+const UPLOAD_PACK_SUFFIX: &str = "/git/git-upload-pack";
+const UPLOAD_PACK_REQUEST: &str = "application/x-git-upload-pack-request";
+
+/// Largest upload-pack request body, after decompression. A request is
+/// wants and one negotiation round of haves; Git sends haves in
+/// batches far below this.
+const MAX_UPLOAD_REQUEST_BYTES: usize = 4 * 1024 * 1024;
+
+fn bad_git_request(message: impl Into<String>) -> Fail {
+    Fail::new(FedErrorCode::FedBadGitRequest, message)
+}
+
+/// The published commits of `object`, as hex ids, if the object is
+/// published and this node's cache has a repo with refs for it.
+/// `404` otherwise, like every other record.
+async fn published_commits(node: &Node, object: &ObjectId) -> Result<BTreeSet<String>, Fail> {
+    let node = node.clone();
+    let object = object.clone();
+    run_blocking(move || {
+        let view = view(&node)?;
+        let closure = view.closures.get(&object).ok_or_else(Fail::not_found)?;
+        if !crate::upload::has_git(&crate::git_root(&node.store), object.as_str()) {
+            return Err(Fail::not_found());
         }
+        Ok(closure
+            .commits
+            .iter()
+            .map(|commit| commit.oid().to_owned())
+            .collect())
     })
-    .await;
-    if let Err(fail) = available {
-        return fail.into_response();
+    .await
+}
+
+fn require_v2(headers: &HeaderMap) -> Result<(), Fail> {
+    let v2 = headers
+        .get("git-protocol")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(crate::git_protocol::wants_v2);
+    if v2 {
+        Ok(())
+    } else {
+        Err(bad_git_request(
+            "this node speaks Git protocol v2 only; use git >= 2.29 or set protocol.version=2",
+        ))
     }
-    let pack = match node
-        .packs
-        .pack(&crate::git_root(&node.store), object.as_str())
-        .await
-    {
-        Ok(pack) => pack,
-        Err(crate::pack::PackError::Empty) => return Fail::not_found().into_response(),
-        Err(crate::pack::PackError::Busy) => {
+}
+
+fn git_response(content_type: &'static str, body: Body) -> Response {
+    let mut response = (StatusCode::OK, body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+}
+
+fn upload_failure(object: &ObjectId, error: crate::upload::UploadError) -> Response {
+    match error {
+        crate::upload::UploadError::Busy => {
             let mut response = Fail::new(
                 FedErrorCode::FedBusy,
-                "the node is generating as many packs as it allows; retry shortly",
+                "the node is serving as many Git fetches as it allows; retry shortly",
             )
             .into_response();
             response.headers_mut().insert(
                 header::RETRY_AFTER,
-                HeaderValue::from(crate::pack::RETRY_AFTER_SECS),
+                HeaderValue::from(crate::upload::RETRY_AFTER_SECS),
             );
-            return response;
+            response
         }
-        Err(crate::pack::PackError::Git(message)) => {
-            tracing::error!(object = %object, %message, "generating a pack failed");
-            return Fail::new(FedErrorCode::FedStoreError, "store read failed").into_response();
+        crate::upload::UploadError::Git(message) => {
+            tracing::error!(object = %object, %message, "git upload-pack failed");
+            Fail::new(FedErrorCode::FedStoreError, "store read failed").into_response()
+        }
+    }
+}
+
+/// `GET …/git/info/refs?service=git-upload-pack`: the protocol v2
+/// capability advertisement, narrowed to what this server answers.
+async fn git_info_refs(
+    State(node): State<Node>,
+    id: PathId,
+    query: RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    let object = match parse_id(id, ObjectId::new) {
+        Ok(object) => object,
+        Err(fail) => return fail.into_response(),
+    };
+    let service = query
+        .ok()
+        .and_then(|Query(params)| params.get("service").cloned());
+    if service.as_deref() != Some("git-upload-pack") {
+        return bad_git_request("only service=git-upload-pack is served").into_response();
+    }
+    if let Err(fail) = published_commits(&node, &object).await {
+        return fail.into_response();
+    }
+    if let Err(fail) = require_v2(&headers) {
+        return fail.into_response();
+    }
+    let raw = match node
+        .uploads
+        .advertise(&crate::git_root(&node.store), object.as_str())
+        .await
+    {
+        Ok(raw) => raw,
+        Err(error) => return upload_failure(&object, error),
+    };
+    match crate::git_protocol::filter_advertisement(&raw) {
+        Ok(advertisement) => git_response(
+            "application/x-git-upload-pack-advertisement",
+            Body::from(advertisement),
+        ),
+        Err(refusal) => {
+            tracing::error!(object = %object, reason = %refusal.0, "unexpected upload-pack advertisement");
+            Fail::new(FedErrorCode::FedStoreError, "store read failed").into_response()
+        }
+    }
+}
+
+/// `POST …/git/git-upload-pack`: one stateless protocol v2 command.
+/// `ls-refs` is answered here; `fetch` is filtered to published
+/// commits and handed to `git upload-pack` (`crate::git_protocol`).
+async fn git_upload_pack(
+    State(node): State<Node>,
+    id: PathId,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let object = match parse_id(id, ObjectId::new) {
+        Ok(object) => object,
+        Err(fail) => return fail.into_response(),
+    };
+    let published = match published_commits(&node, &object).await {
+        Ok(published) => published,
+        Err(fail) => return fail.into_response(),
+    };
+    if let Err(fail) = require_v2(&headers) {
+        return fail.into_response();
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok());
+    if content_type != Some(UPLOAD_PACK_REQUEST) {
+        return bad_git_request(format!("expected Content-Type {UPLOAD_PACK_REQUEST}"))
+            .into_response();
+    }
+    let gzip = match headers
+        .get(header::CONTENT_ENCODING)
+        .map(|value| value.to_str().unwrap_or_default())
+    {
+        None => false,
+        Some("gzip" | "x-gzip") => true,
+        Some(other) => {
+            return bad_git_request(format!("unsupported Content-Encoding {other:?}"))
+                .into_response()
         }
     };
-    let mut response = (StatusCode::OK, crate::pack::file_body(&pack)).into_response();
-    let headers = response.headers_mut();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/x-git-packed-objects"),
-    );
-    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(pack.len));
-    if let Ok(etag) = HeaderValue::from_str(&format!("\"{}\"", pack.key)) {
-        headers.insert(header::ETAG, etag);
+    let raw = match axum::body::to_bytes(body, MAX_UPLOAD_REQUEST_BYTES).await {
+        Ok(raw) => raw,
+        Err(_) => return bad_git_request("request body too large").into_response(),
+    };
+    let request = if gzip {
+        match gunzip(&raw) {
+            Ok(request) => request,
+            Err(fail) => return fail.into_response(),
+        }
+    } else {
+        raw.to_vec()
+    };
+    let parsed = match crate::git_protocol::parse_request(&request) {
+        Ok(parsed) => parsed,
+        Err(refusal) => return bad_git_request(refusal.0).into_response(),
+    };
+    let result = "application/x-git-upload-pack-result";
+    match parsed.command {
+        "ls-refs" => git_response(
+            result,
+            Body::from(crate::git_protocol::ls_refs(&parsed, &published)),
+        ),
+        "fetch" => {
+            let filtered = match crate::git_protocol::filter_fetch(&parsed, &published) {
+                Ok(filtered) => filtered,
+                Err(refusal) => return bad_git_request(refusal.0).into_response(),
+            };
+            match node
+                .uploads
+                .fetch(&crate::git_root(&node.store), object.as_str(), filtered)
+                .await
+            {
+                Ok(body) => git_response(result, body),
+                Err(error) => upload_failure(&object, error),
+            }
+        }
+        other => bad_git_request(format!("command {other:?} is not served")).into_response(),
     }
-    response
+}
+
+fn gunzip(raw: &[u8]) -> Result<Vec<u8>, Fail> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(raw)
+        .take(MAX_UPLOAD_REQUEST_BYTES as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|_| bad_git_request("malformed gzip request body"))?;
+    if out.len() > MAX_UPLOAD_REQUEST_BYTES {
+        return Err(bad_git_request("request body too large"));
+    }
+    Ok(out)
 }
 
 async fn actor_listing(State(node): State<Node>, id: PathId) -> Response {

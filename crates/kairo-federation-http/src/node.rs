@@ -14,7 +14,7 @@ use kairo_store::{
 };
 
 use crate::error::Error;
-use crate::pack::PackService;
+use crate::upload::UploadService;
 use crate::view::ViewCache;
 use crate::Config;
 
@@ -25,7 +25,7 @@ pub struct Node {
     pub(crate) store: FilesystemStore,
     pub(crate) document: Arc<NodeDocument>,
     pub(crate) views: Arc<ViewCache>,
-    pub(crate) packs: Arc<PackService>,
+    pub(crate) uploads: Arc<UploadService>,
 }
 
 impl Node {
@@ -94,15 +94,15 @@ impl Node {
             store,
             document: Arc::new(document),
             views: Arc::new(ViewCache::new(view_ttl)),
-            packs: Arc::new(PackService::new(PackService::default_concurrency())),
+            uploads: Arc::new(UploadService::new(UploadService::default_concurrency())),
         })
     }
 
-    /// Cap concurrent pack generation at `max` (default: half the
-    /// CPUs). Requests over the cap wait briefly, then get `503
-    /// fed_busy`.
+    /// Cap concurrent Git fetches (`upload-pack` runs) at `max`
+    /// (default: half the CPUs). Requests over the cap wait briefly,
+    /// then get `503 fed_busy`.
     pub fn with_max_concurrent_packs(mut self, max: usize) -> Self {
-        self.packs = Arc::new(PackService::new(max));
+        self.uploads = Arc::new(UploadService::new(max));
         self
     }
 
@@ -111,7 +111,7 @@ impl Node {
     }
 
     /// The axum router for every endpoint in
-    /// `specs/PHASE_2_FEDERATION.md` §2.1 except `/git` (slice 4).
+    /// `specs/PHASE_2_FEDERATION.md` §2.1.
     pub fn router(&self) -> Router {
         crate::handlers::router(self.clone())
     }

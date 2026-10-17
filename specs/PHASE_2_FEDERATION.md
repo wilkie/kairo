@@ -54,7 +54,8 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/objects` | `Page<ObjectId>` of published objects |
 | `GET` | `/federation/v1/objects/{id}` | `ObjectListing` (paged) |
 | `GET` | `/federation/v1/objects/{id}/genesis` | `ObjectGenesis` JSON, exactly as stored |
-| `GET` | `/federation/v1/objects/{id}/git` | Git pack, streamed, `application/x-git-packed-objects` |
+| `GET` | `/federation/v1/objects/{id}/git/info/refs?service=git-upload-pack` | Git protocol v2 capability advertisement (`DECISIONS.md` §22) |
+| `POST` | `/federation/v1/objects/{id}/git/git-upload-pack` | Git protocol v2 `ls-refs` / `fetch`, filtered to published commits (§22) |
 | `GET` | `/federation/v1/actors/{id}` | `ActorListing` |
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
@@ -113,9 +114,10 @@ served.
 | 400 | `fed_bad_id` | path segment isn't a valid id of that type |
 | 400 | `fed_bad_cursor` | cursor didn't decode |
 | 400 | `fed_bad_limit` | `limit` isn't an integer from 1 to 1000 (refused, not clamped) |
-| 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD` |
+| 400 | `fed_bad_git_request` | Git request the node won't serve: not protocol v2, a command other than `ls-refs` / `fetch`, an unpublished `want`, a malformed body (`DECISIONS.md` §22) |
+| 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack` `POST` |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
-| 503 | `fed_busy` | pack generation at capacity; `Retry-After` says when to retry (`DECISIONS.md` §21) |
+| 503 | `fed_busy` | concurrent Git fetches at capacity; `Retry-After` says when to retry (`DECISIONS.md` §21, §22) |
 
 Envelope is `API.md` §7.2.
 
@@ -123,8 +125,8 @@ Envelope is `API.md` §7.2.
 
 Defaults, overridable per invocation and later in `[federation]`
 config: 1 MiB per statement or listing page, 256 MiB per blob,
-1 GiB per Git pack, 100 000 records per pull, 30 s per request
-(30 min for the Git pack request).
+1 GiB per Git fetch (measured in the fetch's quarantine), 100 000
+records per pull, 30 s per request (30 min for the Git fetch).
 Exceeding one fails the pull with what was stored so far kept.
 
 ### 2.5 Test harness
@@ -257,7 +259,14 @@ Exceeding one fails the pull with what was stored so far kept.
   Store tests cover provenance dedup, mismatched records,
   snapshot refs, and `rebuild-indexes` leaving it alone.
 
-### Slice 4 — Git pack transfer *(shipped)*
+### Slice 4 — Git pack transfer *(shipped; transport replaced by `DECISIONS.md` §22)*
+
+The single-pack endpoint below was replaced by Git's smart HTTP
+protocol v2 (§22): `git fetch` with negotiation, so a re-pull moves
+only new objects. The listing's `git.available`, the outcome
+reporting, and the pinning under `refs/kairo/imported/` are
+unchanged.
+
 
 - `GET /federation/v1/objects/{id}/git` streams the same pack
   `kairo bundle export --include-git` produces
@@ -422,10 +431,10 @@ two-node check runs against the corrected behavior:
 
 In rough order, each needing its own decision:
 
-0. **Incremental fetch** (`DECISIONS.md` §21 sub-decision 6): the
-   client names the commits it already has and the server packs only
-   the difference, as Git's negotiation does. Then reachability
-   bitmaps, and bundle or packfile URIs for static hosting.
+0. ~~**Incremental fetch**~~ — done by `DECISIONS.md` §22 (Git smart
+   HTTP v2). Next on the content plane: reachability bitmaps, then
+   bundle or packfile URIs for static hosting, both Git
+   configuration now.
 1. **Push** with node authentication (signed node document,
    `KairoActor1` on requests) and a receiver acceptance policy.
 2. **Trust transport** (opt-in, never auto-trusted) and `forget`.
@@ -455,6 +464,13 @@ Sequencing consequence: scoped `ActorTrust` lands before discovery,
 which needs `federation:index` to decide which learned peers to
 follow. Push needs `federation:push`.
 
+Open question for push and discovery: whether statements should
+also travel as Git objects. Radicle's per-peer ref namespaces and
+signed refs are the closest prior art. `DECISIONS.md` §22 deferred it,
+because statements form an independently appended set, not one
+history, their ids are not Git ids, and moving them changes the
+store backend.
+
 ## 5. Risk Notes
 
 - **Publishing is irreversible.** Opt-in and absence ambiguity
@@ -476,9 +492,15 @@ follow. Push needs `federation:push`.
   verifier is tracked in `PHASE_2.md` §11.
 - ~~**Serving a pack holds the object's lock for the whole
   transfer.**~~ Resolved by `DECISIONS.md` §21: lock-free snapshot
-  packing, a pack cache, per-object single-flight, a generation cap
-  with `503 fed_busy`, and a transfer deadline. The pulling side's pool
-  lock during download is gone too (quarantined ingest).
+  packing, a generation cap with `503 fed_busy`, and a stall timeout
+  (§22 replaced the pack cache and the size-based deadline). The
+  pulling side's pool lock during download is gone too (quarantined
+  ingest).
+- **The Git endpoint fronts a shared pool.** Protocol v2
+  `upload-pack` serves any object it can read, and the pool holds
+  unpublished objects' commits. `DECISIONS.md` §22's request filter
+  is the only thing scoping it, so a change to that filter needs the
+  pooled-secret tests in `tests/git.rs` to keep passing.
 - ~~**Rebuilding the published view walks the store.**~~ Resolved
   by `DECISIONS.md` §20: closures walk each object's reachable
   history through the per-object revision index, so a rebuild costs

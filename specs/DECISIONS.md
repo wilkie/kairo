@@ -1189,7 +1189,8 @@ Ten sub-decisions, locked together:
      genesis and key-event ids.
    - `GET /federation/v1/statements/{id}` and
      `/federation/v1/blobs/{id}` return single records.
-   - `GET /federation/v1/objects/{id}/git` returns the Git pack.
+   - `/federation/v1/objects/{id}/git` serves the object's Git
+     history over Git's smart HTTP protocol v2 (§22).
 
    Statements are served as exactly the JSON DTO the store holds
    (the `kairo-statement` wire shape, not `FEDERATION.md`'s
@@ -1208,8 +1209,8 @@ Ten sub-decisions, locked together:
    computes closures itself; it does not proxy the daemon API,
    whose reads are unauthenticated and assume socket
    permissions, so exposing them would publish the whole store.
-   (Since §21 it also writes its own pack cache under the Git
-   cache's `outgoing/`, and nothing else.) It serves plain HTTP and
+   (§21 briefly gave it a pack cache under the Git cache's
+   `outgoing/`; §22 removed it, so it writes nothing.) It serves plain HTTP and
    binds `127.0.0.1` by default. A
    non-loopback bind needs an explicit `--bind` with a
    non-loopback address and a startup warning. TLS is terminated
@@ -1726,37 +1727,21 @@ Sub-decisions:
    pull leaves no objects in the pool (this resolves the slice 4
    "pool junk" note).
 
-4. **Pack cache per ref snapshot.** `GitCache::cached_pack` returns a
-   complete pack file at
-   `<git root>/outgoing/<XX>/<YY>/<object>/<snapshot-key>.pack`. The
-   key is a SHA-256 over the sorted `<ref> <oid>` lines. The pack is
-   generated if absent, written under a temporary name and renamed
-   into place, and packs for older snapshots are removed. This is the
-   shape of Gitaly's pack-objects cache, with our "request" being the
-   object's whole reachable history until incremental fetch exists.
-   The server streams the file with `Content-Length` and an `ETag` of
-   the snapshot key. The federation server therefore writes to its
-   store's Git cache directory (`outgoing/` only), amending §16
-   sub-decision 6's "read-only": it still never writes statements,
-   blobs, refs, or the pool.
+4. **Pack cache per ref snapshot.** *Superseded by §22
+   sub-decision 4:* negotiated packs depend on the client's `have`s,
+   so the whole-history cache under `<git root>/outgoing/` was
+   removed, and the server writes nothing again.
 
-5. **Bounded serving.**
-   - Concurrent requests for one object wait for a single generation
-     and share its file.
-   - A semaphore caps concurrent generation across objects
-     (`--max-concurrent-packs`; default half the CPUs, at least one).
-     A request that can't get a slot within 10 seconds gets `503
-     fed_busy` with `Retry-After: 5`, and cache hits need no slot.
-   - Streaming has a server-side deadline of 30 seconds plus the pack
-     size at 64 KiB/s. A peer that hasn't taken the pack by then is
-     disconnected.
+5. **Bounded serving.** A semaphore caps concurrent pack-producing
+   requests across objects (`--max-concurrent-packs`; default half
+   the CPUs, at least one). A request that can't get a slot within 10
+   seconds gets `503 fed_busy` with `Retry-After: 5`. §22
+   sub-decision 4 keeps the cap and replaces this section's
+   size-based transfer deadline with a 30-second stall timeout.
 
-6. **Next: incremental fetch.** Git hosts send only what the client
-   lacks: the client names commits it has, and the server packs the
-   difference. That is the largest remaining efficiency gap, and it
-   is tracked in `PHASE_2_FEDERATION.md` §4. Reachability bitmaps on
-   the pools and bundle or packfile URIs (serving prebuilt packs from
-   static hosting, as Git's protocol extensions do) follow it.
+6. **Next: incremental fetch.** *Done by §22,* which adopts Git's
+   smart HTTP protocol, so the client's `have`s make the server send
+   only the difference.
 
 Rationale: holding a lock across the network makes one slow client
 everyone's problem. Git solved this long ago with immutable objects,
@@ -1773,3 +1758,128 @@ Affected specs:
   in §2.3; the pack-lock and pool-junk risk notes resolved;
   incremental fetch added to §4.
 - `DECISIONS.md` §16 sub-decision 6 — the server writes its pack cache.
+
+## 22. Git Smart HTTP as the Federation Content Plane
+
+Decision: Git history moves between nodes over **Git's own smart
+HTTP protocol, version 2**, not a Kairo pack endpoint. Each
+published object's repo is served at
+`/federation/v1/objects/{id}/git` (`info/refs` and
+`git-upload-pack`), and a pull runs `git fetch` against it. Git's
+have/want negotiation is the incremental fetch §21 sub-decision 6
+called for. The signed statement plane stays on Kairo's per-record
+endpoints (§16 sub-decision 5): statements are small, verified one
+by one, and already fetched only when missing.
+
+Storing statements themselves in Git (Radicle-style per-peer ref
+namespaces and signed refs) was considered and deferred. Statements
+form a set that nodes append to independently, so they don't map
+onto one Git history. Their ids are Kairo hashes, not Git ids. And
+moving them would change the store backend, not just the transport.
+It is an open question for push and discovery
+(`PHASE_2_FEDERATION.md` §4.1).
+
+Sub-decisions:
+
+1. **The server filters every request; `upload-pack` never sees a
+   raw one.** Protocol v2's `upload-pack` serves any object it can
+   read, whatever `uploadpack.allow*SHA1InWant` says (only v0
+   enforces those). A per-object repo reads the whole shared pool
+   through its alternates, which holds unpublished objects' commits
+   too. So:
+   - **`ls-refs` is answered by Kairo.** It advertises one
+     `refs/kairo/revisions/<oid>` per published commit (the commits
+     named by the object's reachable revisions,
+     `ObjectClosure::commits`), with no `HEAD`.
+   - **`fetch` is filtered.** Every `want` must be a published
+     commit, or the request is refused with `400
+     fed_bad_git_request`. A `have` that isn't one is dropped, so
+     `upload-pack` can neither acknowledge an unpublished object (an
+     existence oracle) nor send deltas against it. `want-ref` and
+     `packfile-uris` are refused. The rest (`thin-pack`, `filter`,
+     `shallow`, `done`, …) passes through.
+   - **Every other command is refused** (`object-info`, `bundle-uri`).
+     The capability advertisement is rewritten to `version`, `agent`,
+     `ls-refs`, `fetch`, `object-format`, and `server-option`.
+   - **Only `git-upload-pack` is served.** `git-receive-pack` gets
+     `400` on `info/refs` and `405` on `POST`, and the
+     `git-upload-pack` RPC is the federation server's one `POST`.
+   - **Protocol v0 and v1 are refused** (`400`, no `Git-Protocol:
+     version=2`), because their ref advertisement would come from
+     the repo and bypass `ls-refs`. Git has defaulted to v2 since
+     2.26.
+
+   An unpublished object, or a published one with no Git history on
+   the node, is `404 fed_not_found` on both paths, like every other
+   record.
+
+2. **Pinned Git on both sides.** `kairo-git`'s `protocol` module
+   builds both commands with system and global Git config ignored
+   (`GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL=/dev/null`) and
+   repository-redirecting environment variables removed. A peer can
+   therefore never reach the operator's credential helpers,
+   `http.extraHeader`s, or `insteadOf` rewrites, and a node serves
+   the same way whatever its operator's `~/.gitconfig` says.
+   - **The fetch** allows only the `https` and `http` transports
+     (the peer URL check of §16 still applies), follows no
+     redirects, never prompts, keeps every fetched pack as a pack,
+     and aborts below 1 KiB/s sustained for 60 seconds.
+   - **`upload-pack`** runs with `--strict` and the advertisement
+     settings off.
+
+3. **Quarantined, negotiated fetch.** `GitCache::fetch_commits`
+   fetches into a quarantine under `incoming/`, as §21's ingest does.
+   Its refs are seeded with the object repo's current ref tips, so
+   negotiation sends them as `have`s. The pool's own refs count too,
+   through alternates. Git's connectivity check and Kairo's
+   per-commit closure check must both pass before the packs move
+   into the pool. Git has no fetch-side size cap
+   (`receive.maxInputSize` is push-only), so the client kills the
+   fetch if the quarantine grows past `max_git_bytes` (`TooLarge`)
+   or the fetch runs past `git_timeout`. A pull now needs `git` ≥
+   2.29 (`fetch --stdin`).
+
+4. **Serving bounds, amending §21 sub-decisions 4 and 5.**
+   - **The pack cache is gone.** A negotiated pack depends on the
+     client's `have`s, so whole-history packs keyed by ref snapshot
+     no longer match what is sent. The server writes nothing to the
+     store again, so §16 sub-decision 6 is "read-only" without
+     exception. A request-keyed cache, as Gitaly does through
+     `uploadpack.packObjectsHook`, is future work if repeated full
+     clones become a cost.
+   - **The concurrency cap stays.** `--max-concurrent-packs` caps
+     concurrent `fetch` requests, each holding its slot until its
+     response ends. Over the cap, a request waits up to 10 seconds,
+     then gets `503 fed_busy` with `Retry-After: 5`. Advertisements
+     and `ls-refs` take no slot.
+   - **The transfer deadline becomes a stall timeout.** A response's
+     size isn't known up front, and `upload-pack` legitimately pauses
+     while counting objects. So a peer that leaves a chunk unread for
+     30 seconds is disconnected, and its `upload-pack` is killed.
+
+5. **Any Git client can mirror published history.** `git clone
+   --mirror https://<node>/federation/v1/objects/<id>/git` yields
+   every published commit under `refs/kairo/revisions/`. It carries
+   no signatures, so it is content only. Verification still needs
+   the statements.
+
+6. **Next.** Reachability bitmaps on the pools (served through
+   alternates), then bundle or packfile URIs for static hosting.
+   Both are now Git configuration, not Kairo protocol.
+
+Rationale: §21 left Kairo one step from reimplementing Git's
+transport. Using Git's own protocol gives negotiation, the
+connectivity check, bitmaps, and partial-clone filters, and lets
+ordinary Git tooling read published content. The one hazard is that
+v2 `upload-pack` trusts its caller to scope objects, so that scoping
+lives in Kairo's filter and its tests, including a fetch of a pooled
+unpublished commit, which must fail.
+
+Affected specs:
+
+- `DECISIONS.md` §16 sub-decisions 5 and 6, and §21 sub-decisions 4–6.
+- `PHASE_2_FEDERATION.md` — §2.1 endpoints, §2.3 `fed_bad_git_request`
+  and `fed_busy`, §2.4 Git limits, slice 4, §4 (incremental fetch
+  done), and §5 risk notes.
+- `STORE.md` §4 — no `outgoing/` directory.
+- `THREAT_MODEL.md` — pool scoping on the Git endpoint.

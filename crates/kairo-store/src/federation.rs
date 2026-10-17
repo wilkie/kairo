@@ -21,12 +21,15 @@
 //!   [`FilesystemStore::actor_key_event_ids`], because key knowledge
 //!   belongs to the actor, not the object.
 //! - **blobs**: every reachable revision's manifest blob.
+//! - **commits**: the Git commit each reachable `git:` revision names:
+//!   what the node's Git endpoint may serve (`specs/DECISIONS.md` §22).
 //!
 //! `ActorTrust` never appears: nothing here reads the trust index.
 
 use std::collections::BTreeSet;
 
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
+use kairo_statement::GitRevision;
 
 use crate::error::{CorruptReason, StoreError};
 use crate::{read_or_missing, FilesystemStore, ObjectStore, JSON_SUFFIX, OBJECTS_DIR};
@@ -41,6 +44,9 @@ pub struct ObjectClosure {
     pub authority: BTreeSet<StatementId>,
     pub actors: BTreeSet<ActorId>,
     pub blobs: BTreeSet<BlobId>,
+    /// Git commits named by `statements`' revisions. Not record ids:
+    /// the Git endpoint serves these and nothing else.
+    pub commits: BTreeSet<GitRevision>,
 }
 
 fn parse_index_id<T>(
@@ -77,6 +83,11 @@ impl FilesystemStore {
             closure
                 .blobs
                 .insert(revision.unsigned().body().manifest_hash().clone());
+            // A malformed `git:` revision names no commit; `verify
+            // object` reports it.
+            if let Ok(Some(commit)) = revision.unsigned().body().revision().git() {
+                closure.commits.insert(commit);
+            }
         }
 
         if let Some(index) = self.read_branch_index(object)? {

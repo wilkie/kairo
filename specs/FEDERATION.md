@@ -37,6 +37,9 @@ where they differ:
 - Statements travel in the `kairo-statement` JSON wire shape
   (`type`, `version`, `actor`, `subject`, `created_at`, `body`,
   `signature`), not a separate federation envelope.
+- Git history travels over Git's own smart HTTP protocol v2
+  (`DECISIONS.md` §22), filtered to the commits of published
+  revisions, so object content needs no Kairo packfile format.
 
 ---
 
