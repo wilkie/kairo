@@ -7,6 +7,7 @@ export {
   type KairoApiClient,
   type CreateKairoClientOptions,
   type BranchActorOption,
+  type RevisionLogOptions,
 } from './client';
 export type {
   VersionInfo,
@@ -20,6 +21,7 @@ export type {
   CapabilityHeadDto,
   VersionTagHeadDto,
   RevisionHeadDto,
+  RevisionLogPage,
   TrustHeadDto,
   StatementByActorDto,
   ObjectByActorDto,
@@ -61,7 +63,9 @@ export {
   useLatestBranch,
   useVersionTags,
   useLatestVersionTag,
-  useRevisions,
+  useRevisionLog,
+  revisionLogRows,
+  REVISION_LOG_PAGE_SIZE,
   useTrust,
   useTrustAbout,
   type UseTrustAboutOptions,

@@ -100,12 +100,23 @@ describe('typed read methods unwrap the success envelope', () => {
     expect(result.map((tag) => tag.version)).toContain('1.0.0');
   });
 
-  it('listRevisions returns the revision head array', async () => {
-    const result = await client.listRevisions(mockIds.object);
-    expect(result.length).toBeGreaterThan(0);
-    expect(result.map((rev) => rev.statement_id)).toContain(mockIds.revisionStmt);
+  it('getRevisionLog walks newest first and pages', async () => {
+    const page = await client.getRevisionLog(mockIds.object);
+    expect(page.revisions.length).toBeGreaterThan(0);
+    expect(page.revisions.map((rev) => rev.statement_id)).toContain(mockIds.revisionStmt);
     // The initial (no-parents) revision must always be present.
-    expect(result.some((rev) => rev.parents.length === 0)).toBe(true);
+    expect(page.revisions.some((rev) => rev.parents.length === 0)).toBe(true);
+    const created = page.revisions.map((rev) => rev.created_at);
+    expect([...created].sort().reverse()).toEqual(created);
+
+    const first = await client.getRevisionLog(mockIds.object, { limit: 1 });
+    expect(first.revisions).toHaveLength(1);
+    expect(first.next_cursor).not.toBeNull();
+    const second = await client.getRevisionLog(mockIds.object, {
+      limit: 1,
+      cursor: first.next_cursor ?? undefined,
+    });
+    expect(second.revisions[0]?.statement_id).not.toBe(first.revisions[0]?.statement_id);
   });
 
   it('listStatementsByActor returns the per-actor signed statement list', async () => {

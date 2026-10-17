@@ -702,11 +702,11 @@ fn revision_create_daemon_mode_persists_through_dispatch() {
         store_path.to_str().unwrap(),
         "--direct",
         "revision",
-        "list",
+        "log",
         "--object",
         &object_id,
     ]);
-    assert!(list.status.success(), "revision list: {list:?}");
+    assert!(list.status.success(), "revision log: {list:?}");
     let list_out = String::from_utf8(list.stdout).expect("utf-8");
     assert!(
         list_out.contains(statement_id),
@@ -887,13 +887,13 @@ fn object_create_daemon_mode_persists_through_dispatch() {
         store_path.to_str().unwrap(),
         "--direct",
         "revision",
-        "list",
+        "log",
         "--object",
         object_id,
     ]);
     assert!(
         genesis_read.status.success(),
-        "revision list after daemon object create failed: stderr = {}",
+        "revision log after daemon object create failed: stderr = {}",
         String::from_utf8_lossy(&genesis_read.stderr)
     );
 

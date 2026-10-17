@@ -284,7 +284,7 @@ kairo object import --statement <object-genesis.json>
 kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]
 kairo revision import --statement <object-revision.json>
 kairo revision inspect --statement <statement-id> [--json]
-kairo revision list --object <object-id>
+kairo revision log --object <object-id> [--from <statement-id>]... [--limit <n>] [--skip <n>]
 kairo revision validate-manifest --statement <object-revision.json> [--manifest <kairo.toml>]
 kairo revision verify-signature --statement <object-revision.json> (--public-key <base64>|--public-key-file <path>)
 kairo revision verify-actor-genesis --statement <object-revision.json> --actor-genesis <actor-genesis.json> [--json]
@@ -429,8 +429,11 @@ shape with three flows:
 
 `revision inspect --statement <id>` reads a stored revision by `StatementId`
 and prints its body fields. `--json` emits a stable JSON shape suitable for
-automation. `revision list --object <id>` scans the local store for
-revisions whose `body.object` matches and prints one summary per match.
+automation. `revision log --object <id>` prints the object's revision
+history newest first, walked along parent links like `git log`
+(`DECISIONS.md` §20). By default it starts from every revision the store
+holds for the object; `--from` walks from specific revision statements,
+and `--limit` / `--skip` page through it.
 
 `branch set` signs and persists an `ObjectBranch` statement that points the
 named branch at the given `ObjectRevision` `StatementId`. The branch must

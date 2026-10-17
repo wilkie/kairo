@@ -84,7 +84,8 @@ pub fn write_bundle(
         Err(error) => return Err(BundleError::ObjectGenesisLookup(error)),
     };
 
-    // 2. Walk statements/ and collect every statement about this object.
+    // 2. The object statements of its closure: refs, and the revisions
+    //    they reach.
     let collected = collect_statements(store, object)?;
 
     // 3. Collect every actor referenced (genesis creator + every
@@ -240,6 +241,12 @@ impl CollectedStatements {
     }
 }
 
+/// The object-bound statements of `target`'s closure
+/// (`FilesystemStore::object_closure`): every branch and tag entry,
+/// and every revision reachable from them and the genesis's initial
+/// revision along parent links, as in Git (`specs/DECISIONS.md` §20).
+/// The closure's authority section (capability grants) is left out:
+/// first-person speech acts don't ride in object bundles (`AGENTS.md`).
 fn collect_statements(
     store: &FilesystemStore,
     target: &ObjectId,
@@ -249,116 +256,45 @@ fn collect_statements(
         branches: BTreeMap::new(),
         version_tags: BTreeMap::new(),
     };
-
-    let statements_root = store.root().join("statements");
-    let level1 = match fs::read_dir(&statements_root) {
-        Ok(iter) => iter,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(out),
-        Err(error) => {
-            return Err(BundleError::Io {
-                path: statements_root,
-                source: error,
-            });
-        }
-    };
-    for shard1 in level1 {
-        let shard1 = shard1.map_err(|source| BundleError::Io {
-            path: statements_root.clone(),
-            source,
-        })?;
-        if !shard1.path().is_dir() {
-            continue;
-        }
-        for shard2 in fs::read_dir(shard1.path()).map_err(|source| BundleError::Io {
-            path: shard1.path(),
-            source,
-        })? {
-            let shard2 = shard2.map_err(|source| BundleError::Io {
-                path: shard1.path(),
+    let closure = store.object_closure(target).map_err(BundleError::Store)?;
+    for id in &closure.statements {
+        let path = PathBuf::from(format!("statements/{id}.json"));
+        let bytes = store.get_statement_bytes(id).map_err(BundleError::Store)?;
+        let peek: EnvelopePeek =
+            serde_json::from_slice(&bytes).map_err(|source| BundleError::RecordParse {
+                path: path.clone(),
                 source,
             })?;
-            if !shard2.path().is_dir() {
-                continue;
+        let shape = |message: String| BundleError::StatementShape {
+            path: path.clone(),
+            message,
+        };
+        let parse = |source| BundleError::RecordParse {
+            path: path.clone(),
+            source,
+        };
+        match peek.statement_type.as_str() {
+            "ObjectRevision" => {
+                let dto: ObjectRevisionStatementJson =
+                    serde_json::from_slice(&bytes).map_err(parse)?;
+                let signed = dto.to_statement().map_err(|e| shape(e.to_string()))?;
+                out.revisions.insert(signed.statement_id(), signed);
             }
-            for entry in fs::read_dir(shard2.path()).map_err(|source| BundleError::Io {
-                path: shard2.path(),
-                source,
-            })? {
-                let entry = entry.map_err(|source| BundleError::Io {
-                    path: shard2.path(),
-                    source,
-                })?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                    continue;
-                }
-                let bytes = fs::read(&path).map_err(|source| BundleError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-                let peek: EnvelopePeek =
-                    serde_json::from_slice(&bytes).map_err(|source| BundleError::RecordParse {
-                        path: path.clone(),
-                        source,
-                    })?;
-                match peek.statement_type.as_str() {
-                    "ObjectRevision" => {
-                        let dto: ObjectRevisionStatementJson = serde_json::from_slice(&bytes)
-                            .map_err(|source| BundleError::RecordParse {
-                                path: path.clone(),
-                                source,
-                            })?;
-                        let signed =
-                            dto.to_statement()
-                                .map_err(|error| BundleError::StatementShape {
-                                    path: path.clone(),
-                                    message: error.to_string(),
-                                })?;
-                        if signed.unsigned().body().object() == target {
-                            out.revisions.insert(signed.statement_id(), signed);
-                        }
-                    }
-                    "ObjectBranch" => {
-                        let dto: ObjectBranchStatementJson = serde_json::from_slice(&bytes)
-                            .map_err(|source| BundleError::RecordParse {
-                                path: path.clone(),
-                                source,
-                            })?;
-                        let signed =
-                            dto.to_statement()
-                                .map_err(|error| BundleError::StatementShape {
-                                    path: path.clone(),
-                                    message: error.to_string(),
-                                })?;
-                        if signed.unsigned().body().object() == target {
-                            out.branches.insert(signed.statement_id(), signed);
-                        }
-                    }
-                    "ObjectVersionTag" => {
-                        let dto: ObjectVersionTagStatementJson = serde_json::from_slice(&bytes)
-                            .map_err(|source| BundleError::RecordParse {
-                                path: path.clone(),
-                                source,
-                            })?;
-                        let signed =
-                            dto.to_statement()
-                                .map_err(|error| BundleError::StatementShape {
-                                    path: path.clone(),
-                                    message: error.to_string(),
-                                })?;
-                        if signed.unsigned().body().object() == target {
-                            out.version_tags.insert(signed.statement_id(), signed);
-                        }
-                    }
-                    // Trust statements — and any other future
-                    // non-object-bearing statement — are intentionally
-                    // skipped for object bundles in the MVP.
-                    _ => continue,
-                }
+            "ObjectBranch" => {
+                let dto: ObjectBranchStatementJson =
+                    serde_json::from_slice(&bytes).map_err(parse)?;
+                let signed = dto.to_statement().map_err(|e| shape(e.to_string()))?;
+                out.branches.insert(signed.statement_id(), signed);
             }
+            "ObjectVersionTag" => {
+                let dto: ObjectVersionTagStatementJson =
+                    serde_json::from_slice(&bytes).map_err(parse)?;
+                let signed = dto.to_statement().map_err(|e| shape(e.to_string()))?;
+                out.version_tags.insert(signed.statement_id(), signed);
+            }
+            other => return Err(shape(format!("unexpected {other} among object statements"))),
         }
     }
-
     Ok(out)
 }
 

@@ -88,14 +88,15 @@ fn resolve_object_format(
     let mut revisions: BTreeSet<GitObjectFormat> = BTreeSet::new();
     if let Ok(object_id) = ObjectId::new(object) {
         let store = open_store(paths)?;
-        let stored = store.list_object_revisions(&object_id).map_err(|source| {
-            CliError::ReadObjectGenesis {
-                object: object_id.clone(),
-                source,
-            }
-        })?;
+        let stored =
+            store
+                .revision_ids(&object_id)
+                .map_err(|source| CliError::ReadObjectGenesis {
+                    object: object_id.clone(),
+                    source,
+                })?;
         for revision in stored {
-            if let Ok(Some(git)) = revision.unsigned().body().revision().git() {
+            if let Ok(Some(git)) = revision.git() {
                 revisions.insert(git.format());
             }
         }

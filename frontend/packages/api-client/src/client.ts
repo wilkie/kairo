@@ -32,6 +32,7 @@ export type BranchTipDto = components['schemas']['BranchTipDto'];
 export type CapabilityHeadDto = components['schemas']['CapabilityHeadDto'];
 export type VersionTagHeadDto = components['schemas']['VersionTagHeadDto'];
 export type RevisionHeadDto = components['schemas']['RevisionHeadDto'];
+export type RevisionLogPage = components['schemas']['RevisionLogPage'];
 export type TrustHeadDto = components['schemas']['TrustHeadDto'];
 export type StatementByActorDto = components['schemas']['StatementByActorDto'];
 export type ProvenanceDto = components['schemas']['ProvenanceDto'];
@@ -95,8 +96,10 @@ export interface KairoApiClient {
     version: string,
     opts?: BranchActorOption,
   ): Promise<ObjectVersionTagStatementJson>;
-  /** `GET /api/v1/revisions/{object}` — chronological revision heads. */
-  listRevisions(objectId: string): Promise<RevisionHeadDto[]>;
+  /** `GET /api/v1/objects/{id}/log` — one page of the object's
+   * revision history, newest first, walked along parent links from
+   * every revision this node holds or from `from`. */
+  getRevisionLog(objectId: string, options?: RevisionLogOptions): Promise<RevisionLogPage>;
   /** `GET /api/v1/trust/{by}/{of}`. */
   getTrust(byActor: string, ofActor: string): Promise<ActorTrustStatementJson>;
   /** `GET /api/v1/trust/about/{of}` — list of opinions expressed about an actor. */
@@ -149,6 +152,17 @@ export interface KairoApiClient {
    * statement body the daemon stored.
    */
   writeViaSession(bodyKind: string, body: unknown): Promise<PutStatementResult>;
+}
+
+/** Options for [`KairoApiClient.getRevisionLog`]. */
+export interface RevisionLogOptions {
+  /** Revision statement ids to walk from; defaults to every revision
+   * this node holds for the object. */
+  from?: string[];
+  /** Page size, 1–500 (daemon default 50). */
+  limit?: number;
+  /** `next_cursor` from the previous page. */
+  cursor?: string;
 }
 
 export interface CreateKairoClientOptions extends Partial<TransportOptions> {
@@ -226,8 +240,18 @@ export function createKairoClient(opts: CreateKairoClientOptions = {}): KairoApi
         actorQuery(opts),
       );
     },
-    async listRevisions(objectId) {
-      return getJson<RevisionHeadDto[]>(http, `api/v1/revisions/${encodeURIComponent(objectId)}`);
+    async getRevisionLog(objectId, options = {}) {
+      const searchParams: Record<string, string> = {};
+      if (options.from !== undefined && options.from.length > 0) {
+        searchParams['from'] = options.from.join(',');
+      }
+      if (options.limit !== undefined) searchParams['limit'] = String(options.limit);
+      if (options.cursor !== undefined) searchParams['cursor'] = options.cursor;
+      return getJson<RevisionLogPage>(
+        http,
+        `api/v1/objects/${encodeURIComponent(objectId)}/log`,
+        searchParams,
+      );
     },
     async getTrust(byActor, ofActor) {
       return getJson<ActorTrustStatementJson>(

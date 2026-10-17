@@ -650,103 +650,116 @@ async fn version_tags_list_returns_empty_for_unknown_object() {
 }
 
 #[tokio::test]
-async fn revisions_list_returns_chronological_history() {
-    // Two revisions, written in reverse-time order, expect them
-    // to come back ascending by created_at.
+async fn revision_log_walks_parents_and_pages() {
+    // r1 <- r2: the default log holds both; `from=r2` walks r2 then its
+    // parent; `from=r1` stops at r1; `limit=1` pages with a cursor.
     let (dir, fixture) = StoreFixture::temp();
     let actor = fixture.make_actor();
     let object = fixture.make_object(&actor, "kairo/object");
+    let r1_id = format!("git:sha1:{}", "1".repeat(40));
     let r1 = fixture.make_revision(
         &actor,
         &object,
-        kairo_statement::RevisionId::new("git:sha256:r1"),
+        kairo_statement::RevisionId::new(r1_id.clone()),
         SAMPLE_MANIFEST,
         Vec::new(),
     );
     let r2 = fixture.make_revision(
         &actor,
         &object,
-        kairo_statement::RevisionId::new("git:sha256:r2"),
+        kairo_statement::RevisionId::new(format!("git:sha1:{}", "2".repeat(40))),
         SAMPLE_MANIFEST,
-        vec![kairo_statement::RevisionId::new("git:sha256:r1")],
+        vec![kairo_statement::RevisionId::new(r1_id.clone())],
     );
     let store_path = dir.path().to_path_buf();
     drop(fixture);
-
     let handle = spawn_daemon(store_path).await;
-    let (status, body) = http_get(
-        handle.socket_path(),
-        &format!("/api/v1/revisions/{}", object.object_id),
-    )
-    .await;
-    assert_eq!(status, hyper::StatusCode::OK);
-    let json: Value = serde_json::from_slice(&body).expect("parse");
-    let arr = json["result"].as_array().expect("array");
-    assert_eq!(arr.len(), 2, "both revisions returned: {arr:#?}");
-    // r1 has no parents so it's the first revision; r2 lists r1
-    // as a parent. Both share a created_at in our fixture, so the
-    // secondary sort by statement_id decides ordering — we check
-    // membership and shape, not order.
-    let ids: Vec<&str> = arr
-        .iter()
-        .map(|e| e["statement_id"].as_str().expect("statement_id"))
-        .collect();
-    assert!(
-        ids.contains(&r1.statement_id.as_str()),
-        "missing r1: {arr:#?}"
-    );
-    assert!(
-        ids.contains(&r2.statement_id.as_str()),
-        "missing r2: {arr:#?}"
-    );
-    for entry in arr {
-        assert_eq!(entry["actor"].as_str(), Some(actor.actor_id.as_str()));
-        assert_eq!(entry["object"].as_str(), Some(object.object_id.as_str()));
-        assert!(entry["revision_id"].is_string(), "entry: {entry:#}");
-        assert!(entry["manifest_hash"].is_string());
-        assert!(entry["created_at"].is_string());
-    }
-    let r1_entry = arr
-        .iter()
-        .find(|e| e["statement_id"].as_str() == Some(r1.statement_id.as_str()))
-        .expect("r1 entry");
-    assert_eq!(r1_entry["parents"], Value::Array(Vec::new()));
-    let r2_entry = arr
+
+    let get = |query: String| {
+        let socket = handle.socket_path().to_path_buf();
+        let object = object.object_id.clone();
+        async move {
+            let (status, body) =
+                http_get(&socket, &format!("/api/v1/objects/{object}/log{query}")).await;
+            assert_eq!(status, hyper::StatusCode::OK, "{query}");
+            let json: Value = serde_json::from_slice(&body).expect("parse");
+            json["result"].clone()
+        }
+    };
+    let ids = |page: &Value| -> Vec<String> {
+        page["revisions"]
+            .as_array()
+            .expect("revisions")
+            .iter()
+            .map(|e| e["statement_id"].as_str().expect("statement_id").to_owned())
+            .collect()
+    };
+
+    let all = get(String::new()).await;
+    let mut both = ids(&all);
+    both.sort();
+    let mut expected = vec![r1.statement_id.to_string(), r2.statement_id.to_string()];
+    expected.sort();
+    assert_eq!(both, expected);
+    assert_eq!(all["next_cursor"], Value::Null);
+    let r2_entry = all["revisions"]
+        .as_array()
+        .expect("revisions")
         .iter()
         .find(|e| e["statement_id"].as_str() == Some(r2.statement_id.as_str()))
-        .expect("r2 entry");
+        .expect("r2 entry")
+        .clone();
+    assert_eq!(r2_entry["parents"], serde_json::json!([r1_id]));
+    assert_eq!(r2_entry["actor"].as_str(), Some(actor.actor_id.as_str()));
+
+    let from_r2 = get(format!("?from={}", r2.statement_id)).await;
     assert_eq!(
-        r2_entry["parents"]
-            .as_array()
-            .expect("parents")
-            .iter()
-            .map(|v| v.as_str().expect("parent string"))
-            .collect::<Vec<_>>(),
-        vec!["git:sha256:r1"],
+        ids(&from_r2),
+        vec![r2.statement_id.to_string(), r1.statement_id.to_string()]
     );
+    let from_r1 = get(format!("?from={}", r1.statement_id)).await;
+    assert_eq!(ids(&from_r1), vec![r1.statement_id.to_string()]);
+
+    let first = get(format!("?from={}&limit=1", r2.statement_id)).await;
+    assert_eq!(ids(&first), vec![r2.statement_id.to_string()]);
+    let cursor = first["next_cursor"].as_str().expect("cursor").to_owned();
+    let second = get(format!("?from={}&limit=1&cursor={cursor}", r2.statement_id)).await;
+    assert_eq!(ids(&second), vec![r1.statement_id.to_string()]);
+    assert_eq!(second["next_cursor"], Value::Null);
+
+    for bad in ["?limit=0", "?limit=501", "?cursor=x", "?from=not-an-id"] {
+        let (status, _) = http_get(
+            handle.socket_path(),
+            &format!("/api/v1/objects/{}/log{bad}", object.object_id),
+        )
+        .await;
+        assert_eq!(status, hyper::StatusCode::BAD_REQUEST, "{bad}");
+    }
 
     handle.shutdown().await;
     drop(dir);
 }
 
 #[tokio::test]
-async fn revisions_list_returns_empty_for_unknown_object() {
+async fn revision_log_is_empty_for_an_object_without_revisions() {
     let (dir, fixture) = StoreFixture::temp();
     let actor = fixture.make_actor();
     let object = fixture.make_object(&actor, "kairo/object");
-    // No revisions written.
     let store_path = dir.path().to_path_buf();
     drop(fixture);
 
     let handle = spawn_daemon(store_path).await;
     let (status, body) = http_get(
         handle.socket_path(),
-        &format!("/api/v1/revisions/{}", object.object_id),
+        &format!("/api/v1/objects/{}/log", object.object_id),
     )
     .await;
     assert_eq!(status, hyper::StatusCode::OK);
     let json: Value = serde_json::from_slice(&body).expect("parse");
-    assert_eq!(json["result"], Value::Array(Vec::new()));
+    assert_eq!(
+        json["result"],
+        serde_json::json!({ "revisions": [], "next_cursor": null })
+    );
 
     handle.shutdown().await;
     drop(dir);
@@ -1175,7 +1188,7 @@ async fn malformed_ids_return_400_across_endpoints() {
         "/api/v1/branches/!!!/head/latest",
         "/api/v1/version-tags/!!!",
         "/api/v1/version-tags/!!!/1.0.0",
-        "/api/v1/revisions/!!!",
+        "/api/v1/objects/!!!/log",
         "/api/v1/trust/!!!/foo",
         "/api/v1/trust/about/!!!",
         "/api/v1/capabilities/!!!",

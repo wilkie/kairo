@@ -11,7 +11,8 @@
 
 import { useState } from 'react';
 import {
-  useRevisions,
+  revisionLogRows,
+  useRevisionLog,
   useSession,
   useSetVersionTag,
   useVersionTags,
@@ -38,7 +39,7 @@ export function VersionTagDialogContainer(props: VersionTagDialogContainerProps)
   const { open, onClose, objectId, onSubmitted } = props;
   const sessionQ = useSession();
   const tagsQ = useVersionTags(objectId);
-  const revisionsQ = useRevisions(objectId);
+  const revisionsQ = useRevisionLog(objectId);
   const mutation = useSetVersionTag();
   const [stickyError, setStickyError] = useState<VersionTagDialogError | undefined>(undefined);
 
@@ -50,15 +51,16 @@ export function VersionTagDialogContainer(props: VersionTagDialogContainerProps)
   const ownHeads = (tagsQ.data ?? []).filter((head) => head.actor === byActor);
   const existingVersions = ownHeads.map((head) => head.version);
 
-  // Revisions are sorted oldest-first server-side; reverse so
-  // the dialog shows newest at the top and pre-selects it.
-  const revisions: VersionTagDialogRevision[] = [...(revisionsQ.data ?? [])]
-    .reverse()
-    .map((row) => ({
-      statementId: row.statement_id,
-      revisionId: row.revision_id,
-      createdAt: row.created_at,
-    }));
+  // The log is newest first, so the dialog shows the newest at the
+  // top and pre-selects it. Only the first page is offered; older
+  // revisions are reached from the object's revision log.
+  const revisions: VersionTagDialogRevision[] = (
+    revisionsQ.data !== undefined ? revisionLogRows(revisionsQ.data) : []
+  ).map((row) => ({
+    statementId: row.statement_id,
+    revisionId: row.revision_id,
+    createdAt: row.created_at,
+  }));
 
   const errorFromMutation = mutation.error !== null ? toDialogError(mutation.error) : undefined;
   const effectiveError = errorFromMutation ?? stickyError;

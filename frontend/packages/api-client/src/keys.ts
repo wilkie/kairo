@@ -32,7 +32,8 @@ export const kairoKeys = {
   versionTag: (objectId: string, version: string, actor?: string) =>
     [...kairoKeys.object(objectId), 'version-tag', version, actor ?? null] as const,
 
-  revisions: (objectId: string) => [...kairoKeys.object(objectId), 'revisions'] as const,
+  revisionLog: (objectId: string, from: ReadonlyArray<string>, pageSize: number) =>
+    [...kairoKeys.object(objectId), 'revision-log', [...from], pageSize] as const,
 
   trust: (byActor: string, ofActor: string) =>
     [...kairoKeys.all, 'trust', byActor, ofActor] as const,

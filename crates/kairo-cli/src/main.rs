@@ -2471,17 +2471,15 @@ fn run_revision_command(
             // One object's history has one Git object format
             // (`specs/DECISIONS.md` §19).
             if let Some(format) = git_revision(body.revision())?.map(|git| git.format()) {
-                let existing = store.list_object_revisions(&object_id).map_err(|source| {
+                let existing = store.revision_ids(&object_id).map_err(|source| {
                     CliError::ReadObjectGenesis {
                         object: object_id.clone(),
                         source,
                     }
                 })?;
-                if let Some(other) = existing.iter().find_map(|stored| {
-                    match stored.unsigned().body().revision().git() {
-                        Ok(Some(git)) if git.format() != format => Some(git.format()),
-                        _ => None,
-                    }
+                if let Some(other) = existing.iter().find_map(|stored| match stored.git() {
+                    Ok(Some(git)) if git.format() != format => Some(git.format()),
+                    _ => None,
                 }) {
                     return Err(CliError::GitFormatConflict {
                         object: object_id.to_string(),
@@ -2558,12 +2556,39 @@ fn run_revision_command(
         RevisionCommand::Inspect { statement, json } => {
             run_revision_inspect(paths, dispatch_opts, statement, json)
         }
-        RevisionCommand::List { object } => {
+        RevisionCommand::Log {
+            object,
+            from,
+            limit,
+            skip,
+        } => {
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
             let store = open_store(paths)?;
-            let revisions = list_object_revisions(&store, &object_id)?;
-            Ok(format_revision_list(&object_id, &revisions))
+            let list_error = |source| CliError::ListRevisions {
+                object: object_id.to_string(),
+                source,
+            };
+            let tips = if from.is_empty() {
+                store
+                    .revision_statement_ids(&object_id)
+                    .map_err(list_error)?
+            } else {
+                let mut tips = Vec::with_capacity(from.len());
+                for raw in from {
+                    tips.push(kairo_core::StatementId::new(raw.clone()).map_err(|source| {
+                        CliError::ParseStatementId {
+                            statement: raw,
+                            source,
+                        }
+                    })?);
+                }
+                tips
+            };
+            let log = store
+                .revision_log(&object_id, &tips, skip, limit)
+                .map_err(list_error)?;
+            Ok(format_revision_log(&object_id, &log, skip))
         }
     }
 }
@@ -5054,18 +5079,6 @@ fn format_revision_signature_valid(
     )
 }
 
-fn list_object_revisions(
-    store: &FilesystemStore,
-    object: &ObjectId,
-) -> Result<Vec<SignedStatement<ObjectRevisionBody>>, CliError> {
-    store
-        .list_object_revisions(object)
-        .map_err(|source| CliError::ListRevisions {
-            object: object.to_string(),
-            source,
-        })
-}
-
 fn run_revision_inspect(
     paths: &StorePaths,
     dispatch_opts: dispatch::DispatchOptions,
@@ -5160,27 +5173,38 @@ fn format_revision_inspect_json(signed: &SignedStatement<ObjectRevisionBody>) ->
     output
 }
 
-fn format_revision_list(
-    object: &ObjectId,
-    revisions: &[SignedStatement<ObjectRevisionBody>],
-) -> String {
+fn format_revision_log(object: &ObjectId, log: &kairo_store::RevisionLog, skip: usize) -> String {
     let mut output = String::new();
     output.push_str(&format!("object = {object}\n"));
-    output.push_str(&format!("revisions = {}\n", revisions.len()));
-    for signed in revisions {
+    output.push_str(&format!("revisions = {}\n", log.revisions.len()));
+    for signed in &log.revisions {
         let body = signed.unsigned().body();
+        let parents = body
+            .parents()
+            .iter()
+            .map(|parent| parent.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
         output.push_str(&format!(
-            "  {} revision={} actor={}\n",
+            "  {} revision={} actor={} created_at={} parents={}\n",
             signed.statement_id(),
             body.revision().as_str(),
-            signed.unsigned().actor()
+            signed.unsigned().actor(),
+            signed.unsigned().created_at(),
+            if parents.is_empty() { "-" } else { &parents },
+        ));
+    }
+    if log.more {
+        output.push_str(&format!(
+            "more = true (next: --skip {})\n",
+            skip + log.revisions.len()
         ));
     }
     output
 }
 
 fn help_text() -> String {
-    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor revoke-attestation-key sign --actor <id> --signing-attestation-key-seed <path> --revoke-key <key-id> [--reason <text>]\n  kairo actor revoke-attestation-key prepare --actor <id> --revoke-key <key-id> [--reason <text>] --output <path>\n  kairo actor revoke-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision list --object <id>\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir> [--include-git]\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--no-cache] [--no-cwd-repo] [--manifest <path>] [--json]\n  kairo git fetch --object <id> --remote <url> [--branch <name>]\n  kairo git cache status\n  kairo store rebuild-indexes\n  kairo web start [--spa-dir <path>] [--bind <addr>]\n  kairo web status [--bind <addr>]\n  kairo web stop [--wait] [--wait-timeout <secs>]\n  kairo federation publish --object <id>\n  kairo federation unpublish --object <id>\n  kairo federation published\n  kairo federation provenance --ref <typed-ref>\n  kairo federation status\n  kairo fetch --object <id> --from <url> [--allow-peer] [--json]\n  kairo config path\n  kairo config validate\n".to_owned()
+    "kairo\n\nUsage:\n  kairo [--store <path>] [--keys <path>] <command>\n\nCommands:\n  kairo actor id --genesis <path>\n  kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...\n  kairo actor import --genesis <path>\n  kairo actor rotate-key --actor <id>\n  kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]\n  kairo actor key-history --actor <id> [--json]\n  kairo actor recover-key sign --actor <id> --attestation-key-seed <path>\n  kairo actor recover-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor recover-key submit --prepared <path> [--signature <path>]\n  kairo actor add-attestation-key sign --actor <id> --signing-attestation-key-seed <path> (--key <hex> | --generate)\n  kairo actor add-attestation-key prepare --actor <id> --new-key <hex> --output <path>\n  kairo actor add-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor revoke-attestation-key sign --actor <id> --signing-attestation-key-seed <path> --revoke-key <key-id> [--reason <text>]\n  kairo actor revoke-attestation-key prepare --actor <id> --revoke-key <key-id> [--reason <text>] --output <path>\n  kairo actor revoke-attestation-key submit --prepared <path> [--signature <path>]\n  kairo actor change-attestation-threshold sign --actor <id> --attestation-key-seed <path> --to <N>\n  kairo actor change-attestation-threshold prepare --actor <id> --to <N> --output <path>\n  kairo actor change-attestation-threshold submit --prepared <path> [--signature <path>]\n  kairo actor co-sign --prepared <path> --actor <id> --attestation-key-seed <path>\n  kairo manifest hash [path]\n  kairo manifest inspect [path]\n  kairo object create --actor <id> --kind <kind> [--initial-revision <ref>]\n  kairo object import --statement <path>\n  kairo revision create --actor <id> --object <id> --revision <ref> [--manifest <path>] [--parent <ref>]... [--no-attests-reachable-history]\n  kairo revision import --statement <path>\n  kairo revision inspect --statement <id> [--json]\n  kairo revision log --object <id> [--from <statement-id>]... [--limit <n>] [--skip <n>]\n  kairo revision validate-manifest --statement <path> [--manifest <path>]\n  kairo revision verify-signature --statement <path> (--public-key <base64>|--public-key-file <path>)\n  kairo revision verify-actor-genesis --statement <path> --actor-genesis <path> [--json]\n  kairo branch set --actor <id> --object <id> --revision <statement-id> [--name <name>]\n  kairo branch show --object <id> [--actor <id>] [--name <name>] [--json]\n  kairo branch list --object <id>\n  kairo tag bind --actor <id> --object <id> --version <semver> --revision <statement-id>\n  kairo tag revoke --actor <id> --object <id> --version <semver>\n  kairo tag show --object <id> [--actor <id>] --version <semver> [--json]\n  kairo tag list --object <id>\n  kairo tag history --object <id> [--actor <id>] --version <semver> [--json]\n  kairo trust grant --by <id> --of <id> [--reason <text>]\n  kairo trust block --by <id> --of <id> [--reason <text>]\n  kairo trust withdraw --by <id> --of <id> [--reason <text>]\n  kairo trust show --by <id> --of <id> [--json]\n  kairo trust list --by <id>\n  kairo trust history --by <id> --of <id> [--json]\n  kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]\n  kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]\n  kairo capability list (--grantor <id> | --object <id>)\n  kairo bundle export --object <id> --output <dir> [--include-git]\n  kairo bundle import --input <dir>\n  kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]\n  kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--no-cache] [--no-cwd-repo] [--manifest <path>] [--json]\n  kairo git fetch --object <id> --remote <url> [--branch <name>]\n  kairo git cache status\n  kairo store rebuild-indexes\n  kairo web start [--spa-dir <path>] [--bind <addr>]\n  kairo web status [--bind <addr>]\n  kairo web stop [--wait] [--wait-timeout <secs>]\n  kairo federation publish --object <id>\n  kairo federation unpublish --object <id>\n  kairo federation published\n  kairo federation provenance --ref <typed-ref>\n  kairo federation status\n  kairo fetch --object <id> --from <url> [--allow-peer] [--json]\n  kairo config path\n  kairo config validate\n".to_owned()
 }
 
 #[cfg(test)]

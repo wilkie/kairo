@@ -128,6 +128,16 @@ pub struct RevisionHeadDto {
     pub created_at: String,
 }
 
+/// One page of `GET /api/v1/objects/{id}/log`: revisions newest
+/// first, walked along parent links from the object's refs or the
+/// requested starting points (`specs/DECISIONS.md` §20).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct RevisionLogPage {
+    pub revisions: Vec<RevisionHeadDto>,
+    /// Pass back as `cursor` for the next page; `null` at the end.
+    pub next_cursor: Option<String>,
+}
+
 /// One object created by an actor, returned by
 /// `GET /api/v1/actors/{id}/objects`. Backed by the per-actor
 /// materialized index in the store

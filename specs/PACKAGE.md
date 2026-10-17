@@ -345,7 +345,12 @@ The `manifest.git_history` field reflects the shipped state:
 }
 ```
 
-`expected_commits` is auto-derived from every `ObjectRevision`'s
+Object bundles carry the revisions the object's refs reach (branch
+and tag targets, and the genesis's initial revision, plus their parent
+chains), as in a Git fetch (`DECISIONS.md` §20). A revision nothing
+points at stays in the source store.
+
+`expected_commits` is auto-derived from every bundled `ObjectRevision`'s
 typed Git revision (`git:sha1:<oid>` or `git:sha256:<oid>`,
 `DECISIONS.md` §19) in the bundle, regardless of whether
 `included` is true; it serves as a manifest of which commits the

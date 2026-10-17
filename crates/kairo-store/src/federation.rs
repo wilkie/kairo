@@ -6,12 +6,13 @@
 //! not in the federation crate, because it is built from the
 //! store's private per-object indexes:
 //!
-//! - **statements**: every `ObjectRevision` (by directory walk, as
-//!   [`FilesystemStore::list_object_revisions`] does, since there is
-//!   no revision index yet), plus every `ObjectBranch` and
-//!   `ObjectVersionTag` entry in the per-object branch and tag
-//!   indexes. Every chain entry is included, not just the heads: a
-//!   peer resolves heads itself.
+//! - **statements**: every `ObjectBranch` and `ObjectVersionTag` entry
+//!   in the per-object branch and tag indexes (whole chains, not just
+//!   heads: a peer resolves heads itself), plus every `ObjectRevision`
+//!   *reachable* from those refs and the genesis's initial revision
+//!   along parent links ([`FilesystemStore::reachable_revisions`]).
+//!   As in Git, a revision no ref reaches stays local
+//!   (`specs/DECISIONS.md` §20).
 //! - **authority**: every entry in the per-object capability reverse
 //!   index (`actor_capability_by_object`), plus every revocation of
 //!   those grants from each grantor's index.
@@ -19,7 +20,7 @@
 //!   Only ids: an actor's key events are fetched per actor through
 //!   [`FilesystemStore::actor_key_event_ids`], because key knowledge
 //!   belongs to the actor, not the object.
-//! - **blobs**: every revision's manifest blob.
+//! - **blobs**: every reachable revision's manifest blob.
 //!
 //! `ActorTrust` never appears: nothing here reads the trust index.
 
@@ -70,7 +71,7 @@ impl FilesystemStore {
         let mut closure = ObjectClosure::default();
         closure.actors.insert(genesis.body().created_by().clone());
 
-        for revision in self.list_object_revisions(object)? {
+        for revision in self.reachable_revisions(object)? {
             closure.statements.insert(revision.statement_id());
             closure.actors.insert(revision.unsigned().actor().clone());
             closure

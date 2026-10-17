@@ -15,9 +15,12 @@
 // their own object-URL lifecycle.
 
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query';
@@ -36,6 +39,7 @@ import type {
   ObjectVersionTagStatementJson,
   PutStatementResult,
   RevisionHeadDto,
+  RevisionLogPage,
   SessionInfo,
   StatementByActorDto,
   StatementValue,
@@ -162,12 +166,44 @@ export function useLatestVersionTag(
   });
 }
 
-export function useRevisions(objectId: string): QueryResult<RevisionHeadDto[]> {
+/** Default page size for revision logs in the inspector. */
+export const REVISION_LOG_PAGE_SIZE = 50;
+
+/**
+ * An object's revision history as a paged log (`specs/DECISIONS.md`
+ * §20): newest first, walked along parent links like `git log`.
+ * `fetchNextPage` walks further back; `revisionLogRows` flattens the
+ * loaded pages.
+ */
+export function useRevisionLog(
+  objectId: string,
+  options: { from?: string[]; pageSize?: number } = {},
+): UseInfiniteQueryResult<InfiniteData<RevisionLogPage>, KairoApiClientError> {
   const client = useKairoClient();
-  return useQuery<RevisionHeadDto[], KairoApiClientError>({
-    queryKey: kairoKeys.revisions(objectId),
-    queryFn: () => client.listRevisions(objectId),
+  const from = options.from ?? [];
+  const pageSize = options.pageSize ?? REVISION_LOG_PAGE_SIZE;
+  return useInfiniteQuery<
+    RevisionLogPage,
+    KairoApiClientError,
+    InfiniteData<RevisionLogPage>,
+    ReturnType<typeof kairoKeys.revisionLog>,
+    string | undefined
+  >({
+    queryKey: kairoKeys.revisionLog(objectId, from, pageSize),
+    queryFn: ({ pageParam }) =>
+      client.getRevisionLog(objectId, {
+        from,
+        limit: pageSize,
+        ...(pageParam !== undefined ? { cursor: pageParam } : {}),
+      }),
+    initialPageParam: undefined,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
+}
+
+/** Every loaded row of a revision log, newest first. */
+export function revisionLogRows(data: InfiniteData<RevisionLogPage>): RevisionHeadDto[] {
+  return data.pages.flatMap((page) => page.revisions);
 }
 
 export function useTrust(byActor: string, ofActor: string): QueryResult<ActorTrustStatementJson> {

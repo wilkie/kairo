@@ -39,6 +39,10 @@ pub fn router(state: AppState) -> Router {
             get(handlers::actors::list_objects_handler),
         )
         .route("/api/v1/objects/:id", get(handlers::objects::handler))
+        .route(
+            "/api/v1/objects/:id/log",
+            get(handlers::revisions::log_handler),
+        )
         .route("/api/v1/statements/:id", get(handlers::statements::handler))
         .route(
             "/api/v1/statements",
@@ -59,10 +63,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/version-tags/:object/:version",
             get(handlers::version_tags::latest_handler),
-        )
-        .route(
-            "/api/v1/revisions/:object",
-            get(handlers::revisions::list_handler),
         )
         .route("/api/v1/trust/:by/:of", get(handlers::trust::handler))
         .route(

@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Changed
 
+- **Revision history is a Git-like log (`DECISIONS.md` §20).**
+  - A per-object revision index (revision id → statements) lets
+    history be walked along parent links, newest first.
+  - `GET /api/v1/objects/{id}/log` and `kairo revision log` page
+    through it, replacing `GET /api/v1/revisions/{object}` and
+    `kairo revision list`.
+  - Federation closures and bundle exports carry only revisions
+    reachable from branches, tags, and the genesis's initial revision.
+    Bundle export no longer walks the whole store.
+  - The inspector's Revisions panel pages with "Load older
+    revisions".
+
 - **Git object formats (`DECISIONS.md` §19).**
   - Revision ids are `git:sha1:<40 hex>` or `git:sha256:<64 hex>`,
     parsed strictly; the label decides the format, never the length.

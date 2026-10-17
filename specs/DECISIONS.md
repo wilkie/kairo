@@ -1135,8 +1135,11 @@ Ten sub-decisions, locked together:
 4. **The published closure of an object** is everything a
    pulling node needs to verify it, and nothing that would read
    as authority it shouldn't:
-   - its `ObjectGenesis`, plus every `ObjectRevision`,
-     `ObjectBranch`, and `ObjectVersionTag` whose body names it;
+   - its `ObjectGenesis`, plus every `ObjectBranch` and
+     `ObjectVersionTag` whose body names it, and every
+     `ObjectRevision` those refs (and the genesis's initial revision)
+     reach along parent links (§20; it was every revision naming the
+     object before);
    - **authority evidence**: every `ActorCapabilityGrant` scoped
      to the object, and every `ActorCapabilityRevocation` of
      such a grant;
@@ -1584,3 +1587,82 @@ Affected specs:
 - `DECISIONS.md` §9 — `kairo git fetch --object-format`; `git cache
   status` reports each pool.
 - `THREAT_MODEL.md` — the Git-cache row names the formats.
+
+---
+
+## 20. Revision History as a Git-like Log
+
+Decision: an object's revision history is a **graph walked from a
+starting point**, like `git log`. It is never one flat list of every
+revision ever signed. The store keeps a **per-object index from
+revision id to the statements naming it**, which is what following a
+parent link needs. **What federates is what the object's refs reach**,
+as in a Git fetch: branch and tag targets and the genesis's initial
+revision, plus their parent chains. A revision no ref reaches stays
+local, like a dangling commit.
+
+Sub-decisions:
+
+1. **The index.** `<store>/object_revisions/<XX>/<YY>/<object-id>.json`
+   maps each revision id (`git:sha1:…`, `git:sha256:…`, or another
+   scheme) to the `ObjectRevision` statements that name it for that
+   object. Several statements can name one revision, because
+   different actors may sign the same commit. `put_object_revision`
+   maintains it under the index lock, and `rebuild_indexes`
+   reproduces it. A revision names its parents by revision id, not
+   statement id, so this lookup is what a walk needs at every step.
+
+2. **The walk.** It starts from a set of revision statements and
+   emits newest first by `(created_at, statement_id)` from a max-heap,
+   queuing each emitted revision's parents through the index. Each
+   statement is emitted once, so merges and shared ancestors appear
+   once. Statements that aren't revisions of the object are ignored
+   as starting points. The order is deterministic for a given store,
+   so pages are an offset into it. A page costs the history walked,
+   not the store's size.
+
+3. **The local log starts from everything held.**
+   - `GET /api/v1/objects/{id}/log?from=&limit=&cursor=` (page size up
+     to 500, default 50).
+   - `kairo revision log --object <id> [--from <statement>]...
+     [--limit] [--skip]`.
+
+   By default both start from every revision this node holds for the
+   object, so a revision just signed shows before a branch moves to
+   it. That's what the branch and tag pickers need. `from` scopes the
+   walk to a tip. These replace `GET /api/v1/revisions/{object}` and
+   `kairo revision list`, which returned one flat list sorted by
+   time.
+
+4. **The closure starts from the refs.** `revision_ref_tips` collects
+   the targets of every `ObjectBranch` and `ObjectVersionTag` chain
+   entry (superseded refs too, so their history stays reachable) and
+   the statements naming the genesis's `initial_revision`.
+   `reachable_revisions` walks from them. The federation closure
+   (§16 sub-decision 4) and bundle export (`PACKAGE.md`) both carry
+   exactly the reachable revisions and their manifest blobs. To
+   share a revision, point a branch or tag at it. Bundle export no
+   longer walks `statements/`; it reads the closure.
+
+5. **The inspector pages.** The object page's Revisions table shows
+   the log newest first, with "Load older revisions". The revision
+   graph draws the loaded window, and parents beyond it render as
+   stubs (the layout already supported that). The branch and tag
+   dialogs offer the log's first page.
+
+Rationale: no consumer actually needs every revision at once. People
+look at recent history and walk back from a tip, and a peer needs what
+the refs reach. The flat list walked every statement file in the store
+for each request, and the federation server repeated that per
+published object every few seconds. Following Git's reachability rule
+also gives the closure a definition a person can predict: "what the
+branches and tags point at".
+
+Affected specs:
+
+- `DECISIONS.md` §16 sub-decision 4 — revisions in the closure are the
+  reachable ones.
+- `PACKAGE.md` — object bundles carry reachable revisions.
+- `crates/kairo-bundle/AGENTS.md` — the "goes in" list.
+- `CLI.md` §5.1 — `kairo revision log`.
+- `PHASE_2_FEDERATION.md` — the view-rebuild risk note is resolved.

@@ -169,14 +169,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/provenance/{record}": {
+    "/api/v1/objects/{id}/log": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get: operations["getProvenance"];
+        /** `GET /api/v1/objects/{id}/log` */
+        get: operations["getRevisionLog"];
         put?: never;
         post?: never;
         delete?: never;
@@ -185,15 +186,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/revisions/{object}": {
+    "/api/v1/provenance/{record}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** `GET /api/v1/revisions/{object_id}` */
-        get: operations["listRevisions"];
+        get: operations["getProvenance"];
         put?: never;
         post?: never;
         delete?: never;
@@ -696,6 +696,16 @@ export interface components {
             parents: string[];
             revision_id: string;
             statement_id: string;
+        };
+        /**
+         * @description One page of `GET /api/v1/objects/{id}/log`: revisions newest
+         *     first, walked along parent links from the object's refs or the
+         *     requested starting points (`specs/DECISIONS.md` §20).
+         */
+        RevisionLogPage: {
+            /** @description Pass back as `cursor` for the next page; `null` at the end. */
+            next_cursor?: string | null;
+            revisions: components["schemas"]["RevisionHeadDto"][];
         };
         /**
          * @description Session metadata returned by `POST /api/v1/sessions` and
@@ -1250,6 +1260,43 @@ export interface operations {
             };
         };
     };
+    getRevisionLog: {
+        parameters: {
+            query?: {
+                /** @description Comma-separated revision statement ids to walk from; defaults to every revision this node holds for the object */
+                from?: string;
+                /** @description Page size, 1 to 500; default 50 */
+                limit?: number;
+                /** @description `next_cursor` from the previous page */
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Object id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revisions reachable from the starting points along parent links, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionLogPage"];
+                };
+            };
+            /** @description Malformed object id, statement id, limit, or cursor */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getProvenance: {
         parameters: {
             query?: never;
@@ -1272,36 +1319,6 @@ export interface operations {
                 };
             };
             /** @description Malformed or unsupported reference */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    listRevisions: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Object id (kairo:object:...) */
-                object: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Revision heads for the object, sorted by created_at ascending (ties by statement_id) */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RevisionHeadDto"][];
-                };
-            };
-            /** @description Malformed object id */
             400: {
                 headers: {
                     [name: string]: unknown;

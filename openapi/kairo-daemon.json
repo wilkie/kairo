@@ -394,6 +394,69 @@
         }
       }
     },
+    "/api/v1/objects/{id}/log": {
+      "get": {
+        "tags": [
+          "revisions"
+        ],
+        "summary": "`GET /api/v1/objects/{id}/log`",
+        "operationId": "getRevisionLog",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Object id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Comma-separated revision statement ids to walk from; defaults to every revision this node holds for the object",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, 1 to 500; default 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "`next_cursor` from the previous page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revisions reachable from the starting points along parent links, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionLogPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed object id, statement id, limit, or cursor"
+          }
+        }
+      }
+    },
     "/api/v1/provenance/{record}": {
       "get": {
         "tags": [
@@ -424,44 +487,6 @@
           },
           "400": {
             "description": "Malformed or unsupported reference"
-          }
-        }
-      }
-    },
-    "/api/v1/revisions/{object}": {
-      "get": {
-        "tags": [
-          "revisions"
-        ],
-        "summary": "`GET /api/v1/revisions/{object_id}`",
-        "operationId": "listRevisions",
-        "parameters": [
-          {
-            "name": "object",
-            "in": "path",
-            "description": "Object id (kairo:object:...)",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Revision heads for the object, sorted by created_at ascending (ties by statement_id)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/RevisionHeadDto"
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Malformed object id"
           }
         }
       }
@@ -1624,6 +1649,28 @@
           },
           "statement_id": {
             "type": "string"
+          }
+        }
+      },
+      "RevisionLogPage": {
+        "type": "object",
+        "description": "One page of `GET /api/v1/objects/{id}/log`: revisions newest\nfirst, walked along parent links from the object's refs or the\nrequested starting points (`specs/DECISIONS.md` §20).",
+        "required": [
+          "revisions"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `cursor` for the next page; `null` at the end."
+          },
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RevisionHeadDto"
+            }
           }
         }
       },

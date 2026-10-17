@@ -89,9 +89,10 @@ whether or not the store holds it.
 }
 ```
 
-`statements` holds the object-bound envelope kinds
-(`ObjectRevision`, `ObjectBranch`, `ObjectVersionTag`, every chain
-entry, not just heads). `ObjectGenesis` is not among them: it has
+`statements` holds the object-bound envelope kinds: every
+`ObjectBranch` and `ObjectVersionTag` chain entry (not just heads), and
+the `ObjectRevision`s those refs and the genesis's initial revision
+reach along parent links (`DECISIONS.md` §20). `ObjectGenesis` is not among them: it has
 no statement id, because its body derives the object id, so it is
 fetched from `/objects/{id}/genesis`. `authority` holds
 object-scoped capability grants and revocations of them
@@ -474,12 +475,10 @@ follow. Push needs `federation:push`.
   nothing caps concurrent `pack-objects` runs. Before real
   deployment: pack to a temporary file under the lock, stream it
   without the lock, and cap concurrent pack requests.
-- **Rebuilding the published view walks the store.** Revisions have
-  no per-object index, so each rebuild (every `--view-ttl`, 5 s by
-  default, under load) walks `statements/`. A large store makes this
-  a CPU and latency problem, and a cold rebuild could exceed the
-  client's 30 s request timeout. A revision-by-object index should
-  land before deployment.
+- ~~**Rebuilding the published view walks the store.**~~ Resolved
+  by `DECISIONS.md` §20: closures walk each object's reachable
+  history through the per-object revision index, so a rebuild costs
+  the published histories, not the store.
 - **Pool junk from failed pulls.** Objects a peer's pack added to a
   pool stay there after a failed completeness check. They are
   content-addressed and harmless to correctness; reclaiming them is

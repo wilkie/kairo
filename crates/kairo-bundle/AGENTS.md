@@ -12,8 +12,11 @@ land in the store undetected — fix the bypass.
 ## What goes in an object bundle, and what does not
 
 **Goes in:** `ObjectGenesis` for the root object; every
-`ObjectRevision` / `ObjectBranch` / `ObjectVersionTag` whose
-`body.object()` matches the root; the `ActorGenesis` of every actor
+`ObjectBranch` / `ObjectVersionTag` whose `body.object()` matches the
+root; every `ObjectRevision` those refs and the genesis's initial
+revision reach along parent links (`specs/DECISIONS.md` §20, as in a
+Git fetch; export reads `FilesystemStore::object_closure` rather than
+walking `statements/`); the `ActorGenesis` of every actor
 that signed any of those statements; every blob those statements
 reference.
 

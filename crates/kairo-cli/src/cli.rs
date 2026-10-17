@@ -1151,10 +1151,21 @@ pub(crate) enum RevisionCommand {
         #[arg(long)]
         json: bool,
     },
-    /// List ObjectRevision statements stored locally for an object.
-    List {
-        /// Filter to revisions whose body.object matches this id.
+    /// Show an object's revision history as a log, newest first,
+    /// walked along parent links like `git log` (`specs/DECISIONS.md`
+    /// §20). Starts from every revision this store holds for the
+    /// object, or from `--from`.
+    Log {
         #[arg(long)]
         object: String,
+        /// Revision statement id to walk from (repeatable).
+        #[arg(long = "from")]
+        from: Vec<String>,
+        /// Revisions to show.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Revisions to skip first (for paging).
+        #[arg(long, default_value_t = 0)]
+        skip: usize,
     },
 }

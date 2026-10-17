@@ -10,7 +10,13 @@
 // prior tip" hint based on the same lookup.
 
 import { useState } from 'react';
-import { useBranches, useRevisions, useSession, useUpdateBranch } from '@kairo/api-client';
+import {
+  revisionLogRows,
+  useBranches,
+  useRevisionLog,
+  useSession,
+  useUpdateBranch,
+} from '@kairo/api-client';
 import {
   BranchUpdateDialog,
   type BranchUpdateDialogError,
@@ -32,7 +38,7 @@ export function BranchUpdateDialogContainer(props: BranchUpdateDialogContainerPr
   const { open, onClose, objectId, onSubmitted } = props;
   const sessionQ = useSession();
   const branchesQ = useBranches(objectId);
-  const revisionsQ = useRevisions(objectId);
+  const revisionsQ = useRevisionLog(objectId);
   const mutation = useUpdateBranch();
   const [stickyError, setStickyError] = useState<BranchUpdateDialogError | undefined>(undefined);
 
@@ -45,15 +51,16 @@ export function BranchUpdateDialogContainer(props: BranchUpdateDialogContainerPr
   const ownTips = tips.filter((tip) => tip.actor === byActor);
   const existingNames = ownTips.map((tip) => tip.name);
 
-  // Revisions are sorted oldest-first server-side; reverse so
-  // the dialog shows newest at the top and pre-selects it.
-  const revisions: BranchUpdateDialogRevision[] = [...(revisionsQ.data ?? [])]
-    .reverse()
-    .map((row) => ({
-      statementId: row.statement_id,
-      revisionId: row.revision_id,
-      createdAt: row.created_at,
-    }));
+  // The log is newest first, so the dialog shows the newest at the
+  // top and pre-selects it. Only the first page is offered; older
+  // revisions are reached from the object's revision log.
+  const revisions: BranchUpdateDialogRevision[] = (
+    revisionsQ.data !== undefined ? revisionLogRows(revisionsQ.data) : []
+  ).map((row) => ({
+    statementId: row.statement_id,
+    revisionId: row.revision_id,
+    createdAt: row.created_at,
+  }));
 
   const errorFromMutation = mutation.error !== null ? toDialogError(mutation.error) : undefined;
   const effectiveError = errorFromMutation ?? stickyError;

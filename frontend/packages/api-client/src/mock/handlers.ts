@@ -266,13 +266,21 @@ export function createHandlers(registry: MockRegistry = mockRegistry) {
       return HttpResponse.json(successEnvelope(registry.versionTagHeads[object] ?? []));
     }),
 
-    http.get('*/api/v1/revisions/:object', ({ params }) => {
-      const object = pathParam(params['object']);
+    http.get('*/api/v1/objects/:id/log', ({ params, request }) => {
+      const object = pathParam(params['id']);
       if (object === null) return badRequest('missing object id');
-      if (registry.objects[object] === undefined) {
-        return notFound(`object not found: ${object}`);
+      const url = new URL(request.url);
+      const limit = Number(url.searchParams.get('limit') ?? '50');
+      const skip = Number(url.searchParams.get('cursor') ?? '0');
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+        return badRequest('limit must be from 1 to 500');
       }
-      return HttpResponse.json(successEnvelope(registry.revisionHeads[object] ?? []));
+      if (!Number.isInteger(skip) || skip < 0) return badRequest('invalid cursor');
+      const from = (url.searchParams.get('from') ?? '').split(',').filter((id) => id !== '');
+      const walked = walkRevisionLog(registry.revisionHeads[object] ?? [], from);
+      const revisions = walked.slice(skip, skip + limit);
+      const next = skip + revisions.length < walked.length ? String(skip + revisions.length) : null;
+      return HttpResponse.json(successEnvelope({ revisions, next_cursor: next }));
     }),
 
     // Literal-prefix routes (`/trust/about/...`,
@@ -1058,3 +1066,48 @@ function handleSessionObjectVersionTag(byActor: string, body: unknown, registry:
 /** Default handler set — what `setupBrowserMock` /
  * `setupNodeMock` use when callers don't pass an override. */
 export const handlers = createHandlers();
+
+/**
+ * The daemon's revision-log walk over mock rows: start from `from`
+ * (or every row), emit newest first by `(created_at, statement_id)`,
+ * and queue each emitted row's parents (rows naming a parent
+ * revision id). Each row once.
+ */
+function walkRevisionLog<
+  T extends {
+    statement_id: string;
+    revision_id: string;
+    created_at: string;
+    parents: ReadonlyArray<string>;
+  },
+>(rows: ReadonlyArray<T>, from: ReadonlyArray<string>): T[] {
+  const byStatement = new Map(rows.map((row) => [row.statement_id, row]));
+  const queued = new Set<string>();
+  const pending: T[] = [];
+  const enqueue = (row: T | undefined) => {
+    if (row === undefined || queued.has(row.statement_id)) return;
+    queued.add(row.statement_id);
+    pending.push(row);
+  };
+  const tips = from.length > 0 ? from.map((id) => byStatement.get(id)) : rows;
+  tips.forEach(enqueue);
+  const out: T[] = [];
+  const newest = (a: T, b: T) =>
+    a.created_at === b.created_at
+      ? a.statement_id < b.statement_id
+        ? 1
+        : -1
+      : a.created_at < b.created_at
+        ? 1
+        : -1;
+  while (pending.length > 0) {
+    pending.sort(newest);
+    const next = pending.shift();
+    if (next === undefined) break;
+    out.push(next);
+    for (const parent of next.parents) {
+      rows.filter((row) => row.revision_id === parent).forEach(enqueue);
+    }
+  }
+  return out;
+}

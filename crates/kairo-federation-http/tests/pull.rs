@@ -542,3 +542,43 @@ fn a_pinned_node_actor_must_match_before_anything_is_fetched() {
     };
     pull_object(&local, &served.base_url, &seeded.published, &pinned).expect("pinned pull");
 }
+
+#[test]
+fn revisions_no_ref_reaches_stay_on_the_origin() {
+    // Git-like closure (DECISIONS.md §20): a revision signed on top of
+    // the published history, but not yet pointed at by any branch or
+    // tag, is like a dangling commit and does not federate.
+    let seeded = seed();
+    let parent = seeded
+        .statements
+        .iter()
+        .find_map(|id| seeded.store.get_object_revision(id).ok())
+        .expect("a revision");
+    let dangling = seeded
+        .store
+        .put_object_revision(&sign(
+            &seeded.alice_actor,
+            &format!("object:{}", seeded.published),
+            1_700_000_700,
+            kairo_statement::ObjectRevisionBody::new(
+                seeded.published.clone(),
+                kairo_statement::RevisionId::new(format!("git:sha1:{}", "9".repeat(40))),
+                vec![parent.unsigned().body().revision().clone()],
+                seeded.manifest.clone(),
+                true,
+            ),
+        ))
+        .expect("put dangling revision");
+
+    let served = serve(&seeded);
+    let (_dir, local) = local_store();
+    pull(&local, &served, &seeded.published).expect("pull");
+    assert!(
+        local.get_statement_bytes(&dangling).is_err(),
+        "not federated"
+    );
+    // Everything the refs reach still arrives.
+    for id in &seeded.statements {
+        assert!(local.get_statement_bytes(id).is_ok(), "{id}");
+    }
+}

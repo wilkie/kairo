@@ -60,7 +60,7 @@ kairo manifest inspect
 
 # 5. Inspect and list the revision through the store.
 kairo revision inspect --statement "$STATEMENT"
-kairo revision list --object "$OBJECT"
+kairo revision log --object "$OBJECT"
 
 # 6a. Set head to point at the new revision. revision create is a low-level
 #     primitive and does not advance any branch on its own; pointer moves

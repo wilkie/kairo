@@ -18,7 +18,8 @@ import {
   useBranches,
   useCapabilitiesForObject,
   useObject,
-  useRevisions,
+  useRevisionLog,
+  revisionLogRows,
   useSession,
   useTrustAbout,
   useVerifyObject,
@@ -73,7 +74,7 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
   const verifyQ = useVerifyObject(id);
   const branchesQ = useBranches(id);
   const tagsQ = useVersionTags(id);
-  const revisionsQ = useRevisions(id);
+  const revisionsQ = useRevisionLog(id);
   const capsQ = useCapabilitiesForObject(id);
   const sessionQ = useSession();
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
@@ -200,23 +201,36 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
 
       <Panel
         title="Revisions"
-        description="Chronological revision history (ascending)."
+        description="Revision log, newest first, walked along parent links like git log."
         actions={<LocalityBadge state="local" />}
       >
         <QueryStatusBoundary query={revisionsQ}>
-          {(rows) => <RevisionsTable rows={rows} />}
+          {(data) => (
+            <Stack spacing={1} alignItems="flex-start">
+              <RevisionsTable rows={revisionLogRows(data)} />
+              {revisionsQ.hasNextPage && (
+                <Button
+                  onClick={() => void revisionsQ.fetchNextPage()}
+                  disabled={revisionsQ.isFetchingNextPage}
+                  data-testid="revision-log-more"
+                >
+                  {revisionsQ.isFetchingNextPage ? 'Loading…' : 'Load older revisions'}
+                </Button>
+              )}
+            </Stack>
+          )}
         </QueryStatusBoundary>
       </Panel>
 
       <Panel
         title="Revision graph"
-        description="Visual parent-relationships for the same revisions, oldest at top. Long-distance edges pass behind intermediate nodes."
+        description="Parent relationships for the loaded revisions, oldest at top. Parents beyond the loaded window show as stubs. Long-distance edges pass behind intermediate nodes."
         actions={<LocalityBadge state="local" />}
       >
         <QueryStatusBoundary query={revisionsQ}>
-          {(rows) => (
+          {(data) => (
             <StatementGraphView
-              revisions={rows}
+              revisions={[...revisionLogRows(data)].reverse()}
               renderLabel={(rev) => (
                 <Stack direction="row" spacing={1} alignItems="baseline">
                   <IdLink kind="statement" id={rev.statement_id} />

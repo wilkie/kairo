@@ -54,6 +54,7 @@ mod objects_by_actor;
 mod provenance;
 mod published;
 mod pulls;
+mod revisions;
 mod shard;
 mod statements_by_actor;
 mod tags;
@@ -96,6 +97,7 @@ pub use objects_by_actor::ObjectByActor;
 pub use provenance::{ProvenanceEntry, ProvenanceStore};
 pub use published::{PublishedObject, PublishedObjectStore};
 pub use pulls::{PullLogStore, PullRecord};
+pub use revisions::RevisionLog;
 pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
@@ -608,91 +610,6 @@ impl FilesystemStore {
         read_or_missing(&path)
     }
 
-    /// List every `ObjectRevision` statement on disk whose body
-    /// targets `object`, sorted by `created_at` ascending (ties
-    /// broken by `statement_id`).
-    ///
-    /// This is a full directory scan over `<root>/statements/`
-    /// — there's no per-object revision index in the v1 store
-    /// layout, so every call walks the sharded statement tree
-    /// once. The cost is acceptable for inspector tooling on
-    /// MVP-sized stores; if a future workload demands faster
-    /// listing, add a `RevisionResolver` trait backed by a
-    /// per-object materialized index (mirroring how
-    /// `BranchResolver` / `VersionTagResolver` work) and move
-    /// the method there.
-    ///
-    /// I/O errors surface as [`StoreError::Unavailable`]; an
-    /// individual file that fails to parse as
-    /// `ObjectRevisionStatementJson` surfaces as
-    /// [`StoreError::Corrupt`] with the offending statement id
-    /// in the error.
-    pub fn list_object_revisions(
-        &self,
-        object: &ObjectId,
-    ) -> Result<Vec<SignedStatement<ObjectRevisionBody>>, StoreError> {
-        let statements_dir = self.root().join(STATEMENTS_DIR);
-        let mut found = Vec::new();
-        let level1 = match fs::read_dir(&statements_dir) {
-            Ok(level1) => level1,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(found),
-            Err(error) => return Err(StoreError::Unavailable(error)),
-        };
-        for shard1 in level1 {
-            let shard1 = shard1?;
-            if !shard1.path().is_dir() {
-                continue;
-            }
-            for shard2 in fs::read_dir(shard1.path())? {
-                let shard2 = shard2?;
-                if !shard2.path().is_dir() {
-                    continue;
-                }
-                for entry in fs::read_dir(shard2.path())? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                        continue;
-                    }
-                    let bytes = fs::read(&path)?;
-                    let dto: ObjectRevisionStatementJson = match serde_json::from_slice(&bytes) {
-                        Ok(dto) => dto,
-                        // Parse failure here means either a non-revision
-                        // statement (we share the directory across all
-                        // statement kinds) or a genuinely corrupt file. We
-                        // can't tell from the deserializer alone — let
-                        // through anything that doesn't decode as a
-                        // revision shape. Per-kind parse errors don't
-                        // belong to "list revisions for object".
-                        Err(_) => continue,
-                    };
-                    let statement_id = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or_default();
-                    let signed = dto.to_statement().map_err(|reason| StoreError::Corrupt {
-                        id: statement_id.to_owned(),
-                        reason: CorruptReason::Parse(reason.to_string()),
-                    })?;
-                    if signed.unsigned().body().object() == object {
-                        found.push(signed);
-                    }
-                }
-            }
-        }
-        found.sort_by(|a, b| {
-            a.unsigned()
-                .created_at()
-                .cmp(&b.unsigned().created_at())
-                .then_with(|| {
-                    a.unsigned()
-                        .statement_id()
-                        .cmp(&b.unsigned().statement_id())
-                })
-        });
-        Ok(found)
-    }
-
     /// Rebuild every materialized index by replaying the on-disk
     /// `statements/` tree. Wipes each index directory first, then
     /// walks each statement file and dispatches it to the matching
@@ -748,6 +665,7 @@ impl FilesystemStore {
             ACTOR_KEYS_DIR,
             STATEMENTS_BY_ACTOR_DIR,
             OBJECTS_BY_ACTOR_DIR,
+            revisions::OBJECT_REVISIONS_DIR,
         ] {
             let path = self.root.join(dir);
             match fs::remove_dir_all(&path) {
@@ -1757,6 +1675,8 @@ impl FilesystemStore {
     ) -> Result<(), StoreError> {
         let actor = statement.unsigned().actor();
         let created_at = statement.unsigned().created_at();
+        let body = statement.unsigned().body();
+        self.upsert_revision_index(body.object(), body.revision(), id)?;
         self.upsert_statement_by_actor_index(actor, id, StatementKind::ObjectRevision, created_at)
     }
 
@@ -6919,6 +6839,180 @@ mod tests {
         );
         store.rebuild_indexes()?;
         assert_eq!(store.list_pulls()?.len(), 2);
+        Ok(())
+    }
+
+    // --- revision index and log ----------------------------------
+
+    fn git_rev(n: u8) -> RevisionId {
+        RevisionId::new(format!(
+            "git:sha1:{}",
+            format!("{n:x}").repeat(40).get(..40).unwrap_or_default()
+        ))
+    }
+
+    /// An `ObjectRevision` for `object` naming `git_rev(n)` with
+    /// `parents`, at `1_700_000_000 + n` seconds.
+    fn revision_for(
+        object: &ObjectId,
+        n: u8,
+        parents: &[u8],
+    ) -> Result<SignedStatement<ObjectRevisionBody>, Box<dyn std::error::Error>> {
+        let actor = fresh_genesis().actor_id();
+        let body = ObjectRevisionBody::new(
+            object.clone(),
+            git_rev(n),
+            parents.iter().map(|p| git_rev(*p)).collect(),
+            BlobId::new(BLOB_ID)?,
+            true,
+        );
+        let subject: KairoRef = format!("object:{object}").parse()?;
+        let unsigned = UnsignedStatement::new(
+            actor.clone(),
+            subject,
+            Timestamp::from_seconds(1_700_000_000 + i64::from(n)),
+            body,
+        );
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    /// Store `revision_for(object, n, parents)`; return its id.
+    fn put_revision(
+        store: &FilesystemStore,
+        object: &ObjectId,
+        n: u8,
+        parents: &[u8],
+    ) -> Result<StatementId, Box<dyn std::error::Error>> {
+        Ok(store.put_object_revision(&revision_for(object, n, parents)?)?)
+    }
+
+    fn log_ids(log: &RevisionLog) -> Vec<StatementId> {
+        log.revisions.iter().map(|r| r.statement_id()).collect()
+    }
+
+    #[test]
+    fn revision_index_maps_revisions_to_statements() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        store.put_actor(&fresh_genesis())?;
+        let object = put_published_test_object(&store, 1)?;
+        let r1 = put_revision(&store, &object, 1, &[])?;
+        assert_eq!(
+            store.revision_statements(&object, &git_rev(1))?,
+            vec![r1.clone()]
+        );
+        assert!(store.revision_statements(&object, &git_rev(9))?.is_empty());
+        assert_eq!(store.revision_ids(&object)?, vec![git_rev(1)]);
+        assert_eq!(store.revision_statement_ids(&object)?, vec![r1]);
+        Ok(())
+    }
+
+    #[test]
+    fn revision_log_walks_parents_newest_first_and_pages() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        store.put_actor(&fresh_genesis())?;
+        let object = put_published_test_object(&store, 1)?;
+        // r1 <- r2 <- r3, and r4 merges r3 with a side revision r5 off r1.
+        let r1 = put_revision(&store, &object, 1, &[])?;
+        let r2 = put_revision(&store, &object, 2, &[1])?;
+        let r3 = put_revision(&store, &object, 3, &[2])?;
+        let r5 = put_revision(&store, &object, 5, &[1])?;
+        let r4 = put_revision(&store, &object, 6, &[3, 5])?;
+
+        let all = store.revision_log(&object, std::slice::from_ref(&r4), 0, 10)?;
+        assert_eq!(
+            log_ids(&all),
+            vec![r4.clone(), r5.clone(), r3.clone(), r2.clone(), r1.clone()],
+            "newest first, each once"
+        );
+        assert!(!all.more);
+
+        let page = store.revision_log(&object, std::slice::from_ref(&r4), 1, 2)?;
+        assert_eq!(log_ids(&page), vec![r5, r3]);
+        assert!(page.more);
+
+        let from_r2 = store.revision_log(&object, std::slice::from_ref(&r2), 0, 10)?;
+        assert_eq!(log_ids(&from_r2), vec![r2, r1]);
+
+        // A tip that isn't a revision of this object is ignored.
+        let stray = StatementId::from_sha256_digest([9; 32]);
+        assert!(store
+            .revision_log(&object, &[stray], 0, 10)?
+            .revisions
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn reachable_revisions_follow_refs_only() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let genesis = fresh_genesis();
+        store.put_actor(&genesis)?;
+        let actor = genesis.actor_id();
+        let object = put_published_test_object(&store, 1)?;
+        let r1 = put_revision(&store, &object, 1, &[])?;
+        let r2 = put_revision(&store, &object, 2, &[1])?;
+        // r3 builds on r2 but nothing points at it yet.
+        let r3 = put_revision(&store, &object, 3, &[2])?;
+        assert!(
+            store.reachable_revisions(&object)?.is_empty(),
+            "no refs yet"
+        );
+
+        store.put_object_branch(&signed_branch(
+            actor.clone(),
+            object.clone(),
+            "main",
+            r2.clone(),
+            None,
+            timestamp(),
+        )?)?;
+        let reachable: Vec<StatementId> = store
+            .reachable_revisions(&object)?
+            .iter()
+            .map(|r| r.statement_id())
+            .collect();
+        assert_eq!(reachable, vec![r2.clone(), r1.clone()]);
+        assert!(!reachable.contains(&r3));
+        assert_eq!(store.revision_ref_tips(&object)?, vec![r2.clone()]);
+
+        // A tag reaches r3 too.
+        store.put_object_version_tag(&signed_version_tag(
+            actor,
+            object.clone(),
+            "1.0.0",
+            Some(r3.clone()),
+            None,
+            timestamp(),
+        )?)?;
+        assert_eq!(store.reachable_revisions(&object)?.len(), 3);
+
+        // The closure carries the same set.
+        let closure = store.object_closure(&object)?;
+        for id in [&r1, &r2, &r3] {
+            assert!(closure.statements.contains(id), "{id}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_indexes_reproduces_the_revision_index() -> TestResult {
+        let (dir, store) = open_temp_store()?;
+        store.put_actor(&fresh_genesis())?;
+        let object = put_published_test_object(&store, 1)?;
+        let r1 = put_revision(&store, &object, 1, &[])?;
+        let r2 = put_revision(&store, &object, 2, &[1])?;
+        fs::remove_dir_all(dir.path().join("object_revisions"))?;
+        assert!(store.revision_statement_ids(&object)?.is_empty());
+        store.rebuild_indexes()?;
+        let log = store.revision_log(&object, std::slice::from_ref(&r2), 0, 10)?;
+        assert_eq!(log_ids(&log), vec![r2, r1]);
         Ok(())
     }
 }

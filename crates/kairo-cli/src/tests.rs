@@ -531,8 +531,8 @@ fn parses_revision_inspect_command() {
 }
 
 #[test]
-fn parses_revision_list_command() {
-    let cli = Cli::try_parse_from(["kairo", "revision", "list", "--object", "zQmObject"]);
+fn parses_revision_log_command() {
+    let cli = Cli::try_parse_from(["kairo", "revision", "log", "--object", "zQmObject"]);
 
     assert!(matches!(
         cli,
@@ -543,9 +543,9 @@ fn parses_revision_list_command() {
             direct: false,
             offline: false,
             command: Some(Command::Revision {
-                command: RevisionCommand::List { object }
+                command: RevisionCommand::Log { object, from, limit: 50, skip: 0 }
             })
-        }) if object == "zQmObject"
+        }) if object == "zQmObject" && from.is_empty()
     ));
 }
 
@@ -750,8 +750,11 @@ fn end_to_end_import_inspect_list() -> Result<(), Box<dyn std::error::Error>> {
         direct: false,
         offline: false,
         command: Some(Command::Revision {
-            command: RevisionCommand::List {
+            command: RevisionCommand::Log {
                 object: object_id.clone(),
+                from: vec![],
+                limit: 50,
+                skip: 0,
             },
         }),
     })?;
@@ -4765,8 +4768,11 @@ kind = "tree"
         direct: false,
         offline: false,
         command: Some(Command::Revision {
-            command: RevisionCommand::List {
+            command: RevisionCommand::Log {
                 object: object_id.clone(),
+                from: vec![],
+                limit: 50,
+                skip: 0,
             },
         }),
     })?;
