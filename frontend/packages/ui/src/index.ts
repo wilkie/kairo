@@ -38,3 +38,9 @@ export {
   type TrustOpinionDialogError,
   type TrustDecision,
 } from './TrustOpinionDialog';
+export {
+  BranchUpdateDialog,
+  type BranchUpdateDialogProps,
+  type BranchUpdateDialogError,
+  type BranchUpdateDialogRevision,
+} from './BranchUpdateDialog';

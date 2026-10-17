@@ -76,6 +76,8 @@ export {
   useSignOut,
   useCreateTrustOpinion,
   type CreateTrustOpinionVars,
+  useUpdateBranch,
+  type UpdateBranchVars,
 } from './hooks';
 
 // Generated path/component types — exposed so callers can

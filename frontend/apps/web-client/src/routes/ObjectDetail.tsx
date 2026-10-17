@@ -19,6 +19,7 @@ import {
   useCapabilitiesForObject,
   useObject,
   useRevisions,
+  useSession,
   useTrustAbout,
   useVerifyObject,
   useVersionTags,
@@ -32,6 +33,7 @@ import {
 } from '@kairo/api-client';
 import { idPrefix, truncateId, validationStatusDescription } from '@kairo/object-model';
 import {
+  Button,
   EmptyState,
   LocalityBadge,
   Panel,
@@ -48,9 +50,10 @@ import {
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import Typography from '@mui/material/Typography';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { IdLink, IdText } from '../components/IdLink';
 import { QueryStatusBoundary } from '../components/QueryStatusBoundary';
+import { BranchUpdateDialogContainer } from '../components/BranchUpdateDialogContainer';
 
 export interface ObjectDetailProps {
   id: string;
@@ -68,6 +71,9 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
   const tagsQ = useVersionTags(id);
   const revisionsQ = useRevisions(id);
   const capsQ = useCapabilitiesForObject(id);
+  const sessionQ = useSession();
+  const [branchDialogOpen, setBranchDialogOpen] = useState(false);
+  const session = sessionQ.data ?? null;
 
   // Trust panel is keyed off the genesis signer; we can only
   // ask the daemon once that id resolves. Pass an explicit
@@ -118,12 +124,32 @@ export function ObjectDetail({ id }: ObjectDetailProps) {
       <Panel
         title="Branches"
         description="Mutable named pointers; one row per (actor, name) chain leaf."
-        actions={<LocalityBadge state="local" />}
+        actions={
+          <Stack direction="row" spacing={1} alignItems="center">
+            {session !== null && (
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => setBranchDialogOpen(true)}
+                data-testid="update-branch"
+              >
+                Update branch
+              </Button>
+            )}
+            <LocalityBadge state="local" />
+          </Stack>
+        }
       >
         <QueryStatusBoundary query={branchesQ}>
           {(rows) => <BranchesTable rows={rows} />}
         </QueryStatusBoundary>
       </Panel>
+
+      <BranchUpdateDialogContainer
+        open={branchDialogOpen}
+        onClose={() => setBranchDialogOpen(false)}
+        objectId={id}
+      />
 
       <Panel
         title="Tags"

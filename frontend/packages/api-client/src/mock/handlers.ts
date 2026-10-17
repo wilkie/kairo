@@ -450,6 +450,8 @@ async function handleSessionWrite(
   switch (payload.body_kind) {
     case 'ActorTrust':
       return handleSessionActorTrust(session.actorId, payload.body, registry);
+    case 'ObjectBranch':
+      return handleSessionObjectBranch(session.actorId, payload.body, registry);
     default:
       return HttpResponse.json(
         errorEnvelope(
@@ -487,10 +489,12 @@ function handleSessionActorTrust(
   }
 
   const trustedActor = fields.trusted_actor;
-  const decision = fields.decision === undefined ? null : (fields.decision as
-    | 'trusted'
-    | 'untrusted'
-    | null);
+  const decision: 'trusted' | 'untrusted' | null =
+    fields.decision === 'trusted'
+      ? 'trusted'
+      : fields.decision === 'untrusted'
+        ? 'untrusted'
+        : null;
   const createdAt = rfc3339(new Date());
   const statementId = `zMockSessionTrustStmt${Date.now().toString(36)}`;
   const reason = typeof fields.reason === 'string' ? fields.reason : undefined;
@@ -534,6 +538,120 @@ function handleSessionActorTrust(
       bytes: 'A'.repeat(88),
     },
   };
+
+  const result: components['schemas']['PutStatementResult'] = {
+    statement_id: statementId,
+    statement: registry.statements[statementId],
+  };
+  return HttpResponse.json(successEnvelope(result));
+}
+
+function handleSessionObjectBranch(
+  byActor: string,
+  body: unknown,
+  registry: MockRegistry,
+) {
+  if (typeof body !== 'object' || body === null) {
+    return badRequest('invalid ObjectBranch body shape');
+  }
+  const fields = body as {
+    object?: unknown;
+    name?: unknown;
+    revision?: unknown;
+    supersedes?: unknown;
+  };
+  if (typeof fields.object !== 'string') {
+    return badRequest('invalid ObjectBranch body: object must be a string');
+  }
+  if (typeof fields.name !== 'string' || fields.name.length === 0) {
+    return badRequest('invalid ObjectBranch body: name must be a non-empty string');
+  }
+  if (typeof fields.revision !== 'string') {
+    return badRequest('invalid ObjectBranch body: revision must be a string');
+  }
+  if (
+    fields.supersedes !== undefined &&
+    fields.supersedes !== null &&
+    typeof fields.supersedes !== 'string'
+  ) {
+    return badRequest('invalid ObjectBranch body: supersedes must be a string or null');
+  }
+
+  const objectId = fields.object;
+  const objectGenesis = registry.objects[objectId];
+  if (objectGenesis === undefined) {
+    return HttpResponse.json(
+      errorEnvelope('not_found', `object not found: ${objectId}`),
+      { status: 404 },
+    );
+  }
+
+  // Root-authority check: only the object's creator may write
+  // branches in the mock. The real daemon evaluates the full
+  // capability chain (root authority for owners, plus
+  // delegated grants); the mock approximates the common case.
+  if (objectGenesis.body.created_by !== byActor) {
+    return HttpResponse.json(
+      errorEnvelope(
+        'not_authorized',
+        `actor ${byActor} lacks an ObjectBranch capability for object ${objectId}`,
+      ),
+      { status: 403 },
+    );
+  }
+
+  const name = fields.name;
+  const revision = fields.revision;
+  const supersedes =
+    typeof fields.supersedes === 'string' ? fields.supersedes : undefined;
+  const createdAt = rfc3339(new Date());
+  const statementId = `zMockSessionBranchStmt${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+
+  // Replace the matching `(actor, name)` tip; otherwise
+  // append. Latest-wins per `(actor, name)` mirrors the
+  // daemon's branch resolver.
+  const priorTips = registry.branchTips[objectId] ?? [];
+  const tip: components['schemas']['BranchTipDto'] = {
+    actor: byActor,
+    object: objectId,
+    name,
+    statement_id: statementId,
+    created_at: createdAt,
+  };
+  const others = priorTips.filter(
+    (entry) => !(entry.actor === byActor && entry.name === name),
+  );
+  registry.branchTips[objectId] = [...others, tip];
+
+  // Seed the statement body so navigating to the new id
+  // resolves the same JSON shape the daemon would emit.
+  const statementBody: Record<string, unknown> = {
+    object: objectId,
+    name,
+    revision,
+  };
+  if (supersedes !== undefined) statementBody.supersedes = supersedes;
+  registry.statements[statementId] = {
+    type: 'ObjectBranch',
+    version: 1,
+    actor: byActor,
+    subject: `object:${objectId}`,
+    created_at: createdAt,
+    body: statementBody,
+    signature: {
+      actor: byActor,
+      key_id: 'mock-key-1',
+      algorithm: 'ed25519',
+      bytes: 'A'.repeat(88),
+    },
+  };
+
+  // Update the latest-branch lookup so `useLatestBranch`
+  // resolves to the new tip without a follow-up fetch.
+  const latestKey = `${objectId}:${name}:${byActor}`;
+  registry.branchLatest[latestKey] = registry.statements[
+    statementId
+  ] as components['schemas']['ObjectBranchStatementJson'];
 
   const result: components['schemas']['PutStatementResult'] = {
     statement_id: statementId,

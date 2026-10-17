@@ -286,6 +286,72 @@ export interface CreateTrustOpinionVars {
 }
 
 /**
+ * Variables accepted by [`useUpdateBranch`]. The mutation
+ * sends an `ObjectBranch` body — the daemon's capability gate
+ * decides whether the session actor may write a branch on the
+ * named object. `supersedes` is optional: pass it when
+ * replacing an existing tip from the same actor with the same
+ * name; omit it to create a fresh branch.
+ */
+export interface UpdateBranchVars {
+  byActor: string;
+  objectId: string;
+  name: string;
+  /** Statement id of the revision the branch tip should
+   * point at. Resolves to `ObjectBranchBody.revision` on the
+   * daemon side. */
+  revisionStatementId: string;
+  /** Statement id of the prior branch tip this update
+   * supersedes. Omit when creating a new branch. */
+  supersedes?: string;
+}
+
+/**
+ * Mutation: cookie-mode write of an `ObjectBranch` statement.
+ * On success invalidates the branches list and per-tip
+ * resolution queries for the object so panels re-render with
+ * the new head, plus the by-actor signed-statements list so
+ * the actor-detail page reflects the new authorship.
+ *
+ * The daemon's capability gate is the source of truth for
+ * whether the session actor may write a branch — denials
+ * surface as `ApiClientError` with `code: 'not_authorized'`
+ * and the consuming dialog renders them inline.
+ */
+export function useUpdateBranch(): UseMutationResult<
+  PutStatementResult,
+  KairoApiClientError,
+  UpdateBranchVars
+> {
+  const client = useKairoClient();
+  const queryClient = useQueryClient();
+  return useMutation<PutStatementResult, KairoApiClientError, UpdateBranchVars>({
+    mutationFn: ({ objectId, name, revisionStatementId, supersedes }) => {
+      const body: Record<string, unknown> = {
+        object: objectId,
+        name,
+        revision: revisionStatementId,
+      };
+      if (supersedes !== undefined) {
+        body.supersedes = supersedes;
+      }
+      return client.writeViaSession('ObjectBranch', body);
+    },
+    onSuccess: (_data, vars) => {
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.branches(vars.objectId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.branch(vars.objectId, vars.name, vars.byActor),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: kairoKeys.actorStatements(vars.byActor),
+      });
+    },
+  });
+}
+
+/**
  * Mutation: cookie-mode write of an `ActorTrust` statement
  * (the simplest body kind — no capability check). Wraps
  * `client.writeViaSession("ActorTrust", body)`; on success,
