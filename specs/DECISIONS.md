@@ -159,12 +159,16 @@ via `objects/info/alternates`**. Layout:
 
 ```
 ~/.kairo/git/
-  pool/                                # single shared bare repo
+  pool-sha1/                           # shared bare repos, one per Git
+  pool-sha256/                         #   object format (§19)
     objects/                           # all Git objects/packs live here
   <XX>/<YY>/<object-id>/               # per-Kairo-object bare repo
-    objects/info/alternates            # → ../../../pool/objects
+    objects/info/alternates            # → ../../../pool-<format>/objects
     refs/heads/...                     # this object's refs only
 ```
+
+(The single `pool/` this section originally specified is split by
+object format in §19.)
 
 Fetches land objects in the pool (under namespaced refs like
 `refs/kairo/<object-id>/<branch>`) and mirror the resolved refs into the
@@ -288,7 +292,7 @@ verb tree, and bundles are **opt-in** to shipping Git packs via
 CLI shape:
 
 ```text
-kairo git fetch --object <id> --remote <url> [--refspec <ref>]
+kairo git fetch --object <id> --remote <url> [--refspec <ref>] [--object-format sha1|sha256]
 kairo git cache status
 kairo git cache verify          # pool integrity probe (later)
 kairo git cache gc [--object <id>]   # paired with STORE.md §12 (later)
@@ -1156,10 +1160,16 @@ Ten sub-decisions, locked together:
    roots there, and withholding it only turns cross-actor
    statements `Indeterminate`. Trust opinions have no such
    anchor and would be misread as authority, so they stay out
-   until an opt-in trust transport exists. A pull is not
-   complete until every listed actor's key events are fetched,
-   because withholding a revocation is the attack
-   `THREAT_MODEL.md` warns about. Object bundles follow the same
+   until an opt-in trust transport exists. The client fetches every
+   key event the peer lists, but it cannot know about events the
+   peer withholds. A withheld rotation is caught, because later
+   statements signed with the new key fail verification. A withheld
+   *revocation* is not: statements signed after it still verify.
+   That is the attack `THREAT_MODEL.md` warns about, and one peer
+   cannot rule it out. The defenses are re-pulling (actor listings
+   are re-read on every pull, so events arrive incrementally) and
+   pulling from more than one peer. Fetching an actor's key events
+   from several peers is the eventual fix. Object bundles follow the same
    split by shipping only each signer's `ActorGenesis`. The
    importing node is responsible for getting current key
    knowledge, which it may already have and which may have
@@ -1217,9 +1227,12 @@ Ten sub-decisions, locked together:
    belong where the listing put it (an object statement for
    another object, a grant scoped elsewhere, any `ActorTrust`). A
    statement whose signing key is revoked at its `created_at` is
-   skipped, not stored, without failing the pull: it is a verified
-   fact about the actor rather than tampering, and the
-   revocation came through the same checks. Records that verify but fail a
+   stored and flagged in the pull report, without failing the pull.
+   It is genuine, the origin holds it too, and the revocation is a
+   verified fact that read-time verification reports. Skipping it
+   would make a node's contents depend on the order key events
+   arrive in, and would make resolvers on two nodes disagree.
+   (Amended 2026-10-17; it was skipped before.) Records that verify but fail a
    capability check are stored anyway, because the store keeps
    conflicts and the resolver decides (`FEDERATION.md` "Conflict
    Handling"). The client requires `https://` except for
@@ -1254,10 +1267,14 @@ Ten sub-decisions, locked together:
    ["object-pull"]`. Pulled data never depends on the node's
    identity, because every record verifies on its own. So in
    provenance, `peer_url` is the observed fact and `peer_actor`
-   is recorded as claimed. Authenticating nodes, by signing the
-   document and responses or by `KairoActor1` on requests,
-   comes with push, which is the first operation that has to
-   know who the peer is.
+   is recorded as claimed. A `node_actor` pin (§17) therefore
+   catches a re-pointed URL, not an impersonator who copies the
+   real document, and the CLI says "claim matches, node not
+   authenticated". Authenticating nodes, by signing the document
+   and responses or by `KairoActor1` on requests, is a
+   prerequisite for push and for discovery (§18): both act on
+   *which node* answered. (Amended 2026-10-17; it was tied to push
+   alone before.)
 
 10. **Out of scope:** push and its acceptance policy; trust
     transport and `forget` for peer opinions (`PHASE_2.md` §4);
@@ -1442,6 +1459,13 @@ Sub-decisions:
    limit. Importing another node's trust statements never makes
    them this node's opinions (§16 sub-decision 4, `PHASE_2.md` §4).
 
+Discovery therefore depends on three things that don't exist yet:
+scoped trust (sub-decision 4), trust transport (fetching other
+nodes' `ActorTrust`, `PHASE_2_FEDERATION.md` §4 item 2), and node
+authentication (§16 sub-decision 9). Without authentication, a node
+trusted for `federation:index` could be impersonated by anyone who
+copies its node document.
+
 Rationale: once nodes are actors, node-to-node trust is
 actor-to-actor trust, so reusing `ActorTrust` gets chains,
 withdrawal, the reverse index, and the "importing is not trusting"
@@ -1460,3 +1484,103 @@ Affected specs:
   — gain the scope in place when it is implemented
   (sub-decision 4).
 - `PHASE_2.md` §12 — new item for scoped `ActorTrust`.
+
+---
+
+## 19. Git Object Formats
+
+Decision: a Git revision id names its repository's object format,
+**`git:sha1:<40 hex>`** or **`git:sha256:<64 hex>`** (lowercase). It
+is parsed strictly, and the format comes from the label, never the
+digest length. Each object's history has **one** format. The managed
+cache keeps **one pool per format**. Git reads go through **gix with
+both hash features**, so SHA-256 repositories verify like SHA-1
+ones. This implements `OBJECT_STORE.md` "Revisions". It replaces the
+Phase 1 choice of a single `git:sha256:` prefix (`PHASE_1.md` §11),
+which had labeled SHA-1 commits as SHA-256 and left SHA-256
+repositories unreadable.
+
+Sub-decisions:
+
+1. **Strict ids.** `GitRevision::parse` (in `kairo-statement`) accepts
+   exactly the two shapes above. Any other `git:` value is malformed:
+   no format segment, an unknown format, a wrong length for its
+   label, or non-lowercase hex. A malformed value is an error, not
+   "some other scheme". Values outside the `git:` scheme (e.g.
+   `hg:…`) still pass through and leave the content layer
+   indeterminate.
+
+2. **Enforced where revisions enter a store.**
+   `check_revision_ids` validates an `ObjectRevision`'s revision
+   and parents, and requires the parents to share the revision's
+   format. It runs at:
+   - `kairo revision create` and `kairo object create
+     --initial-revision`;
+   - the daemon's `POST /api/v1/statements`;
+   - `kairo bundle import`;
+   - federation pull (as a schema rejection).
+
+   Records already in a store are not re-validated on read.
+   `kairo verify object` reports a malformed `git:` revision as an
+   error.
+
+3. **One format per object.** `revision create` refuses a revision
+   whose format differs from the object's existing revisions. An
+   object's per-object cache repo has one fixed format;
+   `ensure_repo` with another format is
+   `GitError::FormatMismatch`. A cache repo in another format can't
+   hold a revision, so `verify object` treats it as a cache miss.
+
+4. **Per-format pools.** The single `pool/` of §7 becomes
+   `pool-sha1/` and `pool-sha256/` at the cache root. Each is created
+   on first use with `git init --bare --object-format=<format>`, and
+   a per-object repo's alternates point at the pool of its own
+   format. Git cannot mix formats in one repository, so a single
+   pool could only ever hold one of them. `GitCache::open` no longer
+   initializes anything. Every cache operation takes or checks the
+   format: `ensure_repo`, `ingest_pack_from`, `has_commit`,
+   `set_ref`, `fetch`.
+
+5. **Packs are checked for completeness before anything is pinned.**
+   `index-pack` accepts a pack that carries a commit without its
+   trees or blobs. After ingesting a pack (bundle import or
+   federation pull), `GitCache::missing_objects` runs `git rev-list
+   --objects` per named commit against its pool. Only when every
+   closure is complete does the object's repo get created and the
+   commits pinned. A failed check pins nothing and creates no repo,
+   so a node never advertises a pack it can't serve. Objects the
+   pack added to the pool stay until cache GC.
+
+6. **Bundles name typed revisions.** `git_history.expected_commits`
+   holds `git:<format>:<oid>` strings, so import knows which pool a
+   shipped pack belongs to. A bundle that ships Git data but names
+   no commits, or names commits in more than one format, is
+   refused. This changes the field in place; nothing is deployed.
+
+7. **`kairo git fetch --object-format`.** The format comes from the
+   flag, the existing cache repo, or the object's stored revisions,
+   and every source that is present must agree. If none is
+   present, the command asks for the flag.
+
+8. **gix 0.89 with `sha1` and `sha256`.** Upgraded from 0.66, which
+   only knew SHA-1. `kairo-git`'s read surface (discover/open,
+   commit lookup, blob at path) needed one API change. Reads stay
+   in-process, so `verify object` still needs no `git` binary for
+   either format.
+
+Rationale: the spec already asked for both formats, explicit labels,
+and SHA-256 for new repositories. The code labelled SHA-1 commits
+`git:sha256:`, inferred the algorithm from length, and could not read
+a SHA-256 repository at all. Federation makes Git's hash the
+integrity guarantee for content across nodes, so the label has to be
+true and checked.
+
+Affected specs:
+
+- `PHASE_1.md` §11 — the single-prefix decision is superseded here.
+- `DECISIONS.md` §7, `STORE.md` §4, `PHASE_2.md` §1 — the pool
+  layout becomes per-format.
+- `PACKAGE.md` — `expected_commits` holds typed revisions.
+- `DECISIONS.md` §9 — `kairo git fetch --object-format`; `git cache
+  status` reports each pool.
+- `THREAT_MODEL.md` — the Git-cache row names the formats.

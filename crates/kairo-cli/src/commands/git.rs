@@ -10,11 +10,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use kairo_git::{GitCache, GitCli};
+use std::collections::BTreeSet;
+
+use kairo_core::ObjectId;
+use kairo_git::{GitCache, GitCli, GitObjectFormat};
 
 use crate::cli::{GitCacheCommand, GitCommand};
 use crate::error::CliError;
-use crate::store_paths::StorePaths;
+use crate::store_paths::{open_store, StorePaths};
 
 pub(crate) fn run_git_command(command: GitCommand, paths: &StorePaths) -> Result<String, CliError> {
     match command {
@@ -22,7 +25,8 @@ pub(crate) fn run_git_command(command: GitCommand, paths: &StorePaths) -> Result
             object,
             remote,
             branch,
-        } => run_fetch(paths, &object, &remote, &branch),
+            object_format,
+        } => run_fetch(paths, &object, &remote, &branch, object_format.as_deref()),
         GitCommand::Cache { command } => match command {
             GitCacheCommand::Status => run_cache_status(paths),
         },
@@ -34,20 +38,96 @@ fn run_fetch(
     object: &str,
     remote: &str,
     branch: &str,
+    object_format: Option<&str>,
 ) -> Result<String, CliError> {
     let branch = strip_refs_heads_prefix(branch);
     let cache =
         GitCache::open(paths.git_root()).map_err(|source| CliError::GitOperation { source })?;
+    let format = resolve_object_format(paths, &cache, object, object_format)?;
     let fetched = cache
-        .fetch(object, remote, branch, &GitCli::new())
+        .fetch(object, remote, branch, format, &GitCli::new())
         .map_err(|source| CliError::GitOperation { source })?;
     let mut out = String::new();
     out.push_str("fetched\n");
     out.push_str(&format!("object = {object}\n"));
     out.push_str(&format!("remote = {remote}\n"));
+    out.push_str(&format!("object_format = {format}\n"));
     out.push_str(&format!("ref = {}\n", fetched.ref_name));
     out.push_str(&format!("oid = {}\n", fetched.oid));
     Ok(out)
+}
+
+/// The object format to fetch `object` in. An object's history has
+/// one format (`specs/DECISIONS.md` §19), so `--object-format`, the
+/// existing cache repo, and the object's stored `git:` revisions must
+/// all agree; the first one present decides, and any disagreement is
+/// an error rather than a silent pick.
+fn resolve_object_format(
+    paths: &StorePaths,
+    cache: &GitCache,
+    object: &str,
+    flag: Option<&str>,
+) -> Result<GitObjectFormat, CliError> {
+    let conflict = |message: String| CliError::GitFormatConflict {
+        object: object.to_owned(),
+        message,
+    };
+    let flag = flag
+        .map(|raw| {
+            raw.parse::<GitObjectFormat>()
+                .map_err(|source| CliError::InvalidGitRevision {
+                    revision: format!("--object-format {raw}"),
+                    source,
+                })
+        })
+        .transpose()?;
+    let repo = cache
+        .repo_format(object)
+        .map_err(|source| CliError::GitOperation { source })?;
+
+    let mut revisions: BTreeSet<GitObjectFormat> = BTreeSet::new();
+    if let Ok(object_id) = ObjectId::new(object) {
+        let store = open_store(paths)?;
+        let stored = store.list_object_revisions(&object_id).map_err(|source| {
+            CliError::ReadObjectGenesis {
+                object: object_id.clone(),
+                source,
+            }
+        })?;
+        for revision in stored {
+            if let Ok(Some(git)) = revision.unsigned().body().revision().git() {
+                revisions.insert(git.format());
+            }
+        }
+    }
+    if revisions.len() > 1 {
+        return Err(conflict("its revisions mix Git object formats".to_owned()));
+    }
+    let from_revisions = revisions.into_iter().next();
+
+    let candidates = [
+        ("--object-format", flag),
+        ("the cache repo", repo),
+        ("its revisions", from_revisions),
+    ];
+    let mut chosen: Option<(&str, GitObjectFormat)> = None;
+    for (source, format) in candidates {
+        let Some(format) = format else { continue };
+        match chosen {
+            None => chosen = Some((source, format)),
+            Some((first, existing)) if existing != format => {
+                return Err(conflict(format!(
+                    "{first} says {existing} but {source} says {format}"
+                )))
+            }
+            Some(_) => {}
+        }
+    }
+    chosen
+        .map(|(_, format)| format)
+        .ok_or_else(|| CliError::GitFormatUnknown {
+            object: object.to_owned(),
+        })
 }
 
 /// Trim a leading `refs/heads/` from a branch name. The CLI accepts
@@ -63,13 +143,15 @@ fn run_cache_status(paths: &StorePaths) -> Result<String, CliError> {
     let mut out = String::new();
     out.push_str(&format!("git cache: {}\n", git_root.display()));
 
-    let pool_objects = git_root.join("pool").join("objects");
-    let pool_state = if pool_objects.is_dir() {
-        "initialized"
-    } else {
-        "not initialized"
-    };
-    out.push_str(&format!("pool: {pool_state}\n"));
+    for format in GitObjectFormat::ALL {
+        let pool_objects = git_root.join(format!("pool-{format}")).join("objects");
+        let pool_state = if pool_objects.is_dir() {
+            "initialized"
+        } else {
+            "not initialized"
+        };
+        out.push_str(&format!("pool {format}: {pool_state}\n"));
+    }
 
     let mut repos = walk_per_object_repos(&git_root)?;
     repos.sort_by(|a, b| a.0.cmp(&b.0));
@@ -112,7 +194,7 @@ fn walk_per_object_repos(git_root: &Path) -> Result<Vec<(String, PathBuf)>, CliE
         {
             continue;
         }
-        if entry.file_name() == "pool" {
+        if entry.file_name().to_string_lossy().starts_with("pool-") {
             continue;
         }
         for level2 in std::fs::read_dir(entry.path())

@@ -132,7 +132,7 @@ impl StoreFixture {
     /// the revision, mirroring `kairo revision create`.
     ///
     /// `revision_id` is the storage commit reference (typically
-    /// `git:sha256:<oid>`); pass `RevisionId::new("git:sha256:r1")`
+    /// `git:sha1:<oid>`); pass `RevisionId::new("git:sha256:r1")`
     /// for tests that don't actually need a real Git commit.
     pub fn make_revision(
         &self,

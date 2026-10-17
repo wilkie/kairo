@@ -59,9 +59,12 @@ pub struct BundleContents {
 pub struct BundleGitHistory {
     /// `false` in MVP — the bundle does not carry Git pack data.
     pub included: bool,
-    /// Hex-encoded Git commit OIDs the bundle's `ObjectRevision`
-    /// statements name. Recipients need these commits in some Git repo
-    /// to reach end-to-end `VALID` verification.
+    /// The Git commits the bundle's `ObjectRevision` statements name,
+    /// as typed revisions (`git:sha1:<oid>` / `git:sha256:<oid>`,
+    /// `specs/DECISIONS.md` §19), so a recipient knows which object
+    /// format's pool a shipped pack belongs to. Recipients need these
+    /// commits in some Git repo to reach end-to-end `VALID`
+    /// verification.
     #[serde(default)]
     pub expected_commits: Vec<String>,
 }

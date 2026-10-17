@@ -24,6 +24,14 @@ pub(crate) fn run_config_command(
         }
         ConfigCommand::Validate => {
             let (config, source) = load_config(paths)?;
+            for peer in &config.federation.peers {
+                if let Err(error) = kairo_federation_http::client::normalize_peer_url(&peer.url) {
+                    return Err(CliError::LoadConfig(kairo_config::ConfigError::Invalid {
+                        path: source.path().to_path_buf(),
+                        message: format!("federation.peers: {error}"),
+                    }));
+                }
+            }
             let mut output = match &source {
                 ConfigSource::File(path) => format!("config = {} (valid)\n", path.display()),
                 ConfigSource::Defaults(path) => {

@@ -143,13 +143,13 @@ characters from the record id's base58 payload:
                                          # on Unix; not part of the store
                                          # crate proper)
   git/                                   # managed Git cache
-    pool/                                # shared bare repo: holds every
-      objects/                           #   commit/tree/blob, content-
-                                         #   addressed; deduplicated across
-                                         #   forked Kairo objects via
-                                         #   alternates
-    <XX>/<YY>/<object-id>/               # per-Kairo-object bare repo
-      objects/info/alternates            #   → ../../../pool/objects
+    pool-sha1/  pool-sha256/             # shared bare repos, one per Git
+      objects/                           #   object format: every commit/
+                                         #   tree/blob, content-addressed;
+                                         #   deduplicated across forked
+                                         #   Kairo objects via alternates
+    <XX>/<YY>/<object-id>/               # per-Kairo-object bare repo, in
+      objects/info/alternates            #   one format → ../../../pool-<format>/objects
       refs/heads/<branch>                #   set by `kairo git fetch`
       refs/kairo/imported/<oid>          #   set by bundle import
 ```
@@ -171,18 +171,21 @@ is future work.
 #### Managed Git cache (`git/`)
 
 The `git/` subtree is a **load-bearing cache**, not authoritative
-storage. It exists so `kairo verify object` can resolve `git:sha256:`
-revisions without depending on a working tree, and so federated
+storage. It exists so `kairo verify object` can resolve `git:sha1:` and
+`git:sha256:` revisions without depending on a working tree, and so federated
 bundles can ship Git history alongside their statements. See
 `specs/DECISIONS.md` §7–§9 for the locked design.
 
-- **`pool/`**: a single bare Git repo whose `objects/` directory
-  holds every Git object (commit/tree/blob) the cache has ingested.
-  Each object lives once regardless of how many Kairo objects
-  reference it — forked Kairo objects share Git history with no disk
-  duplication. Pool fetches/ingests serialize on `pool.lock`.
-- **`<XX>/<YY>/<object-id>/`**: a per-Kairo-object bare repo whose
-  `objects/info/alternates` points at `pool/objects/`. Refs and
+- **`pool-sha1/`, `pool-sha256/`**: one bare Git repo per object
+  format (`DECISIONS.md` §19), each created on first use, whose
+  `objects/` directory holds every Git object (commit/tree/blob) of
+  that format the cache has ingested. Each object lives once
+  regardless of how many Kairo objects reference it, so forked Kairo
+  objects share Git history with no disk duplication. A pool's
+  fetches and ingests serialize on its lock.
+- **`<XX>/<YY>/<object-id>/`**: a per-Kairo-object bare repo in that
+  object's one format, whose `objects/info/alternates` points at the
+  matching `pool-<format>/objects/`. Refs and
   locking are per-object; `git ≥ 2.x` reads transparently see the
   pool. Two unrelated objects' fetches don't block each other.
 - **Refs**: `refs/heads/<branch>` is set by `kairo git fetch` (one

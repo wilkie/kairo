@@ -36,7 +36,7 @@ export interface BranchUpdateDialogRevision {
    * resolves to on the daemon side. Used as the field's submit
    * value. */
   statementId: string;
-  /** Human-readable revision id (e.g. `git:sha256:…`) — what
+  /** Human-readable revision id (e.g. `git:sha1:…`) — what
    * the dropdown actually shows. */
   revisionId: string;
   /** RFC 3339 timestamp shown in the dropdown row for context. */

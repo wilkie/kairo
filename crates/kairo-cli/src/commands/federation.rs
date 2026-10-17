@@ -126,7 +126,12 @@ pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<Stri
         });
     }
     let url = normalize_peer_url(args.from).map_err(|error| CliError::Fetch(Box::new(error)))?;
-    let peer = config.federation.peer(&url);
+    // Compare config entries the way the pull normalizes `--from`.
+    let peer = config
+        .federation
+        .peers
+        .iter()
+        .find(|peer| normalize_peer_url(&peer.url).is_ok_and(|normalized| normalized == url));
     if peer.is_none() && !args.allow_peer {
         return Err(CliError::PeerNotAllowed {
             url,
@@ -174,7 +179,10 @@ struct Pin {
 impl Pin {
     fn describe(self, report: &PullReport) -> String {
         match (self.listed, self.pinned) {
-            (_, true) => "pinned".to_owned(),
+            // The node document is unsigned until node authentication
+            // lands (DECISIONS.md §16 sub-decision 9), so a matching pin
+            // catches a re-pointed URL, not an impersonator.
+            (_, true) => "pinned; claim matches, node not authenticated".to_owned(),
             (true, false) => format!(
                 "claimed, unpinned; add node_actor = \"{}\" to its [[federation.peers]] entry \
                  to pin it",
@@ -313,19 +321,19 @@ fn run_status(paths: &StorePaths) -> Result<String, CliError> {
 
 fn format_fetch(report: &PullReport, pin: Pin) -> String {
     let mut output = format!(
-        "object = {}\npeer = {}\npeer_actor = {} ({})\nfetched = {}\nalready_held = {}\nskipped = {}\n",
+        "object = {}\npeer = {}\npeer_actor = {} ({})\nfetched = {}\nalready_held = {}\nflagged = {}\n",
         report.object,
         report.peer_url,
         report.peer_actor,
         pin.describe(report),
         report.fetched,
         report.already_held,
-        report.skipped.len(),
+        report.flagged.len(),
     );
-    for skipped in &report.skipped {
+    for flagged in &report.flagged {
         output.push_str(&format!(
             "  record={} reason={}\n",
-            skipped.record, skipped.reason
+            flagged.record, flagged.reason
         ));
     }
     output.push_str(&format!("git = {}\n", describe_git(&report.git)));
@@ -367,8 +375,8 @@ fn format_fetch_json(report: &PullReport, pin: Pin) -> String {
         "peer_pin": pin.json(),
         "fetched": report.fetched,
         "already_held": report.already_held,
-        "skipped": report
-            .skipped
+        "flagged": report
+            .flagged
             .iter()
             .map(|s| serde_json::json!({ "record": s.record.to_string(), "reason": s.reason }))
             .collect::<Vec<_>>(),

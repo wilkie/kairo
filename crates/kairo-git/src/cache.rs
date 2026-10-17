@@ -1,13 +1,14 @@
 //! Managed Git cache rooted at `~/.kairo/git/`.
 //!
-//! Layout (per `specs/DECISIONS.md` §7):
+//! Layout (per `specs/DECISIONS.md` §7 and §19):
 //!
 //! ```text
 //! <root>/
-//!   pool/                          # shared bare repo: holds all Git objects
+//!   pool-sha1/                     # shared bare repos, one per object format:
+//!   pool-sha256/                   #   hold all Git objects of that format
 //!     objects/
 //!   <XX>/<YY>/<object-id>/         # per-Kairo-object bare repo
-//!     objects/info/alternates      # → pool/objects (relative)
+//!     objects/info/alternates      # → pool-<format>/objects (relative)
 //!     refs/heads/...
 //! ```
 //!
@@ -30,22 +31,22 @@ use std::process::Command;
 
 use crate::lock::with_path_lock;
 use crate::transport::{self, FetchedRef, GitCacheTransport};
+use kairo_statement::{GitObjectFormat, GitRevision};
+
 use crate::{open, shard, GitError, Repository};
 
-/// Reserved subdirectory name at the cache root for the shared
-/// alternates pool. Cannot collide with any sharded `<XX>` dir
-/// because shard names are exactly two base58 characters.
-const POOL_DIR: &str = "pool";
-
-/// Filename used for sidecar advisory locks at the cache root.
-/// Distinct from any sharded path so it can never collide with a
-/// per-object lock.
-const POOL_LOCK_SUBJECT: &str = "pool";
+/// Prefix of the per-format pool directories at the cache root:
+/// `pool-sha1/` and `pool-sha256/`. Git cannot mix object formats in
+/// one repository, so each format has its own pool, and a per-object
+/// repo borrows from the pool matching its own format
+/// (`specs/DECISIONS.md` §19). Cannot collide with a sharded `<XX>`
+/// directory, which is exactly two base58 characters.
+const POOL_DIR_PREFIX: &str = "pool-";
 
 /// Filesystem-backed Git cache.
 ///
-/// Created via [`GitCache::open`] which initializes (or validates)
-/// the shared pool. Per-object repositories are materialized on
+/// Created via [`GitCache::open`]. Pools are initialized on first use
+/// for their format, and per-object repositories are materialized on
 /// demand via [`GitCache::ensure_repo`].
 #[derive(Debug, Clone)]
 pub struct GitCache {
@@ -53,27 +54,15 @@ pub struct GitCache {
 }
 
 impl GitCache {
-    /// Open the cache rooted at `root`, creating the shared pool
-    /// (`<root>/pool/`) as a bare Git repository if absent. Idempotent
-    /// across processes — concurrent first-time `open` calls
-    /// serialize on the pool advisory lock so only one runs
-    /// `git init --bare`.
+    /// Open the cache rooted at `root`, creating the directory if
+    /// absent. Pools are created lazily, per object format, by the
+    /// operations that need them.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, GitError> {
         let root = root.into();
         std::fs::create_dir_all(&root).map_err(|source| GitError::CacheIo {
             path: root.clone(),
             source,
         })?;
-
-        let pool_path = pool_path(&root);
-        let pool_lock_subject = root.join(POOL_LOCK_SUBJECT);
-        with_path_lock(&pool_lock_subject, || {
-            if !pool_path.exists() {
-                git_init_bare(&pool_path)?;
-            }
-            Ok(())
-        })?;
-
         Ok(Self { root })
     }
 
@@ -90,35 +79,85 @@ impl GitCache {
         shard::shard_path(&self.root, object_id)
     }
 
-    /// Ensure a per-object bare repository exists at the sharded
-    /// path for `object_id`, with `objects/info/alternates`
-    /// pointing at the shared pool. Idempotent — repeated calls
-    /// for the same id are no-ops once the repo is initialized.
-    /// Returns a `Repository` handle for read access.
-    pub fn ensure_repo(&self, object_id: &str) -> Result<Repository, GitError> {
-        let repo_path = self.path_for(object_id)?;
-        with_path_lock(&repo_path, || {
-            if !repo_path.exists() {
-                git_init_bare(&repo_path)?;
-                write_alternates_to_pool(&self.root, &repo_path)?;
+    /// Initialize the `format` pool as a bare repository if absent.
+    /// Concurrent first-time calls serialize on the pool lock so only
+    /// one runs `git init`.
+    fn ensure_pool(&self, format: GitObjectFormat) -> Result<PathBuf, GitError> {
+        let pool = pool_path(&self.root, format);
+        with_path_lock(&pool, || {
+            if !pool.exists() {
+                git_init_bare(&pool, format)?;
             }
             Ok(())
         })?;
-        open(&repo_path)
+        Ok(pool)
     }
 
-    /// Return `Ok(true)` iff `commit_oid` is reachable in the
+    /// The object format of `object_id`'s per-object repo, or `None`
+    /// if it doesn't exist yet. Read without the `git` binary.
+    pub fn repo_format(&self, object_id: &str) -> Result<Option<GitObjectFormat>, GitError> {
+        let repo_path = self.path_for(object_id)?;
+        if !repo_path.exists() {
+            return Ok(None);
+        }
+        open(&repo_path)?.object_format().map(Some)
+    }
+
+    /// Ensure a per-object bare repository exists for `object_id` in
+    /// `format`, with `objects/info/alternates` pointing at that
+    /// format's pool. Idempotent. An existing repo in a different
+    /// format is [`GitError::FormatMismatch`]: an object's history has
+    /// one format (`specs/DECISIONS.md` §19).
+    pub fn ensure_repo(
+        &self,
+        object_id: &str,
+        format: GitObjectFormat,
+    ) -> Result<Repository, GitError> {
+        let repo_path = self.path_for(object_id)?;
+        self.ensure_pool(format)?;
+        with_path_lock(&repo_path, || {
+            if !repo_path.exists() {
+                git_init_bare(&repo_path, format)?;
+                write_alternates_to_pool(&self.root, &repo_path, format)?;
+            }
+            Ok(())
+        })?;
+        let repo = open(&repo_path)?;
+        let found = repo.object_format()?;
+        if found != format {
+            return Err(GitError::FormatMismatch {
+                context: format!("object {object_id}'s cache repo"),
+                expected: format,
+                found,
+            });
+        }
+        Ok(repo)
+    }
+
+    /// Return `Ok(true)` iff `revision`'s commit is reachable in the
     /// per-object repository's object database (which transparently
-    /// includes the shared pool via alternates). Returns
-    /// `Ok(false)` if the per-object repo doesn't exist yet, or if
-    /// the OID is simply absent.
-    pub fn has_commit(&self, object_id: &str, commit_oid: &str) -> Result<bool, GitError> {
+    /// includes its pool via alternates). `Ok(false)` if the repo
+    /// doesn't exist, is in another format, or lacks the commit.
+    pub fn has_commit(&self, object_id: &str, revision: &GitRevision) -> Result<bool, GitError> {
         let repo_path = self.path_for(object_id)?;
         if !repo_path.exists() {
             return Ok(false);
         }
         let repo = open(&repo_path)?;
-        Ok(repo.find_commit(commit_oid)?.is_some())
+        if repo.object_format()? != revision.format() {
+            return Ok(false);
+        }
+        Ok(repo.find_commit(revision)?.is_some())
+    }
+
+    /// Whether `object_id`'s repo exists and has at least one ref, so
+    /// [`Self::pack_for_object_to`] would produce a non-empty pack.
+    pub fn has_refs(&self, object_id: &str) -> Result<bool, GitError> {
+        let repo_path = self.path_for(object_id)?;
+        if !repo_path.exists() {
+            return Ok(false);
+        }
+        open(&repo_path)?.has_refs()
     }
 
     /// Stream a Git pack containing every object reachable from the
@@ -131,10 +170,10 @@ impl GitCache {
     /// fetched or ingested for this object).
     ///
     /// Per-object scoped: takes the per-object lock for the
-    /// duration. Reads transparently include the shared pool via
+    /// duration. Reads transparently include the pool via
     /// alternates, so the pack covers every commit/tree/blob the
     /// per-object refs reach, even though the bytes physically live
-    /// in the pool.
+    /// in the pool. The pack is in the repo's own object format.
     pub fn pack_for_object_to(&self, object_id: &str, sink: impl Write) -> Result<(), GitError> {
         let repo_path = self.path_for(object_id)?;
         if !repo_path.exists() {
@@ -160,63 +199,80 @@ impl GitCache {
         Ok(buf)
     }
 
-    /// Stream pack bytes from `source` into the shared pool via
+    /// Stream pack bytes from `source` into the `format` pool via
     /// `git index-pack --stdin`, which writes the canonical
-    /// `pool/objects/pack/pack-<sha>.{pack,idx}` pair. The
-    /// canonical streaming primitive — handles arbitrarily large
-    /// packs without holding the bytes in memory. Suitable for
-    /// piping directly from a bundle's pack file, an HTTP request
-    /// body, or another cache's `pack_for_object_to`. Pack contents
-    /// are content-addressed by SHA-1 in the filename, so
-    /// re-ingesting the same bytes is a same-file overwrite and
-    /// concurrent ingestion of identical packs converges.
+    /// `objects/pack/pack-<hash>.{pack,idx}` pair. Handles
+    /// arbitrarily large packs without holding them in memory. A pack
+    /// in another format fails in `index-pack`. Pack contents are
+    /// content-addressed in the filename, so re-ingesting the same
+    /// bytes converges.
     ///
-    /// Pool-scoped: takes the pool lock for the duration. The pack
-    /// becomes reachable from every per-object repo through
-    /// `objects/info/alternates`, so a follow-up [`Self::set_ref`]
-    /// call can pin OIDs from the pack into any object's repo.
-    pub fn ingest_pack_from(&self, source: impl Read) -> Result<(), GitError> {
-        let pool = pool_path(&self.root);
-        let pool_lock_subject = self.root.join(POOL_LOCK_SUBJECT);
-        with_path_lock(&pool_lock_subject, || git_index_pack_stream(&pool, source))
+    /// Pool-scoped: takes the pool lock for the duration. Ingesting
+    /// does not create any per-object repo; call
+    /// [`Self::missing_objects`] to check the pack was complete, then
+    /// [`Self::set_ref`] to pin commits into an object's repo.
+    pub fn ingest_pack_from(
+        &self,
+        format: GitObjectFormat,
+        source: impl Read,
+    ) -> Result<(), GitError> {
+        let pool = self.ensure_pool(format)?;
+        with_path_lock(&pool, || git_index_pack_stream(&pool, source))
     }
 
     /// Convenience wrapper over [`Self::ingest_pack_from`] that
     /// takes a byte slice. Useful for tests; production paths
-    /// (bundle import, daemon push) should use the streaming
-    /// version so multi-GB packs flow through without buffering.
-    pub fn ingest_pack(&self, pack_bytes: &[u8]) -> Result<(), GitError> {
-        self.ingest_pack_from(std::io::Cursor::new(pack_bytes))
+    /// (bundle import, federation pull) stream.
+    pub fn ingest_pack(&self, format: GitObjectFormat, pack_bytes: &[u8]) -> Result<(), GitError> {
+        self.ingest_pack_from(format, std::io::Cursor::new(pack_bytes))
     }
 
-    /// Write `ref_name` → `commit_oid` in the per-object repo for
-    /// `object_id`. Initializes the per-object repo if absent (so
-    /// callers don't have to call [`Self::ensure_repo`] first).
-    /// Errors with [`GitError::CacheGitInvocation`] if `commit_oid`
-    /// is not reachable from the per-object repo's object database
-    /// (i.e., not in the pool); pin a commit only after fetching
-    /// or ingesting it.
+    /// Of `revisions`, those whose commit is absent from its format's
+    /// pool or doesn't reach every tree and blob beneath it. A pack
+    /// can carry a commit without its contents; `index-pack` accepts
+    /// that, so callers check this before pinning anything.
+    pub fn missing_objects<'r>(
+        &self,
+        revisions: &'r [GitRevision],
+    ) -> Result<Vec<&'r GitRevision>, GitError> {
+        let mut missing = Vec::new();
+        for revision in revisions {
+            let pool = pool_path(&self.root, revision.format());
+            if !pool.exists() || !git_rev_list_complete(&pool, revision.oid())? {
+                missing.push(revision);
+            }
+        }
+        Ok(missing)
+    }
+
+    /// Write `ref_name` → `revision`'s commit in the per-object repo
+    /// for `object_id`, creating the repo in `revision`'s format if
+    /// absent. Errors with [`GitError::CacheGitInvocation`] if the
+    /// commit is not reachable from the repo's object database; pin a
+    /// commit only after fetching or ingesting it.
     pub fn set_ref(
         &self,
         object_id: &str,
         ref_name: &str,
-        commit_oid: &str,
+        revision: &GitRevision,
     ) -> Result<(), GitError> {
         let repo_path = self.path_for(object_id)?;
-        let _ = self.ensure_repo(object_id)?;
+        let _ = self.ensure_repo(object_id, revision.format())?;
         with_path_lock(&repo_path, || {
-            transport::update_ref(&repo_path, ref_name, commit_oid)
+            transport::update_ref(&repo_path, ref_name, revision.oid())
         })
     }
 
     /// Fetch `remote_branch` from `url` into the cache for
-    /// `object_id`. Orchestrates the layout:
+    /// `object_id`, whose history is in `format`. Orchestrates the
+    /// layout:
     ///
-    /// 1. `ensure_repo(object_id)` — initialize the per-object bare
-    ///    repo if absent.
+    /// 1. `ensure_repo(object_id, format)` — initialize the
+    ///    per-object bare repo if absent.
     /// 2. Under the pool lock, ask `transport` to fetch
-    ///    `refs/heads/<branch>` from `url` into the pool, landing
-    ///    it at `refs/kairo/<object-id>/<branch>`.
+    ///    `refs/heads/<branch>` from `url` into the `format` pool,
+    ///    landing it at `refs/kairo/<object-id>/<branch>`. A remote in
+    ///    the other format fails in `git fetch`.
     /// 3. Under the per-object lock, mirror the resolved OID into
     ///    the per-object repo's `refs/heads/<branch>`.
     ///
@@ -232,23 +288,21 @@ impl GitCache {
         object_id: &str,
         url: &str,
         remote_branch: &str,
+        format: GitObjectFormat,
         transport: &impl GitCacheTransport,
     ) -> Result<FetchedRef, GitError> {
         // Ensures sharding/id validity up front; also creates the
         // per-object repo with alternates so step 3 can succeed
         // without re-running init.
         let repo_path = self.path_for(object_id)?;
-        let _ = self.ensure_repo(object_id)?;
+        let _ = self.ensure_repo(object_id, format)?;
 
-        let pool_lock_subject = self.root.join(POOL_LOCK_SUBJECT);
-        let pool_path = pool_path(&self.root);
+        let pool = pool_path(&self.root, format);
         let local_ref = format!("refs/heads/{remote_branch}");
         let pool_dest_ref = format!("refs/kairo/{object_id}/{remote_branch}");
         let pool_refspec = format!("refs/heads/{remote_branch}:{pool_dest_ref}");
 
-        let pool_fetched = with_path_lock(&pool_lock_subject, || {
-            transport.fetch(&pool_path, url, &pool_refspec)
-        })?;
+        let pool_fetched = with_path_lock(&pool, || transport.fetch(&pool, url, &pool_refspec))?;
         // Defense in depth: the transport should have placed the
         // fetched ref at our requested destination. If it didn't,
         // something is structurally wrong with the impl.
@@ -274,17 +328,17 @@ impl GitCache {
     }
 }
 
-fn pool_path(root: &Path) -> PathBuf {
-    root.join(POOL_DIR)
+fn pool_path(root: &Path, format: GitObjectFormat) -> PathBuf {
+    root.join(format!("{POOL_DIR_PREFIX}{format}"))
 }
 
-fn pool_objects_path(root: &Path) -> PathBuf {
-    pool_path(root).join("objects")
+fn pool_objects_path(root: &Path, format: GitObjectFormat) -> PathBuf {
+    pool_path(root, format).join("objects")
 }
 
 /// Compute the relative path from a per-object repo's
 /// `<repo>/objects/` directory to the shared pool's `objects/`
-/// directory at `<root>/pool/objects/`. Used as the
+/// directory at `<root>/pool-<format>/objects/`. Used as the
 /// `objects/info/alternates` content.
 ///
 /// Git resolves relative alternates paths against
@@ -294,9 +348,13 @@ fn pool_objects_path(root: &Path) -> PathBuf {
 /// the wrong reference point produces a path that's off by one
 /// `..` segment, which manifests as
 /// "object directory ... does not exist" on every read.
-fn alternates_relative_to_pool(root: &Path, repo_path: &Path) -> Result<PathBuf, GitError> {
+fn alternates_relative_to_pool(
+    root: &Path,
+    repo_path: &Path,
+    format: GitObjectFormat,
+) -> Result<PathBuf, GitError> {
     let objects_dir = repo_path.join("objects");
-    let pool_objects = pool_objects_path(root);
+    let pool_objects = pool_objects_path(root, format);
     relative_path_from(&objects_dir, &pool_objects).ok_or_else(|| GitError::CacheIo {
         path: objects_dir,
         source: std::io::Error::new(
@@ -333,8 +391,12 @@ fn relative_path_from(from: &Path, to: &Path) -> Option<PathBuf> {
     Some(result)
 }
 
-fn write_alternates_to_pool(root: &Path, repo_path: &Path) -> Result<(), GitError> {
-    let relative = alternates_relative_to_pool(root, repo_path)?;
+fn write_alternates_to_pool(
+    root: &Path,
+    repo_path: &Path,
+    format: GitObjectFormat,
+) -> Result<(), GitError> {
+    let relative = alternates_relative_to_pool(root, repo_path, format)?;
     let info_dir = repo_path.join("objects").join("info");
     std::fs::create_dir_all(&info_dir).map_err(|source| GitError::CacheIo {
         path: info_dir.clone(),
@@ -524,10 +586,36 @@ fn drain_stdout(child: &mut std::process::Child) -> PipeDrain {
     PipeDrain { handle: join }
 }
 
-/// Run `git init --bare <path>` and surface failures as structured
-/// errors. The cache root is created by `open`/`ensure_repo`; this
-/// function only initializes the bare-repo metadata inside.
-fn git_init_bare(path: &Path) -> Result<(), GitError> {
+/// Whether every object reachable from `oid` (the commit, its
+/// ancestors, and every tree and blob beneath them) is present in the
+/// repository at `repo`. `git rev-list --objects` walks the whole
+/// closure and fails on the first missing object.
+fn git_rev_list_complete(repo: &Path, oid: &str) -> Result<bool, GitError> {
+    use std::process::Stdio;
+
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-list", "--objects", "--quiet", oid, "--"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|source| match source.kind() {
+            std::io::ErrorKind::NotFound => GitError::CacheGitMissing { source },
+            _ => GitError::CacheIo {
+                path: repo.to_path_buf(),
+                source,
+            },
+        })?;
+    Ok(status.success())
+}
+
+/// Run `git init --bare --object-format=<format> <path>` and surface
+/// failures as structured errors. The cache root is created by
+/// `open`/`ensure_repo`; this function only initializes the bare-repo
+/// metadata inside.
+fn git_init_bare(path: &Path, format: GitObjectFormat) -> Result<(), GitError> {
     std::fs::create_dir_all(path).map_err(|source| GitError::CacheIo {
         path: path.to_path_buf(),
         source,
@@ -536,6 +624,7 @@ fn git_init_bare(path: &Path) -> Result<(), GitError> {
         .arg("init")
         .arg("--bare")
         .arg("--quiet")
+        .arg(format!("--object-format={format}"))
         .arg(path)
         .output()
         .map_err(|source| match source.kind() {
@@ -547,7 +636,10 @@ fn git_init_bare(path: &Path) -> Result<(), GitError> {
         })?;
     if !output.status.success() {
         return Err(GitError::CacheGitInvocation {
-            command: format!("git init --bare {}", path.display()),
+            command: format!(
+                "git init --bare --object-format={format} {}",
+                path.display()
+            ),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             exit_code: output.status.code(),
         });
@@ -571,6 +663,11 @@ mod tests {
     const SAMPLE_ID: &str = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
     const OTHER_ID: &str = "zQmAB1z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrz";
 
+    /// Every fixture repo is SHA-1 (plain `git init`).
+    fn sha1(oid: &str) -> GitRevision {
+        GitRevision::new(GitObjectFormat::Sha1, oid).expect("40-hex SHA-1 oid")
+    }
+
     fn open_temp() -> (TempDir, GitCache) {
         let dir = TempDir::new().expect("tempdir");
         let cache = GitCache::open(dir.path()).expect("open cache");
@@ -578,12 +675,23 @@ mod tests {
     }
 
     #[test]
-    fn open_initializes_pool_as_bare_repo() {
+    fn pools_are_created_per_format_on_first_use() {
         if skip_if_no_git() {
             return;
         }
-        let (dir, _cache) = open_temp();
-        let pool = dir.path().join("pool");
+        let (dir, cache) = open_temp();
+        assert!(
+            !dir.path().join("pool-sha1").exists(),
+            "open creates no pool"
+        );
+        cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
+        assert!(
+            !dir.path().join("pool-sha256").exists(),
+            "only the format used"
+        );
+        let pool = dir.path().join("pool-sha1");
         assert!(pool.exists(), "pool dir should exist");
         assert!(pool.join("HEAD").is_file(), "bare HEAD should exist");
         assert!(pool.join("objects").is_dir(), "objects dir should exist");
@@ -599,12 +707,18 @@ mod tests {
             return;
         }
         let dir = TempDir::new().expect("tempdir");
-        let _first = GitCache::open(dir.path()).expect("open 1");
+        let first = GitCache::open(dir.path()).expect("open 1");
+        first
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
         // Drop a marker into the pool to detect re-init.
-        let marker = dir.path().join("pool").join("kairo-marker");
+        let marker = dir.path().join("pool-sha1").join("kairo-marker");
         std::fs::write(&marker, b"keep me").expect("marker");
-        let _second = GitCache::open(dir.path()).expect("open 2");
-        assert!(marker.exists(), "second open must not re-init pool");
+        let second = GitCache::open(dir.path()).expect("open 2");
+        second
+            .ensure_repo(OTHER_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
+        assert!(marker.exists(), "a second open must not re-init the pool");
     }
 
     #[test]
@@ -635,7 +749,9 @@ mod tests {
             return;
         }
         let (_dir, cache) = open_temp();
-        let _repo = cache.ensure_repo(SAMPLE_ID).expect("ensure_repo");
+        let _repo = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
         let repo_path = cache.path_for(SAMPLE_ID).expect("path_for");
 
         assert!(repo_path.join("HEAD").is_file(), "bare HEAD");
@@ -654,8 +770,8 @@ mod tests {
         let objects_dir = repo_path.join("objects");
         let resolved = objects_dir.join(content.trim());
         let canonical_resolved = std::fs::canonicalize(&resolved).expect("canon resolved");
-        let canonical_pool =
-            std::fs::canonicalize(cache.root().join("pool").join("objects")).expect("canon pool");
+        let canonical_pool = std::fs::canonicalize(cache.root().join("pool-sha1").join("objects"))
+            .expect("canon pool");
         assert_eq!(canonical_resolved, canonical_pool);
 
         // git smoke test: rev-parse against an empty repo with
@@ -676,12 +792,16 @@ mod tests {
             return;
         }
         let (_dir, cache) = open_temp();
-        let _ = cache.ensure_repo(SAMPLE_ID).expect("ensure 1");
+        let _ = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure 1");
         // Drop a marker file into the per-object repo to detect re-init.
         let repo_path = cache.path_for(SAMPLE_ID).expect("path_for");
         let marker = repo_path.join("kairo-marker");
         std::fs::write(&marker, b"keep me").expect("marker");
-        let _ = cache.ensure_repo(SAMPLE_ID).expect("ensure 2");
+        let _ = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure 2");
         assert!(marker.exists(), "second ensure must not re-init repo");
     }
 
@@ -693,12 +813,14 @@ mod tests {
         let (_dir, cache) = open_temp();
         // No per-object repo yet — has_commit must be false, not error.
         assert!(!cache
-            .has_commit(SAMPLE_ID, "0000000000000000000000000000000000000000")
+            .has_commit(SAMPLE_ID, &sha1("0000000000000000000000000000000000000000"))
             .expect("has_commit no repo"));
         // After ensure_repo, still false because pool is empty.
-        let _ = cache.ensure_repo(SAMPLE_ID).expect("ensure_repo");
+        let _ = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
         assert!(!cache
-            .has_commit(SAMPLE_ID, "0000000000000000000000000000000000000000")
+            .has_commit(SAMPLE_ID, &sha1("0000000000000000000000000000000000000000"))
             .expect("has_commit empty repo"));
     }
 
@@ -716,7 +838,9 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 scope.spawn(move || {
                     barrier.wait();
-                    cache.ensure_repo(SAMPLE_ID).expect("ensure_repo");
+                    cache
+                        .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+                        .expect("ensure_repo");
                 });
             }
         });
@@ -740,8 +864,12 @@ mod tests {
         // Two distinct ids should both succeed independently. The
         // test mainly proves the lock is keyed per-object: distinct
         // ids never collide on the same lockfile path.
-        let _ = cache.ensure_repo(SAMPLE_ID).expect("ensure 1");
-        let _ = cache.ensure_repo(OTHER_ID).expect("ensure 2");
+        let _ = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure 1");
+        let _ = cache
+            .ensure_repo(OTHER_ID, GitObjectFormat::Sha1)
+            .expect("ensure 2");
         let p1 = cache.path_for(SAMPLE_ID).expect("p1");
         let p2 = cache.path_for(OTHER_ID).expect("p2");
         assert_ne!(p1, p2, "distinct ids must shard to distinct paths");
@@ -781,7 +909,13 @@ mod tests {
         let (_dir, cache) = open_temp();
 
         let fetched = cache
-            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect("fetch");
 
         // Returned ref reflects the per-object repo's view.
@@ -804,12 +938,14 @@ mod tests {
 
         // The OID is reachable from the per-object repo via alternates
         // (objects live in the pool, ref lives per-object).
-        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
+        assert!(cache
+            .has_commit(SAMPLE_ID, &sha1(&head_oid))
+            .expect("has_commit"));
 
         // Pool ref is namespaced.
         let pool_ref = std::process::Command::new("git")
             .arg("-C")
-            .arg(cache.root().join("pool"))
+            .arg(cache.root().join("pool-sha1"))
             .args([
                 "rev-parse",
                 "--verify",
@@ -833,7 +969,13 @@ mod tests {
         let (_dir, cache) = open_temp();
 
         let err = cache
-            .fetch(SAMPLE_ID, &url, "no-such-branch", &GitCli::new())
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                "no-such-branch",
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect_err("fetch must error");
         assert!(matches!(err, GitError::CacheGitInvocation { .. }));
 
@@ -860,23 +1002,37 @@ mod tests {
         let (_dir, cache) = open_temp();
 
         cache
-            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect("fetch 1");
         cache
-            .fetch(OTHER_ID, &url, &branch, &GitCli::new())
+            .fetch(
+                OTHER_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect("fetch 2");
 
         // Both per-object repos resolve the same OID; the actual
         // commit data lives once in the shared pool.
-        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has 1"));
-        assert!(cache.has_commit(OTHER_ID, &head_oid).expect("has 2"));
+        assert!(cache
+            .has_commit(SAMPLE_ID, &sha1(&head_oid))
+            .expect("has 1"));
+        assert!(cache.has_commit(OTHER_ID, &sha1(&head_oid)).expect("has 2"));
 
         // Pool holds two distinct namespaced refs both pointing at
         // the same OID.
         let probe = |id: &str| -> String {
             let out = std::process::Command::new("git")
                 .arg("-C")
-                .arg(cache.root().join("pool"))
+                .arg(cache.root().join("pool-sha1"))
                 .args([
                     "rev-parse",
                     "--verify",
@@ -912,7 +1068,13 @@ mod tests {
                 scope.spawn(move || {
                     barrier.wait();
                     cache
-                        .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+                        .fetch(
+                            SAMPLE_ID,
+                            &url,
+                            &branch,
+                            GitObjectFormat::Sha1,
+                            &GitCli::new(),
+                        )
                         .expect("fetch");
                 });
             }
@@ -920,7 +1082,9 @@ mod tests {
 
         // After all four converge, both refs are intact and the OID
         // matches the source head.
-        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
+        assert!(cache
+            .has_commit(SAMPLE_ID, &sha1(&head_oid))
+            .expect("has_commit"));
     }
 
     #[test]
@@ -936,19 +1100,25 @@ mod tests {
         );
 
         let (_dir, cache) = open_temp();
-        cache.ingest_pack(&pack).expect("ingest_pack");
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest_pack");
 
         // After ingest, the pool's object DB knows about every commit
         // from the source repo. Per-object repos see them via alternates,
         // so has_commit succeeds without needing a fetch.
-        let _ = cache.ensure_repo(SAMPLE_ID).expect("ensure_repo");
+        let _ = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
         assert!(
-            cache.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"),
+            cache
+                .has_commit(SAMPLE_ID, &sha1(&head_oid))
+                .expect("has_commit"),
             "head OID {head_oid} must be reachable after pack ingest"
         );
 
         // The pack file should appear under canonical pack-<sha> naming.
-        let pack_dir = cache.root().join("pool").join("objects").join("pack");
+        let pack_dir = cache.root().join("pool-sha1").join("objects").join("pack");
         let entries: Vec<_> = std::fs::read_dir(&pack_dir)
             .expect("read pack dir")
             .filter_map(Result::ok)
@@ -970,7 +1140,7 @@ mod tests {
         }
         let (_dir, cache) = open_temp();
         let err = cache
-            .ingest_pack(b"not a real pack")
+            .ingest_pack(GitObjectFormat::Sha1, b"not a real pack")
             .expect_err("ingest must reject garbage");
         assert!(matches!(err, GitError::CacheGitInvocation { .. }));
     }
@@ -984,13 +1154,17 @@ mod tests {
         let pack = build_pack_from(src.path());
         let (_dir, cache) = open_temp();
 
-        cache.ingest_pack(&pack).expect("ingest 1");
-        cache.ingest_pack(&pack).expect("ingest 2 (same bytes)");
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest 1");
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest 2 (same bytes)");
 
         // After the second ingest, the same pack-<sha>.pack file
         // exists exactly once in the pool's pack dir — git
         // index-pack overwrites identical content with itself.
-        let pack_dir = cache.root().join("pool").join("objects").join("pack");
+        let pack_dir = cache.root().join("pool-sha1").join("objects").join("pack");
         let pack_files: Vec<_> = std::fs::read_dir(&pack_dir)
             .expect("read pack dir")
             .filter_map(Result::ok)
@@ -998,8 +1172,12 @@ mod tests {
             .collect();
         assert_eq!(pack_files.len(), 1, "exactly one pack file expected");
 
-        let _ = cache.ensure_repo(SAMPLE_ID).expect("ensure_repo");
-        assert!(cache.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
+        let _ = cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("ensure_repo");
+        assert!(cache
+            .has_commit(SAMPLE_ID, &sha1(&head_oid))
+            .expect("has_commit"));
     }
 
     #[test]
@@ -1010,11 +1188,13 @@ mod tests {
         let (src, _url, branch, head_oid) = init_source_repo();
         let pack = build_pack_from(src.path());
         let (_dir, cache) = open_temp();
-        cache.ingest_pack(&pack).expect("ingest_pack");
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest_pack");
 
         let ref_name = format!("refs/heads/{branch}");
         cache
-            .set_ref(SAMPLE_ID, &ref_name, &head_oid)
+            .set_ref(SAMPLE_ID, &ref_name, &sha1(&head_oid))
             .expect("set_ref");
 
         // The per-object repo's ref must resolve to the pinned OID.
@@ -1037,7 +1217,9 @@ mod tests {
         let (src, _url, branch, head_oid) = init_source_repo();
         let pack = build_pack_from(src.path());
         let (_dir, cache) = open_temp();
-        cache.ingest_pack(&pack).expect("ingest_pack");
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest_pack");
 
         // No prior ensure_repo call — set_ref must initialize the
         // per-object repo as part of its operation.
@@ -1048,7 +1230,7 @@ mod tests {
         );
 
         cache
-            .set_ref(OTHER_ID, &format!("refs/heads/{branch}"), &head_oid)
+            .set_ref(OTHER_ID, &format!("refs/heads/{branch}"), &sha1(&head_oid))
             .expect("set_ref");
 
         assert!(
@@ -1078,7 +1260,7 @@ mod tests {
             .set_ref(
                 SAMPLE_ID,
                 "refs/heads/main",
-                "1234567890abcdef1234567890abcdef12345678",
+                &sha1("1234567890abcdef1234567890abcdef12345678"),
             )
             .expect_err("set_ref must error for unreachable OID");
         assert!(matches!(err, GitError::CacheGitInvocation { .. }));
@@ -1098,7 +1280,13 @@ mod tests {
 
         let (_dir1, cache1) = open_temp();
         cache1
-            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect("fetch");
         let pack = cache1.pack_for_object(SAMPLE_ID).expect("pack_for_object");
         assert!(
@@ -1107,13 +1295,17 @@ mod tests {
         );
 
         let (_dir2, cache2) = open_temp();
-        cache2.ingest_pack(&pack).expect("ingest_pack");
         cache2
-            .set_ref(OTHER_ID, "refs/heads/main", &head_oid)
+            .ingest_pack(GitObjectFormat::Sha1, &pack)
+            .expect("ingest_pack");
+        cache2
+            .set_ref(OTHER_ID, "refs/heads/main", &sha1(&head_oid))
             .expect("set_ref");
 
         assert!(
-            cache2.has_commit(OTHER_ID, &head_oid).expect("has_commit"),
+            cache2
+                .has_commit(OTHER_ID, &sha1(&head_oid))
+                .expect("has_commit"),
             "round-tripped OID must be reachable in cache 2"
         );
     }
@@ -1142,7 +1334,13 @@ mod tests {
         let (_src, url, branch, _head_oid) = init_source_repo();
         let (_dir, cache) = open_temp();
         cache
-            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect("fetch");
 
         struct CountingWriter {
@@ -1179,7 +1377,13 @@ mod tests {
         // a tempfile to mimic a bundle's `git/<id>.pack`.
         let (_dir1, cache1) = open_temp();
         cache1
-            .fetch(SAMPLE_ID, &url, &branch, &GitCli::new())
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
             .expect("fetch");
         let pack_bytes = cache1.pack_for_object(SAMPLE_ID).expect("pack");
         let pack_file = TempDir::new().expect("tempdir");
@@ -1190,10 +1394,156 @@ mod tests {
         // index-pack, never holding the full pack in memory.
         let (_dir2, cache2) = open_temp();
         let file = std::fs::File::open(&pack_path).expect("open pack");
-        cache2.ingest_pack_from(file).expect("ingest_pack_from");
         cache2
-            .set_ref(SAMPLE_ID, "refs/heads/main", &head_oid)
+            .ingest_pack_from(GitObjectFormat::Sha1, file)
+            .expect("ingest_pack_from");
+        cache2
+            .set_ref(SAMPLE_ID, "refs/heads/main", &sha1(&head_oid))
             .expect("set_ref");
-        assert!(cache2.has_commit(SAMPLE_ID, &head_oid).expect("has_commit"));
+        assert!(cache2
+            .has_commit(SAMPLE_ID, &sha1(&head_oid))
+            .expect("has_commit"));
+    }
+
+    /// A one-commit repo in `format`; returns (tempdir, revision).
+    fn source_repo_in(format: GitObjectFormat) -> (TempDir, GitRevision) {
+        let dir = TempDir::new().expect("tempdir");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(args)
+                .status()
+                .expect("git");
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&[
+            "init",
+            "--quiet",
+            "--initial-branch=main",
+            &format!("--object-format={format}"),
+        ]);
+        git(&["config", "user.name", "Kairo Test"]);
+        git(&["config", "user.email", "test@kairo.test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.path().join("kairo.toml"), "[kairo]\nschema = 1\n").expect("write");
+        git(&["add", "kairo.toml"]);
+        git(&["commit", "-m", "only", "--quiet"]);
+        let output = std::process::Command::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("rev-parse");
+        let oid = String::from_utf8(output.stdout)
+            .expect("utf8")
+            .trim()
+            .to_owned();
+        let revision = GitRevision::new(format, &oid).expect("oid matches format");
+        (dir, revision)
+    }
+
+    #[test]
+    fn sha256_history_round_trips_through_its_own_pool() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, revision) = source_repo_in(GitObjectFormat::Sha256);
+        let (dir, cache) = open_temp();
+        cache
+            .ingest_pack(GitObjectFormat::Sha256, &build_pack_from(src.path()))
+            .expect("ingest");
+        assert!(dir.path().join("pool-sha256").exists());
+        assert!(!dir.path().join("pool-sha1").exists());
+        assert!(cache
+            .missing_objects(std::slice::from_ref(&revision))
+            .expect("check")
+            .is_empty());
+        cache
+            .set_ref(SAMPLE_ID, "refs/heads/main", &revision)
+            .expect("set_ref");
+        assert_eq!(
+            cache.repo_format(SAMPLE_ID).expect("format"),
+            Some(GitObjectFormat::Sha256)
+        );
+        assert!(cache.has_commit(SAMPLE_ID, &revision).expect("has_commit"));
+        assert!(cache.has_refs(SAMPLE_ID).expect("has_refs"));
+
+        // The object's pack carries its history into another cache.
+        let pack = cache.pack_for_object(SAMPLE_ID).expect("pack");
+        let (_other_dir, other) = open_temp();
+        other
+            .ingest_pack(GitObjectFormat::Sha256, &pack)
+            .expect("ingest relayed pack");
+        other
+            .set_ref(OTHER_ID, "refs/heads/main", &revision)
+            .expect("set_ref");
+        assert!(other.has_commit(OTHER_ID, &revision).expect("has_commit"));
+    }
+
+    #[test]
+    fn an_object_repo_keeps_one_format() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_dir, cache) = open_temp();
+        cache
+            .ensure_repo(SAMPLE_ID, GitObjectFormat::Sha1)
+            .expect("sha1 repo");
+        assert!(matches!(
+            cache.ensure_repo(SAMPLE_ID, GitObjectFormat::Sha256),
+            Err(GitError::FormatMismatch {
+                expected: GitObjectFormat::Sha256,
+                found: GitObjectFormat::Sha1,
+                ..
+            })
+        ));
+        // A revision in the other format is simply not there.
+        let sha256 = GitRevision::new(GitObjectFormat::Sha256, &"b".repeat(64)).expect("shape");
+        assert!(!cache.has_commit(SAMPLE_ID, &sha256).expect("has_commit"));
+    }
+
+    #[test]
+    fn a_pack_in_the_wrong_format_is_refused_by_index_pack() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, _) = source_repo_in(GitObjectFormat::Sha256);
+        let (_dir, cache) = open_temp();
+        assert!(cache
+            .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src.path()))
+            .is_err());
+    }
+
+    #[test]
+    fn missing_objects_catches_a_commit_without_its_tree() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, revision) = source_repo_in(GitObjectFormat::Sha1);
+        // Pack only the commit object, not its tree or blob.
+        let mut child = std::process::Command::new("git")
+            .arg("-C")
+            .arg(src.path())
+            .args(["pack-objects", "--stdout"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("pack-objects");
+        {
+            use std::io::Write as _;
+            let mut stdin = child.stdin.take().expect("stdin");
+            writeln!(stdin, "{}", revision.oid()).expect("write oid");
+        }
+        let output = child.wait_with_output().expect("pack");
+        assert!(output.status.success());
+
+        let (_dir, cache) = open_temp();
+        cache
+            .ingest_pack(GitObjectFormat::Sha1, &output.stdout)
+            .expect("index-pack accepts a commit-only pack");
+        let revisions = [revision];
+        assert_eq!(
+            cache.missing_objects(&revisions).expect("check"),
+            vec![&revisions[0]]
+        );
     }
 }

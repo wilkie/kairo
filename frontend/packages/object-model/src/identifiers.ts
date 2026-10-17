@@ -52,7 +52,7 @@ export function truncateId(id: string, opts: TruncateIdOptions = {}): string {
     return `${head}:${start}${ellipsis}${end}`;
   }
 
-  // Non-Kairo identifier (e.g., a `git:sha256:...` reference,
+  // Non-Kairo identifier (e.g., a `git:sha1:...` reference,
   // or a free-form string). Truncate the whole value.
   if (id.length <= prefixChars + suffixChars + ellipsis.length) {
     return id;

@@ -16,6 +16,34 @@ rather than per-commit.
 
 ## [Unreleased]
 
+### Changed
+
+- **Git object formats (`DECISIONS.md` §19).**
+  - Revision ids are `git:sha1:<40 hex>` or `git:sha256:<64 hex>`,
+    parsed strictly; the label decides the format, never the length.
+    They are enforced at `revision create` / `object create`, the
+    daemon write path, bundle import, and federation pull. One
+    object's history has one format.
+  - The Git cache keeps one pool per format (`pool-sha1/`,
+    `pool-sha256/`, replacing `pool/`), and gix is upgraded 0.66 →
+    0.89 with SHA-256 support, so SHA-256 repositories verify.
+  - `kairo git fetch` takes `--object-format`.
+  - Bundle manifests list typed revisions in `expected_commits`.
+  - Fixtures that labeled SHA-1 commits `git:sha256:` are relabeled.
+- **Federation fix-ups (`PHASE_2_FEDERATION.md`).**
+  - Pulled and bundled Git packs are checked for every commit's full
+    closure before anything is pinned, and a failed check leaves no
+    repo behind.
+  - The server advertises a pack only when the object's repo has
+    refs.
+  - Statements signed with a revoked key are stored and flagged
+    instead of skipped (the report field is now `flagged`).
+  - A pinned peer prints "claim matches, node not authenticated".
+  - Peer URLs are compared case-insensitively.
+  - DECISIONS §16 and §18 now state that withheld revocations can't
+    be detected from one peer, and that discovery needs node
+    authentication.
+
 ### Added
 
 - **Federation policy and visibility (`PHASE_2_FEDERATION.md`

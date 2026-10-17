@@ -712,7 +712,7 @@ async fn accepts_object_revision_and_persists_it() {
     let signed = sign_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3r1"),
+        RevisionId::new("git:sha1:c8a4a4bf7b49507a0485761899735248e5f42a48"),
         vec![],
         manifest_hash.clone(),
         1_700_001_000,
@@ -760,7 +760,7 @@ async fn rejects_object_revision_with_bad_signature() {
     let signed = sign_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3r2"),
+        RevisionId::new("git:sha1:03c8f4ab9c93bc4c772268bee4aa231c7d96d1e2"),
         vec![],
         manifest_hash,
         1_700_001_001,
@@ -797,7 +797,7 @@ async fn accepts_object_branch_set_and_persists_head() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-branch-r1"),
+        RevisionId::new("git:sha1:0f73166af4e7d82bf497bea8c45964fd3f3ae5e8"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -835,7 +835,7 @@ async fn rejects_object_branch_with_bad_signature() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-branch-r2"),
+        RevisionId::new("git:sha1:66a2eb58012456f39351b78692e5b269f9a54fb8"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -876,7 +876,7 @@ async fn accepts_version_tag_bind_and_persists_head() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-tag-r1"),
+        RevisionId::new("git:sha1:4631b84f08c29c88eb1aabad79cffa88d57e0727"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -920,7 +920,7 @@ async fn version_tag_byte_identical_redelivery_is_idempotent() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-tag-r2"),
+        RevisionId::new("git:sha1:e70d0460284426bb07ed1201791520b6d05e8595"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -1584,7 +1584,7 @@ async fn accepts_cross_actor_version_tag_with_valid_grant() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-tag-cross-r1"),
+        RevisionId::new("git:sha1:28117858db126b86e1d7c9c25f8286fa68227a0d"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -1636,7 +1636,7 @@ async fn rejects_cross_actor_revision_without_grant_with_403() {
     let signed = sign_revision(
         &bob,
         &object,
-        RevisionId::new("git:sha256:slice3-cross-r-nope"),
+        RevisionId::new("git:sha1:f3079f4b57808cc36e1864084c929c1ac35c0086"),
         vec![],
         manifest_hash,
         1_700_003_200,
@@ -1672,7 +1672,7 @@ async fn rejects_cross_actor_branch_with_revoked_grant_with_403() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-cross-branch-r1"),
+        RevisionId::new("git:sha1:5bf7485ca39874a19af2d19264463a0d1c1aeb4b"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -1721,7 +1721,7 @@ async fn rejects_cross_actor_version_tag_with_expired_grant_with_403() {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-cross-tag-r1"),
+        RevisionId::new("git:sha1:f97934ce5340fabf22935378bd949c6d6c2cc61f"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -1775,7 +1775,7 @@ async fn rejects_cross_actor_version_tag_with_delegation_depth_violation_with_40
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:slice3-cross-depth-r1"),
+        RevisionId::new("git:sha1:ec5f7116088dea79fa6851754a763f61f42a3809"),
         FIXTURE_MANIFEST,
         vec![],
     );

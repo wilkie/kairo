@@ -165,8 +165,8 @@ pub enum ParentReferenceCheck {
 ///
 /// Populated by `validate_object_revision` when the caller supplies a
 /// `CommitLookup` from a Git repository (TODO §11). When no lookup is
-/// provided, or when the revision's storage form is not a `git:sha256:`
-/// reference, the check stays `Indeterminate`.
+/// provided, or when the revision's storage form is not a well-formed
+/// `git:<format>:` reference, the check stays `Indeterminate`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContentLayerCheck {
     /// Commit was found and its parents agree with the parents
@@ -175,7 +175,7 @@ pub enum ContentLayerCheck {
     Verified,
     /// Commit was found but its parents disagree with the declared
     /// parents. Lists are normalized to git oids (without the
-    /// `git:sha256:` prefix).
+    /// `git:<format>:` prefix).
     ParentMismatch {
         expected: Vec<String>,
         actual: Vec<String>,
@@ -193,14 +193,11 @@ pub enum ContentLayerCheck {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitLookup {
     /// Commit exists; here are its parent oids as plain hex strings
-    /// (without the `git:sha256:` prefix).
+    /// (without the `git:<format>:` prefix).
     Found { parent_oids: Vec<String> },
     /// Commit was not present in the repository.
     NotFound,
 }
-
-/// Storage-revision scheme prefix this validator understands.
-const GIT_REVISION_PREFIX: &str = "git:sha256:";
 
 /// Validate a signed `ObjectRevision` statement against optional companion
 /// data and return a structured report.
@@ -280,14 +277,20 @@ fn evaluate_content_layer(
         CommitLookup::NotFound => return ContentLayerCheck::CommitNotFound,
     };
 
-    // Strip the git:sha256: prefix from declared parents. If any
-    // declared parent lacks the prefix, we can't compare against Git
-    // — treat the layer as Indeterminate so we don't false-positive.
+    // Declared parents as Git object ids in the revision's format.
+    // A parent that isn't a well-formed `git:` revision in that format
+    // can't be compared against Git — treat the layer as Indeterminate
+    // so we don't false-positive (`specs/DECISIONS.md` §19).
+    let Ok(Some(own)) = revision.revision().git() else {
+        return ContentLayerCheck::Indeterminate;
+    };
     let mut expected = Vec::with_capacity(revision.parents().len());
     for parent in revision.parents() {
-        match parent.as_str().strip_prefix(GIT_REVISION_PREFIX) {
-            Some(oid) => expected.push(oid.to_owned()),
-            None => return ContentLayerCheck::Indeterminate,
+        match parent.git() {
+            Ok(Some(parent)) if parent.format() == own.format() => {
+                expected.push(parent.oid().to_owned());
+            }
+            _ => return ContentLayerCheck::Indeterminate,
         }
     }
 
@@ -1231,8 +1234,10 @@ mod tests {
     fn object_revision(object: ObjectId, manifest_hash: BlobId) -> ObjectRevisionBody {
         ObjectRevisionBody::new(
             object,
-            RevisionId::new("git:sha256:revision"),
-            vec![RevisionId::new("git:sha256:parent")],
+            RevisionId::new("git:sha1:eae79d6e0cff76fc7a3bb78723690b0b2367f849"),
+            vec![RevisionId::new(
+                "git:sha1:d8fd39d0bbdd2dcf322d8b11390a4c5825b11495",
+            )],
             manifest_hash,
             true,
         )
@@ -1310,7 +1315,7 @@ mod tests {
         ) -> Result<SignedStatement<ObjectRevisionBody>, Box<dyn std::error::Error>> {
             let body = ObjectRevisionBody::new(
                 object.clone(),
-                RevisionId::new("git:sha256:revision"),
+                RevisionId::new("git:sha1:eae79d6e0cff76fc7a3bb78723690b0b2367f849"),
                 parents,
                 manifest_hash,
                 true,
@@ -1341,7 +1346,9 @@ mod tests {
             let manifest = manifest_with_object(Some(object_id.as_str()))?;
             let signed = signed_revision(
                 object_id.clone(),
-                vec![RevisionId::new("git:sha256:parent")],
+                vec![RevisionId::new(
+                    "git:sha1:d8fd39d0bbdd2dcf322d8b11390a4c5825b11495",
+                )],
                 manifest.manifest_hash(),
             )?;
 
@@ -1379,7 +1386,9 @@ mod tests {
             let manifest = manifest_with_object(None)?;
             let signed = signed_revision(
                 object_id,
-                vec![RevisionId::new("git:sha256:parent")],
+                vec![RevisionId::new(
+                    "git:sha1:d8fd39d0bbdd2dcf322d8b11390a4c5825b11495",
+                )],
                 manifest.manifest_hash(),
             )?;
 
@@ -1400,7 +1409,9 @@ mod tests {
             let object_id = genesis.object_id();
             let signed = signed_revision(
                 object_id,
-                vec![RevisionId::new("git:sha256:parent")],
+                vec![RevisionId::new(
+                    "git:sha1:d8fd39d0bbdd2dcf322d8b11390a4c5825b11495",
+                )],
                 BlobId::from_sha256_digest([1; 32]),
             )?;
 
@@ -1526,11 +1537,13 @@ mod tests {
             let manifest = manifest_with_object(None)?;
             let signed = signed_revision(
                 genesis.object_id(),
-                vec![RevisionId::new("git:sha256:aaa")],
+                vec![RevisionId::new(
+                    "git:sha1:7e240de74fb1ed08fa08d38063f6a6a91462a815",
+                )],
                 manifest.manifest_hash(),
             )?;
             let lookup = CommitLookup::Found {
-                parent_oids: vec!["aaa".to_owned()],
+                parent_oids: vec!["7e240de74fb1ed08fa08d38063f6a6a91462a815".to_owned()],
             };
             let report =
                 validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
@@ -1545,11 +1558,13 @@ mod tests {
             let manifest = manifest_with_object(None)?;
             let signed = signed_revision(
                 genesis.object_id(),
-                vec![RevisionId::new("git:sha256:aaa")],
+                vec![RevisionId::new(
+                    "git:sha1:7e240de74fb1ed08fa08d38063f6a6a91462a815",
+                )],
                 manifest.manifest_hash(),
             )?;
             let lookup = CommitLookup::Found {
-                parent_oids: vec!["bbb".to_owned()],
+                parent_oids: vec!["5cb138284d431abd6a053a56625ec088bfb88912".to_owned()],
             };
             let report =
                 validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
@@ -1570,13 +1585,16 @@ mod tests {
             let signed = signed_revision(
                 genesis.object_id(),
                 vec![
-                    RevisionId::new("git:sha256:aaa"),
-                    RevisionId::new("git:sha256:bbb"),
+                    RevisionId::new("git:sha1:7e240de74fb1ed08fa08d38063f6a6a91462a815"),
+                    RevisionId::new("git:sha1:5cb138284d431abd6a053a56625ec088bfb88912"),
                 ],
                 manifest.manifest_hash(),
             )?;
             let lookup = CommitLookup::Found {
-                parent_oids: vec!["bbb".to_owned(), "aaa".to_owned()],
+                parent_oids: vec![
+                    "5cb138284d431abd6a053a56625ec088bfb88912".to_owned(),
+                    "7e240de74fb1ed08fa08d38063f6a6a91462a815".to_owned(),
+                ],
             };
             let report =
                 validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
@@ -1609,7 +1627,7 @@ mod tests {
                 manifest.manifest_hash(),
             )?;
             let lookup = CommitLookup::Found {
-                parent_oids: vec!["abc".to_owned()],
+                parent_oids: vec!["a9993e364706816aba3e25717850c26c9cd0d89d".to_owned()],
             };
             let report =
                 validate_object_revision(&signed, Some(&genesis), Some(&manifest), Some(&lookup));
@@ -1682,7 +1700,11 @@ mod tests {
         fn same_revision_produces_same_snapshot_id() -> Result<(), Box<dyn std::error::Error>> {
             let object = object_id_for([42; 32])?;
             let manifest_hash = BlobId::from_sha256_digest([1; 32]);
-            let signed = signed_revision(object.clone(), "git:sha256:rev", manifest_hash)?;
+            let signed = signed_revision(
+                object.clone(),
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
+                manifest_hash,
+            )?;
 
             let first = Snapshot::from_object_revision(&object, &signed)?;
             let second = Snapshot::from_object_revision(&object, &signed)?;
@@ -1695,9 +1717,16 @@ mod tests {
         fn different_revision_changes_snapshot_id() -> Result<(), Box<dyn std::error::Error>> {
             let object = object_id_for([42; 32])?;
             let manifest_hash = BlobId::from_sha256_digest([1; 32]);
-            let first_rev =
-                signed_revision(object.clone(), "git:sha256:r1", manifest_hash.clone())?;
-            let second_rev = signed_revision(object.clone(), "git:sha256:r2", manifest_hash)?;
+            let first_rev = signed_revision(
+                object.clone(),
+                "git:sha1:5573e39b6600496d40f493d00ec7658479a19607",
+                manifest_hash.clone(),
+            )?;
+            let second_rev = signed_revision(
+                object.clone(),
+                "git:sha1:a50126cc2d6c726de0ca203c3b659f658d356173",
+                manifest_hash,
+            )?;
 
             let first = Snapshot::from_object_revision(&object, &first_rev)?.snapshot_id();
             let second = Snapshot::from_object_revision(&object, &second_rev)?.snapshot_id();
@@ -1711,12 +1740,12 @@ mod tests {
             let object = object_id_for([42; 32])?;
             let first_rev = signed_revision(
                 object.clone(),
-                "git:sha256:rev",
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
                 BlobId::from_sha256_digest([1; 32]),
             )?;
             let second_rev = signed_revision(
                 object.clone(),
-                "git:sha256:rev",
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
                 BlobId::from_sha256_digest([2; 32]),
             )?;
 
@@ -1735,8 +1764,16 @@ mod tests {
             let object_b = object_id_for([99; 32])?;
             let manifest_hash = BlobId::from_sha256_digest([1; 32]);
 
-            let rev_a = signed_revision(object_a.clone(), "git:sha256:rev", manifest_hash.clone())?;
-            let rev_b = signed_revision(object_b.clone(), "git:sha256:rev", manifest_hash)?;
+            let rev_a = signed_revision(
+                object_a.clone(),
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
+                manifest_hash.clone(),
+            )?;
+            let rev_b = signed_revision(
+                object_b.clone(),
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
+                manifest_hash,
+            )?;
 
             let snapshot_a = Snapshot::from_object_revision(&object_a, &rev_a)?.snapshot_id();
             let snapshot_b = Snapshot::from_object_revision(&object_b, &rev_b)?.snapshot_id();
@@ -1750,7 +1787,11 @@ mod tests {
             let object_a = object_id_for([42; 32])?;
             let object_b = object_id_for([99; 32])?;
             let manifest_hash = BlobId::from_sha256_digest([1; 32]);
-            let rev_for_b = signed_revision(object_b.clone(), "git:sha256:rev", manifest_hash)?;
+            let rev_for_b = signed_revision(
+                object_b.clone(),
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
+                manifest_hash,
+            )?;
 
             let result = Snapshot::from_object_revision(&object_a, &rev_for_b);
 
@@ -1762,7 +1803,11 @@ mod tests {
         fn snapshot_id_is_a_valid_snapshot_id_string() -> Result<(), Box<dyn std::error::Error>> {
             let object = object_id_for([42; 32])?;
             let manifest_hash = BlobId::from_sha256_digest([1; 32]);
-            let signed = signed_revision(object.clone(), "git:sha256:rev", manifest_hash)?;
+            let signed = signed_revision(
+                object.clone(),
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
+                manifest_hash,
+            )?;
             let snapshot = Snapshot::from_object_revision(&object, &signed)?;
             let id = snapshot.snapshot_id();
             // Round-tripping through SnapshotId::new should not change the id.
@@ -1774,7 +1819,11 @@ mod tests {
         fn frontier_carries_the_revision_statement_id() -> Result<(), Box<dyn std::error::Error>> {
             let object = object_id_for([42; 32])?;
             let manifest_hash = BlobId::from_sha256_digest([1; 32]);
-            let signed = signed_revision(object.clone(), "git:sha256:rev", manifest_hash)?;
+            let signed = signed_revision(
+                object.clone(),
+                "git:sha1:03e404fd168941cfed98f46654680130dd85968b",
+                manifest_hash,
+            )?;
             let snapshot = Snapshot::from_object_revision(&object, &signed)?;
 
             assert_eq!(snapshot.frontier(), &[signed.statement_id()]);

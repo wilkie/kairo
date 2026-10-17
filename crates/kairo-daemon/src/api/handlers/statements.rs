@@ -397,6 +397,8 @@ async fn persist_object_revision(
     signed: SignedStatement<ObjectRevisionBody>,
     timestamp: Timestamp,
 ) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    kairo_statement::check_revision_ids(signed.unsigned().body())
+        .map_err(|error| ApiError::bad_request(format!("invalid revision id: {error}")))?;
     require_object_write_authority(
         &state,
         actor,

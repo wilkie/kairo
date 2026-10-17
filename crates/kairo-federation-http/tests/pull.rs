@@ -113,7 +113,7 @@ fn pull_copies_the_published_closure() {
     assert_eq!(report.peer_url, served.base_url);
     assert_eq!(report.peer_actor, seeded.node_actor);
     assert_eq!(report.already_held, 0);
-    assert!(report.skipped.is_empty());
+    assert!(report.flagged.is_empty());
     // alice and bob, the genesis, four object statements, three
     // authority statements, alice's rotation, and the manifest blob.
     assert_eq!(report.fetched, 2 + 1 + 4 + 3 + 1 + 1);
@@ -217,11 +217,13 @@ fn a_second_peer_appends_provenance() {
 }
 
 #[test]
-fn statements_under_a_revoked_key_are_skipped_not_stored() {
+fn statements_under_a_revoked_key_are_stored_and_flagged() {
     let seeded = seed();
     // bob revokes his only key without rotating, then a tag signed
-    // with it shows up dated after the revocation: the verifier
-    // reports KeyRevoked, a verified fact rather than tampering.
+    // with it shows up dated after the revocation. The verifier reports
+    // KeyRevoked, a verified fact rather than tampering, so the pull
+    // stores it like the origin does and flags it; read-time
+    // verification is what reports it invalid.
     let bob = &seeded.bob_actor;
     let revocation = seeded
         .store
@@ -259,21 +261,32 @@ fn statements_under_a_revoked_key_are_skipped_not_stored() {
     let report = pull(&local, &served, &seeded.published).expect("pull succeeds");
     assert_eq!(
         report
-            .skipped
+            .flagged
             .iter()
-            .map(|s| s.record.clone())
+            .map(|f| f.record.clone())
             .collect::<Vec<_>>(),
         vec![KairoRef::Statement(stale_tag.clone())]
     );
-    assert!(local.get_statement_bytes(&stale_tag).is_err(), "not stored");
+    assert_eq!(
+        local.get_statement_bytes(&stale_tag).map(|b| json(&b)).ok(),
+        seeded
+            .store
+            .get_statement_bytes(&stale_tag)
+            .map(|b| json(&b))
+            .ok(),
+        "stored, same as the origin"
+    );
     assert!(
         local.get_statement_bytes(&revocation).is_ok(),
         "revocation stored"
     );
-    assert!(local
-        .get_provenance(&KairoRef::Statement(stale_tag))
-        .expect("provenance")
-        .is_empty());
+    assert_eq!(
+        local
+            .get_provenance(&KairoRef::Statement(stale_tag))
+            .expect("provenance")
+            .len(),
+        1
+    );
 }
 
 // --- refusals ---------------------------------------------------------

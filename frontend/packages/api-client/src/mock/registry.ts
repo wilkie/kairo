@@ -87,12 +87,12 @@ export const mockIds = {
   textBlob: 'zMockBlobText000000000000000000000000000000',
   jsonBlob: 'zMockBlobJson000000000000000000000000000000',
 
-  // Revision IDs (git:sha256:* — kept fully-qualified; the
+  // Revision IDs (git:sha1:* — kept fully-qualified; the
   // `git:` scheme is the wire form for storage refs and is
   // not a kairo-namespace id).
-  alphaRev1: 'git:sha256:0000000000000000000000000000000000000001',
-  alphaRev2: 'git:sha256:0000000000000000000000000000000000000002',
-  alphaRev3: 'git:sha256:0000000000000000000000000000000000000003',
+  alphaRev1: 'git:sha1:0000000000000000000000000000000000000001',
+  alphaRev2: 'git:sha1:0000000000000000000000000000000000000002',
+  alphaRev3: 'git:sha1:0000000000000000000000000000000000000003',
 } as const;
 
 // Back-compat aliases so existing callers using `mockIds.actor`
@@ -127,8 +127,8 @@ kind = "tree"
 const SAMPLE_JSON_BLOB = JSON.stringify(
   {
     object: 'alpha',
-    revision: 'git:sha256:0000000000000000000000000000000000000003',
-    parents: ['git:sha256:0000000000000000000000000000000000000002'],
+    revision: 'git:sha1:0000000000000000000000000000000000000003',
+    parents: ['git:sha1:0000000000000000000000000000000000000002'],
     notes: 'sample structured manifest payload — for the JSON viewer demo',
     metrics: { revisions: 3, branches: 2, tags: 2 },
   },

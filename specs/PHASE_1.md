@@ -229,7 +229,9 @@ not yet deployed.
 
 - [x] Decide the exact MVP format for Git revision IDs (`git:sha256:<commit>`,
       strict prefix; non-prefixed revisions are reported as content-layer
-      `Indeterminate`).
+      `Indeterminate`). *Superseded by `DECISIONS.md` §19: revisions are
+      `git:sha1:<40 hex>` or `git:sha256:<64 hex>`, and the label names the
+      repository's object format.*
 - [x] Read the current commit and parents from a local Git repository
       (`kairo-git` crate built on `gix`, read-only operations).
 - [x] Verify that an `ObjectRevision.revision` exists locally

@@ -17,10 +17,10 @@ pub fn skip_if_no_git() -> bool {
     Command::new("git").arg("--version").output().is_err()
 }
 
-/// Spin up a temp non-bare Git repo with two commits and return
+/// Spin up a temp non-bare SHA-1 Git repo with two commits and return
 /// `(tempdir, file_url, branch_name, head_oid)` for it. The repo
 /// holds a `kairo.toml` blob committed twice so callers can use
-/// the head OID as a `git:sha256:` revision in test fixtures.
+/// the head OID as a `git:sha1:` revision in test fixtures.
 pub fn init_source_repo() -> (TempDir, String, String, String) {
     let dir = TempDir::new().expect("tempdir");
     let path = dir.path();
@@ -43,16 +43,30 @@ pub fn init_source_repo() -> (TempDir, String, String, String) {
     (dir, url, "main".to_owned(), head)
 }
 
-/// Spin up a temp non-bare Git repo with `manifest_text` written to
-/// `kairo.toml` and committed once. Returns `(tempdir, head_oid)`.
-/// Used by tests that need a specific manifest content (e.g.,
-/// matching a revision's signed manifest hash).
+/// Spin up a temp non-bare SHA-1 Git repo with `manifest_text` written
+/// to `kairo.toml` and committed once. Returns `(tempdir, head_oid)`;
+/// label the oid `git:sha1:`. Used by tests that need a specific
+/// manifest content (e.g., matching a revision's signed manifest
+/// hash).
 pub fn init_git_repo_with_manifest(
     manifest_text: &str,
 ) -> Result<(TempDir, String), Box<dyn std::error::Error>> {
+    init_git_repo_with_manifest_in(manifest_text, "sha1")
+}
+
+/// [`init_git_repo_with_manifest`] in a chosen Git object format
+/// (`"sha1"` or `"sha256"`, as `git init --object-format` takes).
+pub fn init_git_repo_with_manifest_in(
+    manifest_text: &str,
+    object_format: &str,
+) -> Result<(TempDir, String), Box<dyn std::error::Error>> {
     let dir = TempDir::new()?;
     let path = dir.path();
-    run_checked(path, &["init", "--initial-branch=main", "--quiet"])?;
+    let format_arg = format!("--object-format={object_format}");
+    run_checked(
+        path,
+        &["init", "--initial-branch=main", "--quiet", &format_arg],
+    )?;
     run_checked(path, &["config", "user.name", "Kairo Test"])?;
     run_checked(path, &["config", "user.email", "test@kairo.test"])?;
     run_checked(path, &["config", "commit.gpgsign", "false"])?;

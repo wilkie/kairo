@@ -39,7 +39,7 @@ use kairo_federation_core::{
     MAX_PAGE_LIMIT, SUPPORTS_OBJECT_PULL, WELL_KNOWN_PATH,
 };
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
-use kairo_statement::StatementKind;
+use kairo_statement::{GitRevision, StatementKind};
 use kairo_store::{
     ActorStore, BlobStore, FilesystemStore, ObjectStore, ProvenanceEntry, ProvenanceStore,
     StatementStore, StoreError,
@@ -95,9 +95,10 @@ pub fn normalize_peer_url(raw: &str) -> Result<String, PullError> {
     http::normalize_base_url(raw)
 }
 
-/// A record the pull verified but did not store.
+/// A record the pull stored but that doesn't verify as valid: today,
+/// a statement signed with a key revoked at its `created_at`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkippedRecord {
+pub struct FlaggedRecord {
     pub record: KairoRef,
     pub reason: String,
 }
@@ -112,7 +113,9 @@ pub struct PullReport {
     pub fetched: usize,
     /// Listed records the store already held (not re-fetched).
     pub already_held: usize,
-    pub skipped: Vec<SkippedRecord>,
+    /// Stored records (counted in `fetched`) that verification will
+    /// report as invalid.
+    pub flagged: Vec<FlaggedRecord>,
     pub git: GitOutcome,
 }
 
@@ -350,7 +353,7 @@ pub fn pull_object(
         peer_actor: document.node_actor.clone(),
         fetched: 0,
         already_held: 0,
-        skipped: Vec::new(),
+        flagged: Vec::new(),
         git: GitOutcome::NoGitRevisions,
     };
     let mut pull = Pull {
@@ -393,10 +396,16 @@ impl Pull<'_> {
     }
 
     /// Make every pulled revision's commit resolve in the local Git
-    /// cache. The pack is only fetched when some commit is missing,
-    /// and is streamed straight into `git index-pack`, never held in
-    /// memory. Git objects are content-addressed, so a commit that
-    /// resolves after ingest is the one the signed revision names.
+    /// cache (`specs/DECISIONS.md` §19). The pack is only fetched when
+    /// some commit is missing, and is streamed straight into `git
+    /// index-pack` in the object's format, never held in memory.
+    ///
+    /// Only after every commit's full closure (commit, ancestors,
+    /// trees, blobs) is present does the object's repo get created
+    /// and the commits pinned. A failed check leaves no repo behind,
+    /// so this node never advertises a pack it can't serve. Objects
+    /// the peer's pack added to the shared pool stay there until
+    /// cache GC.
     fn git(
         &mut self,
         object: &ObjectId,
@@ -404,11 +413,11 @@ impl Pull<'_> {
         available: bool,
     ) -> Result<GitOutcome, PullError> {
         let git_root = crate::git_root(self.store);
-        let mut commits: BTreeSet<String> = BTreeSet::new();
+        let mut commits: BTreeSet<GitRevision> = BTreeSet::new();
         for id in statements {
             let bytes = match self.store.get_statement_bytes(id) {
                 Ok(bytes) => bytes,
-                // Skipped for a revoked key.
+                // Refused earlier in this pull.
                 Err(StoreError::Missing) => continue,
                 Err(error) => return Err(PullError::Store(error)),
             };
@@ -419,69 +428,81 @@ impl Pull<'_> {
                 .store
                 .get_object_revision(id)
                 .map_err(PullError::Store)?;
-            if let Some(oid) = revision
-                .unsigned()
-                .body()
-                .revision()
-                .as_str()
-                .strip_prefix("git:sha256:")
-            {
-                commits.insert(oid.to_owned());
+            // A malformed `git:` revision names no commit; `verify
+            // object` reports it. Nothing to transfer for it.
+            if let Ok(Some(git)) = revision.unsigned().body().revision().git() {
+                commits.insert(git);
             }
         }
-        if commits.is_empty() {
+        let Some(format) = commits.iter().next().map(GitRevision::format) else {
             return Ok(GitOutcome::NoGitRevisions);
+        };
+        if commits.iter().any(|commit| commit.format() != format) {
+            return Err(PullError::Git(format!(
+                "object {object}'s revisions mix Git object formats; one object's history \
+                 has one format (DECISIONS.md §19)"
+            )));
         }
 
-        let missing = |commits: &BTreeSet<String>| -> Result<Vec<String>, PullError> {
-            let mut missing = Vec::new();
-            for oid in commits {
-                if !local_has_commit(&git_root, object, oid)? {
-                    missing.push(oid.clone());
-                }
+        let mut missing = Vec::new();
+        for commit in &commits {
+            if !local_has_commit(&git_root, object, commit)? {
+                missing.push(commit.clone());
             }
-            Ok(missing)
-        };
-        let before = missing(&commits)?;
-        if before.is_empty() {
+        }
+        if missing.is_empty() {
             return Ok(GitOutcome::AlreadyHeld {
                 commits: commits.len(),
             });
         }
         if !available {
             return Ok(GitOutcome::Unavailable {
-                missing: before.len(),
+                missing: missing.len(),
             });
         }
 
         let cache =
             kairo_git::GitCache::open(&git_root).map_err(|e| PullError::Git(e.to_string()))?;
+        if let Some(existing) = cache
+            .repo_format(object.as_str())
+            .map_err(|e| PullError::Git(e.to_string()))?
+        {
+            if existing != format {
+                return Err(PullError::Git(format!(
+                    "the local cache holds object {object} as {existing}, but its revisions \
+                     are {format}"
+                )));
+            }
+        }
         self.peer.with_reader(
             &format!("{API_PREFIX}/objects/{object}/git"),
             self.limits.max_git_bytes,
             self.limits.git_timeout,
             |reader| {
                 cache
-                    .ingest_pack_from(reader)
+                    .ingest_pack_from(format, reader)
                     .map_err(|e| PullError::Git(e.to_string()))
             },
         )?;
-        // The pack lands in the shared pool; the object's own repo
-        // (which reaches the pool through alternates) may not exist yet.
-        cache
-            .ensure_repo(object.as_str())
+        let incomplete = cache
+            .missing_objects(&missing)
             .map_err(|e| PullError::Git(e.to_string()))?;
-        let after = missing(&commits)?;
-        if !after.is_empty() {
-            return Err(PullError::GitIncomplete { missing: after });
+        if !incomplete.is_empty() {
+            return Err(PullError::GitIncomplete {
+                missing: incomplete.iter().map(ToString::to_string).collect(),
+            });
         }
-        for oid in &before {
+        for commit in &missing {
             cache
-                .set_ref(object.as_str(), &format!("refs/kairo/imported/{oid}"), oid)
+                .set_ref(
+                    object.as_str(),
+                    &format!("refs/kairo/imported/{}", commit.oid()),
+                    commit,
+                )
                 .map_err(|e| PullError::Git(e.to_string()))?;
         }
         Ok(GitOutcome::Ingested {
-            commits: before.len(),
+            commits: missing.len(),
         })
     }
 
@@ -665,12 +686,13 @@ impl Pull<'_> {
                 self.report.fetched += 1;
                 self.note(&record)
             }
-            Ok(Ingested::SkippedRevokedKey) => {
-                self.report.skipped.push(SkippedRecord {
-                    record,
+            Ok(Ingested::StoredRevokedKey) => {
+                self.report.fetched += 1;
+                self.report.flagged.push(FlaggedRecord {
+                    record: record.clone(),
                     reason: "signing key is revoked at the statement's created_at".to_owned(),
                 });
-                Ok(())
+                self.note(&record)
             }
             Err(reason) => Err(PullError::Record { record, reason }),
         }
@@ -713,14 +735,15 @@ fn dedup_ids(ids: &[StatementId]) -> Vec<StatementId> {
     list
 }
 
-/// Whether `oid` resolves in `object`'s per-object cache repo
-/// (including the shared pool through alternates). Probed without
-/// opening the cache, so a pull that needs no Git data never requires
-/// the `git` binary, the same rule `verify object` follows.
+/// Whether `commit` resolves in `object`'s per-object cache repo
+/// (including its pool through alternates). Probed without opening
+/// the cache, so a pull that needs no Git data never requires the
+/// `git` binary, the same rule `verify object` follows. A repo in
+/// another format doesn't hold it.
 fn local_has_commit(
     git_root: &std::path::Path,
     object: &ObjectId,
-    oid: &str,
+    commit: &GitRevision,
 ) -> Result<bool, PullError> {
     let Ok(path) = kairo_git::object_repo_path(git_root, object.as_str()) else {
         return Ok(false);
@@ -729,7 +752,14 @@ fn local_has_commit(
         return Ok(false);
     }
     let repo = kairo_git::open(&path).map_err(|e| PullError::Git(e.to_string()))?;
-    repo.find_commit(oid)
-        .map(|commit| commit.is_some())
+    if repo
+        .object_format()
+        .map_err(|e| PullError::Git(e.to_string()))?
+        != commit.format()
+    {
+        return Ok(false);
+    }
+    repo.find_commit(commit)
+        .map(|found| found.is_some())
         .map_err(|e| PullError::Git(e.to_string()))
 }

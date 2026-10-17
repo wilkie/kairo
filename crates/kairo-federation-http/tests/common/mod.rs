@@ -138,7 +138,7 @@ pub(crate) fn seed() -> Seeded {
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new("git:sha256:r1"),
+        RevisionId::new(format!("git:sha1:{}", "1".repeat(40))),
         MANIFEST,
         Vec::new(),
     );
@@ -198,7 +198,7 @@ pub(crate) fn seed() -> Seeded {
     let other_revision = fixture.make_revision(
         &alice,
         &other,
-        RevisionId::new("git:sha256:o1"),
+        RevisionId::new(format!("git:sha1:{}", "2".repeat(40))),
         MANIFEST,
         Vec::new(),
     );

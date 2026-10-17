@@ -26,10 +26,14 @@ const CHUNK_BYTES: usize = 64 * 1024;
 type Chunk = Result<Bytes, io::Error>;
 
 /// Whether the managed cache under `git_root` has a per-object repo
-/// for `object_id`. Checked without opening the cache, which would
-/// initialize the pool, and this process never writes to the store.
+/// for `object_id` with at least one ref, so its pack is non-empty.
+/// Read through gix without opening the cache, so this process never
+/// writes to the store or needs the `git` binary to answer.
 pub(crate) fn has_pack(git_root: &Path, object_id: &str) -> bool {
-    kairo_git::object_repo_path(git_root, object_id).is_ok_and(|path| path.exists())
+    let Ok(path) = kairo_git::object_repo_path(git_root, object_id) else {
+        return false;
+    };
+    path.exists() && kairo_git::open(&path).is_ok_and(|repo| repo.has_refs().unwrap_or(false))
 }
 
 /// A response body streaming `object_id`'s pack from the cache at

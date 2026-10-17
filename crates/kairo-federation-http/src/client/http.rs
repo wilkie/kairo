@@ -147,10 +147,11 @@ pub(crate) fn normalize_base_url(raw: &str) -> Result<String, PullError> {
         reason: reason.to_owned(),
     };
     let trimmed = raw.strip_suffix('/').unwrap_or(raw);
-    let (secure, authority) = if let Some(rest) = trimmed.strip_prefix("https://") {
-        (true, rest)
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        (false, rest)
+    let lower = trimmed.to_ascii_lowercase();
+    let (secure, authority) = if lower.starts_with("https://") {
+        (true, &trimmed["https://".len()..])
+    } else if lower.starts_with("http://") {
+        (false, &trimmed["http://".len()..])
     } else {
         return Err(refuse(
             "must start with https:// (or http:// for a loopback host)",
@@ -168,7 +169,10 @@ pub(crate) fn normalize_base_url(raw: &str) -> Result<String, PullError> {
     if !secure && !is_loopback_authority(authority) {
         return Err(refuse("plain http:// is only allowed for loopback hosts"));
     }
-    Ok(trimmed.to_owned())
+    // Scheme and host are case-insensitive; lowercase both so a
+    // config entry and `--from` compare equal however they're typed.
+    let scheme = if secure { "https" } else { "http" };
+    Ok(format!("{scheme}://{}", authority.to_ascii_lowercase()))
 }
 
 fn is_loopback_authority(authority: &str) -> bool {
@@ -203,6 +207,10 @@ mod tests {
             ("http://127.0.0.1:7880", "http://127.0.0.1:7880"),
             ("http://localhost:7880/", "http://localhost:7880"),
             ("http://[::1]:7880", "http://[::1]:7880"),
+            (
+                "HTTPS://Archive.Example.ORG/",
+                "https://archive.example.org",
+            ),
         ] {
             assert_eq!(
                 normalize_base_url(raw).ok().as_deref(),

@@ -111,7 +111,7 @@ fn formats_valid_revision_manifest_output() {
     assert!(
         matches!(output, Some(output) if output.contains("valid revision manifest")
             && output.contains("object = z")
-            && output.contains("revision = git:sha256:revision")
+            && output.contains("revision = git:sha1:eae79d6e0cff76fc7a3bb78723690b0b2367f849")
             && output.contains("manifest_hash = z"))
     );
 }
@@ -261,7 +261,7 @@ fn revision_dto_for_actor(actor_id: String, manifest_hash: String) -> ObjectRevi
         created_at: "2026-05-01T14:32:07Z".to_owned(),
         body: ObjectRevisionBodyJson {
             object: OBJECT_ID.to_owned(),
-            revision: "git:sha256:revision".to_owned(),
+            revision: "git:sha1:eae79d6e0cff76fc7a3bb78723690b0b2367f849".to_owned(),
             parents: Vec::new(),
             manifest_hash,
             attests_reachable_history: true,
@@ -366,7 +366,9 @@ fn end_to_end_actor_object_revision_against_tempdir() -> Result<(), Box<dyn std:
             command: ObjectSubcommand::Create {
                 actor: actor_id.clone(),
                 kind: "software".to_owned(),
-                initial_revision: Some("git:sha256:abc".to_owned()),
+                initial_revision: Some(
+                    "git:sha1:a9993e364706816aba3e25717850c26c9cd0d89d".to_owned(),
+                ),
             },
         }),
     })?;
@@ -383,9 +385,9 @@ fn end_to_end_actor_object_revision_against_tempdir() -> Result<(), Box<dyn std:
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:def".to_owned(),
+                revision: "git:sha1:589c22335a381f122d129225f5c0ba3056ed5811".to_owned(),
                 manifest: manifest_path.clone(),
-                parents: vec!["git:sha256:abc".to_owned()],
+                parents: vec!["git:sha1:a9993e364706816aba3e25717850c26c9cd0d89d".to_owned()],
                 no_attests_reachable_history: false,
             },
         }),
@@ -640,7 +642,7 @@ fn end_to_end_import_inspect_list() -> Result<(), Box<dyn std::error::Error>> {
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:def".to_owned(),
+                revision: "git:sha1:589c22335a381f122d129225f5c0ba3056ed5811".to_owned(),
                 manifest: manifest_path.clone(),
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -717,7 +719,7 @@ fn end_to_end_import_inspect_list() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     assert!(inspect_text.contains(&statement_id));
     assert!(inspect_text.contains(&object_id));
-    assert!(inspect_text.contains("revision = git:sha256:def"));
+    assert!(inspect_text.contains("revision = git:sha1:589c22335a381f122d129225f5c0ba3056ed5811"));
 
     let inspect_json = run(Cli {
         store: Some(other_dir.path().to_path_buf()),
@@ -735,7 +737,10 @@ fn end_to_end_import_inspect_list() -> Result<(), Box<dyn std::error::Error>> {
     let parsed: serde_json::Value = serde_json::from_str(&inspect_json)?;
     assert_eq!(parsed["statement_id"], statement_id);
     assert_eq!(parsed["object"], object_id);
-    assert_eq!(parsed["revision"], "git:sha256:def");
+    assert_eq!(
+        parsed["revision"],
+        "git:sha1:589c22335a381f122d129225f5c0ba3056ed5811"
+    );
 
     // 5. List revisions for that object.
     let list_text = run(Cli {
@@ -946,7 +951,7 @@ kind = "tree"
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:r1".to_owned(),
+                revision: "git:sha1:5573e39b6600496d40f493d00ec7658479a19607".to_owned(),
                 manifest: manifest_path.clone(),
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -969,9 +974,9 @@ kind = "tree"
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:r2".to_owned(),
+                revision: "git:sha1:a50126cc2d6c726de0ca203c3b659f658d356173".to_owned(),
                 manifest: manifest_path.clone(),
-                parents: vec!["git:sha256:r1".to_owned()],
+                parents: vec!["git:sha1:5573e39b6600496d40f493d00ec7658479a19607".to_owned()],
                 no_attests_reachable_history: false,
             },
         }),
@@ -1142,7 +1147,9 @@ kind = "tree"
                 command: ObjectSubcommand::Create {
                     actor: actor_id.clone(),
                     kind: "software".to_owned(),
-                    initial_revision: Some("git:sha256:bootstrap".to_owned()),
+                    initial_revision: Some(
+                        "git:sha1:3c71cc99d2fc1c12a3d3e1b27e448ca612a89a1d".to_owned(),
+                    ),
                 },
             }),
         })?,
@@ -1160,7 +1167,7 @@ kind = "tree"
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_b.clone(),
-                revision: "git:sha256:rb".to_owned(),
+                revision: "git:sha1:3f2132fc381ee3186016a447d3239d1662d6d65d".to_owned(),
                 manifest: manifest_path.clone(),
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -1328,7 +1335,7 @@ kind = "tree"
                 command: RevisionCommand::Create {
                     actor: actor_id.clone(),
                     object: object_id.clone(),
-                    revision: "git:sha256:def".to_owned(),
+                    revision: "git:sha1:589c22335a381f122d129225f5c0ba3056ed5811".to_owned(),
                     manifest: manifest_path.clone(),
                     parents: vec![],
                     no_attests_reachable_history: false,
@@ -1376,7 +1383,10 @@ kind = "tree"
     })?;
     let pinned_json: serde_json::Value = serde_json::from_str(&pinned)?;
     assert_eq!(pinned_json["object"], object_id);
-    assert_eq!(pinned_json["revision"], "git:sha256:def");
+    assert_eq!(
+        pinned_json["revision"],
+        "git:sha1:589c22335a381f122d129225f5c0ba3056ed5811"
+    );
     let pinned_id = pinned_json["snapshot_id"]
         .as_str()
         .unwrap_or_default()
@@ -1441,7 +1451,7 @@ kind = "tree"
         }),
     })?;
     assert!(human.contains(&pinned_id));
-    assert!(human.contains("revision = git:sha256:def"));
+    assert!(human.contains("revision = git:sha1:589c22335a381f122d129225f5c0ba3056ed5811"));
     assert!(human.contains("frontier = 1"));
     assert!(human.contains(&revision_statement));
 
@@ -1521,7 +1531,7 @@ fn fixture_with_branch() -> Result<VerifyFixture, Box<dyn std::error::Error>> {
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:r1".to_owned(),
+                revision: "git:sha1:5573e39b6600496d40f493d00ec7658479a19607".to_owned(),
                 manifest: manifest_path.clone(),
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -1923,7 +1933,7 @@ fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std:
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: format!("git:sha256:{commit_oid}"),
+                revision: format!("git:sha1:{commit_oid}"),
                 manifest: manifest_path,
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -1980,7 +1990,7 @@ fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std:
     assert!(output.contains("content = VALID"));
     assert!(output.contains("manifest_binding = VALID (bound)"));
     assert!(output.contains(&format!(
-        "manifest_source = git:sha256:{commit_oid}/kairo.toml"
+        "manifest_source = git:sha1:{commit_oid}/kairo.toml"
     )));
     // Default precedence: cwd-discovered repo (no cache populated).
     assert!(
@@ -2002,8 +2012,10 @@ fn populate_cache(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let pack = build_pack_from(src_repo);
     let cache = kairo_git::GitCache::open(store_root.join("git"))?;
-    cache.ingest_pack(&pack)?;
-    cache.set_ref(object_id, "refs/heads/main", commit_oid)?;
+    // Fixture repos are SHA-1 (plain `git init`).
+    cache.ingest_pack(kairo_git::GitObjectFormat::Sha1, &pack)?;
+    let commit = kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, commit_oid)?;
+    cache.set_ref(object_id, "refs/heads/main", &commit)?;
     Ok(())
 }
 
@@ -2067,7 +2079,7 @@ fn verify_object_uses_cache_with_no_cwd_repo() -> Result<(), Box<dyn std::error:
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: format!("git:sha256:{commit_oid}"),
+                revision: format!("git:sha1:{commit_oid}"),
                 manifest: manifest_path,
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -2187,7 +2199,7 @@ fn verify_object_explicit_repo_skips_cache() -> Result<(), Box<dyn std::error::E
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: format!("git:sha256:{commit_oid}"),
+                revision: format!("git:sha1:{commit_oid}"),
                 manifest: manifest_path,
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -2356,7 +2368,7 @@ fn verify_object_with_repo_missing_commit_is_invalid() -> Result<(), Box<dyn std
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:0123456789abcdef0123456789abcdef01234567".to_owned(),
+                revision: "git:sha1:0123456789abcdef0123456789abcdef01234567".to_owned(),
                 manifest: manifest_path.clone(),
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -4608,7 +4620,7 @@ fn actor_revoke_attestation_key_sign_round_trip() -> Result<(), Box<dyn std::err
 /// parsed and threaded through the same way the operator would.
 ///
 /// Skips on hosts without `git` on PATH (the example tree depends
-/// on a real Git commit being addressable as `git:sha256:<oid>`).
+/// on a real Git commit being addressable as `git:sha1:<oid>`).
 #[test]
 fn examples_readme_walkthrough_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     // Aliased so we don't shadow the cli `Command` enum in scope.
@@ -4658,7 +4670,7 @@ kind = "tree"
     git(&["add", "kairo.toml"])?;
     git(&["commit", "-m", "init", "--quiet"])?;
     let commit = git(&["rev-parse", "HEAD"])?;
-    let revision_ref = format!("git:sha256:{commit}");
+    let revision_ref = format!("git:sha1:{commit}");
 
     // ---- README step 1: actor create. ----
     let actor_output = run(Cli {
@@ -5120,6 +5132,7 @@ fn kairo_git_fetch_lands_ref_in_cache() -> Result<(), Box<dyn std::error::Error>
                 object: OBJECT_ID.to_owned(),
                 remote: url.clone(),
                 branch: "main".to_owned(),
+                object_format: Some("sha1".to_owned()),
             },
         }),
     })?;
@@ -5166,6 +5179,7 @@ fn kairo_git_fetch_strips_refs_heads_prefix() -> Result<(), Box<dyn std::error::
                 object: OBJECT_ID.to_owned(),
                 remote: url,
                 branch: "refs/heads/main".to_owned(),
+                object_format: Some("sha1".to_owned()),
             },
         }),
     })?;
@@ -5197,6 +5211,7 @@ fn kairo_git_fetch_unknown_branch_errors() -> Result<(), Box<dyn std::error::Err
                 object: OBJECT_ID.to_owned(),
                 remote: url,
                 branch: "no-such-branch".to_owned(),
+                object_format: Some("sha1".to_owned()),
             },
         }),
     });
@@ -5224,7 +5239,8 @@ fn kairo_git_cache_status_empty_cache() -> Result<(), Box<dyn std::error::Error>
         }),
     })?;
     assert!(output.contains("git cache:"));
-    assert!(output.contains("pool: not initialized"));
+    assert!(output.contains("pool sha1: not initialized"));
+    assert!(output.contains("pool sha256: not initialized"));
     assert!(output.contains("objects: 0"));
     Ok(())
 }
@@ -5254,6 +5270,7 @@ fn kairo_git_cache_status_after_fetch() -> Result<(), Box<dyn std::error::Error>
                 object: OBJECT_ID.to_owned(),
                 remote: url,
                 branch: "main".to_owned(),
+                object_format: Some("sha1".to_owned()),
             },
         }),
     })?;
@@ -5271,7 +5288,7 @@ fn kairo_git_cache_status_after_fetch() -> Result<(), Box<dyn std::error::Error>
         }),
     })?;
     assert!(
-        output.contains("pool: initialized"),
+        output.contains("pool sha1: initialized"),
         "expected initialized pool, got:\n{output}"
     );
     assert!(output.contains("objects: 1"));
@@ -5297,7 +5314,7 @@ fn parses_kairo_git_fetch_command() {
         cli,
         Ok(Cli {
             command: Some(Command::Git {
-                command: GitCommand::Fetch { object, remote, branch },
+                command: GitCommand::Fetch { object, remote, branch, .. },
             }),
             ..
         }) if object == "zQmObject"
@@ -5382,7 +5399,7 @@ fn kairo_bundle_export_include_git_writes_pack_and_flips_flag(
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: format!("git:sha256:{commit_oid}"),
+                revision: format!("git:sha1:{commit_oid}"),
                 manifest: manifest_path,
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -5419,6 +5436,7 @@ fn kairo_bundle_export_include_git_writes_pack_and_flips_flag(
                 object: object_id.clone(),
                 remote: url,
                 branch: "main".to_owned(),
+                object_format: Some("sha1".to_owned()),
             },
         }),
     })?;
@@ -5525,7 +5543,7 @@ fn kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo(
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: format!("git:sha256:{commit_oid}"),
+                revision: format!("git:sha1:{commit_oid}"),
                 manifest: manifest_path,
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -5562,6 +5580,7 @@ fn kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo(
                 object: object_id.clone(),
                 remote: url,
                 branch: "main".to_owned(),
+                object_format: Some("sha1".to_owned()),
             },
         }),
     })?;
@@ -5650,7 +5669,7 @@ fn kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo(
             },
         }),
     })?;
-    assert!(status_output.contains("pool: initialized"));
+    assert!(status_output.contains("pool sha1: initialized"));
     assert!(status_output.contains("objects: 1"));
     assert!(status_output.contains(&object_id));
     assert!(
@@ -5862,7 +5881,7 @@ fn store_rebuild_indexes_after_seed_reports_per_kind_counts(
             command: RevisionCommand::Create {
                 actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: "git:sha256:r1".to_owned(),
+                revision: "git:sha1:5573e39b6600496d40f493d00ec7658479a19607".to_owned(),
                 manifest: manifest_path.clone(),
                 parents: vec![],
                 no_attests_reachable_history: false,
@@ -6237,7 +6256,7 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
                 command: RevisionCommand::Create {
                     actor: actor.clone(),
                     object: object.clone(),
-                    revision: format!("git:sha256:{commit_oid}"),
+                    revision: format!("git:sha1:{commit_oid}"),
                     manifest: git_dir.path().join("kairo.toml"),
                     parents: vec![],
                     no_attests_reachable_history: false,
@@ -6286,7 +6305,9 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
     )?;
     assert!(fetched.contains("git = ingested (1 commits)"), "{fetched}");
     assert!(
-        fetched.contains(&format!("peer_actor = {node_actor} (pinned)")),
+        fetched.contains(&format!(
+            "peer_actor = {node_actor} (pinned; claim matches, node not authenticated)"
+        )),
         "{fetched}"
     );
 
@@ -6475,5 +6496,147 @@ fn federation_status_with_no_config_or_pulls() -> Result<(), Box<dyn std::error:
     );
     assert!(status.contains("peers = 0"), "{status}");
     assert!(!status.contains("unlisted_peers"), "{status}");
+    Ok(())
+}
+
+// --- Git revision ids (DECISIONS.md §19) ------------------------------
+
+fn create_revision(
+    store: &std::path::Path,
+    actor: &str,
+    object: &str,
+    revision: &str,
+    manifest: &std::path::Path,
+) -> Result<String, CliError> {
+    run_in(
+        store,
+        Command::Revision {
+            command: RevisionCommand::Create {
+                actor: actor.to_owned(),
+                object: object.to_owned(),
+                revision: revision.to_owned(),
+                manifest: manifest.to_path_buf(),
+                parents: vec![],
+                no_attests_reachable_history: false,
+            },
+        },
+    )
+}
+
+#[test]
+fn revision_create_enforces_git_revision_ids() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let store = store_dir.path();
+    let actor = parse_field(
+        &run_in(
+            store,
+            Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            },
+        )?,
+        "actor = ",
+    )?;
+    let object = parse_field(
+        &run_in(
+            store,
+            Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            },
+        )?,
+        "object = ",
+    )?;
+    let manifest_dir = tempfile::TempDir::new()?;
+    let manifest = manifest_dir.path().join("kairo.toml");
+    std::fs::write(
+        &manifest,
+        "[kairo]\nschema = 1\nkind = \"software\"\nname = \"ids\"\n\n[content]\nkind = \"tree\"\n",
+    )?;
+
+    // A SHA-1 id under the sha256 label is refused: the format comes
+    // from the label, never the length.
+    let sha1_oid = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+    let mislabelled = create_revision(
+        store,
+        &actor,
+        &object,
+        &format!("git:sha256:{sha1_oid}"),
+        &manifest,
+    )
+    .err()
+    .ok_or("a mislabelled revision was accepted")?;
+    assert!(
+        mislabelled.to_string().contains("64 hex characters"),
+        "{mislabelled}"
+    );
+    assert!(create_revision(store, &actor, &object, "git:sha1:abc", &manifest).is_err());
+
+    create_revision(
+        store,
+        &actor,
+        &object,
+        &format!("git:sha1:{sha1_oid}"),
+        &manifest,
+    )?;
+    // Other storage schemes pass through untouched.
+    create_revision(store, &actor, &object, "hg:0123", &manifest)?;
+
+    // One object's history has one format.
+    let mixed = create_revision(
+        store,
+        &actor,
+        &object,
+        &format!("git:sha256:{}", "e".repeat(64)),
+        &manifest,
+    )
+    .err()
+    .ok_or("a second format was accepted")?;
+    assert!(
+        mixed
+            .to_string()
+            .contains("existing revisions are git:sha1"),
+        "{mixed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn git_fetch_needs_a_format_for_an_unknown_object() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let error = run_in(
+        store_dir.path(),
+        Command::Git {
+            command: GitCommand::Fetch {
+                object: OBJECT_ID.to_owned(),
+                remote: "file:///nonexistent".to_owned(),
+                branch: "main".to_owned(),
+                object_format: None,
+            },
+        },
+    )
+    .err()
+    .ok_or("fetch without a format was accepted")?;
+    assert!(error.to_string().contains("--object-format"), "{error}");
+
+    let bad = run_in(
+        store_dir.path(),
+        Command::Git {
+            command: GitCommand::Fetch {
+                object: OBJECT_ID.to_owned(),
+                remote: "file:///nonexistent".to_owned(),
+                branch: "main".to_owned(),
+                object_format: Some("md5".to_owned()),
+            },
+        },
+    );
+    assert!(bad.is_err());
     Ok(())
 }

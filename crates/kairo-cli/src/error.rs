@@ -71,6 +71,28 @@ pub(crate) enum CliError {
     },
     Fetch(Box<kairo_federation_http::client::PullError>),
     LoadConfig(kairo_config::ConfigError),
+    /// A bundle's `git_history.expected_commits` doesn't name typed
+    /// revisions in one format.
+    BundleGitManifest {
+        message: String,
+    },
+    /// A bundle's Git pack lacks part of a named commit's closure.
+    BundleGitIncomplete {
+        missing: Vec<String>,
+    },
+    /// `kairo git fetch` can't tell which object format to use.
+    GitFormatUnknown {
+        object: String,
+    },
+    /// The object's revisions, or its cache repo, disagree on format.
+    GitFormatConflict {
+        object: String,
+        message: String,
+    },
+    InvalidGitRevision {
+        revision: String,
+        source: kairo_statement::GitRevisionError,
+    },
     /// `[federation] enabled = false`.
     FederationDisabled {
         config: PathBuf,
@@ -528,6 +550,24 @@ impl fmt::Display for CliError {
             }
             Self::Fetch(error) => write!(f, "fetch failed: {error}"),
             Self::LoadConfig(error) => write!(f, "invalid config: {error}"),
+            Self::BundleGitManifest { message } => write!(f, "bundle Git data: {message}"),
+            Self::BundleGitIncomplete { missing } => write!(
+                f,
+                "the bundle's Git pack lacks part of {} commit(s): {}",
+                missing.len(),
+                missing.join(", ")
+            ),
+            Self::GitFormatUnknown { object } => write!(
+                f,
+                "object {object} has no Git revisions or cache repo to take an object format \
+                 from; pass --object-format sha1 or sha256"
+            ),
+            Self::GitFormatConflict { object, message } => {
+                write!(f, "object {object}: {message}")
+            }
+            Self::InvalidGitRevision { revision, source } => {
+                write!(f, "invalid Git revision {revision:?}: {source}")
+            }
             Self::FederationDisabled { config } => write!(
                 f,
                 "federation is disabled ([federation] enabled = false in {})",
@@ -1033,7 +1073,12 @@ impl Error for CliError {
             | Self::WebStopTimeout { .. }
             | Self::FederationDisabled { .. }
             | Self::OfflineFetch
-            | Self::PeerNotAllowed { .. } => None,
+            | Self::PeerNotAllowed { .. }
+            | Self::BundleGitManifest { .. }
+            | Self::BundleGitIncomplete { .. }
+            | Self::GitFormatUnknown { .. }
+            | Self::GitFormatConflict { .. } => None,
+            Self::InvalidGitRevision { source, .. } => Some(source),
             Self::ChangeThresholdShape(error) => Some(error),
             Self::DaemonRuntime(error) | Self::WebRuntime(error) => Some(error),
             Self::DaemonServe { source } | Self::WebServe { source } => Some(source.as_ref()),

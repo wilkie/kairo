@@ -119,6 +119,35 @@ fn ingest_bundle_git_data(
     input: &std::path::Path,
     manifest: &kairo_bundle::BundleManifest,
 ) -> Result<(usize, usize), CliError> {
+    // The manifest names the commits as typed revisions; their format
+    // picks the pool the packs go into (`specs/DECISIONS.md` §19).
+    let mut commits: Vec<kairo_statement::GitRevision> = Vec::new();
+    for value in &manifest.git_history.expected_commits {
+        match kairo_statement::GitRevision::parse(value) {
+            Ok(Some(commit)) => commits.push(commit),
+            Ok(None) => {
+                return Err(CliError::BundleGitManifest {
+                    message: format!("expected commit {value:?} is not a git: revision"),
+                })
+            }
+            Err(error) => {
+                return Err(CliError::BundleGitManifest {
+                    message: format!("expected commit {value:?}: {error}"),
+                })
+            }
+        }
+    }
+    let Some(format) = commits.first().map(kairo_statement::GitRevision::format) else {
+        return Err(CliError::BundleGitManifest {
+            message: "the bundle ships Git data but names no expected commits".to_owned(),
+        });
+    };
+    if commits.iter().any(|commit| commit.format() != format) {
+        return Err(CliError::BundleGitManifest {
+            message: "expected commits mix Git object formats".to_owned(),
+        });
+    }
+
     let cache =
         GitCache::open(paths.git_root()).map_err(|source| CliError::GitOperation { source })?;
     let git_dir = input.join("git");
@@ -151,16 +180,31 @@ fn ingest_bundle_git_data(
             },
         })?;
         cache
-            .ingest_pack_from(file)
+            .ingest_pack_from(format, file)
             .map_err(|source| CliError::GitOperation { source })?;
         pack_object_ids.push(stem.to_owned());
     }
 
+    // `index-pack` accepts a pack that carries a commit without its
+    // trees; refuse to pin until every commit's closure is present.
+    let incomplete = cache
+        .missing_objects(&commits)
+        .map_err(|source| CliError::GitOperation { source })?;
+    if !incomplete.is_empty() {
+        return Err(CliError::BundleGitIncomplete {
+            missing: incomplete.iter().map(ToString::to_string).collect(),
+        });
+    }
+
     let mut refs_pinned = 0usize;
     for object_id in &pack_object_ids {
-        for oid in &manifest.git_history.expected_commits {
+        for commit in &commits {
             cache
-                .set_ref(object_id, &format!("refs/kairo/imported/{oid}"), oid)
+                .set_ref(
+                    object_id,
+                    &format!("refs/kairo/imported/{}", commit.oid()),
+                    commit,
+                )
                 .map_err(|source| CliError::GitOperation { source })?;
             refs_pinned += 1;
         }

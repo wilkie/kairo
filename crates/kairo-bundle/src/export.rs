@@ -103,17 +103,12 @@ pub fn write_bundle(
         blob_ids.insert(revision.unsigned().body().manifest_hash().clone());
     }
 
-    // 5. Pull Git commit ids out of revision references.
+    // 5. Typed Git revisions out of revision references. A malformed
+    //    `git:` revision names no commit; `verify object` reports it.
     let mut expected_commits: BTreeSet<String> = BTreeSet::new();
     for revision in collected.revisions.values() {
-        if let Some(oid) = revision
-            .unsigned()
-            .body()
-            .revision()
-            .as_str()
-            .strip_prefix("git:sha256:")
-        {
-            expected_commits.insert(oid.to_owned());
+        if let Ok(Some(git)) = revision.unsigned().body().revision().git() {
+            expected_commits.insert(git.to_string());
         }
     }
 

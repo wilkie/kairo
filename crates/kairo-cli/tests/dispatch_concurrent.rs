@@ -100,7 +100,7 @@ fn branch_show_round_trips_in_daemon_and_direct_mode() {
     let revision = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:r1"),
+        RevisionId::new("git:sha1:5573e39b6600496d40f493d00ec7658479a19607"),
         MANIFEST,
         vec![],
     );
@@ -228,16 +228,18 @@ fn direct_write_succeeds_while_daemon_serves_concurrent_read() {
     let r1 = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:r1"),
+        RevisionId::new("git:sha1:5573e39b6600496d40f493d00ec7658479a19607"),
         MANIFEST,
         vec![],
     );
     let r2 = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:r2"),
+        RevisionId::new("git:sha1:a50126cc2d6c726de0ca203c3b659f658d356173"),
         MANIFEST,
-        vec![RevisionId::new("git:sha256:r1")],
+        vec![RevisionId::new(
+            "git:sha1:5573e39b6600496d40f493d00ec7658479a19607",
+        )],
     );
     fixture.set_branch(&actor, &object, &r1, "head");
     let object_id = object.object_id.to_string();
@@ -386,7 +388,7 @@ fn branch_list_round_trips_in_both_modes() {
     let revision = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:r1"),
+        RevisionId::new("git:sha1:5573e39b6600496d40f493d00ec7658479a19607"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -414,7 +416,7 @@ fn revision_inspect_round_trips_in_both_modes() {
     let revision = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:r1"),
+        RevisionId::new("git:sha1:5573e39b6600496d40f493d00ec7658479a19607"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -674,7 +676,7 @@ fn revision_create_daemon_mode_persists_through_dispatch() {
         "--object",
         &object_id,
         "--revision",
-        "git:sha256:slice3-cli-r1",
+        "git:sha1:0e7e48d55d9fb262b527be74dfd23616e66af75f",
         "--manifest",
         manifest_path.to_str().unwrap(),
     ]);
@@ -726,7 +728,7 @@ fn branch_set_daemon_mode_advances_head_through_dispatch() {
     let revision = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:slice3-cli-branch-r1"),
+        RevisionId::new("git:sha1:bbcec0f428bbc51775f3049f74e91d41691efb38"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -784,7 +786,7 @@ fn tag_bind_daemon_mode_persists_head_through_dispatch() {
     let revision = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:slice3-cli-tag-r1"),
+        RevisionId::new("git:sha1:72dcd40f3ae2765f023510d72dedd863afd24ae4"),
         FIXTURE_MANIFEST,
         vec![],
     );
@@ -1135,7 +1137,7 @@ fn tag_revoke_daemon_mode_chains_on_prior_bind() {
     let revision = fixture.make_revision(
         &actor,
         &object,
-        RevisionId::new("git:sha256:slice5-tag-r1"),
+        RevisionId::new("git:sha1:332718b71d96444221fc775366022f85b32d6c88"),
         FIXTURE_MANIFEST,
         vec![],
     );

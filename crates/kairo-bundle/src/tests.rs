@@ -242,7 +242,10 @@ fn round_trips_through_export_and_import() -> TestResult {
         .contains(&src.version_tag_statement_id.to_string()));
     assert_eq!(manifest.contents.blobs, vec![src.blob_id.to_string()]);
     assert!(!manifest.git_history.included);
-    assert_eq!(manifest.git_history.expected_commits, vec![COMMIT_OID]);
+    assert_eq!(
+        manifest.git_history.expected_commits,
+        vec![format!("git:sha256:{COMMIT_OID}")]
+    );
 
     // Sanity: every advertised file is on disk.
     for actor in &manifest.contents.actors {

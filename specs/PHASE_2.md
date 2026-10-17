@@ -557,6 +557,11 @@ Deferred from Phase 1 §9 (`specs/PACKAGE.md` "MVP slice").
 - [ ] Trust-bundle type (transport per-truster opinions independently of
       object bundles).
 - [ ] Bundle-level signature (`specs/PACKAGE.md` §24).
+- [ ] Verify statement signatures on bundle import, through the same
+      checks federation pull uses (schema, fixity, revision ids,
+      signature against stored key events). Today bundle import only
+      fixity-checks, so the store has two entry points with different
+      guarantees.
 - [x] Per-truster reverse trust index. Both `list_trust(by_actor)` and
       `list_opinions_about(trusted_actor)` are now indexed lookups in
       `FilesystemStore` rather than directory walks.

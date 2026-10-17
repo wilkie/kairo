@@ -19,6 +19,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 pub use cache::GitCache;
+pub use kairo_statement::{GitObjectFormat, GitRevision};
 pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 
 /// Compute the per-object bare repo path under a Git cache rooted
@@ -95,6 +96,13 @@ pub enum GitError {
     /// Kairo IDs are always pure base58 ASCII so this is an
     /// invariant violation, not a transient failure.
     CacheInvalidObjectId { id: String, reason: &'static str },
+    /// A repository or revision is in a different Git object format
+    /// than the operation requires (`specs/DECISIONS.md` §19).
+    FormatMismatch {
+        context: String,
+        expected: GitObjectFormat,
+        found: GitObjectFormat,
+    },
 }
 
 impl fmt::Display for GitError {
@@ -135,6 +143,14 @@ impl fmt::Display for GitError {
             Self::CacheInvalidObjectId { id, reason } => {
                 write!(f, "invalid object id {id:?} for cache: {reason}")
             }
+            Self::FormatMismatch {
+                context,
+                expected,
+                found,
+            } => write!(
+                f,
+                "{context} uses Git object format {found}, but {expected} is required"
+            ),
         }
     }
 }
@@ -149,7 +165,8 @@ impl Error for GitError {
             Self::CacheIo { source, .. } | Self::CacheGitMissing { source } => Some(source),
             Self::CacheGitInvocation { .. }
             | Self::CacheLockTimeout { .. }
-            | Self::CacheInvalidObjectId { .. } => None,
+            | Self::CacheInvalidObjectId { .. }
+            | Self::FormatMismatch { .. } => None,
         }
     }
 }
@@ -177,12 +194,51 @@ impl Repository {
         self.inner.git_dir()
     }
 
-    /// Look up a commit by its full hex object id. Returns `Ok(None)`
-    /// when the commit is not present in this repository (a normal
-    /// "not found" outcome); returns `Err` for parse or operational
-    /// failures.
-    pub fn find_commit(&self, hex_oid: &str) -> Result<Option<CommitInfo>, GitError> {
-        let oid = parse_oid(hex_oid)?;
+    /// This repository's object format.
+    pub fn object_format(&self) -> Result<GitObjectFormat, GitError> {
+        match self.inner.object_hash() {
+            gix::hash::Kind::Sha1 => Ok(GitObjectFormat::Sha1),
+            gix::hash::Kind::Sha256 => Ok(GitObjectFormat::Sha256),
+            #[allow(unreachable_patterns)]
+            other => Err(GitError::Operation(
+                format!("unsupported Git object format {other:?}").into(),
+            )),
+        }
+    }
+
+    /// Whether the repository has at least one reference.
+    pub fn has_refs(&self) -> Result<bool, GitError> {
+        let platform = self
+            .inner
+            .references()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let mut all = platform
+            .all()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        Ok(all.next().is_some())
+    }
+
+    /// The object id for `revision`, refusing a revision in another
+    /// format than this repository's. Git can't resolve it, and the
+    /// algorithm must come from the label, never the digest length.
+    fn revision_oid(&self, revision: &GitRevision) -> Result<gix::ObjectId, GitError> {
+        let format = self.object_format()?;
+        if format != revision.format() {
+            return Err(GitError::FormatMismatch {
+                context: format!("repository {}", self.git_dir().display()),
+                expected: revision.format(),
+                found: format,
+            });
+        }
+        parse_oid(revision.oid())
+    }
+
+    /// Look up `revision`'s commit. Returns `Ok(None)` when the commit
+    /// is not present in this repository (a normal "not found"
+    /// outcome); returns `Err` for a format mismatch or operational
+    /// failures. Parent ids are plain hex in the same format.
+    pub fn find_commit(&self, revision: &GitRevision) -> Result<Option<CommitInfo>, GitError> {
+        let oid = self.revision_oid(revision)?;
         let object = match self.inner.try_find_object(oid) {
             Ok(Some(object)) => object,
             Ok(None) => return Ok(None),
@@ -208,10 +264,10 @@ impl Repository {
     /// path does not exist (or is not a blob) within its tree.
     pub fn read_blob_at_path(
         &self,
-        commit_hex_oid: &str,
+        revision: &GitRevision,
         path: &str,
     ) -> Result<Option<Vec<u8>>, GitError> {
-        let oid = parse_oid(commit_hex_oid)?;
+        let oid = self.revision_oid(revision)?;
         let object = match self.inner.try_find_object(oid) {
             Ok(Some(object)) => object,
             Ok(None) => return Ok(None),
@@ -224,8 +280,7 @@ impl Repository {
             .tree()
             .map_err(|error| GitError::Operation(Box::new(error)))?;
 
-        let mut buf = Vec::new();
-        let entry = match tree.lookup_entry_by_path(path, &mut buf) {
+        let entry = match tree.lookup_entry_by_path(path) {
             Ok(Some(entry)) => entry,
             Ok(None) => return Ok(None),
             Err(error) => return Err(GitError::Operation(Box::new(error))),
@@ -255,11 +310,15 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
-    /// Initialize a small git repo with two commits in a temp dir,
-    /// returning (tempdir, first_commit_oid, second_commit_oid).
-    fn init_repo() -> (TempDir, String, String) {
+    /// Initialize a small git repo in `format` with two commits in a
+    /// temp dir, returning (tempdir, first_commit, second_commit).
+    fn init_repo_in(format: GitObjectFormat) -> (TempDir, GitRevision, GitRevision) {
         let dir = TempDir::new().expect("tempdir");
-        run(&dir, &["init", "--initial-branch=main", "--quiet"]);
+        let object_format = format!("--object-format={format}");
+        run(
+            &dir,
+            &["init", "--initial-branch=main", "--quiet", &object_format],
+        );
         run(&dir, &["config", "user.name", "Kairo Test"]);
         run(&dir, &["config", "user.email", "test@kairo.test"]);
         run(&dir, &["config", "commit.gpgsign", "false"]);
@@ -276,7 +335,12 @@ mod tests {
         run(&dir, &["add", "kairo.toml"]);
         run(&dir, &["commit", "-m", "second", "--quiet"]);
         let second = rev_parse(&dir, "HEAD");
-        (dir, first, second)
+        let revision = |oid: &str| GitRevision::new(format, oid).expect("oid in format");
+        (dir, revision(&first), revision(&second))
+    }
+
+    fn init_repo() -> (TempDir, GitRevision, GitRevision) {
+        init_repo_in(GitObjectFormat::Sha1)
     }
 
     fn run(dir: &TempDir, args: &[&str]) {
@@ -322,8 +386,8 @@ mod tests {
         let (dir, first, second) = init_repo();
         let repo = discover(dir.path()).expect("discover");
         let info = repo.find_commit(&second).expect("find").expect("present");
-        assert_eq!(info.commit_id, second);
-        assert_eq!(info.parent_ids, vec![first]);
+        assert_eq!(info.commit_id, second.oid());
+        assert_eq!(info.parent_ids, vec![first.oid().to_owned()]);
     }
 
     #[test]
@@ -331,18 +395,47 @@ mod tests {
         let (dir, _, _) = init_repo();
         let repo = discover(dir.path()).expect("discover");
         // A valid-looking sha that isn't in the repo.
-        let result = repo
-            .find_commit("0123456789abcdef0123456789abcdef01234567")
-            .expect("call");
+        let absent = GitRevision::new(
+            GitObjectFormat::Sha1,
+            "0123456789abcdef0123456789abcdef01234567",
+        )
+        .expect("shape");
+        let result = repo.find_commit(&absent).expect("call");
         assert!(result.is_none());
     }
 
     #[test]
-    fn find_commit_errors_on_invalid_oid() {
+    fn find_commit_refuses_a_revision_in_another_format() {
         let (dir, _, _) = init_repo();
         let repo = discover(dir.path()).expect("discover");
-        let result = repo.find_commit("not-a-hex-oid");
-        assert!(matches!(result, Err(GitError::InvalidOid { .. })));
+        assert_eq!(repo.object_format().expect("format"), GitObjectFormat::Sha1);
+        let sha256 = GitRevision::new(GitObjectFormat::Sha256, &"a".repeat(64)).expect("shape");
+        assert!(matches!(
+            repo.find_commit(&sha256),
+            Err(GitError::FormatMismatch {
+                expected: GitObjectFormat::Sha256,
+                found: GitObjectFormat::Sha1,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn sha256_repositories_resolve_commits_and_blobs() {
+        let (dir, first, second) = init_repo_in(GitObjectFormat::Sha256);
+        assert_eq!(second.oid().len(), 64);
+        let repo = discover(dir.path()).expect("discover");
+        assert_eq!(
+            repo.object_format().expect("format"),
+            GitObjectFormat::Sha256
+        );
+        let info = repo.find_commit(&second).expect("find").expect("present");
+        assert_eq!(info.parent_ids, vec![first.oid().to_owned()]);
+        let bytes = repo
+            .read_blob_at_path(&second, "kairo.toml")
+            .expect("read")
+            .expect("present");
+        assert!(String::from_utf8(bytes).expect("utf8").contains("two"));
     }
 
     #[test]
@@ -371,9 +464,12 @@ mod tests {
     fn read_blob_at_path_returns_none_for_missing_commit() {
         let (dir, _, _) = init_repo();
         let repo = discover(dir.path()).expect("discover");
-        let result = repo
-            .read_blob_at_path("0123456789abcdef0123456789abcdef01234567", "kairo.toml")
-            .expect("call");
+        let absent = GitRevision::new(
+            GitObjectFormat::Sha1,
+            "0123456789abcdef0123456789abcdef01234567",
+        )
+        .expect("shape");
+        let result = repo.read_blob_at_path(&absent, "kairo.toml").expect("call");
         assert!(result.is_none());
     }
 }

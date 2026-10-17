@@ -222,8 +222,9 @@ Exceeding one fails the pull with what was stored so far kept.
   calls the daemon uses, plus the genesis check against
   `created_by`'s active key.
 - A statement signed by a key revoked at its `created_at` is
-  skipped and reported, not stored, and the pull continues
-  (§16 sub-decision 7).
+  stored and flagged in the report, and the pull continues
+  (§16 sub-decision 7, amended by the fix-up below; it was
+  skipped at first).
 - Transport is `ureq` 3 with rustls (ring, webpki roots). It
   follows no redirects, so an `https://` peer can't bounce the
   client to plain HTTP, and applies the §2.4 limits per request.
@@ -235,7 +236,7 @@ Exceeding one fails the pull with what was stored so far kept.
   appended under the index lock, one per distinct `peer_url`, and
   the first `fetched_at` is kept.
 - CLI: `kairo fetch --object <id> --from <url> [--json]` reports
-  fetched / already-held / skipped counts.
+  fetched / already-held / flagged counts.
   `kairo federation provenance --ref <typed-ref>` prints the peers,
   or says the record is local.
 - Tests (`tests/pull.rs`, real server on a loopback port) cover:
@@ -243,7 +244,7 @@ Exceeding one fails the pull with what was stored so far kept.
     both stores; nothing outside the closure arrives);
   - re-pull is a no-op that keeps the first provenance;
   - a second peer appends;
-  - revoked-key statements are skipped.
+  - revoked-key statements are stored and flagged.
 
   Every adversarial case fails the pull without storing the bad
   record: tampered bytes, a substituted statement, withheld key
@@ -339,6 +340,48 @@ Exceeding one fails the pull with what was stored so far kept.
   - the daemon provenance endpoint;
   - badge unit tests and an MSW Playwright spec.
 
+### Fix-up after slice 5 *(shipped)*
+
+A review of slices 1–5 found gaps, fixed before slice 6 so the
+two-node check runs against the corrected behavior:
+
+- **Git object formats** (`DECISIONS.md` §19). Revisions are
+  `git:sha1:` / `git:sha256:`, parsed strictly. Each object has one
+  format, there are per-format pools, gix is upgraded to 0.89 for
+  SHA-256 reads, bundles name typed revisions, and `kairo git fetch`
+  takes `--object-format`. The pull ingests a pack into the pool
+  for its commits' format; an object whose revisions mix formats is
+  refused.
+- **Pack completeness.** After ingest, `missing_objects` checks
+  every commit's full closure. The object's repo is created and
+  commits pinned only when it passes, and a failure leaves no repo
+  behind. The server's `git.available` now means the repo has refs,
+  not just that it exists.
+- **Revoked-key statements are stored and flagged**, not skipped, so
+  two nodes don't diverge (§16 sub-decision 7).
+- **Honest node identity.** A matching pin prints "claim matches,
+  node not authenticated", and node authentication is now a
+  prerequisite of discovery as well as push (§16 sub-decision 9,
+  §18).
+- **Honest key-event completeness.** A withheld revocation can't be
+  detected from one peer; §16 sub-decision 4 says so and names the
+  defenses (re-pull, multiple peers).
+- **Peer URLs** are normalized (lowercase scheme and host) on both
+  the config side and the `--from` side, and `kairo config
+  validate` checks them.
+- Tests:
+  - a SHA-256 history federating into its own pool;
+  - a failed Git step leaving no repo;
+  - a commit-only pack caught by `missing_objects`;
+  - wrong-format packs and repos refused;
+  - strict ids at `revision create`, including a mislabeled SHA-1
+    id and a mixed-format history;
+  - `git fetch` asking for a format;
+  - SHA-256 reads in `kairo-git`.
+
+  Fixtures now use valid-shaped ids, with real fixture repos labeled
+  `git:sha1:`.
+
 ### Slice 6 — Two-node real-stack check
 
 - `scripts/federation-smoke.sh`: two stores, publish, serve,
@@ -358,7 +401,10 @@ In rough order, each needing its own decision:
 3. **Daemon `FederationService`**: background sync, on-demand
    fetch of missing closure data (`DAEMON.md` §9).
 4. **Discovery** — token advertisements, indexes, query protocol
-   — once `PHASE_2.md` §7 / §8 statement types exist.
+   — once `PHASE_2.md` §7 / §8 statement types exist. Also needs
+   scoped trust (`DECISIONS.md` §18), trust transport (item 2), and
+   node authentication (`DECISIONS.md` §16 sub-decision 9), which
+   push (item 1) brings.
 
 ### 4.1 Bootstrap peers, learned peers, node trust
 
@@ -394,8 +440,28 @@ follow. Push needs `federation:push`.
 - **First TLS dependency.** rustls enters through the client only;
   keep it out of core crates and the daemon.
 - **Signature verification on ingest is new.** Bundle import does
-  not verify signatures; once slice 3 lands, consider routing
-  bundle import through the same verifier.
+  not verify signatures, so the store has two entry points with
+  different guarantees. Routing bundle import through the pull's
+  verifier is tracked in `PHASE_2.md` §11.
+- **Serving a pack holds the object's lock for the whole
+  transfer.** A slow or stalled peer can block writes to that
+  object's cache repo for up to the 30-minute pack timeout, and
+  nothing caps concurrent `pack-objects` runs. Before real
+  deployment: pack to a temporary file under the lock, stream it
+  without the lock, and cap concurrent pack requests.
+- **Rebuilding the published view walks the store.** Revisions have
+  no per-object index, so each rebuild (every `--view-ttl`, 5 s by
+  default, under load) walks `statements/`. A large store makes this
+  a CPU and latency problem, and a cold rebuild could exceed the
+  client's 30 s request timeout. A revision-by-object index should
+  land before deployment.
+- **Pool junk from failed pulls.** Objects a peer's pack added to a
+  pool stay there after a failed completeness check. They are
+  content-addressed and harmless to correctness; reclaiming them is
+  cache GC's job (`STORE.md` §12).
+- **Strict config parsing on downgrade.** An older `kairo` rejects a
+  config written for a newer one (`DECISIONS.md` §17). That is
+  acceptable before 1.0.
 
 ---
 

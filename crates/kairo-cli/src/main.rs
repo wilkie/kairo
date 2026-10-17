@@ -2300,13 +2300,17 @@ fn run_object_command(
                 })?;
             let secret = require_active_signing_key(&store, &keystore, &actor_id)?;
 
+            let initial_revision = initial_revision.map(RevisionId::new);
+            if let Some(revision) = &initial_revision {
+                git_revision(revision)?;
+            }
             let nonce = generate_nonce().map_err(CliError::GenerateKey)?;
             let body = ObjectGenesisBody::new(
                 ObjectKind::new(kind),
                 actor_id.clone(),
                 Timestamp::now(),
                 nonce,
-                initial_revision.map(RevisionId::new),
+                initial_revision,
             );
             let object_id = body.object_id();
 
@@ -2458,6 +2462,36 @@ fn run_revision_command(
                 manifest_hash,
                 !no_attests_reachable_history,
             );
+            kairo_statement::check_revision_ids(&body).map_err(|source| {
+                CliError::InvalidGitRevision {
+                    revision: body.revision().as_str().to_owned(),
+                    source,
+                }
+            })?;
+            // One object's history has one Git object format
+            // (`specs/DECISIONS.md` §19).
+            if let Some(format) = git_revision(body.revision())?.map(|git| git.format()) {
+                let existing = store.list_object_revisions(&object_id).map_err(|source| {
+                    CliError::ReadObjectGenesis {
+                        object: object_id.clone(),
+                        source,
+                    }
+                })?;
+                if let Some(other) = existing.iter().find_map(|stored| {
+                    match stored.unsigned().body().revision().git() {
+                        Ok(Some(git)) if git.format() != format => Some(git.format()),
+                        _ => None,
+                    }
+                }) {
+                    return Err(CliError::GitFormatConflict {
+                        object: object_id.to_string(),
+                        message: format!(
+                            "its existing revisions are git:{other}; a git:{format} revision \
+                             can't join them"
+                        ),
+                    });
+                }
+            }
 
             let subject: KairoRef = format!("object:{object_id}").parse().map_err(|source| {
                 CliError::BuildSubjectRef {
@@ -4557,7 +4591,7 @@ fn try_cache_repo_for_revision(
     object_id: &str,
     revision: &RevisionId,
 ) -> Result<Option<kairo_git::Repository>, CliError> {
-    let Some(oid) = revision.as_str().strip_prefix("git:sha256:") else {
+    let Some(commit) = git_revision(revision)? else {
         return Ok(None);
     };
     let git_root = paths.git_root();
@@ -4572,25 +4606,43 @@ fn try_cache_repo_for_revision(
         Ok(repo) => repo,
         Err(_) => return Ok(None),
     };
-    match repo.find_commit(oid) {
+    // A cache repo in another object format can't hold this commit.
+    if repo
+        .object_format()
+        .map_err(|source| CliError::GitOperation { source })?
+        != commit.format()
+    {
+        return Ok(None);
+    }
+    match repo.find_commit(&commit) {
         Ok(Some(_)) => Ok(Some(repo)),
         Ok(None) => Ok(None),
         Err(error) => Err(CliError::GitOperation { source: error }),
     }
 }
 
-/// Strip the `git:sha256:` prefix from a `RevisionId` and look up the
-/// commit. Non-git revisions return `Ok(None)` — the caller treats
-/// that as "content layer is Indeterminate."
+/// Parse `revision` as a Git commit (`specs/DECISIONS.md` §19).
+/// `Ok(None)` for another storage scheme; a malformed `git:` revision
+/// is an error rather than being treated as some other scheme.
+fn git_revision(revision: &RevisionId) -> Result<Option<kairo_git::GitRevision>, CliError> {
+    revision
+        .git()
+        .map_err(|source| CliError::InvalidGitRevision {
+            revision: revision.as_str().to_owned(),
+            source,
+        })
+}
+
+/// Look up `revision`'s commit. Non-git revisions return `NotFound` —
+/// the caller treats that as "content layer is Indeterminate."
 fn lookup_commit_for_revision(
     repo: &kairo_git::Repository,
     revision: &RevisionId,
 ) -> Result<CommitLookup, CliError> {
-    let oid = match revision.as_str().strip_prefix("git:sha256:") {
-        Some(oid) => oid,
-        None => return Ok(CommitLookup::NotFound),
+    let Some(commit) = git_revision(revision)? else {
+        return Ok(CommitLookup::NotFound);
     };
-    match repo.find_commit(oid) {
+    match repo.find_commit(&commit) {
         Ok(Some(info)) => Ok(CommitLookup::Found {
             parent_oids: info.parent_ids,
         }),
@@ -4614,12 +4666,11 @@ fn resolve_manifest(
     let (Some(repo), Some(CommitLookup::Found { .. })) = (git_repo, commit_lookup.as_ref()) else {
         return Ok((None, None));
     };
-    let oid = match revision.as_str().strip_prefix("git:sha256:") {
-        Some(oid) => oid,
-        None => return Ok((None, None)),
+    let Some(commit) = git_revision(revision)? else {
+        return Ok((None, None));
     };
     let bytes = repo
-        .read_blob_at_path(oid, "kairo.toml")
+        .read_blob_at_path(&commit, "kairo.toml")
         .map_err(|source| CliError::GitOperation { source })?;
     let Some(bytes) = bytes else {
         return Ok((None, None));
@@ -4628,7 +4679,7 @@ fn resolve_manifest(
     let manifest = ObjectManifest::parse_toml(&text).map_err(CliError::ParseManifest)?;
     Ok((
         Some(manifest),
-        Some(PathBuf::from(format!("git:sha256:{oid}/kairo.toml"))),
+        Some(PathBuf::from(format!("{commit}/kairo.toml"))),
     ))
 }
 

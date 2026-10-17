@@ -17,12 +17,12 @@ const ALPHA = 'zMockObject00000000000000000000000000000000';
 
 const REV_NEW: VersionTagDialogRevision = {
   statementId: 'zMockRevStmt3',
-  revisionId: 'git:sha256:0003',
+  revisionId: 'git:sha1:0003',
   createdAt: '2026-01-03T00:00:00Z',
 };
 const REV_OLD: VersionTagDialogRevision = {
   statementId: 'zMockRevStmt1',
-  revisionId: 'git:sha256:0001',
+  revisionId: 'git:sha1:0001',
   createdAt: '2026-01-01T00:00:00Z',
 };
 

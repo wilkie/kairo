@@ -9,17 +9,17 @@ const alpha = 'zMockObject00000000000000000000000000000000';
 const REVISIONS: VersionTagDialogRevision[] = [
   {
     statementId: 'zMockRevisionStmtAlpha3000000000000000000',
-    revisionId: 'git:sha256:0000000000000000000000000000000000000003',
+    revisionId: 'git:sha1:0000000000000000000000000000000000000003',
     createdAt: '2026-01-03T00:00:00Z',
   },
   {
     statementId: 'zMockRevisionStmtAlpha2000000000000000000',
-    revisionId: 'git:sha256:0000000000000000000000000000000000000002',
+    revisionId: 'git:sha1:0000000000000000000000000000000000000002',
     createdAt: '2026-01-02T00:00:00Z',
   },
   {
     statementId: 'zMockRevisionStmt00000000000000000000000000',
-    revisionId: 'git:sha256:0000000000000000000000000000000000000001',
+    revisionId: 'git:sha1:0000000000000000000000000000000000000001',
     createdAt: '2026-01-01T00:00:00Z',
   },
 ];

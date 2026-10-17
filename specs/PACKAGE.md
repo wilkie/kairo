@@ -340,22 +340,26 @@ The `manifest.git_history` field reflects the shipped state:
 {
   "git_history": {
     "included": true,
-    "expected_commits": ["<hex-oid-1>", "<hex-oid-2>", ...]
+    "expected_commits": ["git:sha1:<oid-1>", "git:sha1:<oid-2>", ...]
   }
 }
 ```
 
 `expected_commits` is auto-derived from every `ObjectRevision`'s
-`git:sha256:<oid>` in the bundle, regardless of whether
+typed Git revision (`git:sha1:<oid>` or `git:sha256:<oid>`,
+`DECISIONS.md` §19) in the bundle, regardless of whether
 `included` is true; it serves as a manifest of which commits the
 bundle expects to reach for end-to-end VALID. Recipients may use
 it to fetch missing commits from elsewhere when `included = false`.
 
 **Import semantics.** When `included = true`, bundle import streams
-each `git/<object-id>.pack` into the recipient's
-`~/.kairo/git/pool/objects/` via `git index-pack --stdin`, then
-pins every `expected_commits` OID under the matching per-object
-cache repo as `refs/kairo/imported/<oid>`. The pinned refs keep
+each `git/<object-id>.pack` into the recipient's pool for the
+commits' format (`~/.kairo/git/pool-<format>/`) via `git index-pack
+--stdin`. It then checks that every `expected_commits` commit's
+closure is present (a pack can carry a commit without its trees),
+and only then pins each one under the matching per-object cache repo
+as `refs/kairo/imported/<oid>`. Commits in mixed formats, or a pack
+with no named commits, are refused. The pinned refs keep
 those OIDs alive against future cache GC and surface them in
 `kairo git cache status`. After import, the recipient's
 `kairo verify object` reaches the cached commits via the §6.1

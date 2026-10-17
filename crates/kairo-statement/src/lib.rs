@@ -1,7 +1,10 @@
 //! Signed statement envelope primitives.
 
+mod git_revision;
 pub mod json;
 pub mod verify;
+
+pub use git_revision::{check_revision_ids, GitObjectFormat, GitRevision, GitRevisionError};
 
 use std::error::Error;
 use std::fmt;

@@ -12,9 +12,11 @@ use kairo_core::{ObjectId, StatementId, Timestamp};
 use kairo_federation_core::ObjectListing;
 use kairo_federation_http::client::{pull_object, GitOutcome, Limits, PullError, PullOptions};
 use kairo_git::GitCache;
-use kairo_statement::RevisionId;
+use kairo_statement::{GitObjectFormat, GitRevision};
 use kairo_store::{FilesystemStore, PublishedObjectStore};
-use kairo_test_support::git::{build_pack_from, init_git_repo_with_manifest, skip_if_no_git};
+use kairo_test_support::git::{
+    build_pack_from, init_git_repo_with_manifest, init_git_repo_with_manifest_in, skip_if_no_git,
+};
 use kairo_test_support::store::StoreFixture;
 use tempfile::TempDir;
 
@@ -44,18 +46,23 @@ struct Origin {
     node_actor: kairo_core::ActorId,
     object: ObjectId,
     revision: StatementId,
-    commit: String,
+    commit: GitRevision,
 }
 
 fn origin(cached: bool) -> Origin {
-    let (repo, commit) = init_git_repo_with_manifest(MANIFEST).expect("git repo");
+    origin_in(cached, GitObjectFormat::Sha1)
+}
+
+fn origin_in(cached: bool, format: GitObjectFormat) -> Origin {
+    let (repo, oid) = init_git_repo_with_manifest_in(MANIFEST, format.as_str()).expect("git repo");
+    let commit = GitRevision::new(format, &oid).expect("oid in format");
     let (dir, fixture) = StoreFixture::temp();
     let alice = fixture.make_actor();
     let object = fixture.make_object(&alice, "kairo/object");
     let revision = fixture.make_revision(
         &alice,
         &object,
-        RevisionId::new(format!("git:sha256:{commit}")),
+        commit.to_revision_id(),
         MANIFEST,
         Vec::new(),
     );
@@ -63,7 +70,7 @@ fn origin(cached: bool) -> Origin {
     if cached {
         let cache = GitCache::open(fixture.store.root().join("git")).expect("cache");
         cache
-            .ingest_pack(&build_pack_from(repo.path()))
+            .ingest_pack(format, &build_pack_from(repo.path()))
             .expect("ingest");
         cache
             .set_ref(object.object_id.as_str(), "refs/heads/main", &commit)
@@ -104,7 +111,7 @@ fn local_store() -> (TempDir, FilesystemStore) {
     (dir, store)
 }
 
-fn local_has_commit(store: &FilesystemStore, object: &ObjectId, commit: &str) -> bool {
+fn local_has_commit(store: &FilesystemStore, object: &ObjectId, commit: &GitRevision) -> bool {
     GitCache::open(store.root().join("git"))
         .expect("cache")
         .has_commit(object.as_str(), commit)
@@ -158,7 +165,7 @@ fn pull_ingests_the_pack_and_pins_each_commit() {
     let (_relay_dir, relay) = local_store();
     GitCache::open(relay.root().join("git"))
         .expect("cache")
-        .ingest_pack(&pack)
+        .ingest_pack(GitObjectFormat::Sha1, &pack)
         .expect("ingest relayed pack");
     assert!(GitCache::open(relay.root().join("git"))
         .expect("cache")
@@ -274,11 +281,12 @@ fn a_pack_missing_the_revision_commit_fails_the_pull() {
     // The origin's cache holds an unrelated repo's history for the
     // object, so its pack is valid Git but lacks the signed commit.
     let origin = origin(false);
-    let (other, other_commit) =
+    let (other, other_oid) =
         init_git_repo_with_manifest("[kairo]\nschema = 1\nname = \"other\"\n").expect("repo");
+    let other_commit = GitRevision::new(GitObjectFormat::Sha1, &other_oid).expect("sha1 oid");
     let cache = GitCache::open(origin.store.root().join("git")).expect("cache");
     cache
-        .ingest_pack(&build_pack_from(other.path()))
+        .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(other.path()))
         .expect("ingest");
     cache
         .set_ref(origin.object.as_str(), "refs/heads/main", &other_commit)
@@ -293,7 +301,7 @@ fn a_pack_missing_the_revision_commit_fails_the_pull() {
         &PullOptions::default(),
     ) {
         Err(PullError::GitIncomplete { missing }) => {
-            assert_eq!(missing, vec![origin.commit.clone()])
+            assert_eq!(missing, vec![origin.commit.to_string()])
         }
         other => panic!("expected GitIncomplete, got {other:?}"),
     }
@@ -326,4 +334,71 @@ fn an_oversize_pack_fails_the_pull() {
     assert!(!local_has_commit(&local, &origin.object, &origin.commit));
     // The signed history before the Git step stays.
     assert!(local.get_statement_bytes(&origin.revision).is_ok());
+}
+
+#[test]
+fn sha256_history_federates_into_its_own_pool() {
+    if skip_if_no_git() {
+        return;
+    }
+    let origin = origin_in(true, GitObjectFormat::Sha256);
+    assert_eq!(origin.commit.oid().len(), 64);
+    let served = serve(&origin);
+    let (_dir, local) = local_store();
+    let report = pull_object(
+        &local,
+        &served.base_url,
+        &origin.object,
+        &PullOptions::default(),
+    )
+    .expect("pull");
+    assert_eq!(report.git, GitOutcome::Ingested { commits: 1 });
+    let cache = GitCache::open(local.root().join("git")).expect("cache");
+    assert_eq!(
+        cache.repo_format(origin.object.as_str()).expect("format"),
+        Some(GitObjectFormat::Sha256)
+    );
+    assert!(cache
+        .has_commit(origin.object.as_str(), &origin.commit)
+        .expect("has_commit"));
+    assert!(local.root().join("git").join("pool-sha256").exists());
+    assert!(!local.root().join("git").join("pool-sha1").exists());
+}
+
+#[test]
+fn a_failed_git_step_leaves_no_repo_to_advertise() {
+    if skip_if_no_git() {
+        return;
+    }
+    // Same setup as the missing-commit case: the pull fails after
+    // ingesting the peer's pack into the pool.
+    let origin = origin(false);
+    let (other, other_oid) =
+        init_git_repo_with_manifest("[kairo]\nschema = 1\nname = \"other\"\n").expect("repo");
+    let other_commit = GitRevision::new(GitObjectFormat::Sha1, &other_oid).expect("sha1 oid");
+    let origin_cache = GitCache::open(origin.store.root().join("git")).expect("cache");
+    origin_cache
+        .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(other.path()))
+        .expect("ingest");
+    origin_cache
+        .set_ref(origin.object.as_str(), "refs/heads/main", &other_commit)
+        .expect("ref");
+    let served = serve(&origin);
+
+    let (_dir, local) = local_store();
+    assert!(matches!(
+        pull_object(
+            &local,
+            &served.base_url,
+            &origin.object,
+            &PullOptions::default()
+        ),
+        Err(PullError::GitIncomplete { .. })
+    ));
+    let cache = GitCache::open(local.root().join("git")).expect("cache");
+    assert_eq!(
+        cache.repo_format(origin.object.as_str()).expect("format"),
+        None
+    );
+    assert!(!cache.has_refs(origin.object.as_str()).expect("has_refs"));
 }

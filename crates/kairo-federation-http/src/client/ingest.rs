@@ -13,11 +13,14 @@
 //!    stored, which is why the caller ingests actors and their key
 //!    events first, in `created_at` order.
 //!
-//! A statement whose signing key is revoked at its `created_at` is a
-//! verified fact rather than tampering, so it is skipped (not
-//! stored) instead of failing the pull. Capability checks are not run
-//! here: a verified statement whose signer lacks the capability is
-//! stored, and the resolver decides (`FEDERATION.md` "Conflict
+//! A statement whose signing key is revoked at its `created_at` is
+//! stored and flagged, not refused: the bytes are genuine, the
+//! revocation is a verified fact about the actor, and the origin
+//! holds the same statement. Dropping it would make what a node
+//! stores depend on the order key events arrive in. Read-time
+//! verification reports it as revoked. Capability checks are not run
+//! here either: a verified statement whose signer lacks the capability
+//! is stored, and the resolver decides (`FEDERATION.md` "Conflict
 //! Handling").
 
 use std::collections::BTreeSet;
@@ -62,8 +65,8 @@ pub(crate) enum Section<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ingested {
     Stored,
-    /// Not stored: the signing key is revoked at `created_at`.
-    SkippedRevokedKey,
+    /// Stored, but the signing key is revoked at `created_at`.
+    StoredRevokedKey,
 }
 
 /// The two envelope fields ordering needs, read before full parsing.
@@ -125,7 +128,7 @@ fn signature_outcome(report: &VerificationReport) -> Result<Ingested, RecordReje
     }
     match &report.signature {
         SignatureStatus::Valid => Ok(Ingested::Stored),
-        SignatureStatus::KeyRevoked => Ok(Ingested::SkippedRevokedKey),
+        SignatureStatus::KeyRevoked => Ok(Ingested::StoredRevokedKey),
         other => Err(RecordRejection::Signature(format!("{other:?}"))),
     }
 }
@@ -152,9 +155,7 @@ pub(crate) fn ingest_statement(
             fixity(expected, $signed.statement_id())?;
             $check?;
             let outcome = signature_outcome(&verify_envelope_statement(&$signed, store_))?;
-            if outcome == Ingested::Stored {
-                store_.$put(&$signed).map_err(store)?;
-            }
+            store_.$put(&$signed).map_err(store)?;
             Ok(outcome)
         }};
     }
@@ -166,9 +167,7 @@ pub(crate) fn ingest_statement(
             fixity(expected, $signed.statement_id())?;
             $check?;
             let outcome = signature_outcome(&verify_envelope_multi_statement(&$signed, store_))?;
-            if outcome == Ingested::Stored {
-                store_.$put(&$signed).map_err(store)?;
-            }
+            store_.$put(&$signed).map_err(store)?;
             Ok(outcome)
         }};
     }
@@ -194,7 +193,9 @@ pub(crate) fn ingest_statement(
     match kind {
         StatementKind::ObjectRevision => {
             single!(ObjectRevisionStatementJson, put_object_revision, |signed| {
-                object_section(signed.unsigned().body().object())
+                object_section(signed.unsigned().body().object()).and_then(|()| {
+                    kairo_statement::check_revision_ids(signed.unsigned().body()).map_err(schema)
+                })
             })
         }
         StatementKind::ObjectBranch => {

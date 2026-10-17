@@ -233,16 +233,18 @@ async fn session_mode_version_tag_bind_retarget_and_grantee() {
     let rev1 = fixture.make_revision(
         &alice,
         &object,
-        kairo_statement::RevisionId::new("git:sha256:r1"),
+        kairo_statement::RevisionId::new("git:sha1:5573e39b6600496d40f493d00ec7658479a19607"),
         manifest_text,
         Vec::new(),
     );
     let rev2 = fixture.make_revision(
         &alice,
         &object,
-        kairo_statement::RevisionId::new("git:sha256:r2"),
+        kairo_statement::RevisionId::new("git:sha1:a50126cc2d6c726de0ca203c3b659f658d356173"),
         manifest_text,
-        vec![kairo_statement::RevisionId::new("git:sha256:r1")],
+        vec![kairo_statement::RevisionId::new(
+            "git:sha1:5573e39b6600496d40f493d00ec7658479a19607",
+        )],
     );
     let store_path = dir.path().to_path_buf();
     drop(fixture);
@@ -377,7 +379,7 @@ async fn session_mode_capability_denied_for_object_revision_returns_403() {
     let manifest_hash = kairo_core::BlobId::from_sha256_digest([0xAB; 32]).to_string();
     let body = json!({
         "object": object.object_id.to_string(),
-        "revision": "git:sha256:0000000000000000000000000000000000000000",
+        "revision": "git:sha1:0000000000000000000000000000000000000000",
         "parents": [],
         "manifest_hash": manifest_hash,
         "attests_reachable_history": false,

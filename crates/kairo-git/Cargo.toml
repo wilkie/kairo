@@ -8,7 +8,8 @@ repository.workspace = true
 
 [dependencies]
 fs2 = "0.4"
-gix = { version = "0.66", default-features = false, features = ["max-performance-safe"] }
+gix = { version = "0.89", default-features = false, features = ["max-performance-safe", "sha1", "sha256"] }
+kairo-statement = { path = "../kairo-statement" }
 
 [dev-dependencies]
 kairo-test-support = { path = "../kairo-test-support" }

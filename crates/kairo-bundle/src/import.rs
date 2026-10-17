@@ -249,6 +249,12 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
                         message: error.to_string(),
                     })?;
                 fixity_check_statement(&path, &statement_id, &signed.statement_id())?;
+                kairo_statement::check_revision_ids(signed.unsigned().body()).map_err(|error| {
+                    BundleError::StatementShape {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
                 store
                     .put_object_revision(&signed)
                     .map_err(BundleError::Store)?;
