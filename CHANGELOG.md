@@ -28,8 +28,11 @@ rather than per-commit.
   - Branches, version tags, capability grants and revocations, and key
     events are chained kinds. `ObjectRevision` and `ActorTrust` are
     unchained and refuse a non-empty `previous`.
-  - Write paths still sign with an empty `previous`. Setting the tips
-    comes in the next step.
+  - Every write path signs with the current tips: CLI commands
+    (including emergency key prepare; `submit` keeps the prepared
+    envelope's `previous`) and daemon session signing. Unchained kinds
+    are unaffected. `GET /api/v1/actors/{id}/chains` lists an actor's
+    chains and tips for clients that sign their own statements.
   - The store indexes every actor chain per signer
     (`actor_chains/`, rebuilt by `rebuild-indexes`). It reports each
     chain's tips, and completeness with the missing ids. It also

@@ -586,7 +586,18 @@ where
             ApiError::internal(format!("could not load signing key for {actor}: {error}"))
         })?;
 
+    // Chain it: `previous` is the actor's current tips in the
+    // statement's chain (`specs/DECISIONS.md` §23 sub-decision 5).
+    // Two concurrent writes may both read the same tips; that's a fork,
+    // which the next write merges.
+    let store = state.store.clone();
     let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+    let unsigned = tokio::task::spawn_blocking(move || store.link_to_chain(unsigned))
+        .await
+        .map_err(|error| ApiError::internal(format!("chain tips task: {error}")))?
+        .map_err(|error| {
+            ApiError::internal(format!("could not read chain tips for {actor}: {error}"))
+        })?;
     let canonical = unsigned.canonical_bytes();
     let signature_bytes = secret.sign(&canonical);
     let key_id = secret.public_key().key_id().to_string();

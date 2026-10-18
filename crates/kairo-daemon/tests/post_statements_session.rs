@@ -286,6 +286,9 @@ async fn session_mode_version_tag_bind_retarget_and_grantee() {
         .await
         .expect("retarget");
     assert_eq!(retarget.statement["body"]["supersedes"], first.statement_id);
+    // Actor chains (DECISIONS.md §23): the daemon signs with the tips.
+    assert_eq!(first.statement["previous"], json!([]));
+    assert_eq!(retarget.statement["previous"], json!([first.statement_id]));
 
     let latest = client
         .latest_version_tag(&object_id, "1.0.0", None)
@@ -298,7 +301,7 @@ async fn session_mode_version_tag_bind_retarget_and_grantee() {
     );
 
     // Alice grants Bob the kind; Bob can then tag Alice's object.
-    client
+    let grant = client
         .write_via_session(
             &alice_cookie,
             "ActorCapabilityGrant",
@@ -314,6 +317,15 @@ async fn session_mode_version_tag_bind_retarget_and_grantee() {
         )
         .await
         .expect("grant");
+    // The object-scoped grant joins the same chain as Alice's tags.
+    assert_eq!(grant.statement["previous"], json!([retarget.statement_id]));
+    let chains = client
+        .actor_chains(&alice.actor_id.to_string())
+        .await
+        .expect("chains");
+    assert_eq!(chains.chains.len(), 1);
+    assert_eq!(chains.chains[0].scope, format!("object:{object_id}"));
+    assert_eq!(chains.chains[0].tips, vec![grant.statement_id.clone()]);
     let (_info, bob_cookie) = client
         .open_session(&bob.actor_id.to_string(), None)
         .await

@@ -66,7 +66,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use actor_chains::ChainPlacement;
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{
@@ -85,9 +84,9 @@ use kairo_statement::{
     ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
     ActorAttestationThresholdChangeBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
     ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
-    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ChainScope, MultiSignedStatement,
-    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
-    SignedStatement, StatementKind,
+    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ChainKey, ChainScope,
+    MultiSignedStatement, ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody,
+    ObjectVersionTagBody, SignedStatement, StatementKind,
 };
 
 pub use actor_chains::{ChainCompleteness, ChainReport};
@@ -1702,7 +1701,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Object(body.object().clone())),
+            &ChainKey::Scope(ChainScope::Object(body.object().clone())),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1728,7 +1727,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Object(body.object().clone())),
+            &ChainKey::Scope(ChainScope::Object(body.object().clone())),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1778,7 +1777,7 @@ impl FilesystemStore {
         }
         self.upsert_actor_chain(
             grantor,
-            &ChainPlacement::Scope(ChainScope::for_capability(scope)),
+            &ChainKey::Scope(ChainScope::for_capability(scope)),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1808,7 +1807,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             grantor,
-            &ChainPlacement::RevokedGrant(body.revoked_grant().clone()),
+            &ChainKey::RevokedGrant(body.revoked_grant().clone()),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1839,7 +1838,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1865,7 +1864,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1896,7 +1895,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1927,7 +1926,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1951,7 +1950,7 @@ impl FilesystemStore {
         self.upsert_attestation_add_index(actor, id, body.new_key(), created_at)?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -1975,7 +1974,7 @@ impl FilesystemStore {
         self.upsert_attestation_revocation_index(actor, id, body.revoked_key(), created_at)?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,
@@ -2004,7 +2003,7 @@ impl FilesystemStore {
         )?;
         self.upsert_actor_chain(
             actor,
-            &ChainPlacement::Scope(ChainScope::Keys),
+            &ChainKey::Scope(ChainScope::Keys),
             id,
             statement.unsigned().previous(),
             created_at,

@@ -202,12 +202,15 @@ impl StoreFixture {
         let subject: KairoRef = format!("object:{}", object.object_id)
             .parse()
             .expect("subject parse");
-        let unsigned = UnsignedStatement::new(
-            actor.actor_id.clone(),
-            subject,
-            Timestamp::from_seconds(FIXTURE_TIMESTAMP),
-            body,
-        );
+        let unsigned = self
+            .store
+            .link_to_chain(UnsignedStatement::new(
+                actor.actor_id.clone(),
+                subject,
+                Timestamp::from_seconds(FIXTURE_TIMESTAMP),
+                body,
+            ))
+            .expect("chain tips");
         let signature_bytes = actor.signing.sign(&unsigned.canonical_bytes());
         let signature = Signature::new(
             actor.actor_id.clone(),

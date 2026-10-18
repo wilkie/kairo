@@ -39,8 +39,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use crate::dto::{
-    ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto, KeystoreActorDto,
-    KeystoreActorsResponse, ObjectBranchStatementJson, ObjectByActorDto,
+    ActorChainsDto, ActorGenesisJson, ActorTrustStatementJson, BranchTipDto, CapabilityHeadDto,
+    KeystoreActorDto, KeystoreActorsResponse, ObjectBranchStatementJson, ObjectByActorDto,
     ObjectGenesisStatementJson, ObjectVersionTagStatementJson, OpenSessionRequest,
     PutStatementResult, SessionInfo, StatementByActorDto, StatementValue, StatusInfo,
     ValidationResult, VersionInfo,
@@ -145,6 +145,14 @@ impl Client {
         actor_id: &str,
     ) -> ClientResult<Vec<ObjectByActorDto>> {
         self.get_json(&format!("/api/v1/actors/{actor_id}/objects"))
+            .await
+    }
+
+    /// `GET /api/v1/actors/{actor_id}/chains` — the actor's chains and
+    /// their tips, for setting `previous` on a client-signed statement
+    /// (`specs/DECISIONS.md` §23).
+    pub async fn actor_chains(&self, actor_id: &str) -> ClientResult<ActorChainsDto> {
+        self.get_json(&format!("/api/v1/actors/{actor_id}/chains"))
             .await
     }
 

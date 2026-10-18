@@ -20,6 +20,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/actors/{id}/chains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** `GET /api/v1/actors/{id}/chains` */
+        get: operations["listActorChains"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/actors/{id}/objects": {
         parameters: {
             query?: never;
@@ -423,6 +440,26 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description One of an actor's chains (`specs/DECISIONS.md` §23). */
+        ActorChainDto: {
+            /** @description `object:<id>`, `actor:<id>`, or `keys`. */
+            scope: string;
+            /**
+             * @description The chain's current tips, ascending: the `previous` the actor's
+             *     next statement in this scope names (at most 16; more merge over
+             *     later writes).
+             */
+            tips: string[];
+        };
+        /**
+         * @description Response body for `GET /api/v1/actors/{id}/chains`: what a client
+         *     that signs its own statements needs to set `previous`.
+         */
+        ActorChainsDto: {
+            actor: string;
+            /** @description Every scope the actor has statements in, ascending by scope. */
+            chains: components["schemas"]["ActorChainDto"][];
+        };
         ActorGenesisJson: {
             actor_kind: string;
             attestation_keys: components["schemas"]["PublicKeyJson"][];
@@ -968,6 +1005,36 @@ export interface operations {
             };
             /** @description Actor not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listActorChains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Actor id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The actor's chains and their current tips (DECISIONS.md §23). A client that signs its own statements sets `previous` to the tips of the statement's scope; stale tips only create a fork, which a later write merges. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActorChainsDto"];
+                };
+            };
+            /** @description Malformed actor id */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

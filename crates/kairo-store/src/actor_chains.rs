@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use kairo_core::{ActorId, StatementId, Timestamp};
-use kairo_statement::{ChainScope, Previous};
+use kairo_statement::{ChainKey, ChainScope, Previous, StatementBody, UnsignedStatement};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CorruptReason, StoreError};
@@ -58,20 +58,10 @@ struct ChainLinks {
 #[serde(transparent)]
 struct ActorChainsFile(BTreeMap<String, BTreeMap<String, ChainLink>>);
 
-/// Where a chained statement is filed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ChainPlacement {
-    Scope(ChainScope),
-    /// A revocation, placed in the scope of the grant it revokes.
-    RevokedGrant(StatementId),
-}
-
-impl ChainPlacement {
-    fn key(&self) -> String {
-        match self {
-            Self::Scope(scope) => scope.key(),
-            Self::RevokedGrant(grant) => format!("{GRANT_KEY_PREFIX}{grant}"),
-        }
+fn chain_key_string(key: &ChainKey) -> String {
+    match key {
+        ChainKey::Scope(scope) => scope.key(),
+        ChainKey::RevokedGrant(grant) => format!("{GRANT_KEY_PREFIX}{grant}"),
     }
 }
 
@@ -135,7 +125,7 @@ impl FilesystemStore {
     pub(crate) fn upsert_actor_chain(
         &self,
         signer: &ActorId,
-        placement: &ChainPlacement,
+        key: &ChainKey,
         id: &StatementId,
         previous: &Previous,
         created_at: Timestamp,
@@ -147,7 +137,7 @@ impl FilesystemStore {
                 previous: previous.ids().iter().map(ToString::to_string).collect(),
                 created_at: created_at.to_string(),
             };
-            let chain = file.0.entry(placement.key()).or_default();
+            let chain = file.0.entry(chain_key_string(key)).or_default();
             if chain.get(id.as_str()) == Some(&link) {
                 return Ok(());
             }
@@ -236,6 +226,37 @@ impl FilesystemStore {
         scope: &ChainScope,
     ) -> Result<Vec<StatementId>, StoreError> {
         Ok(tips(&self.chain_links(signer, scope)?.links))
+    }
+
+    /// `unsigned` with `previous` set to its signer's current tips in
+    /// its chain: what every write path signs (`DECISIONS.md` §23
+    /// sub-decision 5). Unchained kinds come back unchanged. A
+    /// revocation whose grant isn't held, and so has no known scope,
+    /// starts with an empty `previous`. With more than
+    /// [`kairo_statement::MAX_PREVIOUS`] tips, the lowest ids are named
+    /// and the rest merge on later writes.
+    pub fn link_to_chain<B: StatementBody>(
+        &self,
+        unsigned: UnsignedStatement<B>,
+    ) -> Result<UnsignedStatement<B>, StoreError> {
+        let scope = match unsigned.body().chain_key() {
+            None => return Ok(unsigned),
+            Some(ChainKey::Scope(scope)) => scope,
+            Some(ChainKey::RevokedGrant(grant)) => match self.grant_scope(&grant)? {
+                Some(scope) => scope,
+                None => return Ok(unsigned),
+            },
+        };
+        let mut tips = self.actor_chain_tips(unsigned.actor(), &scope)?;
+        tips.truncate(kairo_statement::MAX_PREVIOUS);
+        let previous = Previous::new(tips).map_err(|error| StoreError::Rejected {
+            reason: error.to_string(),
+        })?;
+        unsigned
+            .with_previous(previous)
+            .map_err(|error| StoreError::Rejected {
+                reason: error.to_string(),
+            })
     }
 
     /// `signer`'s chain in `scope` as this node holds it.

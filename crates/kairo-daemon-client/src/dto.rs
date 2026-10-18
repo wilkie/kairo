@@ -222,6 +222,26 @@ pub struct ProvenanceDto {
     pub entries: Vec<ProvenanceEntryDto>,
 }
 
+/// One of an actor's chains (`specs/DECISIONS.md` §23).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActorChainDto {
+    /// `object:<id>`, `actor:<id>`, or `keys`.
+    pub scope: String,
+    /// The chain's current tips, ascending: the `previous` the actor's
+    /// next statement in this scope names (at most 16; more merge over
+    /// later writes).
+    pub tips: Vec<String>,
+}
+
+/// Response body for `GET /api/v1/actors/{id}/chains`: what a client
+/// that signs its own statements needs to set `previous`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ActorChainsDto {
+    pub actor: String,
+    /// Every scope the actor has statements in, ascending by scope.
+    pub chains: Vec<ActorChainDto>,
+}
+
 /// Response body for `GET /api/v1/version`.
 ///
 /// All four fields are crate-version strings (semver), drawn

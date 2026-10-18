@@ -81,6 +81,22 @@ pub trait StatementBody: CanonicalEncode {
     /// non-empty `previous` (`specs/DECISIONS.md` §23). Defaults to
     /// `false`: a kind is unchained unless its decision chains it.
     const CHAINED: bool = false;
+
+    /// Where this statement chains, for a [`Self::CHAINED`] kind;
+    /// `None` otherwise.
+    fn chain_key(&self) -> Option<ChainKey> {
+        None
+    }
+}
+
+/// Where a chained statement belongs (`specs/DECISIONS.md` §23
+/// sub-decision 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChainKey {
+    Scope(ChainScope),
+    /// A capability revocation: the scope of the grant it revokes,
+    /// known once that grant is held.
+    RevokedGrant(StatementId),
 }
 
 /// Most chain tips one statement may name (`specs/DECISIONS.md` §23).
@@ -658,6 +674,10 @@ impl StatementBody for ObjectBranchBody {
     const TYPE: &'static str = "ObjectBranch";
     const VERSION: u8 = 1;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Object(self.object().clone())))
+    }
 }
 
 impl CanonicalEncode for ObjectBranchBody {
@@ -784,6 +804,10 @@ impl StatementBody for ObjectVersionTagBody {
     const TYPE: &'static str = "ObjectVersionTag";
     const VERSION: u8 = 1;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Object(self.object().clone())))
+    }
 }
 
 impl CanonicalEncode for ObjectVersionTagBody {
@@ -1317,6 +1341,12 @@ impl StatementBody for ActorCapabilityGrantBody {
     const TYPE: &'static str = "ActorCapabilityGrant";
     const VERSION: u8 = 1;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::for_capability(
+            self.capability().scope(),
+        )))
+    }
 }
 
 impl CanonicalEncode for ActorCapabilityGrantBody {
@@ -1371,6 +1401,10 @@ impl StatementBody for ActorCapabilityRevocationBody {
     const TYPE: &'static str = "ActorCapabilityRevocation";
     const VERSION: u8 = 1;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::RevokedGrant(self.revoked_grant().clone()))
+    }
 }
 
 impl CanonicalEncode for ActorCapabilityRevocationBody {
@@ -1427,6 +1461,10 @@ impl StatementBody for ActorKeyRotationBody {
     const TYPE: &'static str = "ActorKeyRotation";
     const VERSION: u8 = 1;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorKeyRotationBody {
@@ -1485,6 +1523,10 @@ impl StatementBody for ActorKeyRevocationBody {
     const TYPE: &'static str = "ActorKeyRevocation";
     const VERSION: u8 = 1;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorKeyRevocationBody {
@@ -1537,6 +1579,10 @@ impl StatementBody for ActorEmergencyKeyRotationBody {
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorEmergencyKeyRotationBody {
@@ -1591,6 +1637,10 @@ impl StatementBody for ActorEmergencyKeyRevocationBody {
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorEmergencyKeyRevocationBody {
@@ -1632,6 +1682,10 @@ impl StatementBody for ActorAttestationKeyAddBody {
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorAttestationKeyAddBody {
@@ -1690,6 +1744,10 @@ impl StatementBody for ActorAttestationThresholdChangeBody {
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorAttestationThresholdChangeBody {
@@ -1742,6 +1800,10 @@ impl StatementBody for ActorAttestationKeyRevocationBody {
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
     const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Keys))
+    }
 }
 
 impl CanonicalEncode for ActorAttestationKeyRevocationBody {

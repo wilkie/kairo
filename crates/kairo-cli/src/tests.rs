@@ -3277,6 +3277,28 @@ fn capability_revoke_emits_revocation_and_blocks_wrong_grantor(
     assert!(revoke.contains("revoke capability"));
     assert!(revoke.contains(&format!("revoked_grant = {grant_id}")));
     assert!(revoke.contains("retroactive = true"));
+
+    // Actor chains (DECISIONS.md §23): the grant and its revocation
+    // share the object's chain, so the revocation names the grant.
+    let revocation_id = kairo_core::StatementId::new(parse_field(&revoke, "statement = ")?)?;
+    let grant_id = kairo_core::StatementId::new(grant_id)?;
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let revocation = store.get_actor_capability_revocation(&revocation_id)?;
+    assert_eq!(
+        revocation.unsigned().previous().ids(),
+        std::slice::from_ref(&grant_id)
+    );
+    let grant = store.get_actor_capability_grant(&grant_id)?;
+    assert!(grant.unsigned().previous().is_empty(), "first in its chain");
+    let grantor_id = grant.unsigned().actor().clone();
+    let scope =
+        kairo_statement::ChainScope::for_capability(grant.unsigned().body().capability().scope());
+    let report = store.actor_chain_report(&grantor_id, &scope, |_| false)?;
+    assert_eq!(report.tips, vec![revocation_id]);
+    assert_eq!(
+        report.completeness,
+        kairo_store::ChainCompleteness::Complete
+    );
     Ok(())
 }
 

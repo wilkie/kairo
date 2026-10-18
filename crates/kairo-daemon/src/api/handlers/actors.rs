@@ -19,7 +19,9 @@
 
 use axum::extract::{Path, State};
 use kairo_core::ActorId;
-use kairo_daemon_client::dto::{ObjectByActorDto, StatementByActorDto};
+use kairo_daemon_client::dto::{
+    ActorChainDto, ActorChainsDto, ObjectByActorDto, StatementByActorDto,
+};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_store::{ActorStore, ObjectsByActorResolver, StatementByActorResolver};
 
@@ -138,4 +140,52 @@ pub async fn list_objects_handler(
         .collect();
 
     Ok(ApiResult(dtos))
+}
+
+/// `GET /api/v1/actors/{id}/chains`
+#[utoipa::path(
+    get,
+    path = "/api/v1/actors/{id}/chains",
+    tag = "actors",
+    operation_id = "listActorChains",
+    params(
+        ("id" = String, Path, description = "Actor id"),
+    ),
+    responses(
+        (status = 200, description = "The actor's chains and their current tips (DECISIONS.md §23). A client that signs its own statements sets `previous` to the tips of the statement's scope; stale tips only create a fork, which a later write merges.", body = ActorChainsDto),
+        (status = 400, description = "Malformed actor id"),
+    ),
+)]
+pub async fn chains_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<ApiResult<ActorChainsDto>, ApiError> {
+    let actor_id: ActorId = id
+        .parse()
+        .map_err(|error| ApiError::bad_request(format!("invalid actor id {id:?}: {error}")))?;
+
+    let store = state.store.clone();
+    let actor = actor_id.clone();
+    let chains = tokio::task::spawn_blocking(move || {
+        store
+            .actor_chain_scopes(&actor)?
+            .into_iter()
+            .map(|scope| {
+                let mut tips = store.actor_chain_tips(&actor, &scope)?;
+                tips.truncate(kairo_statement::MAX_PREVIOUS);
+                Ok(ActorChainDto {
+                    scope: scope.key(),
+                    tips: tips.iter().map(ToString::to_string).collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, kairo_store::StoreError>>()
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+    .map_err(|error| map_store_error(error, "actor_chain_tips"))?;
+
+    Ok(ApiResult(ActorChainsDto {
+        actor: actor_id.to_string(),
+        chains,
+    }))
 }

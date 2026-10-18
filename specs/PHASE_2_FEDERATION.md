@@ -448,8 +448,8 @@ inventory step, and 7 come from comparing this design with Radicle
    1. ~~the envelope field and every schema doc's envelope section~~
       (shipped);
    2. ~~tips and completeness in the store~~ (shipped);
-   3. every write path signs with the tips, and the daemon API
-      exposes them;
+   3. ~~every write path signs with the tips, and the daemon API
+      exposes them~~ (shipped);
    4. ingest order and the pull report;
    5. verification and the daemon API's completeness.
 2. **Batch record fetch.** One request names many record ids and

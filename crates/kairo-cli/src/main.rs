@@ -440,7 +440,12 @@ fn run_actor_recover_key_sign(
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let signature_bytes = attestation_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         actor_id.clone(),
@@ -517,7 +522,12 @@ fn run_actor_recover_key_prepare(
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let canonical_bytes = unsigned.canonical_bytes();
 
     // Emit a partial envelope with `signatures: []`. Cosigners append
@@ -625,7 +635,16 @@ fn run_actor_recover_key_submit(
                 source,
                 value: envelope_json.created_at.clone(),
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned)
+        .with_previous(
+            kairo_statement::json::parse_previous(&envelope_json.previous)
+                .map_err(CliError::ParseStatement)?,
+        )
+        .map_err(|error| {
+            CliError::ParseStatement(kairo_statement::json::StatementJsonError::InvalidPrevious(
+                error,
+            ))
+        })?;
     let canonical = unsigned.canonical_bytes();
 
     // Backward-compat single-signer path: --signature provided, the
@@ -830,7 +849,12 @@ fn run_actor_add_attestation_key_sign(
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let signature_bytes = signing_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         actor_id.clone(),
@@ -880,7 +904,12 @@ fn run_actor_add_attestation_key_prepare(
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let canonical_bytes = unsigned.canonical_bytes();
 
     let envelope_json = ActorAttestationKeyAddStatementJson {
@@ -983,7 +1012,16 @@ fn run_actor_add_attestation_key_submit(
                 source,
                 value: envelope_json.created_at.clone(),
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned)
+        .with_previous(
+            kairo_statement::json::parse_previous(&envelope_json.previous)
+                .map_err(CliError::ParseStatement)?,
+        )
+        .map_err(|error| {
+            CliError::ParseStatement(kairo_statement::json::StatementJsonError::InvalidPrevious(
+                error,
+            ))
+        })?;
     let canonical = unsigned.canonical_bytes();
 
     if let Some(sig_path) = signature {
@@ -1108,7 +1146,12 @@ fn run_actor_revoke_attestation_key_sign(
                 source,
             })?;
     let now = Timestamp::now();
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
 
     let secret = read_attestation_seed(&signing_attestation_key_seed)?;
     let public = secret.public_key();
@@ -1181,7 +1224,12 @@ fn run_actor_revoke_attestation_key_prepare(
                 source,
             })?;
     let now = Timestamp::now();
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let canonical_bytes = unsigned.canonical_bytes();
 
     let envelope_json = kairo_statement::json::ActorAttestationKeyRevocationStatementJson {
@@ -1290,7 +1338,16 @@ fn run_actor_revoke_attestation_key_submit(
                 source,
                 value: envelope_json.created_at.clone(),
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned)
+        .with_previous(
+            kairo_statement::json::parse_previous(&envelope_json.previous)
+                .map_err(CliError::ParseStatement)?,
+        )
+        .map_err(|error| {
+            CliError::ParseStatement(kairo_statement::json::StatementJsonError::InvalidPrevious(
+                error,
+            ))
+        })?;
     let canonical = unsigned.canonical_bytes();
 
     if let Some(sig_path) = signature {
@@ -1418,7 +1475,12 @@ fn run_actor_change_attestation_threshold_sign(
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
 
     let secret = read_attestation_seed(&attestation_key_seed)?;
     let public = secret.public_key();
@@ -1489,7 +1551,12 @@ fn run_actor_change_attestation_threshold_prepare(
                 source,
             })?;
     let now = Timestamp::now();
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let canonical_bytes = unsigned.canonical_bytes();
 
     let envelope_json = kairo_statement::json::ActorAttestationThresholdChangeStatementJson {
@@ -1603,7 +1670,16 @@ fn run_actor_change_attestation_threshold_submit(
                 source,
                 value: envelope_json.created_at.clone(),
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned);
+    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, created_at, body_unsigned)
+        .with_previous(
+            kairo_statement::json::parse_previous(&envelope_json.previous)
+                .map_err(CliError::ParseStatement)?,
+        )
+        .map_err(|error| {
+            CliError::ParseStatement(kairo_statement::json::StatementJsonError::InvalidPrevious(
+                error,
+            ))
+        })?;
     let canonical = unsigned.canonical_bytes();
 
     if let Some(sig_path) = signature {
@@ -1934,7 +2010,12 @@ fn run_actor_rotate_key(paths: &StorePaths, actor: String) -> Result<String, Cli
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let signature_bytes = prior_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         actor_id.clone(),
@@ -2040,7 +2121,12 @@ fn run_actor_revoke_key(
                 actor: actor_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(actor_id.clone(), subject, now, body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(actor_id.clone(), subject, now, body))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
     let signature_bytes = signing_secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         actor_id.clone(),
@@ -2522,8 +2608,17 @@ fn run_revision_command(
                 }
             })?;
 
-            let unsigned =
-                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let unsigned = store
+                .link_to_chain(UnsignedStatement::new(
+                    actor_id.clone(),
+                    subject,
+                    Timestamp::now(),
+                    body,
+                ))
+                .map_err(|source| CliError::ReadActorChain {
+                    actor: actor_id.clone(),
+                    source,
+                })?;
 
             let signature_bytes = secret.sign(&unsigned.canonical_bytes());
             let signature = Signature::new(
@@ -2685,8 +2780,17 @@ fn run_branch_command(
                     source,
                 }
             })?;
-            let unsigned =
-                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let unsigned = store
+                .link_to_chain(UnsignedStatement::new(
+                    actor_id.clone(),
+                    subject,
+                    Timestamp::now(),
+                    body,
+                ))
+                .map_err(|source| CliError::ReadActorChain {
+                    actor: actor_id.clone(),
+                    source,
+                })?;
             let signature_bytes = secret.sign(&unsigned.canonical_bytes());
             let signature = Signature::new(
                 actor_id.clone(),
@@ -2981,8 +3085,17 @@ fn run_tag_command(
                     source,
                 }
             })?;
-            let unsigned =
-                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let unsigned = store
+                .link_to_chain(UnsignedStatement::new(
+                    actor_id.clone(),
+                    subject,
+                    Timestamp::now(),
+                    body,
+                ))
+                .map_err(|source| CliError::ReadActorChain {
+                    actor: actor_id.clone(),
+                    source,
+                })?;
             let signature_bytes = secret.sign(&unsigned.canonical_bytes());
             let signature = Signature::new(
                 actor_id.clone(),
@@ -3064,8 +3177,17 @@ fn run_tag_command(
                     source,
                 }
             })?;
-            let unsigned =
-                UnsignedStatement::new(actor_id.clone(), subject, Timestamp::now(), body);
+            let unsigned = store
+                .link_to_chain(UnsignedStatement::new(
+                    actor_id.clone(),
+                    subject,
+                    Timestamp::now(),
+                    body,
+                ))
+                .map_err(|source| CliError::ReadActorChain {
+                    actor: actor_id.clone(),
+                    source,
+                })?;
             let signature_bytes = secret.sign(&unsigned.canonical_bytes());
             let signature = Signature::new(
                 actor_id.clone(),
@@ -3491,7 +3613,17 @@ fn run_trust_decide(
             source,
         }
     })?;
-    let unsigned = UnsignedStatement::new(by_actor.clone(), subject, Timestamp::now(), body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(
+            by_actor.clone(),
+            subject,
+            Timestamp::now(),
+            body,
+        ))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: by_actor.clone(),
+            source,
+        })?;
     let signature_bytes = secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         by_actor.clone(),
@@ -3896,7 +4028,17 @@ fn run_capability_grant(
                 actor: grantee_id.clone(),
                 source,
             })?;
-    let unsigned = UnsignedStatement::new(grantor_id.clone(), subject, Timestamp::now(), body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(
+            grantor_id.clone(),
+            subject,
+            Timestamp::now(),
+            body,
+        ))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: grantor_id.clone(),
+            source,
+        })?;
     let signature_bytes = secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         grantor_id.clone(),
@@ -3994,7 +4136,17 @@ fn run_capability_revoke(
             source,
         }
     })?;
-    let unsigned = UnsignedStatement::new(grantor_id.clone(), subject, Timestamp::now(), body);
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(
+            grantor_id.clone(),
+            subject,
+            Timestamp::now(),
+            body,
+        ))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: grantor_id.clone(),
+            source,
+        })?;
     let signature_bytes = secret.sign(&unsigned.canonical_bytes());
     let signature = Signature::new(
         grantor_id.clone(),

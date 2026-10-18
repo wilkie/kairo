@@ -116,7 +116,7 @@ impl Error for StatementJsonError {
 /// Parse the envelope's `previous`: statement ids, strictly ascending,
 /// at most [`crate::MAX_PREVIOUS`]. Only the canonical spelling is
 /// accepted.
-fn parse_previous(raw: &[String]) -> Result<Previous, StatementJsonError> {
+pub fn parse_previous(raw: &[String]) -> Result<Previous, StatementJsonError> {
     let ids = raw
         .iter()
         .map(|id| StatementId::new(id.clone()).map_err(StatementJsonError::InvalidStatement))

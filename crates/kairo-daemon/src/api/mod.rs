@@ -38,6 +38,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/actors/:id/objects",
             get(handlers::actors::list_objects_handler),
         )
+        .route(
+            "/api/v1/actors/:id/chains",
+            get(handlers::actors::chains_handler),
+        )
         .route("/api/v1/objects/:id", get(handlers::objects::handler))
         .route(
             "/api/v1/objects/:id/log",

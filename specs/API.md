@@ -812,6 +812,14 @@ statements index):
 The others return the underlying statement envelope; clients that
 want the body decode it themselves.
 
+`GET /api/v1/actors/{actor_id}/chains` lists the actor's chains
+(`DECISIONS.md` §23): one `{ scope, tips }` per scope (`object:<id>`,
+`actor:<id>`, or `keys`), tips ascending and at most 16. A client
+that signs its own statements (signed mode) sets the envelope's
+`previous` to the tips of the statement's scope. Session-mode writes
+get this from the daemon automatically. Stale tips are not an error:
+they create a fork, which the actor's next write merges.
+
 ### 14.1 List statements for object
 
 ```http

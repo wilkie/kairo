@@ -133,6 +133,12 @@ pub(crate) enum CliError {
         actor: ActorId,
         source: kairo_store::StoreError,
     },
+    /// Reading the signer's chain tips to set `previous` failed
+    /// (`specs/DECISIONS.md` §23).
+    ReadActorChain {
+        actor: ActorId,
+        source: kairo_store::StoreError,
+    },
     ReadKey {
         actor: ActorId,
         source: kairo_keystore::KeystoreError,
@@ -607,6 +613,9 @@ impl fmt::Display for CliError {
             Self::ReadActor { actor, source } => {
                 write!(f, "failed to read actor {actor}: {source}")
             }
+            Self::ReadActorChain { actor, source } => {
+                write!(f, "failed to read actor {actor}'s chain tips: {source}")
+            }
             Self::ReadKey { actor, source } => {
                 write!(f, "failed to read key for actor {actor}: {source}")
             }
@@ -979,6 +988,7 @@ impl Error for CliError {
             | Self::RecordPull { source, .. }
             | Self::WriteActor { source, .. }
             | Self::ReadActor { source, .. }
+            | Self::ReadActorChain { source, .. }
             | Self::WriteObjectGenesis { source, .. }
             | Self::WriteRevision { source, .. }
             | Self::WriteBlob { source, .. }

@@ -1979,10 +1979,12 @@ Sub-decisions:
 5. **Every write path sets it.**
    - **CLI and daemon session signing** (§15) read the signer's tips
      from the store and sign with them.
-   - **Signed-mode clients** (§13) read them from the daemon API.
-     The API exposes the tips for each actor and scope, and the write
-     path returns the new tips. A client with stale tips creates a
-     fork, which is merged later.
+   - **Signed-mode clients** (§13) read them from the daemon API
+     (`GET /api/v1/actors/{id}/chains`, every scope and its tips). A
+     statement that named all of its scope's tips becomes that scope's
+     only tip, so a client writing in sequence can chain from what it
+     just wrote. A client with stale tips creates a fork, which is
+     merged later.
    - **Imports sign nothing.** Bundle import and federation pull only
      store other actors' statements.
 
