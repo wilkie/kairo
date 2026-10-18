@@ -8,10 +8,12 @@ repository.workspace = true
 
 [dependencies]
 base64 = "=0.21.7"
+getrandom = "0.2"
 kairo-core = { path = "../kairo-core" }
 kairo-identity = { path = "../kairo-identity" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
 
 [lib]
 name = "kairo_federation_core"

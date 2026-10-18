@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 
 use crate::{
     ActorListing, ActorListingError, Cursor, CursorError, FedErrorCode, FedErrorEnvelope,
-    GitAvailability, NodeDocument, NodeDocumentError, ObjectListing, PageRequest, PageRequestError,
-    PublishedObjects, UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT,
-    PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL,
+    GitAvailability, NodeAuthHeaderError, NodeAuthorization, NodeDocument, NodeDocumentError,
+    NodeRequest, ObjectListing, PageRequest, PageRequestError, PublishedObjects,
+    UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT, PROTOCOL_VERSION,
+    SUPPORTS_OBJECT_PULL,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -466,6 +467,7 @@ fn error_codes_serialize_and_map_to_statuses() -> TestResult {
         (FedErrorCode::FedMethodNotAllowed, 405),
         (FedErrorCode::FedStoreError, 500),
         (FedErrorCode::FedBusy, 503),
+        (FedErrorCode::FedUnauthenticated, 401),
     ];
     for (code, status) in cases {
         assert_eq!(serde_json::to_value(code)?, json!(code.as_str()));
@@ -484,5 +486,78 @@ fn unknown_error_codes_from_newer_nodes_still_parse() -> TestResult {
     let envelope: FedErrorEnvelope = serde_json::from_value(json)?;
     assert_eq!(envelope.error.code, FedErrorCode::Unknown);
     assert_eq!(envelope.error.details, json!({}));
+    Ok(())
+}
+
+// --- KairoNode1 (DECISIONS.md §25 sub-decision 3) ---------------------
+
+const REQUEST: NodeRequest<'static> = NodeRequest {
+    method: "POST",
+    receiver_base_url: "https://archive.example.org",
+    path_and_query: "/federation/v1/announce",
+    body: b"{}",
+};
+
+#[test]
+fn the_node_request_signing_string_is_pinned() {
+    let nonce = [0xab; 16];
+    assert_eq!(
+        REQUEST.signing_string(1_700_000_000, &nonce),
+        "kairo-federation-request-v1\n\
+         POST\n\
+         https://archive.example.org\n\
+         /federation/v1/announce\n\
+         44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a\n\
+         1700000000\n\
+         abababababababababababababababab\n"
+    );
+}
+
+#[test]
+fn a_node_authorization_round_trips_and_verifies() -> TestResult {
+    let key = SecretSigningKey::ed25519([7; 32]);
+    let node = genesis(ActorKind::node(), 7)?.actor_id();
+    let auth = NodeAuthorization::sign(&REQUEST, node.clone(), &key, 1_700_000_000, [1; 16]);
+    let header = auth.format();
+    assert!(header.starts_with(&format!("KairoNode1 node={node}, key_id=")));
+    let parsed = NodeAuthorization::parse(&header)?;
+    assert_eq!(parsed, auth);
+    let signing = REQUEST.signing_string(parsed.timestamp, &parsed.nonce);
+    kairo_identity::verify_signature(
+        &key.public_key(),
+        signing.as_bytes(),
+        &kairo_identity::SignatureBytes::ed25519(parsed.signature),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn malformed_node_authorizations_are_refused() -> TestResult {
+    let key = SecretSigningKey::ed25519([7; 32]);
+    let node = genesis(ActorKind::node(), 7)?.actor_id();
+    let good = NodeAuthorization::sign(&REQUEST, node, &key, 1_700_000_000, [0xab; 16]).format();
+    assert!(matches!(
+        NodeAuthorization::parse(&good.replacen("KairoNode1", "KairoActor1", 1)),
+        Err(NodeAuthHeaderError::UnsupportedScheme(_))
+    ));
+    let nonce = "ab".repeat(16);
+    for bad in [
+        "KairoNode1".to_owned(),
+        good.replacen("node=", "actor=", 1),
+        format!("{good}, node=x"),
+        good.replacen(", timestamp=1700000000", "", 1),
+        good.replacen("timestamp=1700000000", "timestamp=soon", 1),
+        good.replacen(&nonce, &nonce.to_uppercase(), 1),
+        good.replacen(&nonce, "abab", 1),
+        good.replacen("signature=", "signature=AA", 1),
+    ] {
+        assert!(
+            matches!(
+                NodeAuthorization::parse(&bad),
+                Err(NodeAuthHeaderError::Malformed(_))
+            ),
+            "{bad}"
+        );
+    }
     Ok(())
 }

@@ -24,6 +24,7 @@ mod error;
 mod listing;
 mod node;
 mod page;
+mod request_auth;
 mod schema;
 mod wire_id;
 
@@ -47,6 +48,10 @@ pub use node::{
 pub use page::{
     Cursor, CursorError, PageRequest, PageRequestError, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN,
     MAX_PAGE_LIMIT,
+};
+pub use request_auth::{
+    node_request_signing_string, random_node_nonce, NodeAuthHeaderError, NodeAuthorization,
+    NodeRequest, NODE_NONCE_LEN, NODE_REQUEST_DOMAIN, NODE_REQUEST_WINDOW_SECONDS, NODE_SCHEME_TAG,
 };
 
 /// The protocol version the MVP speaks. A node lists it in

@@ -16,6 +16,17 @@ rather than per-commit.
 
 ## [Unreleased]
 
+### Added
+
+- **`KairoNode1` request signatures (`DECISIONS.md` §25 sub-decision
+  3).** `kairo-federation-core` builds, signs, and parses the
+  `Authorization: KairoNode1` header over the
+  `kairo-federation-request-v1` signing string, which names the
+  receiver's base URL. `Node::authenticate_request` verifies one: a
+  known `node` actor, its key active and unrevoked at the timestamp,
+  ±300 s, and a nonce accepted once per window. Failures are the new
+  `401 fed_unauthenticated`. No endpoint requires it yet; push will.
+
 ### Changed
 
 - **Nodes sign their node document, and pulls authenticate the peer

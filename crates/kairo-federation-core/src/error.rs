@@ -39,6 +39,11 @@ pub enum FedErrorCode {
     /// v2, a command other than `ls-refs` or `fetch`, a `want` that
     /// isn't a published commit, or a malformed body.
     FedBadGitRequest,
+    /// A request to an endpoint that acts on who is asking has a
+    /// missing or invalid `KairoNode1` signature, or names an unknown
+    /// node actor, a non-node actor, or a revoked key
+    /// (`specs/DECISIONS.md` §25 sub-decision 3).
+    FedUnauthenticated,
     /// A code this client doesn't know, from a newer node.
     #[serde(other)]
     Unknown,
@@ -55,6 +60,7 @@ impl FedErrorCode {
             | Self::FedBadLimit
             | Self::FedBadBatch
             | Self::FedBadGitRequest => 400,
+            Self::FedUnauthenticated => 401,
             Self::FedMethodNotAllowed => 405,
             Self::FedStoreError | Self::Unknown => 500,
             Self::FedBusy => 503,
@@ -72,6 +78,7 @@ impl FedErrorCode {
             Self::FedBusy => "fed_busy",
             Self::FedBadGitRequest => "fed_bad_git_request",
             Self::FedBadBatch => "fed_bad_batch",
+            Self::FedUnauthenticated => "fed_unauthenticated",
             Self::Unknown => "unknown",
         }
     }

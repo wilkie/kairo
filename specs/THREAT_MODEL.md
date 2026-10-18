@@ -334,6 +334,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | `DECISIONS.md` §25 sub-decisions 1–2. The node signs its document with the node actor's active key at startup, covering `node_actor`, `base_url`, `protocol_versions`, `supports`, and `signed_at` (`schemas/canonical/node-document-v1.md`). A pull refuses a document whose `base_url` isn't the URL it pulled from, before fetching anything. It then fetches the node actor's genesis and key events, which the node always serves, and refuses a signature that isn't by the key active at `signed_at` or that is revoked then. An edited document fails the signature; a copied one fails the `base_url` check. The server refuses to start with a key that isn't the node actor's active key. |
 | **Residual risk** | No freshness: a document captured before a key rotation still verifies at its old `signed_at` until that key is revoked, so `signed_at` is only a recency signal. A node whose key is stolen can be impersonated until the operator rotates or revokes it, as for any actor (§4.3). The document authenticates the node actor *at a URL*, not the transport: TLS to the reverse proxy is what keeps a network attacker from serving its own copy at the real URL (§4.1). Requests that act on who is asking need `KairoNode1` signatures (§25 sub-decision 3), not the document. |
 
+### 5.19 Forged or replayed node requests
+
+| | |
+|---|---|
+| **Adversary** | §4.2, §4.6, §4.1 (anyone who can reach or observe a node's federation endpoint) |
+| **Attack** | Send a request to an endpoint that acts on who is asking (push, announce) as another node, or capture one node's signed request and resend it, to the same node or to a different one. |
+| **Mechanism** | `DECISIONS.md` §25 sub-decision 3. A `KairoNode1` signature covers the method, the **receiver's** base URL, the path and query, the body's SHA-256, a timestamp, and a 16-byte nonce. The receiver requires a `node` actor it holds, signing with the key active at the timestamp and unrevoked then or now, within ±300 s of its clock. After the signature verifies, it records `(node, nonce)` until the timestamp leaves the window, and refuses the pair again. A request signed for one node fails at another because the base URL differs. |
+| **Residual risk** | The nonce cache is in memory: a request captured within the last 300 s can be replayed once more across a receiver restart. Clock skew beyond ±300 s refuses honest requests. The receiver checks keys against the key events it holds, so a rotation it hasn't learned refuses the new key, and a revocation it hasn't learned lets the old one through, as for any statement (§5.15). Authentication says who asked, not what they may do: authorization (`federation:push` trust, the accept list) is §26's. |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by
@@ -600,7 +609,9 @@ shipped):
   capability scope, §5.8 cross-actor first-person events, §5.9
   bricking guard at the CLI, §5.10 active-key compromise recovery,
   §5.13 fork preservation, §5.14 genesis-asymmetry impersonation,
-  §5.18 node impersonation (federation pulls): all defended.
+  §5.18 node impersonation (federation pulls), §5.19 forged or
+  replayed node requests: all defended. §5.19's verifier has no
+  endpoint calling it until push ships.
 - §5.11 attestation-key compromise, §5.12 malicious attestation-key
   add: defended **only by detection** in shipped v1, not by
   in-protocol response. `ActorAttestationKeyRevocation` is designed

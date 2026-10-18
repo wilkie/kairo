@@ -17,6 +17,7 @@ use kairo_store::{
     ActorStore, FilesystemStore, ObjectsByActorResolver, StatementByActorResolver, StoreError,
 };
 
+use crate::auth::NonceCache;
 use crate::error::Error;
 use crate::upload::UploadService;
 use crate::view::ViewCache;
@@ -30,6 +31,9 @@ pub struct Node {
     pub(crate) document: Arc<NodeDocument>,
     pub(crate) views: Arc<ViewCache>,
     pub(crate) uploads: Arc<UploadService>,
+    /// `KairoNode1` nonces accepted within the window (`DECISIONS.md`
+    /// §25 sub-decision 3).
+    pub(crate) nonces: Arc<NonceCache>,
 }
 
 impl Node {
@@ -120,6 +124,7 @@ impl Node {
             document: Arc::new(document),
             views: Arc::new(ViewCache::new(node_actor.clone(), view_ttl)),
             uploads: Arc::new(UploadService::new(UploadService::default_concurrency())),
+            nonces: Arc::new(NonceCache::default()),
         })
     }
 

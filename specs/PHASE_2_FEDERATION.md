@@ -127,6 +127,7 @@ sub-decision 2).
 | 400 | `fed_bad_limit` | `limit` isn't an integer from 1 to 1000 (refused, not clamped) |
 | 400 | `fed_bad_batch` | statement batch request that doesn't parse, or names no ids or more than 256 (`DECISIONS.md` §24) |
 | 400 | `fed_bad_git_request` | Git request the node won't serve: not protocol v2, a command other than `ls-refs` / `fetch`, an unpublished `want`, a malformed body (`DECISIONS.md` §22) |
+| 401 | `fed_unauthenticated` | an endpoint that acts on who is asking got no valid `KairoNode1` signature: missing, malformed, outside ±300 s, a replayed nonce, an unknown or non-`node` signer, a key not active or revoked at the request's `timestamp`, or a signature that doesn't verify over this node's base URL (`DECISIONS.md` §25 sub-decision 3). Read endpoints never send it |
 | 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack` `POST` |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
 | 503 | `fed_busy` | concurrent Git fetches at capacity; `Retry-After` says when to retry (`DECISIONS.md` §21, §22) |
@@ -480,8 +481,14 @@ inventory step, and 7 come from comparing this design with Radicle
    2. ~~**Signed node document** and the always-served node actor
       listing~~ (§25 sub-decisions 1–2; shipped). Pulls report
       authenticated peers.
-   3. **`KairoNode1` request signing and verification** (§25
-      sub-decision 3), with the nonce cache.
+   3. ~~**`KairoNode1` request signing and verification**~~ (§25
+      sub-decision 3), with the nonce cache (shipped). The wire format
+      is in `kairo-federation-core`; `Node::authenticate_request`
+      verifies, for slice 4's endpoints to call. A receiver
+      authenticates only node actors whose genesis and key events it
+      holds, so slice 4 has to say how it learns a sender's (for
+      example, from the sender's node document and always-served
+      listing, as a pull does).
    4. **Accept list, inbox, and announce** (§26 sub-decisions 1–3),
       plus `kairo federation announce` and `kairo federation
       receive` for announcements.

@@ -32,6 +32,8 @@ use tempfile as _;
 #[cfg(test)]
 use tower as _;
 
+#[cfg(feature = "server")]
+mod auth;
 #[cfg(feature = "client")]
 pub mod client;
 #[cfg(feature = "server")]
@@ -49,6 +51,8 @@ mod upload;
 #[cfg(feature = "server")]
 mod view;
 
+#[cfg(feature = "server")]
+pub use auth::{AuthenticatedNode, NodeAuthError};
 #[cfg(feature = "server")]
 pub use error::Error;
 #[cfg(feature = "server")]
