@@ -998,6 +998,7 @@
           "actor",
           "subject",
           "created_at",
+          "previous",
           "body",
           "signature"
         ],
@@ -1010,6 +1011,13 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "previous": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The signer's chain tips, ascending (`specs/DECISIONS.md` §23)."
           },
           "signature": {
             "$ref": "#/components/schemas/SignatureJson"
@@ -1287,6 +1295,7 @@
           "actor",
           "subject",
           "created_at",
+          "previous",
           "body",
           "signature"
         ],
@@ -1299,6 +1308,13 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "previous": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The signer's chain tips, ascending (`specs/DECISIONS.md` §23)."
           },
           "signature": {
             "$ref": "#/components/schemas/SignatureJson"
@@ -1433,6 +1449,7 @@
           "actor",
           "subject",
           "created_at",
+          "previous",
           "body",
           "signature"
         ],
@@ -1445,6 +1462,13 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "previous": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The signer's chain tips, ascending (`specs/DECISIONS.md` §23)."
           },
           "signature": {
             "$ref": "#/components/schemas/SignatureJson"
@@ -1497,6 +1521,7 @@
           "actor",
           "subject",
           "created_at",
+          "previous",
           "body",
           "signature"
         ],
@@ -1509,6 +1534,13 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "previous": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The signer's chain tips, ascending (`specs/DECISIONS.md` §23)."
           },
           "signature": {
             "$ref": "#/components/schemas/SignatureJson"

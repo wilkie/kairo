@@ -336,6 +336,7 @@ const alphaHeadBranchStmt: Schemas['ObjectBranchStatementJson'] = {
   actor: mockIds.alice,
   subject: `object:${mockIds.alpha}`,
   created_at: '2026-01-03T00:00:00Z',
+  previous: [],
   body: {
     object: mockIds.alpha,
     name: 'head',
@@ -350,6 +351,7 @@ const alphaExperimentalBranchStmt: Schemas['ObjectBranchStatementJson'] = {
   actor: mockIds.bob,
   subject: `object:${mockIds.alpha}`,
   created_at: '2026-01-02T00:00:00Z',
+  previous: [],
   body: {
     object: mockIds.alpha,
     name: 'experimental',
@@ -384,6 +386,7 @@ const alphaV1Stmt: Schemas['ObjectVersionTagStatementJson'] = {
   actor: mockIds.alice,
   subject: `object:${mockIds.alpha}`,
   created_at: '2026-01-02T00:00:00Z',
+  previous: [],
   body: {
     object: mockIds.alpha,
     version: '1.0.0',
@@ -398,6 +401,7 @@ const alphaV1_1Stmt: Schemas['ObjectVersionTagStatementJson'] = {
   actor: mockIds.alice,
   subject: `object:${mockIds.alpha}`,
   created_at: '2026-01-03T00:00:00Z',
+  previous: [],
   body: {
     object: mockIds.alpha,
     version: '1.1.0',
@@ -503,6 +507,7 @@ const bobTrustsAliceStmt: Schemas['ActorTrustStatementJson'] = {
   actor: mockIds.bob,
   subject: `actor:${mockIds.alice}`,
   created_at: T,
+  previous: [],
   body: {
     trusted_actor: mockIds.alice,
     decision: 'trusted',
@@ -516,6 +521,7 @@ const carolTrustsAliceStmt: Schemas['ActorTrustStatementJson'] = {
   actor: mockIds.carol,
   subject: `actor:${mockIds.alice}`,
   created_at: T,
+  previous: [],
   body: {
     trusted_actor: mockIds.alice,
     decision: 'untrusted',
@@ -532,6 +538,7 @@ const aliceTrustsSelfStmt: Schemas['ActorTrustStatementJson'] = {
   actor: mockIds.alice,
   subject: `actor:${mockIds.alice}`,
   created_at: T,
+  previous: [],
   body: {
     trusted_actor: mockIds.alice,
     decision: 'trusted',

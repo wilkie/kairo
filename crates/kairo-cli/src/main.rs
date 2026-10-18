@@ -530,6 +530,12 @@ fn run_actor_recover_key_prepare(
         actor: actor_id.to_string(),
         subject: format!("actor:{actor_id}"),
         created_at: unsigned.created_at().to_string(),
+        previous: unsigned
+            .previous()
+            .ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         body: kairo_statement::json::ActorEmergencyKeyRotationBodyJson::from_body(unsigned.body()),
         signatures: Vec::new(),
     };
@@ -883,6 +889,12 @@ fn run_actor_add_attestation_key_prepare(
         actor: actor_id.to_string(),
         subject: format!("actor:{actor_id}"),
         created_at: unsigned.created_at().to_string(),
+        previous: unsigned
+            .previous()
+            .ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         body: kairo_statement::json::ActorAttestationKeyAddBodyJson::from_body(unsigned.body()),
         signatures: Vec::new(),
     };
@@ -1178,6 +1190,12 @@ fn run_actor_revoke_attestation_key_prepare(
         actor: actor_id.to_string(),
         subject: format!("actor:{actor_id}"),
         created_at: unsigned.created_at().to_string(),
+        previous: unsigned
+            .previous()
+            .ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         body: kairo_statement::json::ActorAttestationKeyRevocationBodyJson::from_body(
             unsigned.body(),
         ),
@@ -1480,6 +1498,12 @@ fn run_actor_change_attestation_threshold_prepare(
         actor: actor_id.to_string(),
         subject: format!("actor:{actor_id}"),
         created_at: unsigned.created_at().to_string(),
+        previous: unsigned
+            .previous()
+            .ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
         body: kairo_statement::json::ActorAttestationThresholdChangeBodyJson::from_body(
             unsigned.body(),
         ),

@@ -16,9 +16,10 @@ use crate::{
     ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
     ActorTrustShapeError, Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError,
     MultiSignedStatement, MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody,
-    ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, RevisionId,
-    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
-    StatementKindParseError, TrustDecision, TrustDecisionParseError, UnsignedStatement,
+    ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, Previous,
+    PreviousError, RevisionId, SemverParseError, SemverVersion, Signature, SignedStatement,
+    StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError,
+    UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub enum StatementJsonError {
     InvalidPublicKey(ActorGenesisJsonError),
     InvalidMultiSignature(MultiSignedStatementError),
     InvalidThresholdShape(ActorAttestationThresholdChangeShapeError),
+    InvalidPrevious(PreviousError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -79,6 +81,7 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidPublicKey(error) => write!(f, "invalid public key: {error}"),
             Self::InvalidMultiSignature(error) => write!(f, "{error}"),
             Self::InvalidThresholdShape(error) => write!(f, "{error}"),
+            Self::InvalidPrevious(error) => write!(f, "invalid previous: {error}"),
         }
     }
 }
@@ -101,12 +104,28 @@ impl Error for StatementJsonError {
             Self::InvalidPublicKey(error) => Some(error),
             Self::InvalidMultiSignature(error) => Some(error),
             Self::InvalidThresholdShape(error) => Some(error),
+            Self::InvalidPrevious(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
             | Self::InvalidSignatureBase64 => None,
         }
     }
+}
+
+/// Parse the envelope's `previous`: statement ids, strictly ascending,
+/// at most [`crate::MAX_PREVIOUS`]. Only the canonical spelling is
+/// accepted.
+fn parse_previous(raw: &[String]) -> Result<Previous, StatementJsonError> {
+    let ids = raw
+        .iter()
+        .map(|id| StatementId::new(id.clone()).map_err(StatementJsonError::InvalidStatement))
+        .collect::<Result<Vec<_>, _>>()?;
+    Previous::new(ids).map_err(StatementJsonError::InvalidPrevious)
+}
+
+fn previous_to_json(previous: &Previous) -> Vec<String> {
+    previous.ids().iter().map(ToString::to_string).collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -237,6 +256,8 @@ pub struct ObjectRevisionStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ObjectRevisionBodyJson,
     pub signature: SignatureJson,
 }
@@ -257,7 +278,9 @@ impl ObjectRevisionStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -273,6 +296,7 @@ impl ObjectRevisionStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ObjectRevisionBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -322,6 +346,8 @@ pub struct ObjectBranchStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ObjectBranchBodyJson,
     pub signature: SignatureJson,
 }
@@ -342,7 +368,9 @@ impl ObjectBranchStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -358,6 +386,7 @@ impl ObjectBranchStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ObjectBranchBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -408,6 +437,8 @@ pub struct ObjectVersionTagStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ObjectVersionTagBodyJson,
     pub signature: SignatureJson,
 }
@@ -430,7 +461,9 @@ impl ObjectVersionTagStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -446,6 +479,7 @@ impl ObjectVersionTagStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ObjectVersionTagBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -500,6 +534,8 @@ pub struct ActorTrustStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorTrustBodyJson,
     pub signature: SignatureJson,
 }
@@ -520,7 +556,9 @@ impl ActorTrustStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -536,6 +574,7 @@ impl ActorTrustStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorTrustBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -692,6 +731,8 @@ pub struct ActorCapabilityGrantStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorCapabilityGrantBodyJson,
     pub signature: SignatureJson,
 }
@@ -719,7 +760,9 @@ impl ActorCapabilityGrantStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -735,6 +778,7 @@ impl ActorCapabilityGrantStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorCapabilityGrantBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -781,6 +825,8 @@ pub struct ActorCapabilityRevocationStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorCapabilityRevocationBodyJson,
     pub signature: SignatureJson,
 }
@@ -808,7 +854,9 @@ impl ActorCapabilityRevocationStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -824,6 +872,7 @@ impl ActorCapabilityRevocationStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorCapabilityRevocationBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -866,6 +915,8 @@ pub struct ActorKeyRotationStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorKeyRotationBodyJson,
     pub signature: SignatureJson,
 }
@@ -888,7 +939,9 @@ impl ActorKeyRotationStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -904,6 +957,7 @@ impl ActorKeyRotationStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorKeyRotationBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -948,6 +1002,8 @@ pub struct ActorKeyRevocationStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorKeyRevocationBodyJson,
     pub signature: SignatureJson,
 }
@@ -970,7 +1026,9 @@ impl ActorKeyRevocationStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         Ok(SignedStatement::new(
             unsigned,
@@ -986,6 +1044,7 @@ impl ActorKeyRevocationStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorKeyRevocationBodyJson::from_body(unsigned.body()),
             signature: SignatureJson::from_signature(statement.signature()),
         }
@@ -1026,6 +1085,8 @@ pub struct ActorEmergencyKeyRotationStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorEmergencyKeyRotationBodyJson,
     pub signatures: Vec<SignatureJson>,
 }
@@ -1053,7 +1114,9 @@ impl ActorEmergencyKeyRotationStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         let signatures = signatures_to_envelope(&self.signatures)?;
         MultiSignedStatement::new(unsigned, signatures)
@@ -1068,6 +1131,7 @@ impl ActorEmergencyKeyRotationStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorEmergencyKeyRotationBodyJson::from_body(unsigned.body()),
             signatures: statement
                 .signatures()
@@ -1116,6 +1180,8 @@ pub struct ActorEmergencyKeyRevocationStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorEmergencyKeyRevocationBodyJson,
     pub signatures: Vec<SignatureJson>,
 }
@@ -1143,7 +1209,9 @@ impl ActorEmergencyKeyRevocationStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         let signatures = signatures_to_envelope(&self.signatures)?;
         MultiSignedStatement::new(unsigned, signatures)
@@ -1160,6 +1228,7 @@ impl ActorEmergencyKeyRevocationStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorEmergencyKeyRevocationBodyJson::from_body(unsigned.body()),
             signatures: statement
                 .signatures()
@@ -1204,6 +1273,8 @@ pub struct ActorAttestationKeyAddStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorAttestationKeyAddBodyJson,
     pub signatures: Vec<SignatureJson>,
 }
@@ -1231,7 +1302,9 @@ impl ActorAttestationKeyAddStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         let signatures = signatures_to_envelope(&self.signatures)?;
         MultiSignedStatement::new(unsigned, signatures)
@@ -1246,6 +1319,7 @@ impl ActorAttestationKeyAddStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorAttestationKeyAddBodyJson::from_body(unsigned.body()),
             signatures: statement
                 .signatures()
@@ -1285,6 +1359,8 @@ pub struct ActorAttestationKeyRevocationStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorAttestationKeyRevocationBodyJson,
     pub signatures: Vec<SignatureJson>,
 }
@@ -1312,7 +1388,9 @@ impl ActorAttestationKeyRevocationStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         let signatures = signatures_to_envelope(&self.signatures)?;
         MultiSignedStatement::new(unsigned, signatures)
@@ -1329,6 +1407,7 @@ impl ActorAttestationKeyRevocationStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorAttestationKeyRevocationBodyJson::from_body(unsigned.body()),
             signatures: statement
                 .signatures()
@@ -1370,6 +1449,8 @@ pub struct ActorAttestationThresholdChangeStatementJson {
     pub actor: String,
     pub subject: String,
     pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
     pub body: ActorAttestationThresholdChangeBodyJson,
     pub signatures: Vec<SignatureJson>,
 }
@@ -1397,7 +1478,9 @@ impl ActorAttestationThresholdChangeStatementJson {
                 .map_err(StatementJsonError::InvalidSubject)?,
             created_at,
             self.body.to_body()?,
-        );
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
 
         let signatures = signatures_to_envelope(&self.signatures)?;
         MultiSignedStatement::new(unsigned, signatures)
@@ -1414,6 +1497,7 @@ impl ActorAttestationThresholdChangeStatementJson {
             actor: unsigned.actor().to_string(),
             subject: unsigned.subject().to_string(),
             created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
             body: ActorAttestationThresholdChangeBodyJson::from_body(unsigned.body()),
             signatures: statement
                 .signatures()
@@ -1510,6 +1594,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "object": "{OBJECT_ID}",
                 "revision": "git:sha256:revision",
@@ -1547,6 +1632,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "object": "{OBJECT_ID}",
                 "revision": "git:sha256:revision",
@@ -1578,6 +1664,7 @@ mod tests {
                 "object": "{OBJECT_ID}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "object:{OBJECT_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -1761,6 +1848,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "object": "{OBJECT_ID}",
                 "revision": "git:sha256:revision",
@@ -1785,6 +1873,7 @@ mod tests {
             actor: ACTOR_ID.to_owned(),
             subject: format!("object:{OBJECT_ID}"),
             created_at: CREATED_AT.to_owned(),
+            previous: Vec::new(),
             body: ObjectRevisionBodyJson {
                 object: OBJECT_ID.to_owned(),
                 revision: "git:sha256:revision".to_owned(),
@@ -1836,6 +1925,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "object": "{OBJECT_ID}",
                 "name": "{name}",
@@ -1889,6 +1979,7 @@ mod tests {
                 "object": "{OBJECT_ID}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "object:{OBJECT_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -1929,6 +2020,73 @@ mod tests {
         Ok(())
     }
 
+    fn branch_json_with_previous(previous: &str) -> String {
+        branch_json("head", "c2lnbmF0dXJl")
+            .replace(r#""previous": [],"#, &format!(r#""previous": {previous},"#))
+    }
+
+    #[test]
+    fn parses_branch_previous_and_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let (one, two) = (
+            StatementId::from_sha256_digest([0x11; 32]),
+            StatementId::from_sha256_digest([0x22; 32]),
+        );
+        let parsed = parse_branch_json(&branch_json_with_previous(&format!(
+            r#"["{one}", "{two}"]"#
+        )))?;
+        assert_eq!(parsed.unsigned().previous().ids(), &[one, two][..]);
+        assert_ne!(
+            parsed.statement_id(),
+            parse_branch_json(&branch_json("head", "c2lnbmF0dXJl"))?.statement_id()
+        );
+
+        let dto = ObjectBranchStatementJson::from_statement(&parsed);
+        assert_eq!(dto.previous.len(), 2);
+        assert_eq!(dto.to_statement()?.statement_id(), parsed.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_branch_with_missing_or_non_canonical_previous() {
+        let without = branch_json("head", "c2lnbmF0dXJl").replace("\"previous\": [],", "");
+        assert!(
+            serde_json::from_str::<ObjectBranchStatementJson>(&without).is_err(),
+            "previous is required"
+        );
+
+        let (one, two) = (
+            StatementId::from_sha256_digest([0x11; 32]),
+            StatementId::from_sha256_digest([0x22; 32]),
+        );
+        for previous in [
+            format!(r#"["{two}", "{one}"]"#),
+            format!(r#"["{one}", "{one}"]"#),
+            r#"["not-an-id"]"#.to_owned(),
+        ] {
+            assert!(
+                parse_branch_json(&branch_json_with_previous(&previous)).is_err(),
+                "{previous} accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_object_revision_with_previous() -> Result<(), serde_json::Error> {
+        let one = StatementId::from_sha256_digest([0x11; 32]);
+        let json = revision_json("c2lnbmF0dXJl")
+            .replace(r#""previous": [],"#, &format!(r#""previous": ["{one}"],"#));
+        let dto: ObjectRevisionStatementJson = serde_json::from_str(&json)?;
+        assert_eq!(
+            dto.to_statement().map(|_| ()),
+            Err(StatementJsonError::InvalidPrevious(
+                PreviousError::Unchained {
+                    kind: "ObjectRevision"
+                }
+            ))
+        );
+        Ok(())
+    }
+
     fn version_tag_bind_json(version: &str, signature: &str) -> String {
         let target = revision_statement_id();
         format!(
@@ -1938,6 +2096,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "object": "{OBJECT_ID}",
                 "version": "{version}",
@@ -1963,6 +2122,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "object:{OBJECT_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "object": "{OBJECT_ID}",
                 "version": "{version}",
@@ -2073,6 +2233,7 @@ mod tests {
                 "object": "{OBJECT_ID}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "object:{OBJECT_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -2110,6 +2271,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{TRUSTED_ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "trusted_actor": "{TRUSTED_ACTOR_ID}",
                 "decision": "trusted",
@@ -2134,6 +2296,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{TRUSTED_ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "trusted_actor": "{TRUSTED_ACTOR_ID}",
                 "decision": null,
@@ -2229,6 +2392,7 @@ mod tests {
                 "trusted_actor": "{TRUSTED_ACTOR_ID}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "actor:{TRUSTED_ACTOR_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -2266,6 +2430,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{GRANTEE_ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "grantee": "{GRANTEE_ACTOR_ID}",
                 "capability": {{
@@ -2297,6 +2462,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{GRANTEE_ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "grantee": "{GRANTEE_ACTOR_ID}",
                 "capability": {{
@@ -2431,6 +2597,7 @@ mod tests {
                 "grantee": "{GRANTEE_ACTOR_ID}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "actor:{GRANTEE_ACTOR_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -2472,6 +2639,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{GRANTEE_ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "grantee": "{GRANTEE_ACTOR_ID}",
                 "capability": {{
@@ -2508,6 +2676,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "statement:{revoked}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "revoked_grant": "{revoked}",
                 "retroactive": false,
@@ -2532,6 +2701,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "statement:{revoked}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "revoked_grant": "{revoked}",
                 "retroactive": true
@@ -2608,6 +2778,7 @@ mod tests {
                 "revoked_grant": "{revoked}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "statement:{revoked}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -2649,6 +2820,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "next_key": {{
                   "algorithm": "ed25519",
@@ -2673,6 +2845,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "next_key": {{
                   "algorithm": "ed25519",
@@ -2754,6 +2927,7 @@ mod tests {
                 }}
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "actor:{ACTOR_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,
@@ -2793,6 +2967,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "revoked_key": "{revoked_key}",
                 "retroactive": false,
@@ -2816,6 +2991,7 @@ mod tests {
               "actor": "{ACTOR_ID}",
               "subject": "actor:{ACTOR_ID}",
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "body": {{
                 "revoked_key": "{revoked_key}",
                 "retroactive": true
@@ -2884,6 +3060,7 @@ mod tests {
                 "revoked_key": "{revoked}"
               }},
               "created_at": "{CREATED_AT}",
+              "previous": [],
               "subject": "actor:{ACTOR_ID}",
               "actor": "{ACTOR_ID}",
               "version": 1,

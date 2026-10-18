@@ -3,7 +3,7 @@
   "$id": "https://schemas.kairo.exchange/json/statement-envelope-v1.schema.json",
   "title": "Kairo Statement Envelope v1",
   "type": "object",
-  "required": ["type", "version", "created_at", "signature"],
+  "required": ["type", "version", "created_at", "previous", "signature"],
   "properties": {
     "type": {
       "type": "string"
@@ -23,6 +23,13 @@
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
       "description": "Strict RFC 3339 UTC seconds (YYYY-MM-DDTHH:MM:SSZ). No fractional seconds; no offsets other than Z."
+    },
+    "previous": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$" },
+      "maxItems": 16,
+      "uniqueItems": true,
+      "description": "The signer's chain tips when it signed: StatementId payloads, strictly ascending, at most 16. Empty for a chain's first statement (specs/DECISIONS.md §23)."
     },
     "signature": {
       "$ref": "#/$defs/signature"

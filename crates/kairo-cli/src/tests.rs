@@ -259,6 +259,7 @@ fn revision_dto_for_actor(actor_id: String, manifest_hash: String) -> ObjectRevi
         actor: actor_id.clone(),
         subject: format!("object:{OBJECT_ID}"),
         created_at: "2026-05-01T14:32:07Z".to_owned(),
+        previous: Vec::new(),
         body: ObjectRevisionBodyJson {
             object: OBJECT_ID.to_owned(),
             revision: "git:sha1:eae79d6e0cff76fc7a3bb78723690b0b2367f849".to_owned(),

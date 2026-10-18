@@ -445,6 +445,8 @@ export interface components {
             actor: string;
             body: components["schemas"]["ActorTrustBodyJson"];
             created_at: string;
+            /** @description The signer's chain tips, ascending (`specs/DECISIONS.md` §23). */
+            previous: string[];
             signature: components["schemas"]["SignatureJson"];
             subject: string;
             type: string;
@@ -553,6 +555,8 @@ export interface components {
             actor: string;
             body: components["schemas"]["ObjectBranchBodyJson"];
             created_at: string;
+            /** @description The signer's chain tips, ascending (`specs/DECISIONS.md` §23). */
+            previous: string[];
             signature: components["schemas"]["SignatureJson"];
             subject: string;
             type: string;
@@ -604,6 +608,8 @@ export interface components {
             actor: string;
             body: components["schemas"]["ObjectRevisionBodyJson"];
             created_at: string;
+            /** @description The signer's chain tips, ascending (`specs/DECISIONS.md` §23). */
+            previous: string[];
             signature: components["schemas"]["SignatureJson"];
             subject: string;
             type: string;
@@ -620,6 +626,8 @@ export interface components {
             actor: string;
             body: components["schemas"]["ObjectVersionTagBodyJson"];
             created_at: string;
+            /** @description The signer's chain tips, ascending (`specs/DECISIONS.md` §23). */
+            previous: string[];
             signature: components["schemas"]["SignatureJson"];
             subject: string;
             type: string;

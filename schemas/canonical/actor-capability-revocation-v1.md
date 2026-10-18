@@ -143,7 +143,10 @@ The shared unsigned statement envelope is encoded before the body:
 | `actor` (the grantor, signer) | `ActorId` payload as `string` |
 | `subject` (`statement:<revoked-grant-statement-id>`) | internal Kairo reference as `string` |
 | `created_at` | `Timestamp` (`i64` epoch seconds) |
+| `previous` | `list<string>` — the signer's chain tips as `StatementId` payloads, ascending, at most 16 |
 | `body` | body fields below |
+
+**Actor chain** (`specs/DECISIONS.md` §23): Chained in the signer's chain for the revoked grant's capability scope; placing it requires the grant.
 
 ## Canonical Body Fields
 
@@ -180,6 +183,7 @@ canonical_unsigned_statement =
   string(actor) ||
   string(subject) ||
   i64_be(created_at_epoch_seconds) ||
+  list(previous, string) ||
   canonical_body
 
 statement_id =

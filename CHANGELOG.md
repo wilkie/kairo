@@ -18,6 +18,19 @@ rather than per-commit.
 
 ### Changed
 
+- **The statement envelope gains `previous` (`DECISIONS.md` §23,
+  step 1 of actor chains).**
+  - Every signed statement's envelope now carries `previous`, the
+    signer's chain tips: strictly ascending statement ids, at most 16,
+    encoded after `created_at` and required in JSON. Every
+    `StatementId` changes, since the field is part of the canonical
+    bytes.
+  - Branches, version tags, capability grants and revocations, and key
+    events are chained kinds. `ObjectRevision` and `ActorTrust` are
+    unchained and refuse a non-empty `previous`.
+  - Write paths still sign with an empty `previous`. Setting the tips,
+    and completeness checking, come in the next steps.
+
 - **Git history federates over Git's smart HTTP protocol v2
   (`DECISIONS.md` §22).**
   - Each published object's Git history is served at

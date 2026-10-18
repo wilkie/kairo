@@ -77,6 +77,84 @@ pub trait StatementBody: CanonicalEncode {
     /// (`ActorEmergencyKeyRotation`, `ActorEmergencyKeyRevocation`,
     /// `ActorAttestationKeyAdd`) override to `Attestation`.
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Operational;
+    /// Whether this kind belongs to an actor chain and may carry a
+    /// non-empty `previous` (`specs/DECISIONS.md` §23). Defaults to
+    /// `false`: a kind is unchained unless its decision chains it.
+    const CHAINED: bool = false;
+}
+
+/// Most chain tips one statement may name (`specs/DECISIONS.md` §23).
+pub const MAX_PREVIOUS: usize = 16;
+
+/// The envelope's `previous`: the signer's chain tips when it signed,
+/// ascending and deduplicated, at most [`MAX_PREVIOUS`]. Empty for a
+/// chain's first statement and for every unchained kind.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Previous(Vec<StatementId>);
+
+/// Why a `previous` list was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviousError {
+    /// More than [`MAX_PREVIOUS`] entries.
+    TooMany { count: usize },
+    /// Not strictly ascending: unsorted or duplicated. Only the
+    /// canonical spelling is accepted from external input.
+    NotCanonical,
+    /// A non-empty `previous` on a kind that isn't chained.
+    Unchained { kind: &'static str },
+}
+
+impl fmt::Display for PreviousError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooMany { count } => write!(
+                f,
+                "previous names {count} statements; at most {MAX_PREVIOUS} are allowed"
+            ),
+            Self::NotCanonical => {
+                f.write_str("previous must be strictly ascending (sorted, no duplicates)")
+            }
+            Self::Unchained { kind } => {
+                write!(
+                    f,
+                    "{kind} is not a chained kind; its previous must be empty"
+                )
+            }
+        }
+    }
+}
+
+impl Error for PreviousError {}
+
+impl Previous {
+    /// Parse an already-canonical list: strictly ascending, at most
+    /// [`MAX_PREVIOUS`]. Use for external input.
+    pub fn new(ids: Vec<StatementId>) -> Result<Self, PreviousError> {
+        if ids.len() > MAX_PREVIOUS {
+            return Err(PreviousError::TooMany { count: ids.len() });
+        }
+        if ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(PreviousError::NotCanonical);
+        }
+        Ok(Self(ids))
+    }
+
+    /// Sort and deduplicate `tips`, then check the count. Use when a
+    /// write path collects tips in any order.
+    pub fn from_tips(tips: impl IntoIterator<Item = StatementId>) -> Result<Self, PreviousError> {
+        let mut ids: Vec<StatementId> = tips.into_iter().collect();
+        ids.sort();
+        ids.dedup();
+        Self::new(ids)
+    }
+
+    pub fn ids(&self) -> &[StatementId] {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,17 +162,27 @@ pub struct UnsignedStatement<B> {
     actor: ActorId,
     subject: KairoRef,
     created_at: Timestamp,
+    previous: Previous,
     body: B,
 }
 
 impl<B> UnsignedStatement<B> {
+    /// A statement with an empty `previous`: an unchained kind, or the
+    /// first statement of a chain. Chain later ones with
+    /// [`Self::with_previous`].
     pub fn new(actor: ActorId, subject: KairoRef, created_at: Timestamp, body: B) -> Self {
         Self {
             actor,
             subject,
             created_at,
+            previous: Previous::default(),
             body,
         }
+    }
+
+    /// The signer's chain tips at signing time.
+    pub fn previous(&self) -> &Previous {
+        &self.previous
     }
 
     pub fn actor(&self) -> &ActorId {
@@ -115,6 +203,16 @@ impl<B> UnsignedStatement<B> {
 }
 
 impl<B: StatementBody> UnsignedStatement<B> {
+    /// Set `previous`. A non-empty list on an unchained kind is
+    /// refused (`specs/DECISIONS.md` §23 sub-decision 2).
+    pub fn with_previous(mut self, previous: Previous) -> Result<Self, PreviousError> {
+        if !B::CHAINED && !previous.is_empty() {
+            return Err(PreviousError::Unchained { kind: B::TYPE });
+        }
+        self.previous = previous;
+        Ok(self)
+    }
+
     pub fn statement_id(&self) -> StatementId {
         StatementId::from_bytes(STATEMENT_DOMAIN, &self.canonical_bytes())
     }
@@ -127,6 +225,9 @@ impl<B: StatementBody> CanonicalEncode for UnsignedStatement<B> {
         encode_str(out, self.actor.as_str());
         encode_str(out, &self.subject.to_string());
         self.created_at.encode_canonical(out);
+        encode_list(out, self.previous.ids(), |out, id| {
+            encode_str(out, id.as_str())
+        });
         self.body.encode_canonical(out);
     }
 }
@@ -505,6 +606,7 @@ impl ObjectBranchBody {
 impl StatementBody for ObjectBranchBody {
     const TYPE: &'static str = "ObjectBranch";
     const VERSION: u8 = 1;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ObjectBranchBody {
@@ -630,6 +732,7 @@ impl ObjectVersionTagBody {
 impl StatementBody for ObjectVersionTagBody {
     const TYPE: &'static str = "ObjectVersionTag";
     const VERSION: u8 = 1;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ObjectVersionTagBody {
@@ -1162,6 +1265,7 @@ impl ActorCapabilityGrantBody {
 impl StatementBody for ActorCapabilityGrantBody {
     const TYPE: &'static str = "ActorCapabilityGrant";
     const VERSION: u8 = 1;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorCapabilityGrantBody {
@@ -1215,6 +1319,7 @@ impl ActorCapabilityRevocationBody {
 impl StatementBody for ActorCapabilityRevocationBody {
     const TYPE: &'static str = "ActorCapabilityRevocation";
     const VERSION: u8 = 1;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorCapabilityRevocationBody {
@@ -1270,6 +1375,7 @@ impl ActorKeyRotationBody {
 impl StatementBody for ActorKeyRotationBody {
     const TYPE: &'static str = "ActorKeyRotation";
     const VERSION: u8 = 1;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorKeyRotationBody {
@@ -1327,6 +1433,7 @@ impl ActorKeyRevocationBody {
 impl StatementBody for ActorKeyRevocationBody {
     const TYPE: &'static str = "ActorKeyRevocation";
     const VERSION: u8 = 1;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorKeyRevocationBody {
@@ -1378,6 +1485,7 @@ impl StatementBody for ActorEmergencyKeyRotationBody {
     const TYPE: &'static str = "ActorEmergencyKeyRotation";
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorEmergencyKeyRotationBody {
@@ -1431,6 +1539,7 @@ impl StatementBody for ActorEmergencyKeyRevocationBody {
     const TYPE: &'static str = "ActorEmergencyKeyRevocation";
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorEmergencyKeyRevocationBody {
@@ -1471,6 +1580,7 @@ impl StatementBody for ActorAttestationKeyAddBody {
     const TYPE: &'static str = "ActorAttestationKeyAdd";
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorAttestationKeyAddBody {
@@ -1528,6 +1638,7 @@ impl StatementBody for ActorAttestationThresholdChangeBody {
     const TYPE: &'static str = "ActorAttestationThresholdChange";
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorAttestationThresholdChangeBody {
@@ -1579,6 +1690,7 @@ impl StatementBody for ActorAttestationKeyRevocationBody {
     const TYPE: &'static str = "ActorAttestationKeyRevocation";
     const VERSION: u8 = 1;
     const SIGNING_SURFACE: SigningSurface = SigningSurface::Attestation;
+    const CHAINED: bool = true;
 }
 
 impl CanonicalEncode for ActorAttestationKeyRevocationBody {
@@ -2260,6 +2372,130 @@ mod tests {
             ))
         ));
         Ok(())
+    }
+
+    // --- actor chains (`specs/DECISIONS.md` §23) ---------------------
+
+    fn chained_branch(
+        previous: Vec<StatementId>,
+    ) -> Result<UnsignedStatement<ObjectBranchBody>, Box<dyn std::error::Error>> {
+        Ok(unsigned_object_branch("head", statement_id_one())?
+            .with_previous(Previous::from_tips(previous)?)?)
+    }
+
+    #[test]
+    fn object_branch_previous_changes_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let first = chained_branch(Vec::new())?;
+        let chained = chained_branch(vec![statement_id_two()])?;
+        let merged = chained_branch(vec![statement_id_one(), statement_id_two()])?;
+
+        assert_ne!(first.statement_id(), chained.statement_id());
+        assert_ne!(chained.statement_id(), merged.statement_id());
+        assert_eq!(
+            first.statement_id(),
+            unsigned_object_branch("head", statement_id_one())?.statement_id(),
+            "an empty previous is the unchained encoding"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_object_branch_signature_after_previous_change(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let signed_unsigned = chained_branch(vec![statement_id_one()])?;
+        let tampered = chained_branch(vec![statement_id_two()])?;
+        let signature = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, signature);
+
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn unchained_kinds_refuse_a_previous() -> Result<(), Box<dyn std::error::Error>> {
+        let previous = Previous::from_tips([statement_id_one()])?;
+        let revision = unsigned_object_revision(ObjectRevisionBody::new(
+            object_id()?,
+            RevisionId::new("git:sha256:revision"),
+            Vec::new(),
+            blob_id()?,
+            true,
+        ))?;
+        assert_eq!(
+            revision.with_previous(previous.clone()),
+            Err(PreviousError::Unchained {
+                kind: "ObjectRevision"
+            })
+        );
+        let trust = unsigned_actor_trust(Some(TrustDecision::Trusted), None, None)?;
+        assert_eq!(
+            trust.with_previous(previous).map(|_| ()),
+            Err(PreviousError::Unchained { kind: "ActorTrust" })
+        );
+        // An empty previous is always allowed.
+        assert!(unsigned_object_revision(ObjectRevisionBody::new(
+            object_id()?,
+            RevisionId::new("git:sha256:revision"),
+            Vec::new(),
+            blob_id()?,
+            true,
+        ))?
+        .with_previous(Previous::default())
+        .is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn previous_accepts_only_the_canonical_spelling() {
+        let (one, two) = (statement_id_one(), statement_id_two());
+        assert!(Previous::new(vec![one.clone(), two.clone()]).is_ok());
+        assert_eq!(
+            Previous::new(vec![two.clone(), one.clone()]),
+            Err(PreviousError::NotCanonical)
+        );
+        assert_eq!(
+            Previous::new(vec![one.clone(), one.clone()]),
+            Err(PreviousError::NotCanonical)
+        );
+        // `from_tips` normalizes instead.
+        assert_eq!(
+            Previous::from_tips([two.clone(), one.clone(), two]),
+            Previous::new(vec![one, statement_id_two()])
+        );
+        let too_many: Vec<StatementId> = (0..=MAX_PREVIOUS)
+            .filter_map(|n| u8::try_from(n).ok())
+            .map(|n| StatementId::from_sha256_digest([n; 32]))
+            .collect();
+        assert_eq!(
+            Previous::from_tips(too_many),
+            Err(PreviousError::TooMany {
+                count: MAX_PREVIOUS + 1
+            })
+        );
+    }
+
+    #[test]
+    fn chained_kinds_are_exactly_those_of_decision_23() {
+        const {
+            assert!(ObjectBranchBody::CHAINED);
+            assert!(ObjectVersionTagBody::CHAINED);
+            assert!(ActorCapabilityGrantBody::CHAINED);
+            assert!(ActorCapabilityRevocationBody::CHAINED);
+            assert!(ActorKeyRotationBody::CHAINED);
+            assert!(ActorKeyRevocationBody::CHAINED);
+            assert!(ActorEmergencyKeyRotationBody::CHAINED);
+            assert!(ActorEmergencyKeyRevocationBody::CHAINED);
+            assert!(ActorAttestationKeyAddBody::CHAINED);
+            assert!(ActorAttestationKeyRevocationBody::CHAINED);
+            assert!(ActorAttestationThresholdChangeBody::CHAINED);
+            assert!(!ObjectRevisionBody::CHAINED);
+            assert!(!ActorTrustBody::CHAINED);
+        }
     }
 
     fn unsigned_version_tag(
