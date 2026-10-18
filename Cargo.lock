@@ -1732,6 +1732,7 @@ dependencies = [
 name = "kairo-federation-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.7",
  "kairo-core",
  "kairo-identity",
  "serde",
@@ -1750,6 +1751,7 @@ dependencies = [
  "kairo-federation-core",
  "kairo-git",
  "kairo-identity",
+ "kairo-keystore",
  "kairo-object",
  "kairo-statement",
  "kairo-store",

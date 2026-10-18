@@ -1003,7 +1003,11 @@ fetch` (Phase 2 §1). The first federated form is `kairo fetch
 --object <id> --from <url> [--allow-peer] [--require-complete]
 [--json]`. The peer must be listed in `<store>/config.toml` unless
 `--allow-peer` is given, and a pinned node actor must match
-(`DECISIONS.md` §17). It is a direct federation client that pulls a
+(`DECISIONS.md` §17). The pull authenticates the peer as its node
+actor by its signed node document and refuses a document for another
+URL (`DECISIONS.md` §25), so `peer_actor` is reported as
+`pinned, authenticated`, `authenticated, unpinned`, or
+`authenticated; peer not in config`. It is a direct federation client that pulls a
 published object's closure from one peer (`DECISIONS.md` §16,
 `PHASE_2_FEDERATION.md` slice 3); the options below come later.
 

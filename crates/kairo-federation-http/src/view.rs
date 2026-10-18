@@ -2,7 +2,9 @@
 //!
 //! Built from the publish list and each published object's
 //! [`ObjectClosure`], plus the key events of every actor those
-//! closures name. Every per-record endpoint checks membership here
+//! closures name and of the node actor, which is always served so a
+//! peer can check the node document's signature (`DECISIONS.md` §25
+//! sub-decision 2). Every per-record endpoint checks membership here
 //! first, so a record outside every published closure is
 //! indistinguishable from one the store doesn't hold.
 //!
@@ -23,7 +25,8 @@ pub(crate) struct PublishedView {
     /// Published objects whose genesis is present, ascending.
     pub objects: Vec<ObjectId>,
     pub closures: BTreeMap<ObjectId, ObjectClosure>,
-    /// Every actor named by some closure, with its key-event ids.
+    /// Every actor named by some closure, and the node actor, with
+    /// their key-event ids.
     pub actors: BTreeMap<ActorId, Vec<StatementId>>,
     /// Object statements, authority, and key events.
     pub statements: HashSet<StatementId>,
@@ -31,9 +34,9 @@ pub(crate) struct PublishedView {
 }
 
 impl PublishedView {
-    pub(crate) fn build(store: &FilesystemStore) -> Result<Self, StoreError> {
+    pub(crate) fn build(store: &FilesystemStore, node_actor: &ActorId) -> Result<Self, StoreError> {
         let mut view = Self::default();
-        let mut actors: BTreeSet<ActorId> = BTreeSet::new();
+        let mut actors: BTreeSet<ActorId> = BTreeSet::from([node_actor.clone()]);
         for published in store.list_published_objects()? {
             let closure = match store.object_closure(&published.object_id) {
                 Ok(closure) => closure,
@@ -68,13 +71,15 @@ impl PublishedView {
 /// expiry may both rebuild; the later write wins, which is harmless.
 #[derive(Debug)]
 pub(crate) struct ViewCache {
+    node_actor: ActorId,
     ttl: Duration,
     current: Mutex<Option<(Instant, Arc<PublishedView>)>>,
 }
 
 impl ViewCache {
-    pub(crate) fn new(ttl: Duration) -> Self {
+    pub(crate) fn new(node_actor: ActorId, ttl: Duration) -> Self {
         Self {
+            node_actor,
             ttl,
             current: Mutex::new(None),
         }
@@ -86,7 +91,7 @@ impl ViewCache {
                 return Ok(Arc::clone(view));
             }
         }
-        let view = Arc::new(PublishedView::build(store)?);
+        let view = Arc::new(PublishedView::build(store, &self.node_actor)?);
         *self.lock() = Some((Instant::now(), Arc::clone(&view)));
         Ok(view)
     }

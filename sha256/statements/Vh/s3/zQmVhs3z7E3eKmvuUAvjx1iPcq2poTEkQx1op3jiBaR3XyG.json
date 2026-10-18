@@ -1,0 +1,19 @@
+{
+  "type": "ObjectBranch",
+  "version": 1,
+  "actor": "zQmQ8nEYhNSxLDbwUYg87DNchT6PvcGXc7XUV4iGn6RgHmc",
+  "subject": "object:zQmWnLBo3uKsT5zW7u99m9y45te1VX73ZXJeb9K96SwE8mt",
+  "created_at": "2026-10-18T20:46:51Z",
+  "previous": [],
+  "body": {
+    "object": "zQmWnLBo3uKsT5zW7u99m9y45te1VX73ZXJeb9K96SwE8mt",
+    "name": "head",
+    "revision": "zQmfJN3HErrQe64Tn1TVz6QgkyAVtuwwY3ZinfjfVHNaEHD"
+  },
+  "signature": {
+    "actor": "zQmQ8nEYhNSxLDbwUYg87DNchT6PvcGXc7XUV4iGn6RgHmc",
+    "key_id": "zQmYQS4yuXds32oSwvCXfTJLaPzPj8WC5VZHzh1yc8rshnk",
+    "algorithm": "ed25519",
+    "bytes": "eRHWKz+EjGvkKXxqoEuzIP14RwgcXZmb+8GmeJCa1USRH//I9bccOUOdxCDzfMQQDHhFx5VURD5CM4ZAFc7iCw=="
+  }
+}

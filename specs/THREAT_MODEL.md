@@ -325,6 +325,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | `DECISIONS.md` §22. The node answers `ls-refs` itself, from published commits only. It refuses any `want` that isn't a published commit and drops any such `have` before `upload-pack` sees the request. It refuses every command but `ls-refs` and `fetch`, and protocol v0/v1. An unpublished object's endpoint is `404` like every record. Tests fetch a pooled unpublished commit with real `git` and require that to fail. |
 | **Residual risk** | The filter is the only scope: a regression in it exposes the pool. Published commits are named by revisions, so a published commit that shares trees or blobs with an unpublished one serves those shared objects. That is inherent to deduplication and reveals nothing the published commit doesn't already contain. |
 
+### 5.18 Node impersonation
+
+| | |
+|---|---|
+| **Adversary** | §4.2, §4.6 (a peer or relay presenting itself as another node) |
+| **Attack** | Serve another node's `/.well-known/kairo-node` from an attacker-controlled URL, copied byte for byte or edited, so that pulls record the real node's actor in provenance and a `node_actor` pin (`DECISIONS.md` §17) accepts the impostor. |
+| **Mechanism** | `DECISIONS.md` §25 sub-decisions 1–2. The node signs its document with the node actor's active key at startup, covering `node_actor`, `base_url`, `protocol_versions`, `supports`, and `signed_at` (`schemas/canonical/node-document-v1.md`). A pull refuses a document whose `base_url` isn't the URL it pulled from, before fetching anything. It then fetches the node actor's genesis and key events, which the node always serves, and refuses a signature that isn't by the key active at `signed_at` or that is revoked then. An edited document fails the signature; a copied one fails the `base_url` check. The server refuses to start with a key that isn't the node actor's active key. |
+| **Residual risk** | No freshness: a document captured before a key rotation still verifies at its old `signed_at` until that key is revoked, so `signed_at` is only a recency signal. A node whose key is stolen can be impersonated until the operator rotates or revokes it, as for any actor (§4.3). The document authenticates the node actor *at a URL*, not the transport: TLS to the reverse proxy is what keeps a network attacker from serving its own copy at the real URL (§4.1). Requests that act on who is asking need `KairoNode1` signatures (§25 sub-decision 3), not the document. |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by
@@ -590,8 +599,8 @@ shipped):
   replay, §5.5 stale-key, §5.6 retroactive revocation, §5.7
   capability scope, §5.8 cross-actor first-person events, §5.9
   bricking guard at the CLI, §5.10 active-key compromise recovery,
-  §5.13 fork preservation, §5.14 genesis-asymmetry impersonation:
-  all defended.
+  §5.13 fork preservation, §5.14 genesis-asymmetry impersonation,
+  §5.18 node impersonation (federation pulls): all defended.
 - §5.11 attestation-key compromise, §5.12 malicious attestation-key
   add: defended **only by detection** in shipped v1, not by
   in-protocol response. `ActorAttestationKeyRevocation` is designed

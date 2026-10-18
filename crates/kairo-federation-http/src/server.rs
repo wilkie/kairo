@@ -33,6 +33,10 @@ pub struct Config {
     /// Store root to serve from. Opened read-only in practice: the
     /// server calls no `put_*`.
     pub store: PathBuf,
+    /// Keystore holding the node actor's signing key, which signs the
+    /// node document at startup (`DECISIONS.md` §25). The CLI's
+    /// default is `<store>/keys`.
+    pub keys: PathBuf,
     pub bind_addr: SocketAddr,
     /// Public base URL peers reach this node at, e.g.
     /// `https://archive.example.org`. Goes into the node document.

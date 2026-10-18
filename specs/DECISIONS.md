@@ -2225,7 +2225,9 @@ Sub-decisions:
    the access decision (§16). A signature on a read is ignored, not
    refused.
 
-Affected specs:
+Affected specs (sub-decisions 1–2 implemented: `PHASE_2_FEDERATION.md`
+§2.2, `FEDERATION.md`, `THREAT_MODEL.md` §5.18, and
+`schemas/canonical/node-document-v1.md`):
 
 - `PHASE_2_FEDERATION.md` — §2.1 (the node document, the always-served
   node actor listing), §2.3 (`fed_unauthenticated`), §4 item 3.

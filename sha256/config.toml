@@ -1,0 +1,4 @@
+# Written by scripts/federation-smoke.sh.
+[[federation.peers]]
+url = "http://127.0.0.1:7996"
+node_actor = "zQmWSKydWxuFUvWR1JPSk1j9xTbW4GKZx6y86zBqMCywDLC"

@@ -12,7 +12,7 @@ repository.workspace = true
 # proxy and links no TLS stack of its own when built alone.
 [features]
 default = ["server", "client"]
-server = ["dep:axum", "dep:flate2", "dep:http-body", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+server = ["dep:axum", "dep:flate2", "dep:http-body", "dep:kairo-keystore", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
 client = ["dep:kairo-object", "dep:ureq"]
 
 [dependencies]
@@ -23,6 +23,7 @@ kairo-core = { path = "../kairo-core" }
 kairo-federation-core = { path = "../kairo-federation-core" }
 kairo-git = { path = "../kairo-git" }
 kairo-identity = { path = "../kairo-identity" }
+kairo-keystore = { path = "../kairo-keystore", optional = true }
 kairo-object = { path = "../kairo-object", optional = true }
 kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }

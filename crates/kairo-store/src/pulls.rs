@@ -39,7 +39,8 @@ const PULLS_RECORD: &str = "federation/pulls.json";
 pub struct PullRecord {
     pub peer_url: String,
     pub object: ObjectId,
-    /// The node actor the peer claimed.
+    /// The peer's node actor, authenticated by its signed node
+    /// document.
     pub peer_actor: ActorId,
     pub at: Timestamp,
     pub fetched: u64,

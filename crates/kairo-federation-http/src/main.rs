@@ -22,6 +22,7 @@ use http_body_util as _;
 use kairo_federation_core as _;
 use kairo_git as _;
 use kairo_identity as _;
+use kairo_keystore as _;
 #[cfg(feature = "client")]
 use kairo_object as _;
 use kairo_statement as _;
@@ -41,7 +42,7 @@ use ureq as _;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = "\
-usage: kairo-federation-http --store <path> --node-actor <id>
+usage: kairo-federation-http --store <path> --node-actor <id> [--keys <path>]
                              [--bind <addr>] [--base-url <url>] [--view-ttl <secs>]
                              [--max-concurrent-packs <n>]
        kairo-federation-http --version
@@ -49,7 +50,9 @@ usage: kairo-federation-http --store <path> --node-actor <id>
 Serves this node's published objects to federation peers over plain
 HTTP (DECISIONS.md §16). Binds 127.0.0.1:7880 by default; put a
 TLS-terminating reverse proxy in front and pass its public origin as
---base-url. --base-url defaults to http://<bind>.
+--base-url. --base-url defaults to http://<bind>. The node actor's
+signing key comes from --keys (default <store>/keys) and signs the
+node document at startup.
 ";
 
 fn main() -> ExitCode {
@@ -96,6 +99,7 @@ fn main() -> ExitCode {
 fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut iter = args.iter().skip(1);
     let mut store: Option<PathBuf> = None;
+    let mut keys: Option<PathBuf> = None;
     let mut node_actor: Option<ActorId> = None;
     let mut bind_addr: SocketAddr = DEFAULT_BIND;
     let mut base_url: Option<String> = None;
@@ -110,6 +114,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         };
         match arg.as_str() {
             "--store" => store = Some(PathBuf::from(value("--store")?)),
+            "--keys" => keys = Some(PathBuf::from(value("--keys")?)),
             "--node-actor" => {
                 let raw = value("--node-actor")?;
                 node_actor = Some(
@@ -142,8 +147,10 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         }
     }
 
+    let store = store.ok_or("--store is required")?;
     Ok(Config {
-        store: store.ok_or("--store is required")?,
+        keys: keys.unwrap_or_else(|| store.join("keys")),
+        store,
         node_actor: node_actor.ok_or("--node-actor is required")?,
         base_url: base_url.unwrap_or_else(|| format!("http://{bind_addr}")),
         bind_addr,

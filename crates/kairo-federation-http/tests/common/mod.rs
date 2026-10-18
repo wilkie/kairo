@@ -111,10 +111,15 @@ pub(crate) fn grant(
         .expect("put grant")
 }
 
+/// The node actor's operational key, as [`node_actor`] creates it.
+pub(crate) fn node_key() -> SecretSigningKey {
+    SecretSigningKey::ed25519([200; 32])
+}
+
 pub(crate) fn node_actor(store: &FilesystemStore, kind: ActorKind) -> ActorId {
     let genesis = ActorGenesisBody::new(
         kind,
-        SecretSigningKey::ed25519([200; 32]).public_key(),
+        node_key().public_key(),
         vec![SecretSigningKey::ed25519([201; 32]).public_key()],
         1,
         Timestamp::from_seconds(1_700_000_000),
@@ -275,15 +280,22 @@ pub(crate) fn seed() -> Seeded {
 }
 
 /// A node over `seeded`'s store with a zero view TTL, so every
-/// request sees the store as it is now.
-pub(crate) fn node(seeded: &Seeded) -> Node {
+/// request sees the store as it is now, signing its node document for
+/// `base_url`.
+pub(crate) fn node_at(seeded: &Seeded, base_url: &str) -> Node {
     Node::from_store(
         seeded.store.clone(),
         &seeded.node_actor,
-        BASE_URL,
+        &node_key(),
+        base_url,
         Duration::ZERO,
     )
     .expect("node opens")
+}
+
+/// [`node_at`] [`BASE_URL`], for in-process requests.
+pub(crate) fn node(seeded: &Seeded) -> Node {
+    node_at(seeded, BASE_URL)
 }
 
 /// A router served on an ephemeral loopback port from a background
@@ -295,8 +307,14 @@ pub(crate) struct Served {
 }
 
 impl Served {
-    pub(crate) fn spawn(router: Router) -> Self {
-        let (addr_tx, addr_rx) = std::sync::mpsc::channel::<SocketAddr>();
+    /// Bind an ephemeral port, then serve `make(base_url)`, so a node
+    /// can sign its document for the URL it's reached at.
+    pub(crate) fn spawn(make: impl FnOnce(&str) -> Router) -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr: SocketAddr = listener.local_addr().expect("addr");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let base_url = format!("http://{addr}");
+        let router = make(&base_url);
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let thread = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -304,12 +322,7 @@ impl Served {
                 .build()
                 .expect("runtime");
             runtime.block_on(async move {
-                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                    .await
-                    .expect("bind");
-                addr_tx
-                    .send(listener.local_addr().expect("addr"))
-                    .expect("send addr");
+                let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
                 axum::serve(listener, router)
                     .with_graceful_shutdown(async {
                         let _ = stopped.await;
@@ -318,9 +331,8 @@ impl Served {
                     .expect("serve");
             });
         });
-        let addr = addr_rx.recv().expect("server started");
         Self {
-            base_url: format!("http://{addr}"),
+            base_url,
             stop: Some(stop),
             thread: Some(thread),
         }

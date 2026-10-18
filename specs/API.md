@@ -859,7 +859,8 @@ GET /api/v1/provenance/{record}
 `actor:<id>`, `blob:<id>`). The result is `{ record, entries: [{
 peer_url, peer_actor, fetched_at }] }`, first-seen first. `entries` is
 empty for a record authored or imported locally. `peer_actor` is the
-node actor the peer claimed.
+peer's node actor, authenticated by its signed node document
+(`DECISIONS.md` §25).
 
 ### 14.3 Get statement graph
 

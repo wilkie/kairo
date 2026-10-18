@@ -18,12 +18,14 @@ use kairo_federation_core::{
     ActorListing, FedErrorCode, FedErrorEnvelope, NodeDocument, ObjectListing, PublishedObjects,
 };
 use kairo_federation_http::{Error, Node};
-use kairo_identity::ActorKind;
-use kairo_store::PublishedObjectStore;
-use kairo_test_support::store::StoreFixture;
+use kairo_identity::{ActorKind, SecretSigningKey};
+use kairo_keystore::{FilesystemKeystore, Keystore};
+use kairo_statement::ActorKeyRotationBody;
+use kairo_store::{ActorStore, PublishedObjectStore, StatementStore};
+use kairo_test_support::store::{CreatedActor, StoreFixture};
 use tower::ServiceExt;
 
-use common::{node_actor, seed, Seeded, BASE_URL};
+use common::{node_actor, node_key, seed, sign_chained, Seeded, BASE_URL};
 
 // Crates the lib or `common` depends on that this target doesn't name.
 use flate2 as _;
@@ -33,7 +35,6 @@ use kairo_git as _;
 use kairo_object as _;
 use serde as _;
 use serde_json as _;
-use tempfile as _;
 use tracing as _;
 use tracing_subscriber as _;
 use ureq as _;
@@ -123,21 +124,34 @@ async fn full_listing(router: &Router, object: &ObjectId, limit: u32) -> (Object
 
 // --- node document ----------------------------------------------------
 
+fn open_node(
+    store: &kairo_store::FilesystemStore,
+    actor: &kairo_core::ActorId,
+    key: &SecretSigningKey,
+    base_url: &str,
+) -> Result<Node, Error> {
+    Node::from_store(store.clone(), actor, key, base_url, Duration::ZERO)
+}
+
 #[tokio::test]
-async fn serves_a_valid_node_document() {
+async fn serves_a_signed_node_document() {
     let seeded = seed();
     let document: NodeDocument = get_json(&router(&seeded), "/.well-known/kairo-node").await;
     assert_eq!(document.node_actor, seeded.node_actor);
     assert_eq!(document.base_url, BASE_URL);
     assert!(document.supports("object-pull"));
     document.validate().expect("document validates");
+    let signed_at = document
+        .verify_signature(&seeded.store)
+        .expect("signed by the node actor's active key");
+    assert!(signed_at <= Timestamp::now());
 }
 
 #[test]
 fn refuses_a_node_actor_that_is_not_kind_node() {
     let (_dir, fixture) = StoreFixture::temp();
     let person = node_actor(&fixture.store, ActorKind::person());
-    let result = Node::from_store(fixture.store.clone(), &person, BASE_URL, Duration::ZERO);
+    let result = open_node(&fixture.store, &person, &node_key(), BASE_URL);
     assert!(matches!(result, Err(Error::NotANodeActor { ref kind, .. }) if kind == "person"));
 }
 
@@ -146,14 +160,92 @@ fn refuses_a_missing_node_actor_and_a_bad_base_url() {
     let (_dir, fixture) = StoreFixture::temp();
     let absent = fixture.make_actor().actor_id;
     let other = StoreFixture::temp().1;
-    let result = Node::from_store(other.store.clone(), &absent, BASE_URL, Duration::ZERO);
+    let result = open_node(&other.store, &absent, &node_key(), BASE_URL);
     assert!(matches!(result, Err(Error::NodeActorMissing { .. })));
 
     let node = node_actor(&fixture.store, ActorKind::node());
     for bad in ["https://archive.example.org/", "archive.example.org"] {
-        let result = Node::from_store(fixture.store.clone(), &node, bad, Duration::ZERO);
+        let result = open_node(&fixture.store, &node, &node_key(), bad);
         assert!(matches!(result, Err(Error::NodeDocument(_))), "{bad}");
     }
+}
+
+#[test]
+fn refuses_to_sign_with_a_key_that_is_not_the_node_actors_active_key() {
+    let (_dir, fixture) = StoreFixture::temp();
+    let node = node_actor(&fixture.store, ActorKind::node());
+    let stranger = SecretSigningKey::ed25519([77; 32]);
+    let result = open_node(&fixture.store, &node, &stranger, BASE_URL);
+    assert!(matches!(result, Err(Error::NodeKeyNotActive { .. })));
+
+    // After a rotation, the old key no longer signs; the new one does.
+    let node_signer = CreatedActor {
+        actor_id: node.clone(),
+        signing: node_key(),
+        attestation_keys: Vec::new(),
+        genesis: fixture.store.get_actor(&node).expect("genesis"),
+    };
+    fixture
+        .store
+        .put_actor_key_rotation(&sign_chained(
+            &fixture.store,
+            &node_signer,
+            &format!("actor:{node}"),
+            1_700_000_500,
+            ActorKeyRotationBody::new(stranger.public_key(), None),
+        ))
+        .expect("rotate");
+    let result = open_node(&fixture.store, &node, &node_key(), BASE_URL);
+    assert!(matches!(result, Err(Error::NodeKeyNotActive { .. })));
+    open_node(&fixture.store, &node, &stranger, BASE_URL).expect("the rotated key signs");
+}
+
+#[tokio::test]
+async fn the_node_actor_listing_is_served_with_nothing_published() {
+    let (_dir, fixture) = StoreFixture::temp();
+    let node = node_actor(&fixture.store, ActorKind::node());
+    let node_signer = CreatedActor {
+        actor_id: node.clone(),
+        signing: node_key(),
+        attestation_keys: Vec::new(),
+        genesis: fixture.store.get_actor(&node).expect("genesis"),
+    };
+    let rotation = fixture
+        .store
+        .put_actor_key_rotation(&sign_chained(
+            &fixture.store,
+            &node_signer,
+            &format!("actor:{node}"),
+            1_700_000_500,
+            ActorKeyRotationBody::new(SecretSigningKey::ed25519([78; 32]).public_key(), None),
+        ))
+        .expect("rotate");
+    let router = open_node(
+        &fixture.store,
+        &node,
+        &SecretSigningKey::ed25519([78; 32]),
+        BASE_URL,
+    )
+    .expect("node")
+    .router();
+
+    let listing: ActorListing = get_json(&router, &format!("/federation/v1/actors/{node}")).await;
+    listing.validate().expect("genesis derives the id");
+    assert_eq!(listing.key_events, vec![rotation.clone()]);
+    let (status, _, body) = call(
+        &router,
+        Method::GET,
+        &format!("/federation/v1/statements/{rotation}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        fixture
+            .store
+            .get_statement_bytes(&rotation)
+            .expect("stored bytes")
+    );
 }
 
 // --- listings ---------------------------------------------------------
@@ -532,8 +624,14 @@ async fn head_is_allowed() {
 #[tokio::test]
 async fn serve_binds_and_shuts_down() {
     let seeded = seed();
+    let keys = tempfile::TempDir::new().expect("tempdir");
+    FilesystemKeystore::open(keys.path())
+        .expect("keystore")
+        .put_signing_key(&seeded.node_actor, &node_key())
+        .expect("put node key");
     let config = kairo_federation_http::Config {
         store: seeded.store.root().to_path_buf(),
+        keys: keys.path().to_path_buf(),
         bind_addr: "127.0.0.1:0".parse().expect("addr"),
         base_url: BASE_URL.to_owned(),
         node_actor: seeded.node_actor.clone(),

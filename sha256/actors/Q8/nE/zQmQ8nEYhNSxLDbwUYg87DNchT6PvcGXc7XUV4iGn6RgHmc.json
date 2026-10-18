@@ -1,0 +1,18 @@
+{
+  "type": "ActorGenesis",
+  "version": 1,
+  "actor_kind": "person",
+  "initial_key": {
+    "algorithm": "ed25519",
+    "bytes": "MOWLosrWB4qtQ5qObP6kcvtwu6Ud/iKoLCCI7eU/f1Q="
+  },
+  "attestation_keys": [
+    {
+      "algorithm": "ed25519",
+      "bytes": "b5gvY9yv1T+Rhhe6D4XbTzZiHOOQhPcFsHIbFh/Ja60="
+    }
+  ],
+  "attestation_threshold": 1,
+  "created_at": "2026-10-18T20:46:51Z",
+  "nonce": "4ffe8eb0c19819f0fcc161b35fb12421d89aaaf8f5a46f633403ef882b6cdea9"
+}

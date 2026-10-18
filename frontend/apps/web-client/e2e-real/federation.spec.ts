@@ -12,7 +12,7 @@ const peer = pulled.peerUrl.replace(/^https?:\/\//, '');
 test('a pulled object names the node it came from', async ({ page }) => {
   await page.goto(`/objects/${pulled.object}`);
   await expect(page.getByTestId('provenance-badge')).toHaveText(`Fetched from ${peer}`);
-  await expect(page.getByTestId('provenance-badge')).toHaveAccessibleName(/claimed/);
+  await expect(page.getByTestId('provenance-badge')).toHaveAccessibleName(/authenticated/);
 });
 
 test('the pulled revision carries provenance too', async ({ page }) => {

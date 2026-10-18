@@ -1,0 +1,17 @@
+{
+  "type": "ObjectGenesis",
+  "version": 1,
+  "body": {
+    "object_kind": "software",
+    "created_by": "zQmct14c746QP7rn5ntddES8568jyfR74k3BjVwNd6eUsNR",
+    "created_at": "2026-10-18T20:46:51Z",
+    "nonce": "6793ef78c6babee6aa1c3e498b8d18e620b27037cc53832584495fb21ade273d",
+    "initial_revision": null
+  },
+  "signature": {
+    "actor": "zQmct14c746QP7rn5ntddES8568jyfR74k3BjVwNd6eUsNR",
+    "key_id": "zQmQ1diMVWJH9Knxo2KFfSZz4Ss1vHogbBFyVGecLVdaeDQ",
+    "algorithm": "ed25519",
+    "bytes": "hRBzJf3lxjr+fUWqENYPVr9zc0fuzJXvXLdPBCPrRLF5syr41H4IcWPnuZfSwyTpn1lo9/EAWyOO9EA3mYOvDA=="
+  }
+}

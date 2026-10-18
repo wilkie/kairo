@@ -16,7 +16,7 @@ use axum::response::Response;
 use axum::Router;
 use flate2 as _;
 use kairo_core::{KairoRef, ObjectId, StatementId, Timestamp};
-use kairo_federation_core::FedErrorCode;
+use kairo_federation_core::{FedErrorCode, NodeDocument, NodeDocumentError};
 use kairo_federation_http::client::{
     pull_object, IncompleteChain, Limits, PullError, PullOptions, RecordRejection,
 };
@@ -28,13 +28,14 @@ use kairo_store::{
 use serde_json::Value;
 use tempfile::TempDir;
 
-use common::{seed, sign, Seeded, Served};
+use common::{node_key, seed, sign, sign_chained, Seeded, Served};
 
 // Crates the lib or `common` depends on that this target doesn't name.
 use http_body as _;
 use http_body_util as _;
 use kairo_federation_core as _;
 use kairo_git as _;
+use kairo_keystore as _;
 use kairo_object as _;
 use kairo_test_support as _;
 use serde as _;
@@ -51,7 +52,7 @@ fn local_store() -> (TempDir, FilesystemStore) {
 }
 
 fn serve(seeded: &Seeded) -> Served {
-    Served::spawn(common::node(seeded).router())
+    Served::spawn(|base_url| common::node_at(seeded, base_url).router())
 }
 
 /// Serve `seeded`, letting `tamper` replace any response body: it gets
@@ -62,30 +63,34 @@ where
     F: Fn(&str, &[u8]) -> Option<Vec<u8>> + Send + Sync + 'static,
 {
     let tamper = Arc::new(tamper);
-    let router: Router = common::node(seeded).router().layer(middleware::from_fn(
-        move |request: Request, next: Next| {
-            let tamper = Arc::clone(&tamper);
-            async move {
-                let path = request.uri().path().to_owned();
-                let response = next.run(request).await;
-                let (parts, body) = response.into_parts();
-                let bytes = axum::body::to_bytes(body, usize::MAX)
-                    .await
-                    .expect("body")
-                    .to_vec();
-                let mut parts = parts;
-                match tamper(&path, &bytes) {
-                    Some(replaced) => {
-                        parts.status = axum::http::StatusCode::OK;
-                        parts.headers.remove(axum::http::header::CONTENT_LENGTH);
-                        Response::from_parts(parts, Body::from(replaced))
-                    }
-                    None => Response::from_parts(parts, Body::from(bytes)),
+    Served::spawn(|base_url| tamper_router(common::node_at(seeded, base_url).router(), tamper))
+}
+
+fn tamper_router<F>(router: Router, tamper: Arc<F>) -> Router
+where
+    F: Fn(&str, &[u8]) -> Option<Vec<u8>> + Send + Sync + 'static,
+{
+    router.layer(middleware::from_fn(move |request: Request, next: Next| {
+        let tamper = Arc::clone(&tamper);
+        async move {
+            let path = request.uri().path().to_owned();
+            let response = next.run(request).await;
+            let (parts, body) = response.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX)
+                .await
+                .expect("body")
+                .to_vec();
+            let mut parts = parts;
+            match tamper(&path, &bytes) {
+                Some(replaced) => {
+                    parts.status = axum::http::StatusCode::OK;
+                    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+                    Response::from_parts(parts, Body::from(replaced))
                 }
+                None => Response::from_parts(parts, Body::from(bytes)),
             }
-        },
-    ));
-    Served::spawn(router)
+        }
+    }))
 }
 
 fn pull(
@@ -117,9 +122,13 @@ fn pull_copies_the_published_closure() {
     assert_eq!(report.peer_actor, seeded.node_actor);
     assert_eq!(report.already_held, 0);
     assert!(report.flagged.is_empty());
-    // alice and bob, the genesis, four object statements, three
-    // authority statements, alice's rotation, and the manifest blob.
-    assert_eq!(report.fetched, 2 + 1 + 4 + 3 + 1 + 1);
+    // The node actor, alice and bob, the genesis, four object
+    // statements, three authority statements, alice's rotation, and
+    // the manifest blob.
+    assert_eq!(report.fetched, 1 + 2 + 1 + 4 + 3 + 1 + 1);
+    local
+        .get_actor(&seeded.node_actor)
+        .expect("the node actor comes along to check the document");
 
     local
         .get_object_genesis(&seeded.published)
@@ -456,6 +465,114 @@ fn a_node_document_claiming_another_actor_is_refused() {
     ));
 }
 
+/// A served node document changed by `change`, then signed again with
+/// the node's key, as an honest node with those fields would serve it.
+fn resign(bytes: &[u8], change: impl FnOnce(&mut NodeDocument)) -> Vec<u8> {
+    let mut document: NodeDocument = serde_json::from_slice(bytes).expect("document");
+    change(&mut document);
+    document.sign(&node_key(), Timestamp::now());
+    serde_json::to_vec(&document).expect("json")
+}
+
+#[test]
+fn a_node_document_changed_after_signing_is_refused() {
+    let seeded = seed();
+    let served = serve_tampered(&seeded, |request_path, bytes| {
+        (request_path == "/.well-known/kairo-node").then(|| {
+            let mut value: Value = serde_json::from_slice(bytes).expect("json");
+            value["supports"] = serde_json::json!(["object-pull"]);
+            serde_json::to_vec(&value).expect("json")
+        })
+    });
+    let (_dir, local) = local_store();
+    assert!(matches!(
+        pull(&local, &served, &seeded.published),
+        Err(PullError::NodeDocument(NodeDocumentError::BadSignature))
+    ));
+    assert!(local.get_object_genesis(&seeded.published).is_err());
+}
+
+#[test]
+fn a_node_document_signed_by_another_key_is_refused() {
+    let seeded = seed();
+    let served = serve_tampered(&seeded, |request_path, bytes| {
+        (request_path == "/.well-known/kairo-node").then(|| {
+            let mut document: NodeDocument = serde_json::from_slice(bytes).expect("document");
+            document.sign(
+                &kairo_identity::SecretSigningKey::ed25519([77; 32]),
+                Timestamp::now(),
+            );
+            serde_json::to_vec(&document).expect("json")
+        })
+    });
+    let (_dir, local) = local_store();
+    assert!(matches!(
+        pull(&local, &served, &seeded.published),
+        Err(PullError::NodeDocument(
+            NodeDocumentError::KeyMismatch { .. }
+        ))
+    ));
+    assert!(local.get_object_genesis(&seeded.published).is_err());
+}
+
+#[test]
+fn a_node_document_for_another_url_is_refused_before_fetching() {
+    let seeded = seed();
+    // Signed honestly, for the URL the node really has, and served at
+    // a different one (a mirror, or a replay of its document).
+    let served =
+        Served::spawn(|_| common::node_at(&seeded, "https://archive.example.org").router());
+    let (_dir, local) = local_store();
+    match pull(&local, &served, &seeded.published) {
+        Err(PullError::BaseUrlMismatch { pulled, document }) => {
+            assert_eq!(pulled, served.base_url);
+            assert_eq!(document, "https://archive.example.org");
+        }
+        other => panic!("expected BaseUrlMismatch, got {other:?}"),
+    }
+    assert!(local.get_actor(&seeded.node_actor).is_err());
+}
+
+#[test]
+fn a_rotated_node_key_is_learned_from_the_node_actor_listing() {
+    let seeded = seed();
+    let node_signer = kairo_test_support::store::CreatedActor {
+        actor_id: seeded.node_actor.clone(),
+        signing: node_key(),
+        attestation_keys: Vec::new(),
+        genesis: seeded.store.get_actor(&seeded.node_actor).expect("genesis"),
+    };
+    let rotated = kairo_identity::SecretSigningKey::ed25519([78; 32]);
+    let rotation = seeded
+        .store
+        .put_actor_key_rotation(&sign_chained(
+            &seeded.store,
+            &node_signer,
+            &format!("actor:{}", seeded.node_actor),
+            1_700_000_500,
+            kairo_statement::ActorKeyRotationBody::new(rotated.public_key(), None),
+        ))
+        .expect("rotate");
+    let served = Served::spawn(|base_url| {
+        kairo_federation_http::Node::from_store(
+            seeded.store.clone(),
+            &seeded.node_actor,
+            &rotated,
+            base_url,
+            std::time::Duration::ZERO,
+        )
+        .expect("node")
+        .router()
+    });
+    let (_dir, local) = local_store();
+    let report = pull(&local, &served, &seeded.published).expect("pull");
+    assert_eq!(report.peer_actor, seeded.node_actor);
+    assert_eq!(
+        local.actor_key_event_ids(&seeded.node_actor).expect("keys"),
+        vec![rotation]
+    );
+}
+
 #[test]
 fn oversize_responses_fail_and_keep_what_was_stored() {
     let seeded = seed();
@@ -736,9 +853,9 @@ fn a_node_without_batch_support_is_pulled_record_by_record() {
     let served = serve_tampered(&seeded, move |path, bytes| {
         count(&seen, path);
         (path == "/.well-known/kairo-node").then(|| {
-            let mut value: Value = serde_json::from_slice(bytes).expect("json");
-            value["supports"] = serde_json::json!(["object-pull"]);
-            serde_json::to_vec(&value).expect("json")
+            resign(bytes, |document| {
+                document.supports = vec!["object-pull".to_owned()];
+            })
         })
     });
     let (_dir, local) = local_store();

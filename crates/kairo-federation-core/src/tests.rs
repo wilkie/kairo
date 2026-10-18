@@ -1,13 +1,16 @@
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
-use kairo_identity::{ActorGenesisBody, ActorKind, SecretSigningKey};
+use kairo_identity::{
+    ActorGenesisBody, ActorKind, KeyRevocationEntry, KeyRotationEntry, KeySurface,
+    MemoryActorResolver, SecretSigningKey,
+};
 use serde_json::{json, Value};
 
 use crate::{
     ActorListing, ActorListingError, Cursor, CursorError, FedErrorCode, FedErrorEnvelope,
     GitAvailability, NodeDocument, NodeDocumentError, ObjectListing, PageRequest, PageRequestError,
-    PublishedObjects, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT, PROTOCOL_VERSION,
-    SUPPORTS_OBJECT_PULL,
+    PublishedObjects, UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT,
+    PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -23,16 +26,28 @@ fn genesis(kind: ActorKind, seed: u8) -> Result<ActorGenesisBody, Box<dyn std::e
     )?)
 }
 
+const SIGNED_AT: i64 = 1_700_000_100;
+
 fn node_document() -> Result<NodeDocument, Box<dyn std::error::Error>> {
     let body = genesis(ActorKind::node(), 7)?;
-    Ok(NodeDocument {
-        schema: Default::default(),
+    Ok(UnsignedNodeDocument {
         node_actor: body.actor_id(),
         actor_genesis: ActorGenesisJson::from_body(&body),
         base_url: "https://archive.example.org".to_owned(),
         protocol_versions: vec![PROTOCOL_VERSION.to_owned()],
         supports: vec![SUPPORTS_OBJECT_PULL.to_owned()],
-    })
+    }
+    .sign(
+        &SecretSigningKey::ed25519([7; 32]),
+        Timestamp::from_seconds(SIGNED_AT),
+    ))
+}
+
+/// A resolver holding the node actor of [`node_document`].
+fn node_resolver() -> Result<MemoryActorResolver, Box<dyn std::error::Error>> {
+    let mut resolver = MemoryActorResolver::new();
+    resolver.insert(genesis(ActorKind::node(), 7)?);
+    Ok(resolver)
 }
 
 fn object_id(tag: &[u8]) -> ObjectId {
@@ -93,6 +108,116 @@ fn node_document_round_trips_and_validates() -> TestResult {
     assert_eq!(genesis.actor_id(), document.node_actor);
     assert!(back.supports(SUPPORTS_OBJECT_PULL));
     assert!(!back.supports("token-indexes"));
+    Ok(())
+}
+
+#[test]
+fn a_signed_node_document_verifies_against_the_active_key() -> TestResult {
+    let document = node_document()?;
+    let json = serde_json::to_value(&document)?;
+    assert_eq!(json["signed_at"], "2023-11-14T22:15:00Z");
+    assert_eq!(json["signature"]["algorithm"], "ed25519");
+    let signed_at = document.verify_signature(&node_resolver()?)?;
+    assert_eq!(signed_at, Timestamp::from_seconds(SIGNED_AT));
+    Ok(())
+}
+
+#[test]
+fn every_signed_field_is_covered() -> TestResult {
+    let resolver = node_resolver()?;
+    let tampers: [fn(&mut NodeDocument); 4] = [
+        |d| d.base_url = "https://elsewhere.example.org".to_owned(),
+        |d| d.supports.push("statement-batch".to_owned()),
+        |d| d.protocol_versions.push("kairo-fed/2".to_owned()),
+        |d| d.signed_at = "2023-11-14T22:15:01Z".to_owned(),
+    ];
+    for tamper in tampers {
+        let mut document = node_document()?;
+        tamper(&mut document);
+        assert!(matches!(
+            document.verify_signature(&resolver),
+            Err(NodeDocumentError::BadSignature)
+        ));
+    }
+    let mut document = node_document()?;
+    document.signed_at = "yesterday".to_owned();
+    assert!(matches!(
+        document.verify_signature(&resolver),
+        Err(NodeDocumentError::InvalidSignedAt { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_node_document_signed_by_another_key_is_refused() -> TestResult {
+    let mut document = node_document()?;
+    document.sign(
+        &SecretSigningKey::ed25519([9; 32]),
+        Timestamp::from_seconds(SIGNED_AT),
+    );
+    assert!(matches!(
+        document.verify_signature(&node_resolver()?),
+        Err(NodeDocumentError::KeyMismatch { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_node_document_follows_the_node_actors_key_chain() -> TestResult {
+    let document = node_document()?;
+    let actor = document.node_actor.clone();
+    let rotated = SecretSigningKey::ed25519([9; 32]);
+
+    // Rotated after signing: the old key was active at signed_at.
+    let mut resolver = node_resolver()?;
+    resolver.insert_rotation(
+        actor.clone(),
+        KeyRotationEntry {
+            statement_id: "rotation".to_owned(),
+            next_key: rotated.public_key(),
+            created_at: Timestamp::from_seconds(SIGNED_AT + 1),
+            supersedes: None,
+            surface: KeySurface::Operational,
+        },
+    );
+    document.verify_signature(&resolver)?;
+
+    // Re-signed after the rotation, it must be by the new key.
+    let mut stale = document.clone();
+    stale.sign(
+        &SecretSigningKey::ed25519([7; 32]),
+        Timestamp::from_seconds(SIGNED_AT + 2),
+    );
+    assert!(matches!(
+        stale.verify_signature(&resolver),
+        Err(NodeDocumentError::KeyMismatch { .. })
+    ));
+    let mut fresh = document.clone();
+    fresh.sign(&rotated, Timestamp::from_seconds(SIGNED_AT + 2));
+    fresh.verify_signature(&resolver)?;
+
+    // A retroactive revocation of the old key refuses the original.
+    let mut revoked = node_resolver()?;
+    revoked.insert_revocation(
+        actor,
+        KeyRevocationEntry {
+            statement_id: "revocation".to_owned(),
+            revoked_key: SecretSigningKey::ed25519([7; 32]).public_key().key_id(),
+            retroactive: true,
+            created_at: Timestamp::from_seconds(SIGNED_AT + 5),
+            surface: KeySurface::Attestation,
+        },
+    );
+    assert!(matches!(
+        document.verify_signature(&revoked),
+        Err(NodeDocumentError::RevokedKey { .. })
+    ));
+
+    // An unknown node actor has no key to check against.
+    assert!(matches!(
+        document.verify_signature(&MemoryActorResolver::new()),
+        Err(NodeDocumentError::NoActiveKey)
+    ));
     Ok(())
 }
 

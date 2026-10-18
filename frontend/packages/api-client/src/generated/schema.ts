@@ -713,7 +713,7 @@ export interface components {
         ProvenanceEntryDto: {
             /** @description RFC 3339 UTC seconds. */
             fetched_at: string;
-            /** @description Node actor the peer *claimed* in its unsigned node document. */
+            /** @description The peer's node actor, authenticated by its signed node document. */
             peer_actor: string;
             /** @description Base URL the record was fetched from. */
             peer_url: string;

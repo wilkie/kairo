@@ -23,13 +23,14 @@ use kairo_test_support::git::{
 use kairo_test_support::store::{CreatedActor, CreatedObject, StoreFixture};
 use tempfile::TempDir;
 
-use common::{node_actor, Served, BASE_URL, MANIFEST};
+use common::{node_actor, Served, MANIFEST};
 
 // Crates the lib or `common` depends on that this target doesn't name.
 use axum as _;
 use http_body as _;
 use http_body_util as _;
 use kairo_identity as _;
+use kairo_keystore as _;
 use kairo_object as _;
 use serde as _;
 use tokio as _;
@@ -146,16 +147,17 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 fn serve(origin: &Origin) -> Served {
-    Served::spawn(
+    Served::spawn(|base_url| {
         kairo_federation_http::Node::from_store(
             origin.store.clone(),
             &origin.node_actor,
-            BASE_URL,
+            &common::node_key(),
+            base_url,
             std::time::Duration::ZERO,
         )
         .expect("node")
-        .router(),
-    )
+        .router()
+    })
 }
 
 fn local_store() -> (TempDir, FilesystemStore) {

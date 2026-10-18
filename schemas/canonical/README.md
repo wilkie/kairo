@@ -52,3 +52,4 @@ is explicitly a standalone reference.
 - `actor-key-rotation-v1.md`
 - `actor-key-revocation-v1.md`
 - `snapshot-v1.md`
+- `node-document-v1.md` (signing bytes only; no derived id)

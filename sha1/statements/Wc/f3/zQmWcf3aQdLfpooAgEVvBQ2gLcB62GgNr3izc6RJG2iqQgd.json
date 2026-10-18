@@ -1,0 +1,21 @@
+{
+  "type": "ObjectRevision",
+  "version": 1,
+  "actor": "zQmct14c746QP7rn5ntddES8568jyfR74k3BjVwNd6eUsNR",
+  "subject": "object:zQmUWjX3V2xogBX6yjdpQq8B43GVhUzDzhnWmWUG4pcSXAF",
+  "created_at": "2026-10-18T20:46:51Z",
+  "previous": [],
+  "body": {
+    "object": "zQmUWjX3V2xogBX6yjdpQq8B43GVhUzDzhnWmWUG4pcSXAF",
+    "revision": "git:sha1:81cada4e8c20ed6cae7189bb4e18d647e970f384",
+    "parents": [],
+    "manifest_hash": "zQmb6S3PREddCQdWJoBAocfS2MFbxck8tchaMtuovGG9E3E",
+    "attests_reachable_history": true
+  },
+  "signature": {
+    "actor": "zQmct14c746QP7rn5ntddES8568jyfR74k3BjVwNd6eUsNR",
+    "key_id": "zQmQ1diMVWJH9Knxo2KFfSZz4Ss1vHogbBFyVGecLVdaeDQ",
+    "algorithm": "ed25519",
+    "bytes": "RAI9tE85O0FM09kKG3mlAkcsRD+TGp3Efk4g0GQ+umpQxcmnPR7nWbhMzdflJar5Uhen8otB5LwbwFkH/dk7Aw=="
+  }
+}

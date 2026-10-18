@@ -18,6 +18,22 @@ rather than per-commit.
 
 ### Changed
 
+- **Nodes sign their node document, and pulls authenticate the peer
+  (`DECISIONS.md` §25 sub-decisions 1–2).**
+  - The node document gains `signed_at` and `signature`, by the node
+    actor's active key over the bytes in
+    `schemas/canonical/node-document-v1.md`. `kairo-federation-http`
+    loads the key from `--keys` (default `<store>/keys`) and refuses
+    to start with a key that isn't the node actor's active, unrevoked
+    key.
+  - A node always serves its node actor's listing and key events,
+    whether or not a published closure names it.
+  - A pull refuses a document whose `base_url` isn't the URL pulled
+    from, then fetches the node actor's genesis and key events and
+    refuses a signature not by the key active at `signed_at`. The pull
+    report, provenance, `kairo fetch`, and the web client's provenance
+    badge now call `peer_actor` authenticated rather than claimed.
+
 - **`ActorTrust` gains a scope (`DECISIONS.md` §18).**
   - Every trust statement names one scope, `general` or a
     feature-defined one such as `federation:push`, encoded in its

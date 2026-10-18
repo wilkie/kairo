@@ -6352,14 +6352,21 @@ fn serve_federation(
     store_root: &std::path::Path,
     node_actor: &str,
 ) -> Result<ServedFederation, Box<dyn std::error::Error>> {
-    let store = kairo_store::FilesystemStore::open(store_root)?;
-    let node = kairo_federation_http::Node::from_store(
-        store,
-        &kairo_core::ActorId::new(node_actor)?,
-        "http://127.0.0.1:7880",
-        std::time::Duration::ZERO,
-    )?;
-    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    // Bind first: the node signs its document for the URL it's
+    // reached at. `Node::open` loads the node key from `<store>/keys`,
+    // where `kairo actor create` put it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let addr = listener.local_addr()?;
+    let node = kairo_federation_http::Node::open(&kairo_federation_http::Config {
+        store: store_root.to_path_buf(),
+        keys: store_root.join("keys"),
+        bind_addr: addr,
+        base_url: format!("http://{addr}"),
+        node_actor: kairo_core::ActorId::new(node_actor)?,
+        view_ttl: std::time::Duration::ZERO,
+        max_concurrent_packs: None,
+    })?;
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     let thread = std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -6367,12 +6374,7 @@ fn serve_federation(
             .build()
             .expect("runtime");
         runtime.block_on(async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind");
-            addr_tx
-                .send(listener.local_addr().expect("addr"))
-                .expect("send addr");
+            let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
             let stop = async move {
                 let _ = tokio::task::spawn_blocking(move || stop_rx.recv()).await;
             };
@@ -6381,7 +6383,6 @@ fn serve_federation(
                 .expect("serve");
         });
     });
-    let addr = addr_rx.recv()?;
     Ok((format!("http://{addr}"), stop_tx, thread))
 }
 
@@ -6501,7 +6502,7 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
     assert!(fetched.contains("git = ingested (1 commits)"), "{fetched}");
     assert!(
         fetched.contains(&format!(
-            "peer_actor = {node_actor} (pinned; claim matches, node not authenticated)"
+            "peer_actor = {node_actor} (pinned, authenticated)"
         )),
         "{fetched}"
     );

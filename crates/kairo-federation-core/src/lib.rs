@@ -40,7 +40,10 @@ pub use listing::{
     ActorListing, ActorListingError, ActorListingSchema, GitAvailability, ObjectListing,
     ObjectListingSchema, PublishedObjects, PublishedObjectsSchema,
 };
-pub use node::{NodeDocument, NodeDocumentError, NodeDocumentSchema};
+pub use node::{
+    NodeDocument, NodeDocumentError, NodeDocumentSchema, NodeSignature, UnsignedNodeDocument,
+    NODE_DOCUMENT_DOMAIN,
+};
 pub use page::{
     Cursor, CursorError, PageRequest, PageRequestError, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN,
     MAX_PAGE_LIMIT,

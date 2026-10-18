@@ -3,10 +3,10 @@
 // sub-decision 8, `PHASE_2_FEDERATION.md` slice 5).
 //
 // Provenance names only the immediate peer, and the peer's node
-// actor is what its unsigned node document *claimed*; the tooltip
-// says so. Authorship is the signature's job, so this badge sits
-// beside the locality badge rather than replacing anything about
-// validity. Renders nothing for a local record (no entries).
+// actor, which the pull authenticated by its signed node document
+// (`DECISIONS.md` §25). Authorship is the signature's job, so this
+// badge sits beside the locality badge rather than replacing anything
+// about validity. Renders nothing for a local record (no entries).
 //
 // Dumb component: the parent fetches provenance and passes entries.
 
@@ -17,7 +17,7 @@ import { truncateActorId } from './ActorPicker';
 
 export interface ProvenanceBadgeEntry {
   peerUrl: string;
-  /** Claimed by the peer, not authenticated. */
+  /** Authenticated by the peer's signed node document. */
   peerActor: string;
   /** RFC 3339. */
   fetchedAt: string;
@@ -43,7 +43,7 @@ export function ProvenanceBadge({ entries }: ProvenanceBadgeProps) {
   const details = entries
     .map(
       (entry) =>
-        `${entry.peerUrl} at ${entry.fetchedAt} (node actor ${truncateActorId(entry.peerActor)}, claimed)`,
+        `${entry.peerUrl} at ${entry.fetchedAt} (node actor ${truncateActorId(entry.peerActor)}, authenticated)`,
     )
     .join('\n');
   return (

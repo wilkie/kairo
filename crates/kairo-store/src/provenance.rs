@@ -20,8 +20,8 @@
 //!
 //! Only the immediate peer is recorded, not the route a relayed record
 //! took. Authorship needs no provenance; the signature proves it.
-//! `peer_actor` is the node actor the peer's unsigned node document
-//! *claimed*; `peer_url` is the fact.
+//! `peer_actor` is the peer's node actor, authenticated by its signed
+//! node document (`DECISIONS.md` §25).
 //!
 //! ## Primary state, not an index
 //!
@@ -43,7 +43,7 @@ pub(crate) const PROVENANCE_DIR: &str = "provenance";
 pub struct ProvenanceEntry {
     /// Base URL the record was fetched from.
     pub peer_url: String,
-    /// The node actor the peer claimed (unauthenticated in the MVP).
+    /// The peer's node actor, authenticated by its signed node document.
     pub peer_actor: ActorId,
     pub fetched_at: Timestamp,
 }

@@ -5,15 +5,19 @@
 //! into the local store:
 //!
 //! 1. the node document, validated (the node actor derives from the
-//!    genesis it ships, and the node speaks `kairo-fed/1`);
-//! 2. every page of the object listing;
-//! 3. each listed actor: its genesis, then every key event the store
+//!    genesis it ships, the node speaks `kairo-fed/1`, and its
+//!    `base_url` is the URL pulled from);
+//! 2. the node actor's genesis and key events, then the document's
+//!    signature against them (`specs/DECISIONS.md` §25), so the peer
+//!    is authenticated as its node actor;
+//! 3. every page of the object listing;
+//! 4. each listed actor: its genesis, then every key event the store
 //!    lacks, in `created_at` order so each verifies against the keys
 //!    before it;
-//! 4. the object's genesis;
-//! 5. authority (grants, then revocations), then the object
+//! 5. the object's genesis;
+//! 6. authority (grants, then revocations), then the object
 //!    statements (revisions, then branches and tags);
-//! 6. blobs, checked against their content hash.
+//! 7. blobs, checked against their content hash.
 //!
 //! Only records the store lacks are fetched, which makes a re-pull
 //! incremental. Records go in dependency order, and each is stored as
@@ -129,7 +133,8 @@ pub struct FlaggedRecord {
 pub struct PullReport {
     pub object: ObjectId,
     pub peer_url: String,
-    /// Claimed by the peer's unsigned node document.
+    /// The peer's node actor, authenticated by its signed node
+    /// document (`DECISIONS.md` §25).
     pub peer_actor: ActorId,
     /// Records fetched, verified, and stored.
     pub fetched: usize,
@@ -219,6 +224,12 @@ pub enum PullError {
         message: String,
     },
     NodeDocument(NodeDocumentError),
+    /// The node document's `base_url` isn't the URL pulled from, so
+    /// it doesn't vouch for this URL.
+    BaseUrlMismatch {
+        pulled: String,
+        document: String,
+    },
     /// The node doesn't advertise `object-pull`.
     Unsupported,
     /// The peer claims a different node actor than the one pinned
@@ -294,6 +305,11 @@ impl fmt::Display for PullError {
             }
             Self::Parse { url, message } => write!(f, "unexpected response from {url}: {message}"),
             Self::NodeDocument(error) => write!(f, "peer's node document is invalid: {error}"),
+            Self::BaseUrlMismatch { pulled, document } => write!(
+                f,
+                "pulled from {pulled}, but the peer's node document is for {document:?}; \
+                 nothing was fetched"
+            ),
             Self::Unsupported => write!(f, "peer does not support {SUPPORTS_OBJECT_PULL}"),
             Self::NodeActorMismatch { expected, claimed } => write!(
                 f,
@@ -389,6 +405,14 @@ pub fn pull_object(
             });
         }
     }
+    // The signature binds the document to its `base_url`; a document
+    // for another URL says nothing about this one.
+    if http::normalize_base_url(&document.base_url).ok().as_deref() != Some(peer.base_url()) {
+        return Err(PullError::BaseUrlMismatch {
+            pulled: peer.base_url().to_owned(),
+            document: document.base_url.clone(),
+        });
+    }
 
     let provenance = ProvenanceEntry {
         peer_url: peer.base_url().to_owned(),
@@ -413,7 +437,9 @@ pub fn pull_object(
         provenance,
         report,
     };
-    pull.run(object)?;
+    let mut budget = 0;
+    pull.authenticate(&document, &mut budget)?;
+    pull.run(object, budget)?;
     if options.require_complete && !pull.report.incomplete.is_empty() {
         return Err(PullError::IncompleteChains {
             chains: pull.report.incomplete,
@@ -423,12 +449,35 @@ pub fn pull_object(
 }
 
 impl Pull<'_> {
-    fn run(&mut self, object: &ObjectId) -> Result<(), PullError> {
+    /// Fetch the node actor's genesis and key events (always served,
+    /// `DECISIONS.md` §25 sub-decision 2), then check the document's
+    /// signature against the key they make active at `signed_at`.
+    /// The node actor's records are self-verifying, so they're stored
+    /// even if the document's signature then fails.
+    fn authenticate(
+        &mut self,
+        document: &NodeDocument,
+        budget: &mut usize,
+    ) -> Result<(), PullError> {
+        *budget += 1;
+        self.check_budget(*budget)?;
+        self.actor(&document.node_actor, budget)?;
+        document
+            .verify_signature(self.store)
+            .map_err(PullError::NodeDocument)?;
+        Ok(())
+    }
+
+    fn run(&mut self, object: &ObjectId, mut budget: usize) -> Result<(), PullError> {
         let listing = self.listing(object)?;
-        let mut budget = listing.len();
+        budget += listing.len();
         self.check_budget(budget)?;
 
         for actor in &listing.actors {
+            // Already fetched by `authenticate`.
+            if actor == &self.report.peer_actor {
+                continue;
+            }
             self.actor(actor, &mut budget)?;
         }
         self.genesis(object)?;

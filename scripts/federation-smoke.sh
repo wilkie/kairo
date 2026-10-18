@@ -151,7 +151,8 @@ target config validate >/dev/null || fail "generated config does not validate"
 
 FETCHED="$(target fetch --object "$OBJECT" --from "$PEER" --require-complete)" || fail "fetch failed"
 echo "$FETCHED" | sed 's/^/  /'
-grep -q "^peer_actor = $NODE (pinned; " <<<"$FETCHED" || fail "peer was not pinned"
+grep -q "^peer_actor = $NODE (pinned, authenticated)$" <<<"$FETCHED" \
+    || fail "peer was not pinned and authenticated"
 grep -q "^git = ingested (1 commits)$" <<<"$FETCHED" || fail "Git pack not ingested"
 grep -q "^incomplete_chains = 0$" <<<"$FETCHED" || fail "actor chains incomplete:
 $FETCHED"

@@ -181,16 +181,16 @@ struct Pin {
 impl Pin {
     fn describe(self, report: &PullReport) -> String {
         match (self.listed, self.pinned) {
-            // The node document is unsigned until node authentication
-            // lands (DECISIONS.md §16 sub-decision 9), so a matching pin
-            // catches a re-pointed URL, not an impersonator.
-            (_, true) => "pinned; claim matches, node not authenticated".to_owned(),
+            // The pull authenticated the node actor by its signed node
+            // document (DECISIONS.md §25), so a pin holds the URL to
+            // that identity.
+            (_, true) => "pinned, authenticated".to_owned(),
             (true, false) => format!(
-                "claimed, unpinned; add node_actor = \"{}\" to its [[federation.peers]] entry \
-                 to pin it",
+                "authenticated, unpinned; add node_actor = \"{}\" to its [[federation.peers]] \
+                 entry to pin it",
                 report.peer_actor
             ),
-            (false, false) => "claimed; peer not in config (--allow-peer)".to_owned(),
+            (false, false) => "authenticated; peer not in config (--allow-peer)".to_owned(),
         }
     }
 
@@ -270,7 +270,7 @@ fn run_status(paths: &StorePaths) -> Result<String, CliError> {
     let last_pull = |url: &str| pulls.iter().find(|pull| pull.peer_url == url);
     let describe_pull = |pull: Option<&PullRecord>| match pull {
         Some(pull) => format!(
-            "{} object={} fetched={} already_held={} claimed={}",
+            "{} object={} fetched={} already_held={} node_actor={}",
             pull.at, pull.object, pull.fetched, pull.already_held, pull.peer_actor
         ),
         None => "never".to_owned(),

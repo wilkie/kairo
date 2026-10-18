@@ -1733,7 +1733,7 @@
           },
           "peer_actor": {
             "type": "string",
-            "description": "Node actor the peer *claimed* in its unsigned node document."
+            "description": "The peer's node actor, authenticated by its signed node document."
           },
           "peer_url": {
             "type": "string",

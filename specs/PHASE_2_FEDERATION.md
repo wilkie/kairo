@@ -74,9 +74,17 @@ whether or not the store holds it.
   "actor_genesis": { "...": "ActorGenesis JSON as stored" },
   "base_url": "https://archive.example.org",
   "protocol_versions": ["kairo-fed/1"],
-  "supports": ["object-pull"]
+  "supports": ["object-pull", "statement-batch"],
+  "signed_at": "2026-10-18T12:00:00Z",
+  "signature": { "key_id": "z...", "algorithm": "ed25519", "bytes": "<base64>" }
 }
 ```
+
+The node signs the document at startup (`DECISIONS.md` §25 sub-decision
+1; signed bytes in `schemas/canonical/node-document-v1.md`). A pull
+refuses a document whose `base_url` isn't the URL pulled from, fetches
+the node actor's listing and key events, and refuses a signature that
+isn't by the node actor's key active at `signed_at`.
 
 ```json
 {
@@ -105,7 +113,9 @@ the first page only.
 `ActorListing` is `{ schema: "kairo.fed.actor-listing.v1", actor,
 genesis, key_events: [statement ids] }`, unpaged (key-event
 histories are short). Only actors in some published closure are
-served.
+served, plus the node actor, which is always served with its key
+events so a peer can check the node document (`DECISIONS.md` §25
+sub-decision 2).
 
 ### 2.3 Error codes
 
@@ -190,7 +200,9 @@ Exceeding one fails the pull with what was stored so far kept.
   requests. `git` is `{ available: false }` until slice 4.
 - `kairo-federation-http` binary with `--store`, `--node-actor`,
   `--bind` (default `127.0.0.1:7880`), `--base-url` (default
-  `http://<bind>`), and `--view-ttl`. A non-loopback bind logs a
+  `http://<bind>`), and `--view-ttl`; `--keys` (default
+  `<store>/keys`, the node actor's signing key) came with node
+  authentication (`DECISIONS.md` §25). A non-loopback bind logs a
   warning naming the reverse-proxy expectation. Every non-`GET` /
   `HEAD` request, including to unknown paths, gets `405
   fed_method_not_allowed` with `Allow: GET, HEAD`. Unknown paths
@@ -465,9 +477,9 @@ inventory step, and 7 come from comparing this design with Radicle
    1. ~~**Scoped `ActorTrust`**~~ (§18; shipped): the `scope` field,
       the chain key `(truster, trusted, scope)`, and `kairo trust
       --scope`.
-   2. **Signed node document** and the always-served node actor
-      listing (§25 sub-decisions 1–2). Pulls report authenticated
-      peers.
+   2. ~~**Signed node document** and the always-served node actor
+      listing~~ (§25 sub-decisions 1–2; shipped). Pulls report
+      authenticated peers.
    3. **`KairoNode1` request signing and verification** (§25
       sub-decision 3), with the nonce cache.
    4. **Accept list, inbox, and announce** (§26 sub-decisions 1–3),

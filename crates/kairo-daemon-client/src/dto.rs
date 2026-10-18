@@ -206,7 +206,7 @@ pub struct TrustHeadDto {
 pub struct ProvenanceEntryDto {
     /// Base URL the record was fetched from.
     pub peer_url: String,
-    /// Node actor the peer *claimed* in its unsigned node document.
+    /// The peer's node actor, authenticated by its signed node document.
     pub peer_actor: String,
     /// RFC 3339 UTC seconds.
     pub fetched_at: String,

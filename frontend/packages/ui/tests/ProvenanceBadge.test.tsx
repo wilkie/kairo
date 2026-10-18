@@ -24,7 +24,7 @@ describe('<ProvenanceBadge />', () => {
     render(<ProvenanceBadge entries={[ARCHIVE]} />);
     expect(screen.getByText('Fetched from archive.example.org')).toBeInTheDocument();
     const badge = screen.getByTestId('provenance-badge');
-    expect(badge).toHaveAccessibleName(/claimed/);
+    expect(badge).toHaveAccessibleName(/authenticated/);
     expect(badge).toHaveAccessibleName(/2026-10-01T12:00:00Z/);
   });
 

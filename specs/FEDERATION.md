@@ -242,7 +242,9 @@ Example:
   "actor_genesis": { "...": "the node actor's ActorGenesis JSON" },
   "base_url": "https://archive.example.org",
   "protocol_versions": ["kairo-fed/1"],
-  "supports": ["object-pull"]
+  "supports": ["object-pull", "statement-batch"],
+  "signed_at": "2026-10-18T12:00:00Z",
+  "signature": { "key_id": "z...", "algorithm": "ed25519", "bytes": "<base64>" }
 }
 ```
 
@@ -252,7 +254,7 @@ the document carries no key list of its own. Later phases add
 `supports` values (`token-indexes`, `holder-discovery`,
 `provider-discovery`) as those endpoints exist.
 
-The well-known document is a discovery aid. It is not itself a trust root unless local policy says so. In the MVP it is unsigned, so `node_actor` is a claim. Node authentication arrives with push (`DECISIONS.md` §16 sub-decision 9).
+The well-known document is a discovery aid. It is not itself a trust root unless local policy says so. The node signs it at startup with the node actor's active key (`DECISIONS.md` §25, `schemas/canonical/node-document-v1.md`), binding `base_url` to `node_actor`. A pull checks the signature against the node actor's key events, which the node always serves, and refuses a document for a different URL. So a pulled-from node is authenticated as its node actor, and a `node_actor` pin pins an authenticated identity.
 
 ---
 
