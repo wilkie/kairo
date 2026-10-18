@@ -460,11 +460,22 @@ inventory step, and 7 come from comparing this design with Radicle
    instead of one request each, still verifying every statement on
    its own. Absence stays ambiguous, and a statement a batch leaves
    out is fetched per record. Blobs stay per record.
-3. **Push** with node authentication and a receiver acceptance
-   policy. Node identity should be proven on every request from the
-   first one, signed by the node actor's key (`KairoActor1`), as
-   Radicle authenticates every connection by its node key. A signed
-   node document alone is not enough.
+3. **Push** with node authentication, *decided in `DECISIONS.md` §25
+   (node authentication) and §26 (push)*. Slices, in order:
+   1. **Scoped `ActorTrust`** (§18, decided but not yet built): the
+      `scope` field, the chain key `(truster, trusted, scope)`, and
+      `kairo trust --scope`.
+   2. **Signed node document** and the always-served node actor
+      listing (§25 sub-decisions 1–2). Pulls report authenticated
+      peers.
+   3. **`KairoNode1` request signing and verification** (§25
+      sub-decision 3), with the nonce cache.
+   4. **Accept list, inbox, and announce** (§26 sub-decisions 1–3),
+      plus `kairo federation announce` and `kairo federation
+      receive` for announcements.
+   5. **Upload** (`kairo push`, `POST /federation/v1/push`), with
+      bundle ingest through the pull verifier, which completes bundle
+      import's signature verification (§26 sub-decision 4).
 4. **Trust transport** (opt-in, never auto-trusted) and `forget`.
 5. **Daemon `FederationService`**: background sync, on-demand
    fetch of missing closure data (`DAEMON.md` §9). The operator

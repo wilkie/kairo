@@ -1266,7 +1266,8 @@ Ten sub-decisions, locked together:
    `FEDERATION.md` holder discovery, without breaking this
    record.
 
-9. **The MVP node document is unsigned.** It carries
+9. **The MVP node document is unsigned.** *Superseded by §25
+   sub-decision 1, which signs it.* It carries
    `node_actor`, the actor's `ActorGenesis` (so the client can
    check that the id derives from it), `base_url`,
    `protocol_versions: ["kairo-fed/1"]`, and `supports:
@@ -2142,3 +2143,193 @@ Affected specs:
 - `PHASE_2_FEDERATION.md` §2.1 (endpoint), §2.3 (`fed_bad_batch`),
   §2.4 (`max_batch_bytes`), §4 item 2.
 - `FEDERATION.md` — the endpoint list.
+
+## 25. Node Authentication
+
+Decision: nodes authenticate as their node actors in two ways. First,
+the **node document is signed**, so a pull knows which node actor
+answered at a URL. Second, every **request to an endpoint that acts on
+who is asking** (push, and later discovery) carries a `KairoNode1`
+signature. Both use the node actor's active operational key and
+resolve it through the actor's key chain, so key rotation and
+revocation work for nodes as for any actor (§16 sub-decision 1). The
+§16 sub-decision 9 caveat, that `node_actor` is only a claim, ends
+here.
+
+Transport-level authentication (mutual TLS or Noise keyed to the node,
+as Radicle does) was rejected. It would break the deployment §16
+sub-decision 6 settled on, where TLS terminates at a reverse proxy,
+and it would need key handling outside the actor model.
+
+Sub-decisions:
+
+1. **Signed node document.**
+   - **Fields.** The document gains `signed_at` and `signature`. The
+     signature is over the document's canonical bytes without the
+     signature field, under the domain `kairo.fed.node-document.v1`.
+   - **Binding.** The document already carries `base_url`, so the
+     signature binds "this URL serves node actor X". A pull refuses a
+     document whose `base_url` differs from the URL it pulled from
+     (after normalization), or whose signature doesn't verify against
+     the node actor's key active at `signed_at`.
+   - **Freshness.** A node re-signs its document at startup, and
+     `signed_at` gives an observer a recency signal.
+   - **The pull report.** It says `peer_actor` is *authenticated*, not
+     claimed. A `node_actor` pin (§17) then pins an authenticated
+     identity rather than a trust-on-first-use claim.
+
+2. **The node actor's key state is served.** A node always serves its
+   own node actor's `ActorListing`, with its key event ids, at
+   `/federation/v1/actors/{node_actor}`, whether or not any closure
+   names it. A peer pulls that listing before verifying a node
+   signature it can't yet verify, so a rotated or revoked node key is
+   known.
+
+3. **`KairoNode1` request signatures**, modeled on `KairoActor1` (§14).
+   - **Header.**
+
+     ```http
+     Authorization: KairoNode1 node=<actor-id>, key_id=<key-id>,
+       timestamp=<i64>, nonce=<32-hex>, signature=<base64>
+     ```
+
+   - **Signing string.**
+
+     ```text
+     kairo-federation-request-v1\n
+     <method>\n
+     <receiver base URL>\n
+     <path-and-query>\n
+     <body-sha256-hex>\n
+     <timestamp>\n
+     <nonce>\n
+     ```
+
+     The receiver's normalized base URL is signed, which `KairoActor1`
+     didn't need on loopback. A request signed for one node can't be
+     replayed at another.
+
+   - **Replay.** A ±300-second window allows for clock skew across the
+     internet. On top of it, the receiver keeps a cache of `(node,
+     nonce)` pairs seen within the window. The cache lives in memory,
+     so a replay is possible only within one window across a restart,
+     which is accepted for v1.
+
+   - **Refusal.** A missing or invalid signature, an unknown node
+     actor, a non-`node` actor kind, or a revoked key is `401
+     fed_unauthenticated`. Authorization (does this node hold
+     `federation:push`?) is a separate `403`.
+
+4. **Reads stay anonymous.** Pull endpoints neither require nor check
+   `KairoNode1`. Published records verify themselves, and publishing is
+   the access decision (§16). A signature on a read is ignored, not
+   refused.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` — §2.1 (the node document, the always-served
+  node actor listing), §2.3 (`fed_unauthenticated`), §4 item 3.
+- `DECISIONS.md` §16 sub-decision 9 — superseded by sub-decision 1
+  here.
+- `FEDERATION.md` — the node document shape.
+- `THREAT_MODEL.md` — node impersonation.
+
+## 26. Push
+
+Decision: there are two kinds of push, chosen by role. Both land in a
+receiver's **inbox** and are ingested through the same verifier a pull
+uses, so the federation server still never writes the store itself.
+
+- **Announce** (node to node): an authenticated `POST
+  /federation/v1/announce` says "these objects have new state at my
+  base URL". The receiver pulls them from the announcer through the
+  ordinary pull path.
+- **Upload** (a client node to its home node): an authenticated `POST
+  /federation/v1/push` carries a Kairo bundle of the object. It serves
+  a pusher the receiver can't reach, such as a laptop.
+
+A receiver accepts either only from a node it trusts with
+`federation:push` (§18), and only for objects on its accept list.
+
+Sub-decisions:
+
+1. **Who may push.** The request carries a valid `KairoNode1` signature
+   (§25), and the receiving node's actor has an `ActorTrust` in scope
+   `federation:push`, decision `trusted`, about the pushing node actor.
+   There is no fallback from `general` trust (§18). Otherwise the
+   request is `403 fed_not_trusted`.
+
+2. **The accept list.** `[[federation.accept]]` entries in
+   `config.toml` (§17), each with:
+   - `object`: an object id;
+   - `from` (optional): a node actor id. Absent means any node trusted
+     with `federation:push`;
+   - `publish` (default `false`): serve the object onward after
+     ingest. `true` makes the node a public mirror of the object,
+     `false` a private backup.
+
+   A push for an object no entry covers is `403 fed_not_accepted`. The
+   check runs when the request arrives and again at ingest, so a
+   config change in between takes effect.
+
+3. **The inbox.** `<store>/federation/inbox/` holds accepted
+   announcements (a small JSON record each) and uploaded bundles
+   (written to a temporary name, then renamed into place). This is the
+   federation server's one write, amending §16 sub-decision 6 the way
+   §21 briefly did for the pack cache. The server doesn't open the
+   store for writing, and nothing in the inbox is trusted until
+   ingested.
+   - **Bounds.** Uploads are capped at `max_push_bytes` (default
+     1 GiB). Each node may hold at most `max_inbox_entries` (default
+     64) unprocessed entries, after which pushes get `503 fed_busy`
+     with `Retry-After`.
+
+4. **Ingest.** `kairo federation receive` processes the inbox. The
+   daemon's `FederationService` (`PHASE_2_FEDERATION.md` §4 item 5)
+   takes this over when it exists.
+   - **An announcement** becomes a pull of each announced object from
+     the announcer's signed `base_url` (§25 sub-decision 1), with the
+     announcer's node actor as the expected pin.
+   - **An upload** is ingested as a bundle, with the same per-record
+     verification a pull does: fixity, section, signature, actor
+     chains, and Git through quarantine. This means bundle import's
+     signature verification (tracked in `PHASE_2.md` §11) is done as
+     part of push. Records are stored with provenance naming the
+     pushing node.
+   - **After a successful ingest,** an entry with `publish = true`
+     adds the object to the publish list. Rejected records are
+     reported, and the entry is removed either way, with the outcome
+     logged like a pull (`federation/pulls.json`).
+
+5. **The pusher's side.**
+   - `kairo push --object <id> --to <url>` uploads a bundle of the
+     object's published closure.
+   - `kairo federation announce --object <id> --to <url>` sends an
+     announcement.
+
+   Both sign with the local node actor's key, so a pushing node needs
+   a node actor in its keystore.
+
+6. **Incremental upload is later work.** The first upload carries the
+   object's whole closure each time. Chain tips (§23) give the natural
+   increment: the receiver could advertise what it holds, and the
+   pusher could send only what follows. That waits until whole-closure
+   uploads prove too large.
+
+Rationale: the inbox keeps one ingestion path (the pull verifier) for
+everything a node accepts from outside, whether pulled, announced, or
+uploaded. It also keeps the network-facing server out of the store.
+Accepting only from `federation:push`-trusted nodes, and only for
+listed objects, means a node mirrors what its operator chose, never
+what a peer volunteers.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` — §2.1 (the announce and push endpoints),
+  §2.3 (`fed_not_trusted`, `fed_not_accepted`), §4 items 3 and 5.
+- `DECISIONS.md` §16 sub-decision 6 (the inbox write) and §17 (the
+  `[[federation.accept]]` table, `max_push_bytes`,
+  `max_inbox_entries`).
+- `PHASE_2.md` §11 — bundle-import verification, done here.
+- `CLI.md` — `kairo push`, `kairo federation announce|receive`.
+- `THREAT_MODEL.md` — push flooding and unwanted mirroring.
