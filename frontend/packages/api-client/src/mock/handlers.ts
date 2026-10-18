@@ -487,12 +487,17 @@ function handleSessionActorTrust(byActor: string, body: unknown, registry: MockR
   }
   const fields = body as {
     trusted_actor?: unknown;
+    scope?: unknown;
     decision?: unknown;
     reason?: unknown;
   };
   if (typeof fields.trusted_actor !== 'string') {
     return badRequest('invalid ActorTrust body: trusted_actor must be a string');
   }
+  if (typeof fields.scope !== 'string') {
+    return badRequest('invalid ActorTrust body: scope must be a string');
+  }
+  const scope = fields.scope;
   if (
     fields.decision !== 'trusted' &&
     fields.decision !== 'untrusted' &&
@@ -516,6 +521,7 @@ function handleSessionActorTrust(byActor: string, body: unknown, registry: MockR
   const trustHead: components['schemas']['TrustHeadDto'] = {
     by_actor: byActor,
     trusted_actor: trustedActor,
+    scope,
     statement_id: statementId,
     created_at: createdAt,
     decision,
@@ -527,7 +533,7 @@ function handleSessionActorTrust(byActor: string, body: unknown, registry: MockR
   // latest-wins semantics.
   const prior = registry.trustAbout[trustedActor] ?? [];
   registry.trustAbout[trustedActor] = [
-    ...prior.filter((entry) => entry.by_actor !== byActor),
+    ...prior.filter((entry) => entry.by_actor !== byActor || entry.scope !== scope),
     trustHead,
   ];
 
@@ -535,6 +541,7 @@ function handleSessionActorTrust(byActor: string, body: unknown, registry: MockR
   // to the new statement id resolves a body.
   const statementBody: Record<string, unknown> = {
     trusted_actor: trustedActor,
+    scope,
     decision,
   };
   if (reason !== undefined) statementBody.reason = reason;

@@ -18,8 +18,8 @@ use crate::{
     MultiSignedStatement, MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody,
     ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, Previous,
     PreviousError, RevisionId, SemverParseError, SemverVersion, Signature, SignedStatement,
-    StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError,
-    UnsignedStatement,
+    StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError, TrustScope,
+    TrustScopeError, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +50,7 @@ pub enum StatementJsonError {
     InvalidMultiSignature(MultiSignedStatementError),
     InvalidThresholdShape(ActorAttestationThresholdChangeShapeError),
     InvalidPrevious(PreviousError),
+    InvalidTrustScope(TrustScopeError),
 }
 
 impl fmt::Display for StatementJsonError {
@@ -82,6 +83,7 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidMultiSignature(error) => write!(f, "{error}"),
             Self::InvalidThresholdShape(error) => write!(f, "{error}"),
             Self::InvalidPrevious(error) => write!(f, "invalid previous: {error}"),
+            Self::InvalidTrustScope(error) => write!(f, "{error}"),
         }
     }
 }
@@ -105,6 +107,7 @@ impl Error for StatementJsonError {
             Self::InvalidMultiSignature(error) => Some(error),
             Self::InvalidThresholdShape(error) => Some(error),
             Self::InvalidPrevious(error) => Some(error),
+            Self::InvalidTrustScope(error) => Some(error),
             Self::UnexpectedType { .. }
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
@@ -584,6 +587,9 @@ impl ActorTrustStatementJson {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ActorTrustBodyJson {
     pub trusted_actor: String,
+    /// `general`, `federation:index`, `federation:push`, ...
+    /// (`specs/DECISIONS.md` §18).
+    pub scope: String,
     pub decision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -606,13 +612,22 @@ impl ActorTrustBodyJson {
             ),
             None => None,
         };
-        ActorTrustBody::new(trusted_actor, decision, self.reason.clone(), supersedes)
-            .map_err(StatementJsonError::InvalidTrustShape)
+        let scope =
+            TrustScope::parse(&self.scope).map_err(StatementJsonError::InvalidTrustScope)?;
+        ActorTrustBody::new(
+            trusted_actor,
+            scope,
+            decision,
+            self.reason.clone(),
+            supersedes,
+        )
+        .map_err(StatementJsonError::InvalidTrustShape)
     }
 
     pub fn from_body(body: &ActorTrustBody) -> Self {
         Self {
             trusted_actor: body.trusted_actor().to_string(),
+            scope: body.scope().to_string(),
             decision: body.decision().map(|d| d.as_str().to_owned()),
             reason: body.reason().map(|r| r.to_owned()),
             supersedes: body.supersedes().map(|id| id.to_string()),
@@ -2274,6 +2289,7 @@ mod tests {
               "previous": [],
               "body": {{
                 "trusted_actor": "{TRUSTED_ACTOR_ID}",
+                "scope": "general",
                 "decision": "trusted",
                 "supersedes": null
               }},
@@ -2299,6 +2315,7 @@ mod tests {
               "previous": [],
               "body": {{
                 "trusted_actor": "{TRUSTED_ACTOR_ID}",
+                "scope": "general",
                 "decision": null,
                 "reason": "key was leaked",
                 "supersedes": "{prior}"
@@ -2349,6 +2366,7 @@ mod tests {
     fn rejects_actor_trust_with_unknown_decision_string() {
         let body = ActorTrustBodyJson {
             trusted_actor: TRUSTED_ACTOR_ID.to_owned(),
+            scope: "general".to_owned(),
             decision: Some("maybe".to_owned()),
             reason: None,
             supersedes: None,
@@ -2363,6 +2381,7 @@ mod tests {
     fn rejects_actor_trust_withdraw_without_supersedes() {
         let body = ActorTrustBodyJson {
             trusted_actor: TRUSTED_ACTOR_ID.to_owned(),
+            scope: "general".to_owned(),
             decision: None,
             reason: None,
             supersedes: None,
@@ -2389,7 +2408,8 @@ mod tests {
               "body": {{
                 "supersedes": null,
                 "decision": "trusted",
-                "trusted_actor": "{TRUSTED_ACTOR_ID}"
+                "trusted_actor": "{TRUSTED_ACTOR_ID}",
+                "scope": "general"
               }},
               "created_at": "{CREATED_AT}",
               "previous": [],

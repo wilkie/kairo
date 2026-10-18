@@ -387,6 +387,7 @@ fn sign_trust_grant(
 ) -> SignedStatement<ActorTrustBody> {
     let body = ActorTrustBody::new(
         of.actor_id.clone(),
+        kairo_statement::TrustScope::general(),
         decision,
         reason.map(str::to_owned),
         None,
@@ -445,7 +446,11 @@ async fn accepts_signature_valid_trust_grant_and_persists_it() {
     handle.shutdown().await;
     let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     let head = store_reread
-        .latest_trust(&alice.actor_id, &bob.actor_id)
+        .latest_trust(
+            &alice.actor_id,
+            &bob.actor_id,
+            &kairo_statement::TrustScope::general(),
+        )
         .expect("read latest trust")
         .expect("trust head present");
     assert_eq!(head.statement_id(), signed.statement_id());
@@ -496,7 +501,11 @@ async fn rejects_signature_invalid_body_with_422_bad_signature() {
     let store_reread = kairo_store::FilesystemStore::open(&store_path).expect("re-open store");
     assert!(
         store_reread
-            .latest_trust(&alice.actor_id, &bob.actor_id)
+            .latest_trust(
+                &alice.actor_id,
+                &bob.actor_id,
+                &kairo_statement::TrustScope::general()
+            )
             .expect("read")
             .is_none(),
         "no trust head should exist after a rejected write",

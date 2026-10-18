@@ -222,8 +222,14 @@ fn arb_actor_trust_body() -> impl Strategy<Value = ActorTrustBody> {
             |(_, decision, _, supersedes)| decision.is_some() || supersedes.is_some(),
         )
         .prop_map(|(trusted, decision, reason, supersedes)| {
-            ActorTrustBody::new(trusted, decision, reason, supersedes)
-                .expect("well-formed trust body")
+            ActorTrustBody::new(
+                trusted,
+                kairo_statement::TrustScope::general(),
+                decision,
+                reason,
+                supersedes,
+            )
+            .expect("well-formed trust body")
         })
 }
 

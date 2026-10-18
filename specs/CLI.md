@@ -296,18 +296,26 @@ kairo tag revoke --actor <id> --object <id> --version <semver>
 kairo tag show --object <id> [--actor <id>] --version <semver> [--json]
 kairo tag list --object <id>
 kairo tag history --object <id> [--actor <id>] --version <semver> [--json]
-kairo trust grant --by <id> --of <id> [--reason <text>]
-kairo trust block --by <id> --of <id> [--reason <text>]
-kairo trust withdraw --by <id> --of <id> [--reason <text>]
-kairo trust show --by <id> --of <id> [--json]
+kairo trust grant --by <id> --of <id> [--scope <scope>] [--reason <text>]
+kairo trust block --by <id> --of <id> [--scope <scope>] [--reason <text>]
+kairo trust withdraw --by <id> --of <id> [--scope <scope>] [--reason <text>]
+kairo trust show --by <id> --of <id> [--scope <scope>] [--json]
 kairo trust list --by <id>
-kairo trust history --by <id> --of <id> [--json]
+kairo trust history --by <id> --of <id> [--scope <scope>] [--json]
 kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]
 kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]
 kairo capability list (--grantor <id> | --object <id>)
 kairo snapshot compute --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--json]
 kairo verify object --object <id> [--actor <id>] [--name <name>] [--statement <id>] [--as <id>|--no-as] [--repo <path>|--no-repo] [--manifest <path>] [--json]
 ```
+
+Trust commands take `--scope` (`DECISIONS.md` §18), defaulting to
+`general`, the informational trust `verify object` reports. Each scope
+is its own chain: `kairo trust grant --scope federation:push` lets a
+node push here (`DECISIONS.md` §26) and changes nothing about
+`general` trust, and `show` reads only the scope it's given. `list`
+prints each opinion's `scope=`. A scope is lowercase `name(:name)*`;
+any other spelling is refused.
 
 `manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
 `BlobId`.

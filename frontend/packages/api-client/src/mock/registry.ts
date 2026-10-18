@@ -510,6 +510,7 @@ const bobTrustsAliceStmt: Schemas['ActorTrustStatementJson'] = {
   previous: [],
   body: {
     trusted_actor: mockIds.alice,
+    scope: 'general',
     decision: 'trusted',
   },
   signature: signatureFor(mockIds.bob),
@@ -524,6 +525,7 @@ const carolTrustsAliceStmt: Schemas['ActorTrustStatementJson'] = {
   previous: [],
   body: {
     trusted_actor: mockIds.alice,
+    scope: 'general',
     decision: 'untrusted',
   },
   signature: signatureFor(mockIds.carol),
@@ -541,6 +543,7 @@ const aliceTrustsSelfStmt: Schemas['ActorTrustStatementJson'] = {
   previous: [],
   body: {
     trusted_actor: mockIds.alice,
+    scope: 'general',
     decision: 'trusted',
   },
   signature: signatureFor(mockIds.alice),
@@ -550,6 +553,7 @@ const trustHeadsAboutAlice: Schemas['TrustHeadDto'][] = [
   {
     by_actor: mockIds.bob,
     trusted_actor: mockIds.alice,
+    scope: 'general',
     statement_id: mockIds.bobTrustsAliceStmt,
     created_at: T,
     decision: 'trusted',
@@ -557,6 +561,7 @@ const trustHeadsAboutAlice: Schemas['TrustHeadDto'][] = [
   {
     by_actor: mockIds.carol,
     trusted_actor: mockIds.alice,
+    scope: 'general',
     statement_id: mockIds.carolTrustsAliceStmt,
     created_at: T,
     decision: 'untrusted',

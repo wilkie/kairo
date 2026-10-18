@@ -133,10 +133,13 @@ pub enum TrustEvaluation {
 pub trait TrustResolver {
     type Error: std::error::Error + 'static;
 
+    /// The chain leaf for `(by_actor, trusted_actor, scope)`. Other
+    /// scopes' opinions never answer (`specs/DECISIONS.md` §18).
     fn latest_trust(
         &self,
         by_actor: &ActorId,
         trusted_actor: &ActorId,
+        scope: &crate::TrustScope,
     ) -> Result<Option<SignedStatement<ActorTrustBody>>, Self::Error>;
 }
 
@@ -151,9 +154,10 @@ pub trait TrustResolver {
 pub fn evaluate_trust<R: TrustResolver>(
     by_actor: &ActorId,
     of_actor: &ActorId,
+    scope: &crate::TrustScope,
     trust_resolver: &R,
 ) -> Result<TrustEvaluation, R::Error> {
-    match trust_resolver.latest_trust(by_actor, of_actor)? {
+    match trust_resolver.latest_trust(by_actor, of_actor, scope)? {
         None => Ok(TrustEvaluation::Unknown),
         Some(signed) => Ok(match signed.unsigned().body().decision() {
             Some(TrustDecision::Trusted) => TrustEvaluation::Trusted,
@@ -1260,10 +1264,12 @@ mod tests {
             &self,
             by_actor: &ActorId,
             trusted_actor: &ActorId,
+            scope: &crate::TrustScope,
         ) -> Result<Option<SignedStatement<ActorTrustBody>>, Self::Error> {
             Ok(self
                 .entries
                 .get(&(by_actor.to_string(), trusted_actor.to_string()))
+                .filter(|signed| signed.unsigned().body().scope() == scope)
                 .cloned())
         }
     }
@@ -1274,7 +1280,13 @@ mod tests {
         decision: Option<TrustDecision>,
         supersedes: Option<crate::StatementId>,
     ) -> Result<SignedStatement<ActorTrustBody>, Box<dyn std::error::Error>> {
-        let body = ActorTrustBody::new(trusted_actor.clone(), decision, None, supersedes)?;
+        let body = ActorTrustBody::new(
+            trusted_actor.clone(),
+            crate::TrustScope::general(),
+            decision,
+            None,
+            supersedes,
+        )?;
         let subject: KairoRef = format!("actor:{trusted_actor}").parse()?;
         let unsigned = UnsignedStatement::new(by_actor.clone(), subject, timestamp(), body);
         let key = signing_key();
@@ -1306,7 +1318,12 @@ mod tests {
         let by_actor = fresh_actor(1);
         let of_actor = fresh_actor(2);
         let resolver = MemoryTrustResolver::default();
-        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        let evaluation = evaluate_trust(
+            &by_actor,
+            &of_actor,
+            &crate::TrustScope::general(),
+            &resolver,
+        )?;
         assert_eq!(evaluation, TrustEvaluation::Unknown);
         Ok(())
     }
@@ -1322,7 +1339,12 @@ mod tests {
             Some(TrustDecision::Trusted),
             None,
         )?);
-        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        let evaluation = evaluate_trust(
+            &by_actor,
+            &of_actor,
+            &crate::TrustScope::general(),
+            &resolver,
+        )?;
         assert_eq!(evaluation, TrustEvaluation::Trusted);
         Ok(())
     }
@@ -1338,7 +1360,12 @@ mod tests {
             Some(TrustDecision::Untrusted),
             None,
         )?);
-        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        let evaluation = evaluate_trust(
+            &by_actor,
+            &of_actor,
+            &crate::TrustScope::general(),
+            &resolver,
+        )?;
         assert_eq!(evaluation, TrustEvaluation::Untrusted);
         Ok(())
     }
@@ -1353,7 +1380,12 @@ mod tests {
         let withdraw = signed_actor_trust(&by_actor, &of_actor, None, Some(grant.statement_id()))?;
         let mut resolver = MemoryTrustResolver::default();
         resolver.insert(withdraw);
-        let evaluation = evaluate_trust(&by_actor, &of_actor, &resolver)?;
+        let evaluation = evaluate_trust(
+            &by_actor,
+            &of_actor,
+            &crate::TrustScope::general(),
+            &resolver,
+        )?;
         assert_eq!(evaluation, TrustEvaluation::Unknown);
         Ok(())
     }
@@ -1372,11 +1404,21 @@ mod tests {
             None,
         )?);
         assert_eq!(
-            evaluate_trust(&truster_a, &target, &resolver)?,
+            evaluate_trust(
+                &truster_a,
+                &target,
+                &crate::TrustScope::general(),
+                &resolver
+            )?,
             TrustEvaluation::Trusted
         );
         assert_eq!(
-            evaluate_trust(&truster_b, &target, &resolver)?,
+            evaluate_trust(
+                &truster_b,
+                &target,
+                &crate::TrustScope::general(),
+                &resolver
+            )?,
             TrustEvaluation::Unknown
         );
         Ok(())

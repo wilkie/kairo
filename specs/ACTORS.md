@@ -664,7 +664,7 @@ Rules:
    node-wide "is trusted" — each truster has their own opinion, resolved
    independently.
 5. The report shape is stable: `verify_envelope_statement` fills signature
-   and actor resolution; `evaluate_trust(by_actor, of_actor, trust_resolver)`
+   and actor resolution; `evaluate_trust(by_actor, of_actor, scope, trust_resolver)`
    in `kairo-statement::verify` fills the trust field when a truster is
    provided.
 

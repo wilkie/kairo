@@ -495,6 +495,7 @@ fn export_excludes_actor_trust_statements() -> TestResult {
     let trusted_actor_id = src.store.put_actor(&trusted_actor_genesis)?;
     let body = ActorTrustBody::new(
         trusted_actor_id.clone(),
+        kairo_statement::TrustScope::general(),
         Some(TrustDecision::Trusted),
         None,
         None,

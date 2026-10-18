@@ -2657,6 +2657,7 @@ fn end_to_end_trust_grant_show_list() -> Result<(), Box<dyn std::error::Error>> 
             command: TrustCommand::Grant {
                 by: truster_id.clone(),
                 of: trusted_id.clone(),
+                scope: "general".to_owned(),
                 reason: Some("works for me".to_owned()),
             },
         }),
@@ -2675,6 +2676,7 @@ fn end_to_end_trust_grant_show_list() -> Result<(), Box<dyn std::error::Error>> 
             command: TrustCommand::Show {
                 by: truster_id.clone(),
                 of: trusted_id.clone(),
+                scope: "general".to_owned(),
                 json: false,
             },
         }),
@@ -2750,6 +2752,7 @@ fn trust_block_then_withdraw_chains_correctly() -> Result<(), Box<dyn std::error
             command: TrustCommand::Block {
                 by: truster_id.clone(),
                 of: trusted_id.clone(),
+                scope: "general".to_owned(),
                 reason: None,
             },
         }),
@@ -2771,6 +2774,7 @@ fn trust_block_then_withdraw_chains_correctly() -> Result<(), Box<dyn std::error
             command: TrustCommand::Withdraw {
                 by: truster_id.clone(),
                 of: trusted_id.clone(),
+                scope: "general".to_owned(),
                 reason: None,
             },
         }),
@@ -2789,6 +2793,7 @@ fn trust_block_then_withdraw_chains_correctly() -> Result<(), Box<dyn std::error
             command: TrustCommand::Show {
                 by: truster_id.clone(),
                 of: trusted_id.clone(),
+                scope: "general".to_owned(),
                 json: false,
             },
         }),
@@ -2808,6 +2813,7 @@ fn trust_block_then_withdraw_chains_correctly() -> Result<(), Box<dyn std::error
             command: TrustCommand::History {
                 by: truster_id.clone(),
                 of: trusted_id.clone(),
+                scope: "general".to_owned(),
                 json: false,
             },
         }),
@@ -2868,6 +2874,7 @@ fn trust_show_unknown_when_no_opinion() -> Result<(), Box<dyn std::error::Error>
             command: TrustCommand::Show {
                 by: truster_id,
                 of: trusted_id,
+                scope: "general".to_owned(),
                 json: false,
             },
         }),
@@ -2926,6 +2933,7 @@ fn trust_withdraw_without_prior_errors() -> Result<(), Box<dyn std::error::Error
             command: TrustCommand::Withdraw {
                 by: truster_id,
                 of: trusted_id,
+                scope: "general".to_owned(),
                 reason: None,
             },
         }),
@@ -3011,6 +3019,7 @@ fn verify_object_with_explicit_as_grants_trusted() -> Result<(), Box<dyn std::er
             command: TrustCommand::Grant {
                 by: truster_id.clone(),
                 of: signer_id.clone(),
+                scope: "general".to_owned(),
                 reason: None,
             },
         }),
@@ -5126,6 +5135,7 @@ kind = "tree"
             command: TrustCommand::Grant {
                 by: actor_id.clone(),
                 of: actor_id.clone(),
+                scope: "general".to_owned(),
                 reason: Some("self-trust".to_owned()),
             },
         }),
@@ -5140,6 +5150,7 @@ kind = "tree"
             command: TrustCommand::Show {
                 by: actor_id.clone(),
                 of: actor_id.clone(),
+                scope: "general".to_owned(),
                 json: false,
             },
         }),
@@ -6823,5 +6834,55 @@ fn git_fetch_needs_a_format_for_an_unknown_object() -> Result<(), Box<dyn std::e
         },
     );
     assert!(bad.is_err());
+    Ok(())
+}
+
+#[test]
+fn trust_commands_keep_scopes_apart() -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let node = create_local_actor(store_dir.path())?;
+    let peer = create_local_actor(store_dir.path())?;
+    let trust = |command: TrustCommand| {
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            daemon: false,
+            direct: true,
+            offline: false,
+            command: Some(Command::Trust { command }),
+        })
+    };
+
+    trust(TrustCommand::Grant {
+        by: node.clone(),
+        of: peer.clone(),
+        scope: "federation:push".to_owned(),
+        reason: None,
+    })?;
+    let general = trust(TrustCommand::Show {
+        by: node.clone(),
+        of: peer.clone(),
+        scope: "general".to_owned(),
+        json: false,
+    })?;
+    assert!(general.contains("decision = unknown"), "{general}");
+    let push = trust(TrustCommand::Show {
+        by: node.clone(),
+        of: peer.clone(),
+        scope: "federation:push".to_owned(),
+        json: false,
+    })?;
+    assert!(push.contains("scope = federation:push"), "{push}");
+    assert!(push.contains("decision = trusted"), "{push}");
+    let list = trust(TrustCommand::List { by: node.clone() })?;
+    assert!(list.contains("scope=federation:push"), "{list}");
+
+    let refused = trust(TrustCommand::Grant {
+        by: node,
+        of: peer,
+        scope: "Federation:Push".to_owned(),
+        reason: None,
+    });
+    assert!(matches!(refused, Err(CliError::ParseTrustScope(_))));
     Ok(())
 }

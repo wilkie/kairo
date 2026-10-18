@@ -485,6 +485,10 @@ pub(crate) enum TrustCommand {
         /// Trusted actor: the actor being judged.
         #[arg(long)]
         of: String,
+        /// Trust scope (`specs/DECISIONS.md` §18): `general` (shown by
+        /// `verify object`), `federation:push`, `federation:index`, ...
+        #[arg(long, default_value = "general")]
+        scope: String,
         /// Optional human-readable reason. Included in canonical bytes.
         #[arg(long)]
         reason: Option<String>,
@@ -496,6 +500,10 @@ pub(crate) enum TrustCommand {
         by: String,
         #[arg(long)]
         of: String,
+        /// Trust scope (`specs/DECISIONS.md` §18): `general` (shown by
+        /// `verify object`), `federation:push`, `federation:index`, ...
+        #[arg(long, default_value = "general")]
+        scope: String,
         #[arg(long)]
         reason: Option<String>,
     },
@@ -507,6 +515,10 @@ pub(crate) enum TrustCommand {
         by: String,
         #[arg(long)]
         of: String,
+        /// Trust scope (`specs/DECISIONS.md` §18): `general` (shown by
+        /// `verify object`), `federation:push`, `federation:index`, ...
+        #[arg(long, default_value = "general")]
+        scope: String,
         #[arg(long)]
         reason: Option<String>,
     },
@@ -517,11 +529,16 @@ pub(crate) enum TrustCommand {
         by: String,
         #[arg(long)]
         of: String,
+        /// Trust scope (`specs/DECISIONS.md` §18): `general` (shown by
+        /// `verify object`), `federation:push`, `federation:index`, ...
+        #[arg(long, default_value = "general")]
+        scope: String,
         /// Emit a stable JSON representation.
         #[arg(long)]
         json: bool,
     },
-    /// List all current opinions signed by --by, one per trusted actor.
+    /// List all current opinions signed by --by, one per trusted actor
+    /// and scope.
     List {
         #[arg(long)]
         by: String,
@@ -534,6 +551,10 @@ pub(crate) enum TrustCommand {
         by: String,
         #[arg(long)]
         of: String,
+        /// Trust scope (`specs/DECISIONS.md` §18): `general` (shown by
+        /// `verify object`), `federation:push`, `federation:index`, ...
+        #[arg(long, default_value = "general")]
+        scope: String,
         #[arg(long)]
         json: bool,
     },

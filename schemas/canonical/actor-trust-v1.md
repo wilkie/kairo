@@ -192,9 +192,14 @@ Fields are encoded in this exact order:
 | Field | Encoding |
 |---|---|
 | `trusted_actor` | `ActorId` payload as `string` |
+| `scope` | `string` — the trust scope (`specs/DECISIONS.md` §18): `general`, `federation:index`, `federation:push`, or another `name(:name)*` with names `[a-z][a-z0-9-]*`, at most 64 bytes |
 | `decision` | `option<string>` — `0x00` for withdrawal, `0x01 \|\| string("trusted" \| "untrusted")` otherwise |
 | `reason` | `option<string>` — `0x00` if absent, `0x01 \|\| string(reason)` if present |
 | `supersedes` | `option<string>` — `0x00` for genesis, `0x01 \|\| string(StatementId payload)` for successor |
+
+The chain key is `(actor, trusted_actor, scope)`. A successor must
+keep its predecessor's scope, and a query reads one scope only, with no
+fallback between scopes.
 
 `decision` must be either `"trusted"` or `"untrusted"` when present;
 the parser rejects any other value at body construction time and the
@@ -215,6 +220,7 @@ The following must not be included in Statement ID canonical bytes:
 ```text
 canonical_body =
   string(trusted_actor) ||
+  string(scope) ||
   option(decision, string) ||
   option(reason, string) ||
   option(supersedes, string)

@@ -462,9 +462,9 @@ inventory step, and 7 come from comparing this design with Radicle
    out is fetched per record. Blobs stay per record.
 3. **Push** with node authentication, *decided in `DECISIONS.md` §25
    (node authentication) and §26 (push)*. Slices, in order:
-   1. **Scoped `ActorTrust`** (§18, decided but not yet built): the
-      `scope` field, the chain key `(truster, trusted, scope)`, and
-      `kairo trust --scope`.
+   1. ~~**Scoped `ActorTrust`**~~ (§18; shipped): the `scope` field,
+      the chain key `(truster, trusted, scope)`, and `kairo trust
+      --scope`.
    2. **Signed node document** and the always-served node actor
       listing (§25 sub-decisions 1–2). Pulls report authenticated
       peers.

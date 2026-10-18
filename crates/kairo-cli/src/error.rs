@@ -135,6 +135,7 @@ pub(crate) enum CliError {
     },
     /// Reading the signer's chain tips to set `previous` failed
     /// (`specs/DECISIONS.md` §23).
+    ParseTrustScope(kairo_statement::TrustScopeError),
     ReadActorChain {
         actor: ActorId,
         source: kairo_store::StoreError,
@@ -613,6 +614,7 @@ impl fmt::Display for CliError {
             Self::ReadActor { actor, source } => {
                 write!(f, "failed to read actor {actor}: {source}")
             }
+            Self::ParseTrustScope(error) => write!(f, "{error}"),
             Self::ReadActorChain { actor, source } => {
                 write!(f, "failed to read actor {actor}'s chain tips: {source}")
             }
@@ -960,6 +962,7 @@ impl fmt::Display for CliError {
 impl Error for CliError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::ParseTrustScope(error) => Some(error),
             Self::ReadManifest { source, .. }
             | Self::ReadStatement { source, .. }
             | Self::ReadPublicKey { source, .. }

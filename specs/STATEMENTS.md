@@ -220,8 +220,14 @@ precedence over timestamp.
 
 Differences from `ObjectVersionTag`:
 
-1. The lookup key is `(by_actor, trusted_actor)` — there is no object.
-   Trust is about who is trustworthy, not about what they signed.
+1. The lookup key is `(by_actor, trusted_actor, scope)` — there is no
+   object. Trust is about who is trustworthy, not about what they
+   signed. `scope` (`DECISIONS.md` §18) says for what: `general` (the
+   informational trust `verify object` reports), `federation:push`
+   ("accept pushes from this node"), `federation:index`, or another
+   feature-defined `name(:name)*`. Each scope is its own chain, a
+   successor keeps its predecessor's scope, and a query reads one scope
+   with no fallback.
 2. `decision` is one of `"trusted"`, `"untrusted"`, or `null`. A `null`
    decision is a withdrawal: it retracts any prior opinion. The shape
    `decision = null && supersedes = null` is invalid (you can't
@@ -235,7 +241,7 @@ Differences from `ObjectVersionTag`:
 4. An optional `reason` string, included in canonical bytes, lets the
    truster annotate why.
 
-`evaluate_trust(by_actor, of_actor)` (in `kairo-statement::verify`)
+`evaluate_trust(by_actor, of_actor, scope)` (in `kairo-statement::verify`)
 folds the chain leaf into a `TrustEvaluation`:
 
 - `Some("trusted")` → `Trusted`

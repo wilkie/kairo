@@ -86,7 +86,7 @@ use kairo_statement::{
     ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
     ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ChainKey, ChainScope,
     MultiSignedStatement, ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody,
-    ObjectVersionTagBody, SignedStatement, StatementKind,
+    ObjectVersionTagBody, SignedStatement, StatementKind, TrustScope,
 };
 
 pub use actor_chains::{ChainCompleteness, ChainReport};
@@ -386,17 +386,19 @@ pub trait VersionTagResolver {
 /// enforces this structurally — the chain resolver only ever walks
 /// entries under one truster key.
 pub trait TrustResolver {
-    /// Latest `ActorTrust` statement for `(by_actor, trusted_actor)`.
-    /// Returns `None` if `by_actor` has never published a trust
-    /// statement about `trusted_actor`.
+    /// Latest `ActorTrust` statement for `(by_actor, trusted_actor,
+    /// scope)`. Returns `None` if `by_actor` has never published a trust
+    /// statement about `trusted_actor` in `scope`; opinions in other
+    /// scopes never answer (`specs/DECISIONS.md` §18).
     fn latest_trust(
         &self,
         by_actor: &ActorId,
         trusted_actor: &ActorId,
+        scope: &TrustScope,
     ) -> Result<Option<SignedStatement<ActorTrustBody>>, StoreError>;
 
     /// All known trust heads signed by `by_actor`. Each head is the
-    /// chain leaf for one `trusted_actor`.
+    /// chain leaf for one `(trusted_actor, scope)`.
     ///
     /// MVP implementation walks the trust directory; this is
     /// O(trusted-actor count). A per-truster reverse index can land
@@ -404,7 +406,7 @@ pub trait TrustResolver {
     fn list_trust(&self, by_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError>;
 
     /// All known trust heads about `trusted_actor`, one per truster
-    /// who has expressed an opinion. O(1) given the sharding choice;
+    /// and scope with an opinion. O(1) given the sharding choice;
     /// useful for federation aggregation and for surfacing peer
     /// opinions in UIs.
     fn list_opinions_about(&self, trusted_actor: &ActorId) -> Result<Vec<TrustHead>, StoreError>;
@@ -1129,6 +1131,27 @@ impl StatementStore for FilesystemStore {
         statement: &SignedStatement<ActorTrustBody>,
     ) -> Result<StatementId, StoreError> {
         let id = statement.statement_id();
+        // A successor keeps its predecessor's scope (`DECISIONS.md` §18
+        // sub-decision 4). Checked when the predecessor is held; one
+        // that isn't can't be compared, and resolution only ever walks
+        // one scope's entries anyway.
+        let body = statement.unsigned().body();
+        if let Some(predecessor) = body.supersedes() {
+            if let Some(index) = self.read_trust_index(body.trusted_actor())? {
+                if let Some(previous) = index.entry_scope(statement.unsigned().actor(), predecessor)
+                {
+                    if previous != body.scope().as_str() {
+                        return Err(StoreError::Rejected {
+                            reason: format!(
+                                "ActorTrust in scope {} supersedes {predecessor}, which is in \
+                                 scope {previous}; a chain keeps one scope",
+                                body.scope()
+                            ),
+                        });
+                    }
+                }
+            }
+        }
         let json = ActorTrustStatementJson::from_statement(statement);
         let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
@@ -1743,14 +1766,7 @@ impl FilesystemStore {
         let by_actor = statement.unsigned().actor();
         let body = statement.unsigned().body();
         let created_at = statement.unsigned().created_at();
-        self.upsert_trust_index(
-            body.trusted_actor(),
-            by_actor,
-            id,
-            created_at,
-            body.decision().map(|d| d.as_str()),
-            body.supersedes(),
-        )?;
+        self.upsert_trust_index(by_actor, body, id, created_at)?;
         self.upsert_statement_by_actor_index(by_actor, id, StatementKind::ActorTrust, created_at)
     }
 
@@ -2232,13 +2248,12 @@ impl FilesystemStore {
 
     fn upsert_trust_index(
         &self,
-        trusted_actor: &ActorId,
         by_actor: &ActorId,
+        body: &ActorTrustBody,
         statement_id: &StatementId,
         created_at: kairo_core::Timestamp,
-        decision: Option<&str>,
-        supersedes: Option<&StatementId>,
     ) -> Result<(), StoreError> {
+        let trusted_actor = body.trusted_actor();
         let path = self.shard_path(TRUST_DIR, trusted_actor.as_str(), JSON_SUFFIX)?;
         lock::with_index_lock(&path, || {
             let mut index =
@@ -2255,7 +2270,14 @@ impl FilesystemStore {
                     Err(error) => return Err(StoreError::Unavailable(error)),
                 };
 
-            let updated = index.upsert(by_actor, statement_id, created_at, decision, supersedes);
+            let updated = index.upsert(
+                by_actor,
+                body.scope(),
+                statement_id,
+                created_at,
+                body.decision().map(|d| d.as_str()),
+                body.supersedes(),
+            );
             if updated {
                 let bytes =
                     serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(trusted_actor))?;
@@ -3050,11 +3072,12 @@ impl TrustResolver for FilesystemStore {
         &self,
         by_actor: &ActorId,
         trusted_actor: &ActorId,
+        scope: &TrustScope,
     ) -> Result<Option<SignedStatement<ActorTrustBody>>, StoreError> {
         let Some(index) = self.read_trust_index(trusted_actor)? else {
             return Ok(None);
         };
-        let Some(entry) = index.lookup_head(by_actor) else {
+        let Some(entry) = index.lookup_head(by_actor, scope) else {
             return Ok(None);
         };
         let statement_id =
@@ -3068,11 +3091,12 @@ impl TrustResolver for FilesystemStore {
 
         if signed.unsigned().actor() != by_actor
             || signed.unsigned().body().trusted_actor() != trusted_actor
+            || signed.unsigned().body().scope() != scope
         {
             return Err(StoreError::Corrupt {
                 id: statement_id.to_string(),
                 reason: CorruptReason::Parse(
-                    "trust index points at a statement with mismatched (by_actor, trusted_actor)"
+                    "trust index points at a statement with mismatched (by_actor, trusted_actor, scope)"
                         .to_owned(),
                 ),
             });
@@ -3304,8 +3328,9 @@ impl kairo_statement::verify::TrustResolver for FilesystemStore {
         &self,
         by_actor: &ActorId,
         trusted_actor: &ActorId,
+        scope: &TrustScope,
     ) -> Result<Option<SignedStatement<ActorTrustBody>>, Self::Error> {
-        TrustResolver::latest_trust(self, by_actor, trusted_actor)
+        TrustResolver::latest_trust(self, by_actor, trusted_actor, scope)
     }
 }
 
@@ -4590,6 +4615,7 @@ mod tests {
     ) -> Result<SignedStatement<ActorTrustBody>, Box<dyn std::error::Error>> {
         let body = ActorTrustBody::new(
             trusted_actor.clone(),
+            kairo_statement::TrustScope::general(),
             decision,
             reason.map(|r| r.to_owned()),
             supersedes,
@@ -4675,7 +4701,8 @@ mod tests {
         )?;
         store.put_actor_trust(&block)?;
 
-        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        let resolved =
+            store.latest_trust(&by_actor, &trusted, &kairo_statement::TrustScope::general())?;
         assert_eq!(resolved, Some(block));
         Ok(())
     }
@@ -4704,7 +4731,8 @@ mod tests {
         )?;
         store.put_actor_trust(&withdraw)?;
 
-        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        let resolved =
+            store.latest_trust(&by_actor, &trusted, &kairo_statement::TrustScope::general())?;
         assert!(matches!(
             resolved,
             Some(signed) if signed.unsigned().body().is_withdrawal()
@@ -4717,7 +4745,8 @@ mod tests {
         let (_dir, store) = open_temp_store()?;
         let by_actor = fresh_genesis().actor_id();
         let trusted = trusted_actor_id();
-        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        let resolved =
+            store.latest_trust(&by_actor, &trusted, &kairo_statement::TrustScope::general())?;
         assert!(resolved.is_none());
         Ok(())
     }
@@ -4747,8 +4776,22 @@ mod tests {
         store.put_actor_trust(&grant_a)?;
         store.put_actor_trust(&block_b)?;
 
-        assert_eq!(store.latest_trust(&by_actor, &trusted_a)?, Some(grant_a));
-        assert_eq!(store.latest_trust(&by_actor, &trusted_b)?, Some(block_b));
+        assert_eq!(
+            store.latest_trust(
+                &by_actor,
+                &trusted_a,
+                &kairo_statement::TrustScope::general()
+            )?,
+            Some(grant_a)
+        );
+        assert_eq!(
+            store.latest_trust(
+                &by_actor,
+                &trusted_b,
+                &kairo_statement::TrustScope::general()
+            )?,
+            Some(block_b)
+        );
         Ok(())
     }
 
@@ -4949,12 +4992,20 @@ mod tests {
         store.put_actor_trust(&a_grant)?;
         store.put_actor_trust(&b_block)?;
 
-        let a_head = store.latest_trust(&truster_a, &trusted)?;
+        let a_head = store.latest_trust(
+            &truster_a,
+            &trusted,
+            &kairo_statement::TrustScope::general(),
+        )?;
         assert!(matches!(
             a_head,
             Some(s) if s.unsigned().body().decision() == Some(TrustDecision::Trusted)
         ));
-        let b_head = store.latest_trust(&truster_b, &trusted)?;
+        let b_head = store.latest_trust(
+            &truster_b,
+            &trusted,
+            &kairo_statement::TrustScope::general(),
+        )?;
         assert!(matches!(
             b_head,
             Some(s) if s.unsigned().body().decision() == Some(TrustDecision::Untrusted)
@@ -4986,7 +5037,8 @@ mod tests {
         )?;
         store.put_actor_trust(&withdraw)?;
 
-        let resolved = store.latest_trust(&by_actor, &trusted)?;
+        let resolved =
+            store.latest_trust(&by_actor, &trusted, &kairo_statement::TrustScope::general())?;
         assert!(matches!(
             resolved,
             Some(s) if s.unsigned().body().is_withdrawal()
@@ -7382,6 +7434,94 @@ mod tests {
         ];
         expected.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
         assert_eq!(summary, expected);
+        Ok(())
+    }
+
+    // --- scoped ActorTrust (`specs/DECISIONS.md` §18) ----------------
+
+    fn scoped_trust(
+        by_actor: &ActorId,
+        trusted_actor: &ActorId,
+        scope: &str,
+        decision: Option<TrustDecision>,
+        supersedes: Option<StatementId>,
+    ) -> Result<SignedStatement<ActorTrustBody>, Box<dyn std::error::Error>> {
+        let body = ActorTrustBody::new(
+            trusted_actor.clone(),
+            kairo_statement::TrustScope::parse(scope)?,
+            decision,
+            None,
+            supersedes,
+        )?;
+        let subject: KairoRef = format!("actor:{trusted_actor}").parse()?;
+        let unsigned = UnsignedStatement::new(by_actor.clone(), subject, timestamp(), body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            by_actor.clone(),
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn trust_scopes_are_separate_chains_with_no_fallback() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let node = fresh_genesis().actor_id();
+        let peer = trusted_actor_id();
+        let general = kairo_statement::TrustScope::general();
+        let push = kairo_statement::TrustScope::federation_push();
+
+        let trusted = scoped_trust(&node, &peer, "general", Some(TrustDecision::Trusted), None)?;
+        store.put_actor_trust(&trusted)?;
+        assert_eq!(store.latest_trust(&node, &peer, &general)?, Some(trusted));
+        assert_eq!(
+            store.latest_trust(&node, &peer, &push)?,
+            None,
+            "general trust never answers federation:push"
+        );
+
+        let push_trust = scoped_trust(
+            &node,
+            &peer,
+            "federation:push",
+            Some(TrustDecision::Untrusted),
+            None,
+        )?;
+        store.put_actor_trust(&push_trust)?;
+        assert_eq!(store.latest_trust(&node, &peer, &push)?, Some(push_trust));
+        let scopes: Vec<String> = store
+            .list_trust(&node)?
+            .into_iter()
+            .map(|head| head.scope.to_string())
+            .collect();
+        assert_eq!(scopes.len(), 2);
+        assert!(
+            scopes.contains(&"general".to_owned())
+                && scopes.contains(&"federation:push".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_trust_successor_cannot_change_scope() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let node = fresh_genesis().actor_id();
+        let peer = trusted_actor_id();
+        let first = scoped_trust(&node, &peer, "general", Some(TrustDecision::Trusted), None)?;
+        let first_id = store.put_actor_trust(&first)?;
+        let switched = scoped_trust(
+            &node,
+            &peer,
+            "federation:push",
+            Some(TrustDecision::Trusted),
+            Some(first_id),
+        )?;
+        assert!(matches!(
+            store.put_actor_trust(&switched),
+            Err(StoreError::Rejected { .. })
+        ));
         Ok(())
     }
 }

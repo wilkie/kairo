@@ -11,15 +11,22 @@
 //!   pages aggregate these per-object by intersecting the list
 //!   with the object's involved actors.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use kairo_core::ActorId;
 use kairo_daemon_client::dto::TrustHeadDto;
 use kairo_statement::json::ActorTrustStatementJson;
+use kairo_statement::TrustScope;
 use kairo_store::TrustResolver;
 
 use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
+
+/// `?scope=` on `GET /api/v1/trust/{by}/{of}`.
+#[derive(Debug, serde::Deserialize)]
+pub struct ScopeQuery {
+    scope: Option<String>,
+}
 
 /// `GET /api/v1/trust/about/{of}`
 #[utoipa::path(
@@ -31,7 +38,7 @@ use crate::api::store_errors::map_store_error;
         ("of" = String, Path, description = "Actor whose incoming opinions to list (kairo:actor:...)"),
     ),
     responses(
-        (status = 200, description = "Chain-leaf trust heads expressed about the actor (one per by_actor)", body = [TrustHeadDto]),
+        (status = 200, description = "Chain-leaf trust heads expressed about the actor (one per by_actor and scope)", body = [TrustHeadDto]),
         (status = 400, description = "Malformed actor id"),
     ),
 )]
@@ -54,6 +61,7 @@ pub async fn list_about_handler(
         .map(|head| TrustHeadDto {
             by_actor: head.by_actor.to_string(),
             trusted_actor: head.trusted_actor.to_string(),
+            scope: head.scope.to_string(),
             statement_id: head.statement_id.to_string(),
             created_at: head.created_at.to_string(),
             decision: head.decision,
@@ -71,6 +79,7 @@ pub async fn list_about_handler(
     params(
         ("by" = String, Path, description = "Actor whose opinion to read (kairo:actor:...)"),
         ("of" = String, Path, description = "Actor whose trust state to look up"),
+        ("scope" = Option<String>, Query, description = "Trust scope (DECISIONS.md §18): general (default), federation:index, federation:push, ..."),
     ),
     responses(
         (status = 200, description = "Latest ActorTrust statement (grant, block, or withdrawal)", body = ActorTrustStatementJson),
@@ -81,7 +90,14 @@ pub async fn list_about_handler(
 pub async fn handler(
     State(state): State<AppState>,
     Path((by, of)): Path<(String, String)>,
+    Query(query): Query<ScopeQuery>,
 ) -> Result<ApiResult<ActorTrustStatementJson>, ApiError> {
+    let scope = match query.scope.as_deref() {
+        None => TrustScope::general(),
+        Some(raw) => {
+            TrustScope::parse(raw).map_err(|error| ApiError::bad_request(error.to_string()))?
+        }
+    };
     let by_actor: ActorId = by
         .parse()
         .map_err(|error| ApiError::bad_request(format!("invalid by-actor id {by:?}: {error}")))?;
@@ -90,11 +106,12 @@ pub async fn handler(
         .map_err(|error| ApiError::bad_request(format!("invalid of-actor id {of:?}: {error}")))?;
 
     let store = state.store.clone();
-    let signed = tokio::task::spawn_blocking(move || store.latest_trust(&by_actor, &trusted_actor))
-        .await
-        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
-        .map_err(|error| map_store_error(error, "latest_trust"))?
-        .ok_or_else(|| ApiError::not_found("trust opinion not found"))?;
+    let signed =
+        tokio::task::spawn_blocking(move || store.latest_trust(&by_actor, &trusted_actor, &scope))
+            .await
+            .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+            .map_err(|error| map_store_error(error, "latest_trust"))?
+            .ok_or_else(|| ApiError::not_found("trust opinion not found"))?;
 
     Ok(ApiResult(ActorTrustStatementJson::from_statement(&signed)))
 }

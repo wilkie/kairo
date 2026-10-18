@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Changed
 
+- **`ActorTrust` gains a scope (`DECISIONS.md` §18).**
+  - Every trust statement names one scope, `general` or a
+    feature-defined one such as `federation:push`, encoded in its
+    canonical body. The chain key becomes `(truster, trusted, scope)`:
+    scopes are separate chains with no fallback, and the store refuses
+    a successor that changes its predecessor's scope.
+  - `kairo trust grant|block|withdraw|show|history` take `--scope`
+    (default `general`), and `trust list` shows each opinion's scope.
+    `GET /api/v1/trust/{by}/{of}` takes `?scope=`, and trust heads
+    carry their scope. The web inspector writes `general` opinions.
+  - `verify object` keeps reporting `general` trust.
+
 - **Pulls fetch statements in batches (`DECISIONS.md` §24).**
   - `POST /federation/v1/statement-batch` returns up to 256 requested
     statements, each the stored JSON verbatim, in request order. Ids

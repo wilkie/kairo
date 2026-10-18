@@ -1489,8 +1489,8 @@ Affected specs:
 - `PHASE_2_FEDERATION.md` §4.1 — now records this decision; the
   sequencing note says scoped trust comes before discovery.
 - `STATEMENTS.md` §4.2c and `schemas/canonical/actor-trust-v1.md`
-  — gain the scope in place when it is implemented
-  (sub-decision 4).
+  — gain the scope in place (sub-decision 4; implemented, with
+  `kairo trust --scope` and `?scope=` on the daemon's trust read).
 - `PHASE_2.md` §12 — new item for scoped `ActorTrust`.
 
 ---

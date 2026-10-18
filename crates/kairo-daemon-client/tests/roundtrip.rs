@@ -473,6 +473,7 @@ async fn client_trust_round_trips() {
     // Inline trust signing.
     let body = ActorTrustBody::new(
         bob.actor_id.clone(),
+        kairo_statement::TrustScope::general(),
         Some(TrustDecision::Trusted),
         None,
         None,
@@ -507,7 +508,10 @@ async fn client_trust_round_trips() {
     let (handle, _dir) = spawn_daemon_at(dir).await;
     let client = Client::new(handle.socket_path());
 
-    let trust = client.trust(&alice_id, &bob_id).await.expect("trust call");
+    let trust = client
+        .trust(&alice_id, &bob_id, "general")
+        .await
+        .expect("trust call");
     let raw = serde_json::to_value(&trust).expect("serialize");
     assert_eq!(raw["body"]["trusted_actor"], bob_id);
     assert_eq!(raw["body"]["decision"], "trusted");
@@ -527,7 +531,7 @@ async fn client_trust_returns_404_for_missing_opinion() {
     let (handle, _dir) = spawn_daemon_at(dir).await;
     let client = Client::new(handle.socket_path());
 
-    match client.trust(&alice_id, &bob_id).await {
+    match client.trust(&alice_id, &bob_id, "general").await {
         Err(ClientError::Http { status, code, .. }) => {
             assert_eq!(status, 404);
             assert_eq!(code, "not_found");
@@ -670,6 +674,7 @@ async fn put_actor_trust_round_trips_through_client() {
 
     let body = ActorTrustBody::new(
         bob.actor_id.clone(),
+        kairo_statement::TrustScope::general(),
         Some(TrustDecision::Trusted),
         Some("client round-trip".to_owned()),
         None,
@@ -710,7 +715,7 @@ async fn put_actor_trust_round_trips_through_client() {
     // back through the typed `trust` method — doesn't poke the
     // store directly.
     let head = client
-        .trust(alice.actor_id.as_str(), bob.actor_id.as_str())
+        .trust(alice.actor_id.as_str(), bob.actor_id.as_str(), "general")
         .await
         .expect("trust read");
     assert_eq!(head.actor, alice.actor_id.to_string());
@@ -738,6 +743,7 @@ async fn put_actor_trust_surfaces_daemon_bad_signature() {
 
     let body = ActorTrustBody::new(
         bob.actor_id.clone(),
+        kairo_statement::TrustScope::general(),
         Some(TrustDecision::Trusted),
         None,
         None,

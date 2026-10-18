@@ -213,7 +213,14 @@ fn put_trust(
     of: &ActorId,
     decision: TrustDecision,
 ) -> StatementId {
-    let body = ActorTrustBody::new(of.clone(), Some(decision), None, None).expect("trust body");
+    let body = ActorTrustBody::new(
+        of.clone(),
+        kairo_statement::TrustScope::general(),
+        Some(decision),
+        None,
+        None,
+    )
+    .expect("trust body");
     let subject: KairoRef = format!("actor:{of}").parse().expect("subject");
     let signed = sign(by, subject, body);
     store.put_actor_trust(&signed).expect("put_actor_trust")

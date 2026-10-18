@@ -193,6 +193,8 @@ pub struct StatementByActorDto {
 pub struct TrustHeadDto {
     pub by_actor: String,
     pub trusted_actor: String,
+    /// The opinion's trust scope (`specs/DECISIONS.md` §18).
+    pub scope: String,
     pub statement_id: String,
     /// RFC 3339 UTC seconds.
     pub created_at: String,

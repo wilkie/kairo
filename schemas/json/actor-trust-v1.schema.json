@@ -33,12 +33,18 @@
     },
     "body": {
       "type": "object",
-      "required": ["trusted_actor", "decision", "supersedes"],
+      "required": ["trusted_actor", "scope", "decision", "supersedes"],
       "properties": {
         "trusted_actor": {
           "type": "string",
           "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
           "description": "ActorId of the actor being judged. Must agree with the envelope subject."
+        },
+        "scope": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]*(:[a-z][a-z0-9-]*)*$",
+          "description": "Trust scope (specs/DECISIONS.md §18): general, federation:index, federation:push, ... The chain key is (actor, trusted_actor, scope); no fallback between scopes."
         },
         "decision": {
           "oneOf": [

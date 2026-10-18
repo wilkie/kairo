@@ -51,6 +51,7 @@
 use std::collections::BTreeMap;
 
 use kairo_core::{ActorId, StatementId, Timestamp};
+use kairo_statement::TrustScope;
 use serde::{Deserialize, Serialize};
 
 use crate::chain::{chain_head, ChainEntry};
@@ -60,6 +61,9 @@ use crate::error::{CorruptReason, StoreError};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TrustEntry {
     pub statement_id: String,
+    /// The opinion's `TrustScope`. A chain only walks entries of one
+    /// scope (`specs/DECISIONS.md` §18).
+    pub scope: String,
     pub created_at: String,
     /// `"trusted"`, `"untrusted"`, or `None` (withdrawal).
     pub decision: Option<String>,
@@ -96,6 +100,7 @@ pub(crate) struct TrustIndexFile {
 pub struct TrustHead {
     pub by_actor: ActorId,
     pub trusted_actor: ActorId,
+    pub scope: TrustScope,
     pub statement_id: StatementId,
     pub created_at: Timestamp,
     /// `Some("trusted")`, `Some("untrusted")`, or `None` (withdrawal).
@@ -109,6 +114,7 @@ impl TrustIndexFile {
     pub(crate) fn upsert(
         &mut self,
         by_actor: &ActorId,
+        scope: &TrustScope,
         statement_id: &StatementId,
         created_at: Timestamp,
         decision: Option<&str>,
@@ -121,6 +127,7 @@ impl TrustIndexFile {
         }
         entries.push(TrustEntry {
             statement_id: new_id,
+            scope: scope.to_string(),
             created_at: created_at.to_string(),
             decision: decision.map(|d| d.to_owned()),
             supersedes: supersedes.map(|s| s.to_string()),
@@ -137,9 +144,31 @@ impl TrustIndexFile {
     /// `supersedes` only ever resolves against same-actor entries,
     /// matching the canonical schema's "cross-actor supersedes is
     /// invalid" rule.
-    pub(crate) fn lookup_head(&self, by_actor: &ActorId) -> Option<&TrustEntry> {
-        let entries = self.by_truster.get(by_actor.as_str())?;
-        chain_head(entries)
+    pub(crate) fn lookup_head(
+        &self,
+        by_actor: &ActorId,
+        scope: &TrustScope,
+    ) -> Option<&TrustEntry> {
+        let entries: Vec<&TrustEntry> = self
+            .by_truster
+            .get(by_actor.as_str())?
+            .iter()
+            .filter(|entry| entry.scope == scope.as_str())
+            .collect();
+        chain_head(&entries).copied()
+    }
+
+    /// The scope of the held entry `statement_id` by `by_actor`, if any.
+    pub(crate) fn entry_scope(
+        &self,
+        by_actor: &ActorId,
+        statement_id: &StatementId,
+    ) -> Option<&str> {
+        self.by_truster
+            .get(by_actor.as_str())?
+            .iter()
+            .find(|entry| entry.statement_id == statement_id.as_str())
+            .map(|entry| entry.scope.as_str())
     }
 
     /// Resolve all `(by_actor, head)` pairs known about
@@ -155,35 +184,48 @@ impl TrustIndexFile {
                         "invalid truster actor id in trust index: {error}"
                     )),
                 })?;
-            let Some(head_entry) = chain_head(entries) else {
-                continue;
-            };
-            let statement_id =
-                StatementId::new(head_entry.statement_id.clone()).map_err(|error| {
-                    StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid statement id in trust index: {error}"
-                        )),
-                    }
+            let scopes: std::collections::BTreeSet<&str> =
+                entries.iter().map(|entry| entry.scope.as_str()).collect();
+            for scope_str in scopes {
+                let scoped: Vec<&TrustEntry> = entries
+                    .iter()
+                    .filter(|entry| entry.scope == scope_str)
+                    .collect();
+                let Some(head_entry) = chain_head(&scoped).copied() else {
+                    continue;
+                };
+                let scope = TrustScope::parse(scope_str).map_err(|error| StoreError::Corrupt {
+                    id: head_entry.statement_id.clone(),
+                    reason: CorruptReason::Parse(format!("invalid scope in trust index: {error}")),
                 })?;
-            let created_at: Timestamp =
-                head_entry
-                    .created_at
-                    .parse()
-                    .map_err(|error| StoreError::Corrupt {
-                        id: head_entry.statement_id.clone(),
-                        reason: CorruptReason::Parse(format!(
-                            "invalid created_at in trust index: {error}"
-                        )),
+                let statement_id =
+                    StatementId::new(head_entry.statement_id.clone()).map_err(|error| {
+                        StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid statement id in trust index: {error}"
+                            )),
+                        }
                     })?;
-            heads.push(TrustHead {
-                by_actor,
-                trusted_actor: trusted_actor.clone(),
-                statement_id,
-                created_at,
-                decision: head_entry.decision.clone(),
-            });
+                let created_at: Timestamp =
+                    head_entry
+                        .created_at
+                        .parse()
+                        .map_err(|error| StoreError::Corrupt {
+                            id: head_entry.statement_id.clone(),
+                            reason: CorruptReason::Parse(format!(
+                                "invalid created_at in trust index: {error}"
+                            )),
+                        })?;
+                heads.push(TrustHead {
+                    by_actor: by_actor.clone(),
+                    trusted_actor: trusted_actor.clone(),
+                    scope,
+                    statement_id,
+                    created_at,
+                    decision: head_entry.decision.clone(),
+                });
+            }
         }
         Ok(heads)
     }
@@ -234,6 +276,7 @@ mod tests {
         let mut index = TrustIndexFile::default();
         index.upsert(
             &truster_a(),
+            &TrustScope::general(),
             &statement_id_one(),
             timestamp(100),
             Some("trusted"),
@@ -241,6 +284,7 @@ mod tests {
         );
         let added = index.upsert(
             &truster_a(),
+            &TrustScope::general(),
             &statement_id_one(),
             timestamp(100),
             Some("trusted"),
@@ -254,6 +298,7 @@ mod tests {
         let mut index = TrustIndexFile::default();
         index.upsert(
             &truster_a(),
+            &TrustScope::general(),
             &statement_id_one(),
             timestamp(100),
             Some("trusted"),
@@ -261,6 +306,7 @@ mod tests {
         );
         index.upsert(
             &truster_b(),
+            &TrustScope::general(),
             &statement_id_two(),
             timestamp(50),
             Some("untrusted"),
@@ -268,13 +314,13 @@ mod tests {
         );
         assert_eq!(
             index
-                .lookup_head(&truster_a())
+                .lookup_head(&truster_a(), &TrustScope::general())
                 .map(|e| e.statement_id.as_str()),
             Some(statement_id_one().as_str())
         );
         assert_eq!(
             index
-                .lookup_head(&truster_b())
+                .lookup_head(&truster_b(), &TrustScope::general())
                 .map(|e| e.statement_id.as_str()),
             Some(statement_id_two().as_str())
         );
@@ -285,6 +331,7 @@ mod tests {
         let mut index = TrustIndexFile::default();
         index.upsert(
             &truster_a(),
+            &TrustScope::general(),
             &statement_id_one(),
             timestamp(100),
             Some("trusted"),
@@ -292,6 +339,7 @@ mod tests {
         );
         index.upsert(
             &truster_a(),
+            &TrustScope::general(),
             &statement_id_two(),
             timestamp(200),
             None,
@@ -299,6 +347,7 @@ mod tests {
         );
         index.upsert(
             &truster_b(),
+            &TrustScope::general(),
             &statement_id_three(),
             timestamp(50),
             Some("untrusted"),

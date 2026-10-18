@@ -3505,34 +3505,71 @@ fn format_tag_history_json(
     output
 }
 
+fn parse_trust_scope(raw: &str) -> Result<kairo_statement::TrustScope, CliError> {
+    kairo_statement::TrustScope::parse(raw).map_err(CliError::ParseTrustScope)
+}
+
 fn run_trust_command(
     command: TrustCommand,
     paths: &StorePaths,
     dispatch_opts: dispatch::DispatchOptions,
 ) -> Result<String, CliError> {
     match command {
-        TrustCommand::Grant { by, of, reason } => run_trust_decide(
+        TrustCommand::Grant {
+            by,
+            of,
+            scope,
+            reason,
+        } => run_trust_decide(
             paths,
             dispatch_opts,
             by,
             of,
+            parse_trust_scope(&scope)?,
             reason,
             Some(TrustDecision::Trusted),
-            "grant",
         ),
-        TrustCommand::Block { by, of, reason } => run_trust_decide(
+        TrustCommand::Block {
+            by,
+            of,
+            scope,
+            reason,
+        } => run_trust_decide(
             paths,
             dispatch_opts,
             by,
             of,
+            parse_trust_scope(&scope)?,
             reason,
             Some(TrustDecision::Untrusted),
-            "block",
         ),
-        TrustCommand::Withdraw { by, of, reason } => {
-            run_trust_decide(paths, dispatch_opts, by, of, reason, None, "withdraw")
-        }
-        TrustCommand::Show { by, of, json } => run_trust_show(paths, dispatch_opts, by, of, json),
+        TrustCommand::Withdraw {
+            by,
+            of,
+            scope,
+            reason,
+        } => run_trust_decide(
+            paths,
+            dispatch_opts,
+            by,
+            of,
+            parse_trust_scope(&scope)?,
+            reason,
+            None,
+        ),
+        TrustCommand::Show {
+            by,
+            of,
+            scope,
+            json,
+        } => run_trust_show(
+            paths,
+            dispatch_opts,
+            by,
+            of,
+            &parse_trust_scope(&scope)?,
+            json,
+        ),
         TrustCommand::List { by } => {
             let by_actor = ActorId::new(by.clone())
                 .map_err(|source| CliError::ParseActorId { actor: by, source })?;
@@ -3542,14 +3579,20 @@ fn run_trust_command(
                 .map_err(CliError::ReadActorTrust)?;
             Ok(format_trust_list(&by_actor, &heads))
         }
-        TrustCommand::History { by, of, json } => {
+        TrustCommand::History {
+            by,
+            of,
+            scope,
+            json,
+        } => {
+            let scope = parse_trust_scope(&scope)?;
             let by_actor = ActorId::new(by.clone())
                 .map_err(|source| CliError::ParseActorId { actor: by, source })?;
             let trusted_actor = ActorId::new(of.clone())
                 .map_err(|source| CliError::ParseActorId { actor: of, source })?;
             let store = open_store(paths)?;
             let head = store
-                .latest_trust(&by_actor, &trusted_actor)
+                .latest_trust(&by_actor, &trusted_actor, &scope)
                 .map_err(CliError::ReadActorTrust)?;
             let chain = match head {
                 Some(signed) => walk_trust_chain(&store, signed)?,
@@ -3569,10 +3612,15 @@ fn run_trust_decide(
     dispatch_opts: dispatch::DispatchOptions,
     by: String,
     of: String,
+    scope: kairo_statement::TrustScope,
     reason: Option<String>,
     decision: Option<TrustDecision>,
-    label: &str,
 ) -> Result<String, CliError> {
+    let label = match decision {
+        Some(TrustDecision::Trusted) => "grant",
+        Some(TrustDecision::Untrusted) => "block",
+        None => "withdraw",
+    };
     let by_actor =
         ActorId::new(by.clone()).map_err(|source| CliError::ParseActorId { actor: by, source })?;
     let trusted_actor =
@@ -3597,7 +3645,7 @@ fn run_trust_decide(
     // actor, supersede it; otherwise this is the genesis opinion.
     // Withdrawal additionally requires a prior head.
     let prior = store
-        .latest_trust(&by_actor, &trusted_actor)
+        .latest_trust(&by_actor, &trusted_actor, &scope)
         .map_err(CliError::ReadActorTrust)?;
     let supersedes = prior.as_ref().map(|signed| signed.statement_id());
     if decision.is_none() && supersedes.is_none() {
@@ -3607,8 +3655,14 @@ fn run_trust_decide(
         });
     }
 
-    let body = ActorTrustBody::new(trusted_actor.clone(), decision, reason, supersedes.clone())
-        .map_err(CliError::TrustShape)?;
+    let body = ActorTrustBody::new(
+        trusted_actor.clone(),
+        scope,
+        decision,
+        reason,
+        supersedes.clone(),
+    )
+    .map_err(CliError::TrustShape)?;
     let subject: KairoRef = format!("actor:{trusted_actor}").parse().map_err(|source| {
         CliError::BuildActorSubjectRef {
             actor: trusted_actor.clone(),
@@ -3706,6 +3760,7 @@ fn run_trust_show(
     dispatch_opts: dispatch::DispatchOptions,
     by: String,
     of: String,
+    scope: &kairo_statement::TrustScope,
     json: bool,
 ) -> Result<String, CliError> {
     let by_actor =
@@ -3716,7 +3771,11 @@ fn run_trust_show(
     let mode = dispatch::resolve(paths, dispatch_opts)?;
     let resolved = match mode {
         dispatch::Mode::Daemon { runtime, client } => {
-            let result = runtime.block_on(client.trust(by_actor.as_str(), trusted_actor.as_str()));
+            let result = runtime.block_on(client.trust(
+                by_actor.as_str(),
+                trusted_actor.as_str(),
+                scope.as_str(),
+            ));
             match result {
                 Ok(json_form) => Some(json_form.to_statement().map_err(CliError::ParseStatement)?),
                 // 404 means "no opinion" — same as direct's None.
@@ -3727,7 +3786,7 @@ fn run_trust_show(
         dispatch::Mode::Direct => {
             let store = open_store(paths)?;
             store
-                .latest_trust(&by_actor, &trusted_actor)
+                .latest_trust(&by_actor, &trusted_actor, scope)
                 .map_err(CliError::ReadActorTrust)?
         }
     };
@@ -3736,12 +3795,14 @@ fn run_trust_show(
         Ok(format_trust_show_json(
             &by_actor,
             &trusted_actor,
+            scope,
             resolved.as_ref(),
         ))
     } else {
         Ok(format_trust_show(
             &by_actor,
             &trusted_actor,
+            scope,
             resolved.as_ref(),
         ))
     }
@@ -3750,12 +3811,13 @@ fn run_trust_show(
 fn format_trust_show(
     by_actor: &ActorId,
     trusted_actor: &ActorId,
+    scope: &kairo_statement::TrustScope,
     resolved: Option<&SignedStatement<ActorTrustBody>>,
 ) -> String {
     match resolved {
-        None => {
-            format!("by_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = unknown\n")
-        }
+        None => format!(
+            "by_actor = {by_actor}\ntrusted_actor = {trusted_actor}\nscope = {scope}\ndecision = unknown\n"
+        ),
         Some(signed) => {
             let body = signed.unsigned().body();
             let decision = match body.decision() {
@@ -3771,7 +3833,7 @@ fn format_trust_show(
                 None => String::new(),
             };
             format!(
-                "statement = {}\nby_actor = {by_actor}\ntrusted_actor = {trusted_actor}\ndecision = {decision}\nsupersedes = {supersedes}\ncreated_at = {}\n{reason}",
+                "statement = {}\nby_actor = {by_actor}\ntrusted_actor = {trusted_actor}\nscope = {scope}\ndecision = {decision}\nsupersedes = {supersedes}\ncreated_at = {}\n{reason}",
                 signed.statement_id(),
                 signed.unsigned().created_at(),
             )
@@ -3782,12 +3844,14 @@ fn format_trust_show(
 fn format_trust_show_json(
     by_actor: &ActorId,
     trusted_actor: &ActorId,
+    scope: &kairo_statement::TrustScope,
     resolved: Option<&SignedStatement<ActorTrustBody>>,
 ) -> String {
     let value = match resolved {
         None => serde_json::json!({
             "by_actor": by_actor.to_string(),
             "trusted_actor": trusted_actor.to_string(),
+            "scope": scope.as_str(),
             "decision": "unknown",
             "statement_id": null,
         }),
@@ -3797,6 +3861,7 @@ fn format_trust_show_json(
                 "statement_id": signed.statement_id().to_string(),
                 "by_actor": by_actor.to_string(),
                 "trusted_actor": trusted_actor.to_string(),
+                "scope": scope.as_str(),
                 "decision": body.decision().map(|d| d.as_str()),
                 "supersedes": body.supersedes().map(|id| id.to_string()),
                 "reason": body.reason(),
@@ -3817,8 +3882,8 @@ fn format_trust_list(by_actor: &ActorId, heads: &[kairo_store::TrustHead]) -> St
     for head in heads {
         let decision = head.decision.as_deref().unwrap_or("unknown");
         output.push_str(&format!(
-            "  trusted_actor={} decision={decision} statement={} created_at={}\n",
-            head.trusted_actor, head.statement_id, head.created_at,
+            "  trusted_actor={} scope={} decision={decision} statement={} created_at={}\n",
+            head.trusted_actor, head.scope, head.statement_id, head.created_at,
         ));
     }
     output
@@ -4643,6 +4708,7 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 signature.trust = match kairo_statement::verify::evaluate_trust(
                     by_actor,
                     &signature.signature_actor,
+                    &kairo_statement::TrustScope::general(),
                     &store,
                 ) {
                     Ok(eval) => eval,

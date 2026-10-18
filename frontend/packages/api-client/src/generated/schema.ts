@@ -475,6 +475,11 @@ export interface components {
         ActorTrustBodyJson: {
             decision?: string | null;
             reason?: string | null;
+            /**
+             * @description `general`, `federation:index`, `federation:push`, ...
+             *     (`specs/DECISIONS.md` §18).
+             */
+            scope: string;
             supersedes?: string | null;
             trusted_actor: string;
         };
@@ -891,6 +896,8 @@ export interface components {
             /** @description RFC 3339 UTC seconds. */
             created_at: string;
             decision?: string | null;
+            /** @description The opinion's trust scope (`specs/DECISIONS.md` §18). */
+            scope: string;
             statement_id: string;
             trusted_actor: string;
         };
@@ -1646,7 +1653,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Chain-leaf trust heads expressed about the actor (one per by_actor) */
+            /** @description Chain-leaf trust heads expressed about the actor (one per by_actor and scope) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1666,7 +1673,10 @@ export interface operations {
     };
     getTrust: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Trust scope (DECISIONS.md §18): general (default), federation:index, federation:push, ... */
+                scope?: string;
+            };
             header?: never;
             path: {
                 /** @description Actor whose opinion to read (kairo:actor:...) */

@@ -226,9 +226,13 @@ impl Client {
         &self,
         by_actor: &str,
         of_actor: &str,
+        scope: &str,
     ) -> ClientResult<ActorTrustStatementJson> {
-        self.get_json(&format!("/api/v1/trust/{by_actor}/{of_actor}"))
-            .await
+        // Scopes are `[a-z0-9:-]`, so they need no escaping.
+        self.get_json(&format!(
+            "/api/v1/trust/{by_actor}/{of_actor}?scope={scope}"
+        ))
+        .await
     }
 
     /// `GET /api/v1/capabilities/{grantor}` — list of

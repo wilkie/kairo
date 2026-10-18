@@ -892,10 +892,90 @@ impl Error for TrustDecisionParseError {}
 /// Canonical ActorTrust body v1 encoding is documented at
 /// `schemas/canonical/actor-trust-v1.md`.
 ///
+/// What an `ActorTrust` opinion is about (`specs/DECISIONS.md` §18
+/// sub-decision 4). Each statement names exactly one scope, the chain
+/// key is `(by_actor, trusted_actor, scope)`, and a query reads only
+/// its own scope: `general` trust never satisfies a federation scope,
+/// nor the reverse.
+///
+/// Scopes are named by the features that consume them. The grammar is
+/// lowercase `name(:name)*`, each name `[a-z][a-z0-9-]*`, at most 64
+/// bytes, so a feature can introduce a scope without a format change.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TrustScope(String);
+
+/// Why a trust scope string was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustScopeError {
+    pub input: String,
+}
+
+impl fmt::Display for TrustScopeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "invalid trust scope {:?}: expected lowercase name(:name)*, each name \
+             [a-z][a-z0-9-]*, at most {} bytes",
+            self.input,
+            TrustScope::MAX_LEN
+        )
+    }
+}
+
+impl Error for TrustScopeError {}
+
+impl TrustScope {
+    pub const MAX_LEN: usize = 64;
+    /// Today's informational actor trust, shown by `verify object`.
+    /// Every unscoped opinion means this.
+    pub const GENERAL: &'static str = "general";
+    /// "This node's discovery hints are worth following."
+    pub const FEDERATION_INDEX: &'static str = "federation:index";
+    /// "Accept pushes from this node" (`specs/DECISIONS.md` §26).
+    pub const FEDERATION_PUSH: &'static str = "federation:push";
+
+    pub fn parse(raw: &str) -> Result<Self, TrustScopeError> {
+        let valid_name = |name: &str| {
+            let mut chars = name.chars();
+            chars.next().is_some_and(|c| c.is_ascii_lowercase())
+                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        };
+        if raw.len() <= Self::MAX_LEN && raw.split(':').all(valid_name) {
+            Ok(Self(raw.to_owned()))
+        } else {
+            Err(TrustScopeError {
+                input: raw.to_owned(),
+            })
+        }
+    }
+
+    pub fn general() -> Self {
+        Self(Self::GENERAL.to_owned())
+    }
+
+    pub fn federation_push() -> Self {
+        Self(Self::FEDERATION_PUSH.to_owned())
+    }
+
+    pub fn federation_index() -> Self {
+        Self(Self::FEDERATION_INDEX.to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TrustScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// `ActorTrust` records a local actor's first-person opinion about
-/// another actor's identity claims: trusted, untrusted, or withdrawn
-/// (`decision = None`). Resolution is per-truster — `(by_actor,
-/// trusted_actor)` is the lookup key. Cross-actor `supersedes` is
+/// another actor, in one [`TrustScope`]: trusted, untrusted, or
+/// withdrawn (`decision = None`). Resolution is per-truster —
+/// `(by_actor, trusted_actor, scope)` is the lookup key. Cross-actor `supersedes` is
 /// invalid for trust (tighter than `ObjectVersionTag`); the resolver
 /// in `kairo-store` enforces this at lookup time.
 ///
@@ -907,6 +987,7 @@ impl Error for TrustDecisionParseError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorTrustBody {
     trusted_actor: ActorId,
+    scope: TrustScope,
     decision: Option<TrustDecision>,
     reason: Option<String>,
     supersedes: Option<StatementId>,
@@ -915,6 +996,7 @@ pub struct ActorTrustBody {
 impl ActorTrustBody {
     pub fn new(
         trusted_actor: ActorId,
+        scope: TrustScope,
         decision: Option<TrustDecision>,
         reason: Option<String>,
         supersedes: Option<StatementId>,
@@ -924,6 +1006,7 @@ impl ActorTrustBody {
         }
         Ok(Self {
             trusted_actor,
+            scope,
             decision,
             reason,
             supersedes,
@@ -932,6 +1015,10 @@ impl ActorTrustBody {
 
     pub fn trusted_actor(&self) -> &ActorId {
         &self.trusted_actor
+    }
+
+    pub fn scope(&self) -> &TrustScope {
+        &self.scope
     }
 
     pub fn decision(&self) -> Option<TrustDecision> {
@@ -963,6 +1050,7 @@ impl StatementBody for ActorTrustBody {
 impl CanonicalEncode for ActorTrustBody {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, self.trusted_actor.as_str());
+        encode_str(out, self.scope.as_str());
         encode_option(out, self.decision.as_ref(), |out, decision| {
             encode_str(out, decision.as_str());
         });
@@ -2487,6 +2575,44 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn trust_scope_changes_statement_id_and_parses_strictly(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let make = |scope: &str| -> Result<StatementId, Box<dyn std::error::Error>> {
+            let body = ActorTrustBody::new(
+                trusted_actor()?,
+                TrustScope::parse(scope)?,
+                Some(TrustDecision::Trusted),
+                None,
+                None,
+            )?;
+            let subject: KairoRef = format!("actor:{}", trusted_actor()?).parse()?;
+            Ok(UnsignedStatement::new(actor_id()?, subject, timestamp(), body).statement_id())
+        };
+        assert_ne!(make("general")?, make("federation:push")?);
+        for good in [
+            "general",
+            "federation:push",
+            "federation:index",
+            "builds:x86-64",
+        ] {
+            assert!(TrustScope::parse(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "",
+            "General",
+            "federation:",
+            ":push",
+            "a b",
+            "fed::push",
+            "9lives",
+            &"a".repeat(65),
+        ] {
+            assert!(TrustScope::parse(bad).is_err(), "{bad:?}");
+        }
+        Ok(())
+    }
+
     // --- actor chains (`specs/DECISIONS.md` §23) ---------------------
 
     fn chained_branch(
@@ -2798,6 +2924,7 @@ mod tests {
         let trusted = trusted_actor()?;
         let body = ActorTrustBody::new(
             trusted.clone(),
+            TrustScope::general(),
             decision,
             reason.map(|r| r.to_owned()),
             supersedes,
@@ -2829,7 +2956,7 @@ mod tests {
     #[test]
     fn actor_trust_body_rejects_withdraw_without_supersedes(
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let body = ActorTrustBody::new(trusted_actor()?, None, None, None);
+        let body = ActorTrustBody::new(trusted_actor()?, TrustScope::general(), None, None, None);
         assert_eq!(
             body.err(),
             Some(ActorTrustShapeError::WithdrawWithoutSupersedes)
@@ -2839,7 +2966,13 @@ mod tests {
 
     #[test]
     fn actor_trust_body_genesis_grant_is_valid() -> Result<(), Box<dyn std::error::Error>> {
-        let body = ActorTrustBody::new(trusted_actor()?, Some(TrustDecision::Trusted), None, None)?;
+        let body = ActorTrustBody::new(
+            trusted_actor()?,
+            TrustScope::general(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+        )?;
         assert!(body.is_genesis());
         assert!(!body.is_withdrawal());
         Ok(())
@@ -2847,7 +2980,13 @@ mod tests {
 
     #[test]
     fn actor_trust_body_successor_withdraw_is_valid() -> Result<(), Box<dyn std::error::Error>> {
-        let body = ActorTrustBody::new(trusted_actor()?, None, None, Some(statement_id_one()))?;
+        let body = ActorTrustBody::new(
+            trusted_actor()?,
+            TrustScope::general(),
+            None,
+            None,
+            Some(statement_id_one()),
+        )?;
         assert!(!body.is_genesis());
         assert!(body.is_withdrawal());
         Ok(())

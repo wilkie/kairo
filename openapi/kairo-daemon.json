@@ -733,7 +733,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Chain-leaf trust heads expressed about the actor (one per by_actor)",
+            "description": "Chain-leaf trust heads expressed about the actor (one per by_actor and scope)",
             "content": {
               "application/json": {
                 "schema": {
@@ -772,6 +772,15 @@
             "in": "path",
             "description": "Actor whose trust state to look up",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Trust scope (DECISIONS.md §18): general (default), federation:index, federation:push, ...",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -1040,7 +1049,8 @@
       "ActorTrustBodyJson": {
         "type": "object",
         "required": [
-          "trusted_actor"
+          "trusted_actor",
+          "scope"
         ],
         "properties": {
           "decision": {
@@ -1054,6 +1064,10 @@
               "string",
               "null"
             ]
+          },
+          "scope": {
+            "type": "string",
+            "description": "`general`, `federation:index`, `federation:push`, ...\n(`specs/DECISIONS.md` §18)."
           },
           "supersedes": {
             "type": [
@@ -1974,6 +1988,7 @@
         "required": [
           "by_actor",
           "trusted_actor",
+          "scope",
           "statement_id",
           "created_at"
         ],
@@ -1990,6 +2005,10 @@
               "string",
               "null"
             ]
+          },
+          "scope": {
+            "type": "string",
+            "description": "The opinion's trust scope (`specs/DECISIONS.md` §18)."
           },
           "statement_id": {
             "type": "string"

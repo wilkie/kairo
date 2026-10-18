@@ -457,6 +457,7 @@ async fn browser_session_write_round_trips_through_proxy() {
         "body_kind": "ActorTrust",
         "body": {
             "trusted_actor": bob.actor_id.to_string(),
+            "scope": "general",
             "decision": "trusted",
             "reason": "kairo-web proxy round trip",
         },

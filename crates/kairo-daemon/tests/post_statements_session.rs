@@ -131,6 +131,7 @@ async fn session_mode_actor_trust_round_trips() {
 
     let body = json!({
         "trusted_actor": bob.actor_id.to_string(),
+        "scope": "general",
         "decision": "trusted",
         "reason": "cookie-mode smoke test",
     });

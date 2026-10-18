@@ -221,6 +221,7 @@ pub(crate) fn seed() -> Seeded {
             1_700_000_500,
             ActorTrustBody::new(
                 bob.actor_id.clone(),
+                kairo_statement::TrustScope::general(),
                 Some(TrustDecision::Trusted),
                 None,
                 None,

@@ -799,7 +799,9 @@ statements index):
   branch head by `(created_at, statement_id)`
 - `GET /api/v1/version-tags/{object_id}/{version}` —
   ObjectVersionTag statement for that version
-- `GET /api/v1/trust/{by}/{of}` — ActorTrust statement
+- `GET /api/v1/trust/{by}/{of}[?scope=<scope>]` — ActorTrust
+  statement for that scope (default `general`, `DECISIONS.md` §18);
+  `GET /api/v1/trust/about/{of}` heads carry their `scope`
 - `GET /api/v1/capabilities/{grantor}` and
   `GET /api/v1/capabilities/for-object/{object_id}` — capability
   head summaries (`CapabilityHeadDto`), one per `(grantor, grantee,

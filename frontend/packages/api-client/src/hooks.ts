@@ -629,8 +629,12 @@ export function useCreateTrustOpinion(): UseMutationResult<
   const queryClient = useQueryClient();
   return useMutation<PutStatementResult, KairoApiClientError, CreateTrustOpinionVars>({
     mutationFn: ({ trustedActor, decision, reason }) => {
+      // The inspector's opinions are informational actor trust
+      // (DECISIONS.md §18 scope `general`), the scope `verify object`
+      // reports.
       const body: Record<string, unknown> = {
         trusted_actor: trustedActor,
+        scope: 'general',
         decision,
       };
       if (reason !== undefined && reason.length > 0) {
