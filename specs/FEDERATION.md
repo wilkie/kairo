@@ -291,9 +291,11 @@ GET  /.well-known/kairo-node
 GET  /federation/v1/objects
 GET  /federation/v1/objects/{objectId}
 GET  /federation/v1/objects/{objectId}/genesis
-GET  /federation/v1/objects/{objectId}/git
+GET  /federation/v1/objects/{objectId}/git/info/refs?service=git-upload-pack
+POST /federation/v1/objects/{objectId}/git/git-upload-pack
 GET  /federation/v1/actors/{actorId}
 GET  /federation/v1/statements/{statementId}
+POST /federation/v1/statement-batch
 GET  /federation/v1/blobs/{blobId}
 ```
 

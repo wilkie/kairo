@@ -35,8 +35,9 @@ use std::time::Duration;
 
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_federation_core::{
-    ActorListing, FedErrorCode, NodeDocument, NodeDocumentError, ObjectListing, API_PREFIX,
-    MAX_PAGE_LIMIT, SUPPORTS_OBJECT_PULL, WELL_KNOWN_PATH,
+    ActorListing, FedErrorCode, NodeDocument, NodeDocumentError, ObjectListing, StatementBatch,
+    StatementBatchRequest, API_PREFIX, MAX_BATCH_IDS, MAX_PAGE_LIMIT, STATEMENT_BATCH_PATH,
+    SUPPORTS_OBJECT_PULL, SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::{ChainScope, GitRevision, StatementKind};
@@ -53,6 +54,9 @@ use self::ingest::{ingest_genesis, ingest_statement, peek, Ingested, Peek, Secti
 pub struct Limits {
     /// Largest statement, genesis, document, or listing page.
     pub max_json_bytes: u64,
+    /// Largest statement batch response (`DECISIONS.md` §24). Each
+    /// statement in it is still held to `max_json_bytes`.
+    pub max_batch_bytes: u64,
     pub max_blob_bytes: u64,
     /// Most records (listed ids plus key events) one pull may name.
     pub max_records: usize,
@@ -68,6 +72,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             max_json_bytes: 1024 * 1024,
+            max_batch_bytes: 32 * 1024 * 1024,
             max_blob_bytes: 256 * 1024 * 1024,
             max_records: 100_000,
             request_timeout: Duration::from_secs(30),
@@ -351,6 +356,8 @@ fn rank(kind: StatementKind) -> u8 {
 struct Pull<'a> {
     store: &'a FilesystemStore,
     peer: Peer,
+    /// The peer advertises `statement-batch` (`DECISIONS.md` §24).
+    batch: bool,
     limits: &'a Limits,
     provenance: ProvenanceEntry,
     report: PullReport,
@@ -400,6 +407,7 @@ pub fn pull_object(
     };
     let mut pull = Pull {
         store,
+        batch: document.supports(SUPPORTS_STATEMENT_BATCH),
         peer,
         limits,
         provenance,
@@ -698,14 +706,17 @@ impl Pull<'_> {
         // Key events verify against the keys before them, so fetch the
         // missing ones and ingest in chain order (`created_at` between
         // statements the chain leaves unordered).
-        let mut missing: Vec<Pending<Timestamp>> = Vec::new();
+        let mut wanted = Vec::new();
         for id in dedup_ids(&listing.key_events) {
             if Self::held(self.store.get_statement_bytes(&id))? {
                 self.report.already_held += 1;
                 self.note(&KairoRef::Statement(id))?;
                 continue;
             }
-            let bytes = self.fetch_statement(&id)?;
+            wanted.push(id);
+        }
+        let mut missing: Vec<Pending<Timestamp>> = Vec::new();
+        for (id, bytes) in self.fetch_statements(&wanted)? {
             let peeked = peek(&bytes).map_err(|reason| PullError::Record {
                 record: KairoRef::Statement(id.clone()),
                 reason,
@@ -748,22 +759,75 @@ impl Pull<'_> {
         )
     }
 
+    /// Fetch `ids`, in batches of [`MAX_BATCH_IDS`] when the peer
+    /// supports it (`DECISIONS.md` §24), otherwise one at a time. An id
+    /// a batch leaves out is fetched on its own, so a listed statement
+    /// the peer won't serve fails the pull with the same `404` as
+    /// before. Returned in `ids` order.
+    fn fetch_statements(
+        &self,
+        ids: &[StatementId],
+    ) -> Result<Vec<(StatementId, Vec<u8>)>, PullError> {
+        if !self.batch {
+            return ids
+                .iter()
+                .map(|id| Ok((id.clone(), self.fetch_statement(id)?)))
+                .collect();
+        }
+        let path = format!("{API_PREFIX}{STATEMENT_BATCH_PATH}");
+        let mut fetched = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(MAX_BATCH_IDS) {
+            let bytes = self.peer.post_json(
+                &path,
+                &StatementBatchRequest::new(chunk.to_vec()),
+                self.limits.max_batch_bytes,
+            )?;
+            let batch: StatementBatch =
+                serde_json::from_slice(&bytes).map_err(|error| PullError::Parse {
+                    url: format!("{}{path}", self.peer.base_url()),
+                    message: error.to_string(),
+                })?;
+            let mut served: BTreeMap<StatementId, Vec<u8>> = batch
+                .statements
+                .into_iter()
+                .map(|entry| (entry.id, entry.statement.get().as_bytes().to_vec()))
+                .collect();
+            for id in chunk {
+                let bytes = match served.remove(id) {
+                    Some(bytes) if bytes.len() as u64 <= self.limits.max_json_bytes => bytes,
+                    Some(_) => {
+                        return Err(PullError::TooLarge {
+                            url: format!("{}{path}", self.peer.base_url()),
+                            limit: self.limits.max_json_bytes,
+                        })
+                    }
+                    None => self.fetch_statement(id)?,
+                };
+                fetched.push((id.clone(), bytes));
+            }
+        }
+        Ok(fetched)
+    }
+
     fn statements(&mut self, ids: &[StatementId], section: Section<'_>) -> Result<(), PullError> {
-        let mut missing: Vec<Pending<(u8, Timestamp)>> = Vec::new();
+        let mut wanted = Vec::new();
         for id in ids {
             if Self::held(self.store.get_statement_bytes(id))? {
                 self.report.already_held += 1;
                 self.note(&KairoRef::Statement(id.clone()))?;
                 continue;
             }
-            let bytes = self.fetch_statement(id)?;
+            wanted.push(id.clone());
+        }
+        let mut missing: Vec<Pending<(u8, Timestamp)>> = Vec::new();
+        for (id, bytes) in self.fetch_statements(&wanted)? {
             let peeked = peek(&bytes).map_err(|reason| PullError::Record {
                 record: KairoRef::Statement(id.clone()),
                 reason,
             })?;
             missing.push(Pending {
                 key: (rank(peeked.kind), peeked.created_at),
-                id: id.clone(),
+                id,
                 previous: peeked.previous,
                 bytes,
             });

@@ -58,6 +58,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `POST` | `/federation/v1/objects/{id}/git/git-upload-pack` | Git protocol v2 `ls-refs` / `fetch`, filtered to published commits (§22) |
 | `GET` | `/federation/v1/actors/{id}` | `ActorListing` |
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
+| `POST` | `/federation/v1/statement-batch` | up to 256 statements, each exactly as stored, in request order; unserved ids left out (`DECISIONS.md` §24) |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
 
 Every other method or path is `405` / `404`. `{id}` is a bare id.
@@ -114,6 +115,7 @@ served.
 | 400 | `fed_bad_id` | path segment isn't a valid id of that type |
 | 400 | `fed_bad_cursor` | cursor didn't decode |
 | 400 | `fed_bad_limit` | `limit` isn't an integer from 1 to 1000 (refused, not clamped) |
+| 400 | `fed_bad_batch` | statement batch request that doesn't parse, or names no ids or more than 256 (`DECISIONS.md` §24) |
 | 400 | `fed_bad_git_request` | Git request the node won't serve: not protocol v2, a command other than `ls-refs` / `fetch`, an unpublished `want`, a malformed body (`DECISIONS.md` §22) |
 | 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack` `POST` |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
@@ -124,7 +126,8 @@ Envelope is `API.md` §7.2.
 ### 2.4 Client limits
 
 Defaults, overridable per invocation and later in `[federation]`
-config: 1 MiB per statement or listing page, 256 MiB per blob,
+config: 1 MiB per statement or listing page, 32 MiB per statement
+batch response (`DECISIONS.md` §24), 256 MiB per blob,
 1 GiB per Git fetch (measured in the fetch's quarantine), 100 000
 records per pull, 30 s per request (30 min for the Git fetch).
 Exceeding one fails the pull with what was stored so far kept.
@@ -452,13 +455,11 @@ inventory step, and 7 come from comparing this design with Radicle
       exposes them~~ (shipped);
    4. ~~ingest order and the pull report~~ (shipped);
    5. ~~verification and the daemon API's completeness~~ (shipped).
-2. **Batch record fetch.** One request names many record ids and
-   returns them together, each still verified on its own. A pull
-   today costs one round trip per statement, actor, and blob, which
-   for a long history is thousands of requests; Radicle syncs a
-   repository in one fetch. The batch keeps the per-record trust
-   model and the publish filter (an id outside every published
-   closure is simply absent from the response).
+2. ~~**Batch record fetch.**~~ *Shipped as statement batches,
+   `DECISIONS.md` §24.* A pull fetches statements 256 at a time
+   instead of one request each, still verifying every statement on
+   its own. Absence stays ambiguous, and a statement a batch leaves
+   out is fetched per record. Blobs stay per record.
 3. **Push** with node authentication and a receiver acceptance
    policy. Node identity should be proven on every request from the
    first one, signed by the node actor's key (`KairoActor1`), as

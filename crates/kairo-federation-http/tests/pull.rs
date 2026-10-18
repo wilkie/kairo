@@ -303,17 +303,43 @@ fn record_error(
     }
 }
 
+/// Serve `seeded`, replacing the statement `target` with
+/// `replace(stored bytes)` on every path that carries it: its
+/// per-record `GET` and its entry in any statement batch (DECISIONS.md
+/// §24). The replacement must be JSON.
+fn serve_replacing_statement<F>(seeded: &Seeded, target: &StatementId, replace: F) -> Served
+where
+    F: Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
+{
+    let path = statements_path(target);
+    let target = target.to_string();
+    serve_tampered(seeded, move |request_path, bytes| {
+        if request_path == path {
+            return Some(replace(bytes));
+        }
+        if request_path != "/federation/v1/statement-batch" {
+            return None;
+        }
+        let mut batch: Value = serde_json::from_slice(bytes).expect("batch json");
+        for entry in batch["statements"].as_array_mut()? {
+            if entry["id"].as_str() == Some(target.as_str()) {
+                let original = serde_json::to_vec(&entry["statement"]).expect("json");
+                entry["statement"] =
+                    serde_json::from_slice(&replace(&original)).expect("replacement is json");
+            }
+        }
+        Some(serde_json::to_vec(&batch).expect("json"))
+    })
+}
+
 #[test]
 fn tampered_statement_bytes_fail_fixity() {
     let seeded = seed();
     let target = seeded.after_rotation_branch.clone();
-    let path = statements_path(&target);
-    let served = serve_tampered(&seeded, move |request_path, bytes| {
-        (request_path == path).then(|| {
-            let mut value: Value = serde_json::from_slice(bytes).expect("json");
-            value["body"]["name"] = Value::from("tampered");
-            serde_json::to_vec(&value).expect("json")
-        })
+    let served = serve_replacing_statement(&seeded, &target, |bytes| {
+        let mut value: Value = serde_json::from_slice(bytes).expect("json");
+        value["body"]["name"] = Value::from("tampered");
+        serde_json::to_vec(&value).expect("json")
     });
     let (_dir, local) = local_store();
     let (record, reason) = record_error(pull(&local, &served, &seeded.published));
@@ -341,10 +367,7 @@ fn a_different_valid_statement_under_the_requested_id_fails_fixity() {
                 .expect("another"),
         )
         .expect("bytes");
-    let path = statements_path(&asked);
-    let served = serve_tampered(&seeded, move |request_path, _| {
-        (request_path == path).then(|| substitute.clone())
-    });
+    let served = serve_replacing_statement(&seeded, &asked, move |_| substitute.clone());
     let (_dir, local) = local_store();
     let (record, reason) = record_error(pull(&local, &served, &seeded.published));
     assert_eq!(record, KairoRef::Statement(asked));
@@ -664,4 +687,88 @@ fn require_complete_fails_on_a_gap_but_keeps_what_verified() {
     let report =
         pull_object(&local, &honest.base_url, &seeded.published, &options).expect("complete pull");
     assert!(report.incomplete.is_empty());
+}
+
+// --- statement batch (DECISIONS.md §24) -------------------------------
+
+/// Counts of per-record statement `GET`s and batch `POST`s a pull made.
+#[derive(Default)]
+struct Requests {
+    per_record: std::sync::atomic::AtomicUsize,
+    batches: std::sync::atomic::AtomicUsize,
+}
+
+fn count(requests: &Requests, path: &str) {
+    use std::sync::atomic::Ordering;
+    if path.starts_with("/federation/v1/statements/") {
+        requests.per_record.fetch_add(1, Ordering::SeqCst);
+    } else if path == "/federation/v1/statement-batch" {
+        requests.batches.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn a_pull_fetches_statements_in_batches() {
+    use std::sync::atomic::Ordering;
+    let seeded = seed();
+    let requests = Arc::new(Requests::default());
+    let seen = Arc::clone(&requests);
+    let served = serve_tampered(&seeded, move |path, _| {
+        count(&seen, path);
+        None
+    });
+    let (_dir, local) = local_store();
+    let report = pull(&local, &served, &seeded.published).expect("pull");
+    assert!(report.incomplete.is_empty());
+    assert_eq!(requests.per_record.load(Ordering::SeqCst), 0);
+    assert!(requests.batches.load(Ordering::SeqCst) >= 1);
+    for id in seeded.statements.iter().chain(&seeded.authority) {
+        assert!(local.get_statement_bytes(id).is_ok(), "{id}");
+    }
+}
+
+#[test]
+fn a_node_without_batch_support_is_pulled_record_by_record() {
+    use std::sync::atomic::Ordering;
+    let seeded = seed();
+    let requests = Arc::new(Requests::default());
+    let seen = Arc::clone(&requests);
+    let served = serve_tampered(&seeded, move |path, bytes| {
+        count(&seen, path);
+        (path == "/.well-known/kairo-node").then(|| {
+            let mut value: Value = serde_json::from_slice(bytes).expect("json");
+            value["supports"] = serde_json::json!(["object-pull"]);
+            serde_json::to_vec(&value).expect("json")
+        })
+    });
+    let (_dir, local) = local_store();
+    let report = pull(&local, &served, &seeded.published).expect("pull");
+    assert!(report.incomplete.is_empty());
+    assert_eq!(requests.batches.load(Ordering::SeqCst), 0);
+    assert!(requests.per_record.load(Ordering::SeqCst) > 0);
+}
+
+#[test]
+fn a_statement_a_batch_leaves_out_is_fetched_on_its_own() {
+    use std::sync::atomic::Ordering;
+    let seeded = seed();
+    let left_out = seeded.after_rotation_branch.to_string();
+    let requests = Arc::new(Requests::default());
+    let seen = Arc::clone(&requests);
+    let served = serve_tampered(&seeded, move |path, bytes| {
+        count(&seen, path);
+        (path == "/federation/v1/statement-batch").then(|| {
+            let mut value: Value = serde_json::from_slice(bytes).expect("json");
+            if let Some(statements) = value["statements"].as_array_mut() {
+                statements.retain(|entry| entry["id"].as_str() != Some(left_out.as_str()));
+            }
+            serde_json::to_vec(&value).expect("json")
+        })
+    });
+    let (_dir, local) = local_store();
+    pull(&local, &served, &seeded.published).expect("pull");
+    assert!(local
+        .get_statement_bytes(&seeded.after_rotation_branch)
+        .is_ok());
+    assert_eq!(requests.per_record.load(Ordering::SeqCst), 1);
 }

@@ -1356,8 +1356,9 @@ Sub-decisions:
    - `enabled` (default `true`). `false` is local-only mode
      (`DAEMON.md` §10.1): `kairo fetch` refuses to run.
    - `[federation.limits]`: optional overrides of the pull client's
-     limits (`max_json_bytes`, `max_blob_bytes`, `max_git_bytes`,
-     `max_records`, `request_timeout_secs`, `git_timeout_secs`).
+     limits (`max_json_bytes`, `max_batch_bytes` (§24),
+     `max_blob_bytes`, `max_git_bytes`, `max_records`,
+     `request_timeout_secs`, `git_timeout_secs`).
      Zero is invalid.
    - `[[federation.peers]]` entries, each with a `url` and an
      optional `node_actor` (a bare actor id).
@@ -2088,3 +2089,56 @@ Affected specs:
 - `PHASE_2_FEDERATION.md` §4 item 1 — decided here.
 - `THREAT_MODEL.md` §5.15 — the fix, with the freshness limit.
 - `GLOSSARY.md` — actor chain, chain tip.
+
+## 24. Statement Batch Fetch
+
+Decision: a pull fetches statements in batches. `POST
+/federation/v1/statement-batch` takes up to 256 statement ids and
+returns those the node serves, each with the exact JSON the store
+holds. Per-record verification is unchanged: the client checks
+fixity, section, and signature on every statement as before. A pull
+of N statements costs about N/256 requests instead of N
+(`PHASE_2_FEDERATION.md` §4 item 2; Radicle syncs a repository in one
+fetch, §4.2).
+
+Sub-decisions:
+
+1. **Shape.**
+   - **Request:** `{ "schema": "kairo.fed.statement-batch-request.v1",
+     "ids": [ ... ] }`, with 1 to 256 ids and unknown fields refused.
+   - **Response:** `{ "schema": "kairo.fed.statement-batch.v1",
+     "statements": [ { "id": ..., "statement": <stored JSON> } ] }`,
+     in request order, each id at most once. The `statement` value is
+     the stored bytes embedded verbatim, not re-serialized, so the
+     client verifies exactly what a per-record `GET` would return.
+   - A malformed request is `400 fed_bad_batch`.
+
+2. **Absence stays ambiguous.** An id the node doesn't hold and an id
+   outside every published closure are both simply left out (§16
+   sub-decision 3). The client fetches anything left out through the
+   per-record endpoint, so a listed-but-unserved statement fails the
+   pull exactly as before, with the same `404 fed_not_found`.
+
+3. **Read-only in spirit.** The batch is a `POST` only because the id
+   list doesn't fit a URL. It reads, like the Git `upload-pack` RPC
+   (§22). These two are the federation server's only `POST`s.
+
+4. **Advertised, with fallback.** The node document's `supports`
+   gains `statement-batch`. A client uses the batch only when the
+   node lists it, and otherwise fetches per record. Responses aren't
+   cacheable the way per-record `GET`s are; a caching proxy keeps
+   working for nodes or clients that use per-record fetches.
+
+5. **Bounds.**
+   - **Server:** the request body is capped at 64 KiB.
+   - **Client:** requests at most 256 ids at a time and caps each
+     response at `max_batch_bytes` (default 32 MiB), failing the pull
+     with `TooLarge` beyond it, like any oversize response.
+   - **Blobs stay per record.** They are few, large, and binary, and
+     batching them would only make responses unbounded.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` §2.1 (endpoint), §2.3 (`fed_bad_batch`),
+  §2.4 (`max_batch_bytes`), §4 item 2.
+- `FEDERATION.md` — the endpoint list.

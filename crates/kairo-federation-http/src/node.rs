@@ -5,7 +5,9 @@ use std::time::Duration;
 
 use axum::Router;
 use kairo_core::ActorId;
-use kairo_federation_core::{NodeDocument, PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL};
+use kairo_federation_core::{
+    NodeDocument, PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL, SUPPORTS_STATEMENT_BATCH,
+};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::ActorKind;
 use kairo_statement::StatementKind;
@@ -84,7 +86,10 @@ impl Node {
             actor_genesis: ActorGenesisJson::from_body(&genesis),
             base_url: base_url.to_owned(),
             protocol_versions: vec![PROTOCOL_VERSION.to_owned()],
-            supports: vec![SUPPORTS_OBJECT_PULL.to_owned()],
+            supports: vec![
+                SUPPORTS_OBJECT_PULL.to_owned(),
+                SUPPORTS_STATEMENT_BATCH.to_owned(),
+            ],
         };
         document.validate().map_err(Error::NodeDocument)?;
 

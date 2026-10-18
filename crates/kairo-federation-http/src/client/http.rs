@@ -38,7 +38,7 @@ impl Peer {
     /// `GET <base><path>`, returning at most `limit` body bytes.
     pub(crate) fn get_bytes(&self, path: &str, limit: u64) -> Result<Vec<u8>, PullError> {
         let url = format!("{}{path}", self.base_url);
-        let mut response = self
+        let response = self
             .agent
             .get(&url)
             .call()
@@ -46,6 +46,42 @@ impl Peer {
                 url: url.clone(),
                 message: error.to_string(),
             })?;
+        Self::read_body(url, response, limit)
+    }
+
+    /// `POST <base><path>` with a JSON `body`, returning at most `limit`
+    /// response bytes. Only for endpoints that read (`DECISIONS.md`
+    /// §24).
+    pub(crate) fn post_json<T: serde::Serialize>(
+        &self,
+        path: &str,
+        body: &T,
+        limit: u64,
+    ) -> Result<Vec<u8>, PullError> {
+        let url = format!("{}{path}", self.base_url);
+        let bytes = serde_json::to_vec(body).map_err(|error| PullError::Parse {
+            url: url.clone(),
+            message: error.to_string(),
+        })?;
+        let response = self
+            .agent
+            .post(&url)
+            .header("content-type", "application/json")
+            .send(&bytes[..])
+            .map_err(|error| PullError::Transport {
+                url: url.clone(),
+                message: error.to_string(),
+            })?;
+        Self::read_body(url, response, limit)
+    }
+
+    /// A response's body, at most `limit` bytes for a 2xx; a non-2xx
+    /// becomes [`PullError::Status`] with the envelope's code.
+    fn read_body(
+        url: String,
+        mut response: ureq::http::Response<ureq::Body>,
+        limit: u64,
+    ) -> Result<Vec<u8>, PullError> {
         let status = response.status().as_u16();
         // Error bodies are small envelopes; cap them tighter than data.
         let read_limit = if (200..300).contains(&status) {

@@ -10,7 +10,7 @@ repository.workspace = true
 kairo-core = { path = "../kairo-core" }
 kairo-identity = { path = "../kairo-identity" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 
 [lib]
 name = "kairo_federation_core"

@@ -544,3 +544,89 @@ async fn serve_binds_and_shuts_down() {
         .await
         .expect("serve exits cleanly");
 }
+
+// --- statement batch (DECISIONS.md §24) -------------------------------
+
+async fn post_batch(router: &Router, body: &serde_json::Value) -> (StatusCode, Vec<u8>) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/federation/v1/statement-batch")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::to_vec(body).expect("json")))
+        .expect("request");
+    let response = router.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    (status, body.to_vec())
+}
+
+fn batch_request(ids: &[String]) -> serde_json::Value {
+    serde_json::json!({ "schema": "kairo.fed.statement-batch-request.v1", "ids": ids })
+}
+
+#[tokio::test]
+async fn the_node_document_advertises_statement_batch() {
+    let seeded = seed();
+    let document: kairo_federation_core::NodeDocument =
+        get_json(&router(&seeded), "/.well-known/kairo-node").await;
+    assert!(document.supports(kairo_federation_core::SUPPORTS_STATEMENT_BATCH));
+}
+
+#[tokio::test]
+async fn a_batch_serves_published_statements_verbatim_in_request_order() {
+    let seeded = seed();
+    let router = router(&seeded);
+    let published: Vec<StatementId> = seeded.statements.iter().cloned().collect();
+    let unknown = StatementId::from_sha256_digest([0xEE; 32]);
+    let mut ids: Vec<String> = published.iter().rev().map(ToString::to_string).collect();
+    ids.insert(1, seeded.unpublished_statements[0].to_string());
+    ids.push(unknown.to_string());
+    ids.push(published[0].to_string()); // a duplicate
+
+    let (status, body) = post_batch(&router, &batch_request(&ids)).await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let batch: kairo_federation_core::StatementBatch =
+        serde_json::from_slice(&body).expect("batch");
+    let served: Vec<StatementId> = batch.statements.iter().map(|s| s.id.clone()).collect();
+    let expected: Vec<StatementId> = published.iter().rev().cloned().collect();
+    assert_eq!(served, expected, "published only, request order, once each");
+    for entry in &batch.statements {
+        assert_eq!(
+            entry.statement.get().as_bytes(),
+            &seeded.store.get_statement_bytes(&entry.id).expect("stored")[..],
+            "verbatim"
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_batches_are_refused() {
+    let seeded = seed();
+    let router = router(&seeded);
+    // The count is checked before duplicates are dropped.
+    let too_many = vec![
+        StatementId::from_sha256_digest([1; 32]).to_string();
+        kairo_federation_core::MAX_BATCH_IDS + 1
+    ];
+    for body in [
+        batch_request(&[]),
+        batch_request(&too_many),
+        serde_json::json!({ "schema": "kairo.fed.statement-batch-request.v1", "ids": ["nope"] }),
+        serde_json::json!({ "schema": "wrong", "ids": [] }),
+        serde_json::json!({
+            "schema": "kairo.fed.statement-batch-request.v1",
+            "ids": [],
+            "extra": true,
+        }),
+    ] {
+        let (status, bytes) = post_batch(&router, &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        let envelope: FedErrorEnvelope = serde_json::from_slice(&bytes).expect("envelope");
+        assert_eq!(envelope.error.code, FedErrorCode::FedBadBatch, "{body}");
+    }
+}

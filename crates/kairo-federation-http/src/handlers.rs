@@ -18,8 +18,9 @@ use axum::routing::{get, post};
 use axum::Router;
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_federation_core::{
-    ActorListing, Cursor, FedErrorCode, FedErrorEnvelope, GitAvailability, ObjectListing,
-    PageRequest, PageRequestError, PublishedObjects, API_PREFIX, WELL_KNOWN_PATH,
+    ActorListing, BatchedStatement, Cursor, FedErrorCode, FedErrorEnvelope, GitAvailability,
+    ObjectListing, PageRequest, PageRequestError, PublishedObjects, StatementBatch,
+    StatementBatchRequest, API_PREFIX, STATEMENT_BATCH_PATH, WELL_KNOWN_PATH,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_store::{ActorStore, BlobStore, StoreError};
@@ -53,6 +54,10 @@ pub(crate) fn router(node: Node) -> Router {
         )
         .route(&format!("{API_PREFIX}/actors/:id"), get(actor_listing))
         .route(&format!("{API_PREFIX}/statements/:id"), get(statement))
+        .route(
+            &format!("{API_PREFIX}{STATEMENT_BATCH_PATH}"),
+            post(statement_batch),
+        )
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
         .fallback(not_found)
         .layer(middleware::from_fn(read_only))
@@ -175,9 +180,14 @@ fn page_request(query: RawQuery) -> Result<PageRequest, Fail> {
 /// federation envelope, on every path including unknown ones.
 async fn read_only(request: Request, next: Next) -> Response {
     let method = request.method();
-    // The one `POST` is Git's upload-pack RPC, which only reads.
-    let upload_pack = method == Method::POST && request.uri().path().ends_with(UPLOAD_PACK_SUFFIX);
-    if method == Method::GET || method == Method::HEAD || upload_pack {
+    // The two `POST`s only read: Git's upload-pack RPC (DECISIONS.md
+    // §22) and the statement batch (§24), whose id list doesn't fit a
+    // URL.
+    let path = request.uri().path();
+    let reading_post = method == Method::POST
+        && (path.ends_with(UPLOAD_PACK_SUFFIX)
+            || path == format!("{API_PREFIX}{STATEMENT_BATCH_PATH}"));
+    if method == Method::GET || method == Method::HEAD || reading_post {
         return next.run(request).await;
     }
     let mut response = Fail::new(
@@ -623,6 +633,62 @@ async fn statement(State(node): State<Node>, id: PathId) -> Response {
             .get_statement_bytes(&statement)
             .map_err(|e| Fail::from_read(&e))?;
         Ok(bytes_response(StatusCode::OK, JSON, bytes))
+    })
+    .await
+}
+
+/// Largest statement batch request body (`DECISIONS.md` §24): 256 ids
+/// fit with room to spare.
+const MAX_BATCH_REQUEST_BYTES: usize = 64 * 1024;
+
+/// `POST /federation/v1/statement-batch`: the requested statements the
+/// node serves, in request order, each the stored JSON verbatim. An id
+/// outside every published closure is left out exactly like one the
+/// store doesn't hold (`DECISIONS.md` §24 sub-decision 2).
+async fn statement_batch(State(node): State<Node>, body: Body) -> Response {
+    let bad = |message: String| Fail::new(FedErrorCode::FedBadBatch, message).into_response();
+    let Ok(raw) = axum::body::to_bytes(body, MAX_BATCH_REQUEST_BYTES).await else {
+        return bad(format!(
+            "batch request body over {MAX_BATCH_REQUEST_BYTES} bytes"
+        ));
+    };
+    let request: StatementBatchRequest = match serde_json::from_slice(&raw) {
+        Ok(request) => request,
+        Err(error) => return bad(format!("malformed batch request: {error}")),
+    };
+    if let Err(error) = request.validate() {
+        return bad(error.to_string());
+    }
+    blocking(move || {
+        let view = view(&node)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut statements = Vec::new();
+        for id in request.ids {
+            if !seen.insert(id.clone()) || !view.statements.contains(&id) {
+                continue;
+            }
+            let bytes = match node.store.get_statement_bytes(&id) {
+                Ok(bytes) => bytes,
+                Err(StoreError::Missing) => continue,
+                Err(error) => return Err(Fail::store(&error)),
+            };
+            // Stored statements are JSON; one that isn't is corrupt.
+            let text = String::from_utf8(bytes).map_err(|_| {
+                Fail::store(&StoreError::Rejected {
+                    reason: format!("stored statement {id} is not UTF-8"),
+                })
+            })?;
+            let statement = serde_json::value::RawValue::from_string(text).map_err(|error| {
+                Fail::store(&StoreError::Rejected {
+                    reason: format!("stored statement {id} is not JSON: {error}"),
+                })
+            })?;
+            statements.push(BatchedStatement { id, statement });
+        }
+        json_response(&StatementBatch {
+            schema: Default::default(),
+            statements,
+        })
     })
     .await
 }

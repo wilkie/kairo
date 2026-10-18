@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Changed
 
+- **Pulls fetch statements in batches (`DECISIONS.md` §24).**
+  - `POST /federation/v1/statement-batch` returns up to 256 requested
+    statements, each the stored JSON verbatim, in request order. Ids
+    the node doesn't serve are left out, so missing and unpublished
+    stay indistinguishable.
+  - Nodes advertise `statement-batch` in `supports`. The pull uses it
+    when the node does, and otherwise fetches per record. Anything a
+    batch leaves out is fetched on its own, and every statement is
+    still verified individually.
+  - A new limit, `max_batch_bytes` (default 32 MiB), is configurable
+    under `[federation.limits]`.
+
 - **The statement envelope gains `previous` (`DECISIONS.md` §23,
   step 1 of actor chains).**
   - Every signed statement's envelope now carries `previous`, the

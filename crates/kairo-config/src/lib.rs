@@ -66,6 +66,8 @@ impl Default for FederationConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LimitsConfig {
     pub max_json_bytes: Option<u64>,
+    /// Largest statement batch response (`specs/DECISIONS.md` §24).
+    pub max_batch_bytes: Option<u64>,
     pub max_blob_bytes: Option<u64>,
     pub max_git_bytes: Option<u64>,
     pub max_records: Option<u64>,
@@ -115,6 +117,7 @@ struct RawFederation {
 #[serde(deny_unknown_fields)]
 struct RawLimits {
     max_json_bytes: Option<u64>,
+    max_batch_bytes: Option<u64>,
     max_blob_bytes: Option<u64>,
     max_git_bytes: Option<u64>,
     max_records: Option<u64>,
@@ -204,6 +207,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
     let limits = federation.limits.unwrap_or_default();
     for (name, value) in [
         ("max_json_bytes", limits.max_json_bytes),
+        ("max_batch_bytes", limits.max_batch_bytes),
         ("max_blob_bytes", limits.max_blob_bytes),
         ("max_git_bytes", limits.max_git_bytes),
         ("max_records", limits.max_records),
@@ -249,6 +253,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             enabled: federation.enabled.unwrap_or(true),
             limits: LimitsConfig {
                 max_json_bytes: limits.max_json_bytes,
+                max_batch_bytes: limits.max_batch_bytes,
                 max_blob_bytes: limits.max_blob_bytes,
                 max_git_bytes: limits.max_git_bytes,
                 max_records: limits.max_records,

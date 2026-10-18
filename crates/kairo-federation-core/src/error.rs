@@ -32,6 +32,9 @@ pub enum FedErrorCode {
     /// The node is at its limit for concurrent Git fetches; retry
     /// after the response's `Retry-After`.
     FedBusy,
+    /// A statement batch request that doesn't parse, or names no ids
+    /// or more than `MAX_BATCH_IDS` (`specs/DECISIONS.md` §24).
+    FedBadBatch,
     /// A Git smart-HTTP request the node won't serve: not protocol
     /// v2, a command other than `ls-refs` or `fetch`, a `want` that
     /// isn't a published commit, or a malformed body.
@@ -47,7 +50,11 @@ impl FedErrorCode {
     pub fn status(self) -> u16 {
         match self {
             Self::FedNotFound => 404,
-            Self::FedBadId | Self::FedBadCursor | Self::FedBadLimit | Self::FedBadGitRequest => 400,
+            Self::FedBadId
+            | Self::FedBadCursor
+            | Self::FedBadLimit
+            | Self::FedBadBatch
+            | Self::FedBadGitRequest => 400,
             Self::FedMethodNotAllowed => 405,
             Self::FedStoreError | Self::Unknown => 500,
             Self::FedBusy => 503,
@@ -64,6 +71,7 @@ impl FedErrorCode {
             Self::FedStoreError => "fed_store_error",
             Self::FedBusy => "fed_busy",
             Self::FedBadGitRequest => "fed_bad_git_request",
+            Self::FedBadBatch => "fed_bad_batch",
             Self::Unknown => "unknown",
         }
     }

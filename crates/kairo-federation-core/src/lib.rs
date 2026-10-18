@@ -16,8 +16,10 @@
 //!
 //! Statements and blobs themselves are not modeled here. A node
 //! serves statements as exactly the `kairo-statement` JSON the store
-//! holds, and blobs as raw bytes.
+//! holds (embedded verbatim in a statement batch), and blobs as raw
+//! bytes.
 
+mod batch;
 mod error;
 mod listing;
 mod node;
@@ -29,6 +31,10 @@ mod wire_id;
 #[allow(clippy::expect_used)]
 mod tests;
 
+pub use batch::{
+    BatchedStatement, StatementBatch, StatementBatchRequest, StatementBatchRequestError,
+    StatementBatchRequestSchema, StatementBatchSchema, MAX_BATCH_IDS, STATEMENT_BATCH_PATH,
+};
 pub use error::{FedErrorBody, FedErrorCode, FedErrorEnvelope, ERROR_SCHEMA};
 pub use listing::{
     ActorListing, ActorListingError, ActorListingSchema, GitAvailability, ObjectListing,
@@ -46,6 +52,10 @@ pub const PROTOCOL_VERSION: &str = "kairo-fed/1";
 
 /// `supports` value for the object-pull endpoint set.
 pub const SUPPORTS_OBJECT_PULL: &str = "object-pull";
+
+/// `supports` value for `POST /federation/v1/statement-batch`
+/// (`specs/DECISIONS.md` §24).
+pub const SUPPORTS_STATEMENT_BATCH: &str = "statement-batch";
 
 /// Path of the node document, relative to the node's base URL.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/kairo-node";

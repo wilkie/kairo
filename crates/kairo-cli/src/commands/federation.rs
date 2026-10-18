@@ -209,6 +209,7 @@ fn limits_from(config: &kairo_config::LimitsConfig) -> Limits {
     let secs = |value: Option<u64>, default: Duration| value.map_or(default, Duration::from_secs);
     Limits {
         max_json_bytes: config.max_json_bytes.unwrap_or(defaults.max_json_bytes),
+        max_batch_bytes: config.max_batch_bytes.unwrap_or(defaults.max_batch_bytes),
         max_blob_bytes: config.max_blob_bytes.unwrap_or(defaults.max_blob_bytes),
         max_git_bytes: config.max_git_bytes.unwrap_or(defaults.max_git_bytes),
         max_records: config.max_records.map_or(defaults.max_records, |n| {
