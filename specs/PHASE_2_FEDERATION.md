@@ -437,22 +437,20 @@ inventory step, and 7 come from comparing this design with Radicle
    HTTP v2). Next on the content plane: reachability bitmaps, then
    bundle or packfile URIs for static hosting, both Git
    configuration now.
-1. **Signed statement heads.** Each actor signs a small head
-   statement per object committing to the set of statements they
-   have made about it (for example a hash over their sorted statement
-   ids), chained to their previous head. This is Radicle's
-   `rad/sigrefs` applied to statements. A puller holding a head knows
-   exactly which of that actor's statements it lacks, so a peer that
-   withholds a revocation or a branch update is detected instead of
-   silently yielding `Indeterminate` (`THREAT_MODEL.md` §5.15), and
-   the chain stops a relay from replaying an older head. Open points:
-   - whether heads are per actor per object or per actor;
-   - how they interact with the closure (heads are published with
-     it) and with ingest (a missing committed statement fails the
-     pull);
-   - what to do about actors who never sign a head (their
-     statements stay verifiable, only withholding detection is
-     lost).
+1. **Actor chains** (signed statement heads), *decided in
+   `DECISIONS.md` §23*. The statement envelope gains `previous`, the
+   signer's tips in the statement's chain (per object, per capability
+   target, or the actor's key events). Every chained statement is its
+   own head, so there are no extra records. Withholding inside a chain
+   becomes a detected, attributable gap (`THREAT_MODEL.md` §5.15), and
+   each chain is causally ordered. Freshness still needs witnesses
+   (§23 sub-decision 9). Implementation steps:
+   1. the envelope field and every schema doc's envelope section;
+   2. tips and completeness in the store;
+   3. every write path signs with the tips, and the daemon API
+      exposes them;
+   4. ingest order and the pull report;
+   5. verification and the daemon API's completeness.
 2. **Batch record fetch.** One request names many record ids and
    returns them together, each still verified on its own. A pull
    today costs one round trip per statement, actor, and blob, which
@@ -521,13 +519,14 @@ because statements form an independently appended set, not one
 history, their ids are not Git ids, and moving them changes the
 store backend.
 
-Current assessment: keep statements on Kairo's own sync. Signed
-statement heads and batch fetch (§4 items 1 and 2) bring the two main
-gains a Git-driven statement sync would, withholding detection and
-few round trips, and chained heads allow "everything since head H".
+Current assessment: keep statements on Kairo's own sync. Actor chains
+(`DECISIONS.md` §23) and batch fetch (§4 items 1 and 2) bring the two
+main gains a Git-driven statement sync would, withholding detection
+and few round trips, and chain tips allow "everything after these
+tips".
 Git would add little beyond those:
 - **It adds transport, not trust.** Git refs are unsigned, and Git
-  commit signing knows nothing of Kairo keys, so Kairo-signed heads
+  commit signing knows nothing of Kairo keys, so Kairo-signed chains
   are needed either way.
 - **Relayed views need their own namespaces.** A relay's merged view
   of an actor can't carry that actor's signature, which forces
@@ -540,11 +539,11 @@ Git would add little beyond those:
   content.
 
 What Git would uniquely add is relaying through ordinary Git hosts
-and Git bundles for offline transfer. To keep that open cheaply,
-item 1's commitment should be considered as a Merkle tree keyed by
-statement id and shaped like a Git tree, so a Git projection of
-statements could be generated later without a new commitment
-format. Decide when item 1 is designed.
+and Git bundles for offline transfer. §23 keeps that open: an actor
+chain is a hash-linked DAG whose `previous` edges map onto Git commit
+parents (one commit per statement, adding its file), so a Git
+projection of statements could be generated later without a new
+commitment format.
 
 ### 4.2 Comparison with Radicle
 

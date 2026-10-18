@@ -305,7 +305,7 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Adversary** | §4.2, §4.6 |
 | **Attack** | A federation peer withholds specific statements (the ones that would invalidate something the adversary wants the local node to accept). The local resolver returns `Indeterminate` rather than `Invalid`. |
 | **Mechanism** | The verification report distinguishes `Invalid` (rule was checked and failed) from `Indeterminate` (predecessor data is missing) and from `ResolverUnavailable` (transient). Trust is per-truster; a node can choose not to federate from peers that consistently produce Indeterminate. Multi-peer redundancy is the operational defense — out of scope for v1. |
-| **Residual risk** | If the operator only federates from one peer, that peer's selective withholding is undetectable from the protocol. Signed statement heads (`PHASE_2_FEDERATION.md` §4 item 1) are the planned fix: an actor's signed commitment to its statement set makes withholding detectable from a single peer. Multi-peer reconciliation remains the operational defense until then. |
+| **Residual risk** | If the operator only federates from one peer, that peer's selective withholding is undetectable from the protocol. Actor chains (`DECISIONS.md` §23, not implemented yet) are the planned fix: every chained statement names its signer's previous statements in that scope, so holding any statement exposes a withheld predecessor, from a single peer. They cannot prove freshness: a peer may still serve an older, consistent state, so multi-peer comparison (now cheap, by leaf ids) and a future home-node attestation remain the defense there. |
 
 ### 5.16 Tampering with the managed Git cache
 

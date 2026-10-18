@@ -239,8 +239,7 @@ the typed-reference grammar from `IDENTIFIERS.md`.
   "frontier": [
     {
       "actor_id": "z6MkActor...",
-      "statement_id": "z6MkStatement...",
-      "actor_seq": 12
+      "statement_id": "z6MkStatement..."
     }
   ]
 }

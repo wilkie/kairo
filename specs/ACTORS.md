@@ -548,10 +548,9 @@ A signature must cover:
 2. Actor ID.
 3. Object ID.
 4. Statement kind.
-5. Actor sequence.
-6. Previous actor statement reference.
-7. Causal parents.
-8. Any other fields declared signed by `STATEMENTS.md`.
+5. Previous statements in the actor's chain (`previous`).
+6. Causal parents.
+7. Any other fields declared signed by `STATEMENTS.md`.
 
 The exact canonical signing payload is defined by `STATEMENTS.md` and `SCHEMA.md`.
 
@@ -676,15 +675,27 @@ Rules:
 Actor activity for a given object is represented by per-actor signed statement
 chains as defined in `CORE_LIBRARY.md`.
 
-For each `(object_id, actor_id)` pair:
+An actor's statements in one scope (an object, a capability target, or
+its own key events) form a chain through the envelope's `previous`
+field (`DECISIONS.md` §23):
 
-1. Actor statements must have monotonic sequence numbers.
-2. Non-initial statements must reference previous actor statements.
-3. Chain continuity is required for validation when the chain affects the snapshot.
-4. Broken chains are invalid if contradictory data is present.
-5. Missing required chain predecessors make validation indeterminate.
+1. Each chained statement names the signer's tips in that chain at
+   signing time. Forks from several devices are merged by a later
+   statement naming several tips.
+2. Chains are first-person: `previous` names only the same actor's
+   statements in the same scope.
+3. Chain completeness is required for validation when the chain
+   affects the result. A named predecessor that is missing makes
+   validation indeterminate.
+4. A statement whose `previous` names another actor's statement, an
+   unchained kind, or another scope is invalid.
+5. Within a chain, `previous` is the order; `created_at` only breaks
+   ties the DAG leaves open.
 
-Actor chains prove continuity of a signer’s participation in an object.
+Actor chains prove that a signer's participation in an object, or its
+key history, is complete up to the newest statement a node holds. They
+cannot prove that no newer statement exists (`DECISIONS.md` §23
+sub-decision 9).
 
 ---
 

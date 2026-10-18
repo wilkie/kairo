@@ -55,6 +55,7 @@ UnsignedStatement {
   actor,
   subject,
   created_at,
+  previous,
   body
 } -> StatementId
 SignedStatement {
@@ -71,9 +72,24 @@ standalone to derive `ActorId` / `ObjectId`. `created_at` is RFC 3339 / UTC /
 canonical bytes. The timestamp is the actor's self-claim of when the statement
 was made; it is not a trusted observation.
 
-Adding a statement type should require defining only its body fields and
-canonical body encoding. The unsigned/signed statement envelope process is
-shared.
+Every signed statement also carries `previous` on the envelope
+(`DECISIONS.md` §23): the signer's current tips in the statement's
+**actor chain**, ascending, at most 16. It is encoded after `created_at`.
+Chained kinds and their chain scopes:
+- `ObjectBranch` and `ObjectVersionTag` chain per object.
+- `ActorCapabilityGrant` chains per capability scope, and
+  `ActorCapabilityRevocation` in its grant's scope.
+- Key events chain in the signer's `keys` scope.
+
+`ObjectRevision` and `ActorTrust` are unchained, so their `previous` is
+empty. Each chained statement is a commitment to its signer's earlier
+statements in that scope. A missing predecessor is a detectable gap,
+and the chain orders the statements causally. Forks from several
+devices are merged by naming several tips.
+
+Adding a statement type should require defining only its body fields,
+canonical body encoding, and chain rule (chained, with its scope, or
+unchained). The unsigned/signed statement envelope process is shared.
 
 ---
 

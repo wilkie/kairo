@@ -434,7 +434,7 @@ A commit must:
 1. Verify staging index is non-empty.
 2. Verify default actor/key is available.
 3. Convert staged changes into statement bodies.
-4. Link statements to previous actor statement.
+4. Set each statement's `previous` to the actor's current chain tips (`DECISIONS.md` §23).
 5. Include required causal parents.
 6. Sign statements.
 7. Persist statements to local workspace/store.

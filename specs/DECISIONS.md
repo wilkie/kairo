@@ -1883,3 +1883,201 @@ Affected specs:
   done), and §5 risk notes.
 - `STORE.md` §4 — no `outgoing/` directory.
 - `THREAT_MODEL.md` — pool scoping on the Git endpoint.
+
+## 23. Actor Chains: `previous` on the Statement Envelope
+
+Decision: the statement envelope gains a `previous` field. In a
+**chained** kind, `previous` names the signer's current tips in the
+statement's **chain**, so each actor's statements in a scope form a
+hash-linked DAG. Every chained statement is its own head: the newest
+one a node holds is the signer's attestation to everything before it.
+A node holding a statement whose `previous` it lacks knows exactly
+what is missing and whose it is. Withholding inside a chain therefore
+becomes a detected gap instead of a silent `Indeterminate`
+(`THREAT_MODEL.md` §5.15).
+
+This realizes the **actor chains** of `CORE_LIBRARY.md` §9.2 and
+`ACTORS.md` §7, which specified an `actor_seq` and a
+`previous_actor_statement` on every statement but were never
+implemented. It differs from them in three ways:
+- There is no sequence number, because chain position is the DAG.
+- Forks are allowed, and merged by naming several tips.
+- The chain key is a scope (an object, the actor's key events, or a
+  capability target), not just the object.
+
+Alternatives considered (`PHASE_2_FEDERATION.md` §4.2):
+
+- **Separate checkpoint statements** that commit to batches. These
+  add one record per write, kept forever, to say what the data could
+  say itself.
+- **A single latest signed Merkle root** per actor and scope (AT
+  Protocol, Hypercore, Certificate Transparency). This keeps O(1)
+  state and allows proofs of membership and absence. But it needs one
+  coherent writer per chain, while Kairo actors sign from several
+  devices and from daemon session signing, and it gives no causal
+  order. It remains the path to freshness and absence proofs, built
+  over chain tips rather than replacing them (sub-decision 9).
+
+Sub-decisions:
+
+1. **Envelope.** The unsigned envelope is `type`, `version`, `actor`,
+   `subject`, `created_at`, `previous`, `body`.
+   - `previous` is a list of statement ids, ascending, deduplicated,
+     at most 16. It is encoded in canonical bytes after `created_at`
+     as a length-prefixed list of strings.
+   - In JSON it is a required array. It is empty for unchained kinds
+     and for a chain's first statement.
+   - The envelope stays `kairo.statement.v1` and is amended in place,
+     since nothing is deployed (as §18 did for `ActorTrust`). Every
+     StatementId changes.
+   - `ObjectGenesis` and `ActorGenesis` have no envelope and are
+     unchanged.
+
+2. **Chain key.** A chain is `(signer, scope)`, and a chained kind's
+   scope comes from its body:
+
+   | Kind | Scope |
+   |------|-------|
+   | `ObjectBranch`, `ObjectVersionTag` | `object <id>` (the body's object) |
+   | `ActorCapabilityGrant` | the capability's scope: `object <id>` or `actor <id>` |
+   | `ActorCapabilityRevocation` | the revoked grant's scope |
+   | key events (rotation, revocation, emergency rotation and revocation, attestation key add and revocation, threshold change) | `keys` |
+
+   - A revocation's scope is known only once its grant is held.
+     Without the grant, its chain placement is `Indeterminate`, as its
+     authority already is.
+   - **Unchained kinds** must have an empty `previous`:
+     - `ObjectRevision`, so that a revision no ref reaches stays local
+       (§20) instead of becoming a required predecessor of the
+       signer's next branch move;
+     - `ActorTrust`, which is first-person, has its own `supersedes`
+       chain, and never federates;
+     - future kinds, unless their own decision chains them.
+   - A new kind declares its chain rule when it is specified
+     (`kairo-statement` `AGENTS.md`).
+
+3. **What `previous` must name.** At signing time, the signer's
+   current tips in that chain: its held chain statements that no other
+   held chain statement names. Every entry must be a statement by the
+   same signer, of a chained kind, in the same scope. Anything else
+   makes the statement `Invalid` (`CORE_LIBRARY.md` §12.2, "claims a
+   previous statement that belongs to another actor chain").
+   - `previous` is about completeness and order. A branch's
+     `supersedes` keeps its own meaning (which branch statement
+     replaces which, possibly across actors, `CAPABILITIES.md` §6.2),
+     and both fields can name the same statement.
+   - A signer with more than 16 tips merges them across successive
+     writes.
+
+4. **Forks are normal.** Two devices that each write from the same
+   tips leave two tips. The next write from either, after syncing,
+   names both and merges them. Nothing is invalid in between, and the
+   chain's set is everything under all tips. A signer cannot be forced
+   into contradiction by a race, unlike `CORE_LIBRARY.md`'s earlier
+   strictly increasing `actor_seq`.
+
+5. **Every write path sets it.**
+   - **CLI and daemon session signing** (§15) read the signer's tips
+     from the store and sign with them.
+   - **Signed-mode clients** (§13) read them from the daemon API.
+     The API exposes the tips for each actor and scope, and the write
+     path returns the new tips. A client with stale tips creates a
+     fork, which is merged later.
+   - **Imports sign nothing.** Bundle import and federation pull only
+     store other actors' statements.
+
+6. **Completeness.** For one signer and scope, the tips are the held
+   chain statements no held chain statement names.
+   - **Completeness** is `Complete` (every `previous` of every held
+     statement in the chain is held) or `Incomplete { missing }` (the
+     named-but-absent ids). An absent statement's own predecessors are
+     unknown until it arrives, so completeness is re-evaluated after
+     each fetch.
+   - **Revoked keys.** A statement signed with a key revoked at its
+     `created_at` is stored and flagged (§16). Its `previous` is
+     ignored for completeness, so a stolen key can't name ids that
+     don't exist and pin a chain as permanently `Incomplete`. It still
+     counts as held when a valid statement names it.
+
+7. **Order.** Within one chain, `previous` is the order: a statement
+   comes after everything it names, transitively. Resolution and
+   ingest use chain order first, then `created_at` and statement id
+   as tiebreaks only between statements the DAG leaves unordered
+   (`CORE_LIBRARY.md` §15.2). In particular, key events are now
+   causally ordered among themselves.
+
+   Still open: an object-chain statement's key validity is judged by
+   `created_at` against the `keys` chain. Letting it also name the
+   signer's `keys` tip, as Keybase links carry a sequence number, would
+   make "signed after this revocation" causal and defeat backdating
+   with a stolen key. That is a separate decision.
+
+8. **Federation and verification.**
+   - **The closure is unchanged.** Every chained kind is already in it:
+     branch and tag chains and authority are served whole (§16
+     sub-decision 4), and key events come with the actor listing.
+   - **`actor`-scope grants** are chained but don't federate today.
+     Their chains are only evaluated locally.
+   - **Ingest** orders each chain topologically.
+   - **The pull report** lists each incomplete signer and scope with
+     its missing ids. The pull still succeeds, keeping what verified.
+     `kairo fetch --require-complete` turns any `Incomplete` into a
+     failure (exit 11, `fed_incomplete`).
+   - **`kairo verify object`** reports completeness for every chain
+     the result consults:
+     - the genesis creator's and grantors' chains on the authority
+       path;
+     - the chains of the resolved branch and tag signers;
+     - the `keys` chain of every signer whose signature is checked.
+
+     `Incomplete` on any of these makes the result `Indeterminate`,
+     naming the signer, the scope, and the missing ids. An incomplete
+     chain the result doesn't consult is reported and changes nothing.
+     The daemon API exposes the same, for the web client.
+
+9. **What this does not prove: freshness.** Holding a statement
+   proves its predecessors exist, and a peer can't hide what a held
+   statement names. A peer can still serve an older, internally
+   consistent state, because nothing signed only by the actor shows
+   its newest statement. This is the same limit as Radicle's signed
+   refs.
+
+   Freshness needs parties other than the signer. The design to
+   follow is Certificate Transparency's, also used by the Go checksum
+   database: nodes sign a Merkle root over the chain tips they hold
+   (the "latest signed root" alternative above, built on the tips
+   rather than replacing them), and independent nodes co-sign roots
+   as witnesses, so a split view or a stale serve becomes detectable.
+   That is the signed form of `OBJECT_STORE.md`'s "observed log root"
+   and node-published "Log Checkpoints", and it waits on node
+   authentication (`PHASE_2_FEDERATION.md` §4 item 3).
+
+Rationale: per-statement signatures prove each record is genuine but
+say nothing about what is missing. Selective withholding of a
+revocation is the federation attack with the worst consequence:
+accepting a compromised key's statements, or authority that was
+withdrawn. Putting `previous` in the envelope makes every chained
+statement a commitment to its signer's history in that scope:
+- no extra records, and no growth beyond the statements themselves;
+- causal order within each chain, in place of signer-asserted
+  timestamps;
+- forks from several devices tolerated by construction.
+
+One envelope field and one verifier path serve every chained kind,
+current and future.
+
+Affected specs:
+
+- `STATEMENTS.md` §2 (envelope) and §4 (each kind's chain rule) — and
+  every `schemas/canonical/*-v1.md` "Canonical Envelope Fields"
+  section, at implementation.
+- `CORE_LIBRARY.md` §9.1, §9.2, §13.1 step 7, §15.2 — actor chains as
+  `previous`; `actor_seq` and `previous_actor_statement` removed.
+- `ACTORS.md` §6 and §7 — the same.
+- `PACKAGE.md` and `WORKSPACE.md` — records preserve `previous`; a
+  write sets it.
+- `API.md` — chain tips per actor and scope, and per-actor
+  completeness.
+- `PHASE_2_FEDERATION.md` §4 item 1 — decided here.
+- `THREAT_MODEL.md` §5.15 — the fix, with the freshness limit.
+- `GLOSSARY.md` — actor chain, chain tip.

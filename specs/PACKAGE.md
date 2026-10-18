@@ -532,13 +532,12 @@ Each statement record must preserve:
 1. Statement ID.
 2. Object ID.
 3. Actor ID.
-4. Actor sequence.
-5. Previous actor statement reference.
-6. Causal parents.
-7. Statement kind/body.
-8. Body hash.
-9. Signature.
-10. Version/feature information.
+4. Previous statements in the actor's chain (`previous`).
+5. Causal parents.
+6. Statement kind/body.
+7. Body hash.
+8. Signature.
+9. Version/feature information.
 
 Statement signatures must remain byte-for-byte valid after package import/export.
 
@@ -564,8 +563,7 @@ A snapshot record should include:
   "frontier": [
     {
       "actor_id": "z6MkActor...",
-      "statement_id": "z6MkStatement...",
-      "actor_seq": 12
+      "statement_id": "z6MkStatement..."
     }
   ],
   "purpose": "run",

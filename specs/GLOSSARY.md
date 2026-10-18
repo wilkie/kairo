@@ -108,6 +108,19 @@ advertisements.
 
 See `STATEMENTS.md`.
 
+## Actor Chain
+
+An `actor chain` is the DAG an actor's statements form in one scope (an
+object, a capability target, or the actor's own key events) through
+the envelope's `previous` field. Its **tips** are the statements no
+other statement in the chain names. The newest statement a node holds
+attests to every statement before it in the chain, so a missing one is
+a detectable gap. A chain proves completeness up to what is held,
+never freshness. Chain tips are not a branch `head` and not a
+`frontier`: they commit to history, not to a selected current state.
+
+See `DECISIONS.md` §23 and `CORE_LIBRARY.md` §9.2.
+
 ## Version Tag
 
 A `VersionTag` is an actor-scoped, mutable pointer that binds a strict

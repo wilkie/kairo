@@ -323,8 +323,8 @@ pub struct Statement {
     pub id: StatementId,
     pub object_id: ObjectId,
     pub actor_id: ActorId,
-    pub actor_seq: u64,
-    pub previous_actor_statement: Option<StatementId>,
+    /// The signer's chain tips at signing time (`DECISIONS.md` §23).
+    pub previous: Vec<StatementId>,
     pub causal_parents: Vec<StatementId>,
     pub kind: StatementKind,
     pub issued_at: Option<Timestamp>,
@@ -337,18 +337,29 @@ The exact serialized shape is defined by `STATEMENTS.md`; this structure describ
 
 ### 9.2 Actor chains
 
-For a given `(object_id, actor_id)` pair:
+An actor chain is the DAG an actor's statements form in one scope
+through the envelope's `previous` field (`DECISIONS.md` §23). An
+earlier draft of this section used an `actor_seq` and a
+`previous_actor_statement`; §23 replaced both.
 
-1. `actor_seq` must be strictly increasing.
-2. The first statement in the actor chain must have either:
-   - `actor_seq == 0`, or
-   - the canonical first sequence value defined by `STATEMENTS.md`.
-3. Every non-initial statement must reference the actor’s previous statement through `previous_actor_statement`.
-4. The referenced previous statement must:
-   - Exist in the snapshot closure, or
-   - Be outside the closure only if the closure explicitly states that the predecessor is irrelevant for the requested purpose.
-5. If a required previous statement is missing, validation must return `Indeterminate`.
-6. If an actor chain is internally contradictory, validation must return `Invalid`.
+For a given `(actor_id, scope)` chain (an object, a capability target,
+or the actor's key events):
+
+1. A chained statement's `previous` names the signer's tips in the
+   chain at signing time. The first statement in a chain has an empty
+   `previous`.
+2. Forks are allowed. A later statement that names several tips
+   merges them.
+3. Every `previous` entry must be a chained statement by the same actor
+   in the same scope.
+4. If a statement's `previous` names a statement that is missing, and
+   the chain affects the requested purpose, validation must return
+   `Indeterminate`.
+5. If a statement's `previous` names another actor's statement, an
+   unchained kind, or another scope, validation must return `Invalid`
+   for that statement.
+6. Chain order is causal: a statement follows everything it names,
+   transitively.
 
 ### 9.3 Causal parents
 
@@ -380,7 +391,7 @@ pub struct SnapshotRef {
 }
 ```
 
-A statement frontier identifies the statement heads used to define the snapshot.
+A statement frontier identifies the statements selected to define the snapshot (`GLOSSARY.md` "Frontier").
 
 ```rust
 pub struct StatementFrontierSet {
@@ -390,7 +401,6 @@ pub struct StatementFrontierSet {
 pub struct StatementFrontier {
     pub actor_id: ActorId,
     pub statement_id: StatementId,
-    pub actor_seq: u64,
 }
 ```
 
@@ -632,7 +642,7 @@ Given `(SnapshotClosure closure, SnapshotPurpose purpose)`:
    - Every statement body hash must match the canonical serialized body.
 
 7. Verify actor chains.
-   - For each actor chain, check sequence monotonicity and previous-statement links.
+   - For each actor chain the purpose depends on, check that every `previous` names a statement of the same chain and that each named statement is present (`DECISIONS.md` §23).
 
 8. Verify causal closure.
    - Every required causal parent must be present or represented by a dependent snapshot.
@@ -762,7 +772,7 @@ The core library must apply statements in a deterministic topological order.
 Ordering keys:
 
 1. Causal parent order.
-2. Actor chain order.
+2. Actor chain order (`previous`, `DECISIONS.md` §23).
 3. Statement ID as deterministic tie-breaker for independent statements.
 
 Tie-breaking must not be used to hide semantic conflicts. It may only provide deterministic iteration order.
