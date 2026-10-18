@@ -2024,7 +2024,7 @@ Sub-decisions:
    - **The pull report** lists each incomplete signer and scope with
      its missing ids. The pull still succeeds, keeping what verified.
      `kairo fetch --require-complete` turns any `Incomplete` into a
-     failure (exit 11, `fed_incomplete`).
+     failure (exit 11).
    - **`kairo verify object`** reports completeness for every chain
      the result consults:
      - the genesis creator's and grantors' chains on the authority

@@ -17,8 +17,10 @@ use axum::Router;
 use flate2 as _;
 use kairo_core::{KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_federation_core::FedErrorCode;
-use kairo_federation_http::client::{pull_object, Limits, PullError, PullOptions, RecordRejection};
-use kairo_statement::{ActorKeyRevocationBody, ObjectVersionTagBody, SemverVersion};
+use kairo_federation_http::client::{
+    pull_object, IncompleteChain, Limits, PullError, PullOptions, RecordRejection,
+};
+use kairo_statement::{ActorKeyRevocationBody, ChainScope, ObjectVersionTagBody, SemverVersion};
 use kairo_store::{
     ActorStore, BlobStore, BranchResolver, FilesystemStore, ObjectStore, ProvenanceStore,
     StatementStore,
@@ -582,4 +584,84 @@ fn revisions_no_ref_reaches_stay_on_the_origin() {
     for id in &seeded.statements {
         assert!(local.get_statement_bytes(id).is_ok(), "{id}");
     }
+}
+
+// --- actor chains (DECISIONS.md §23) ----------------------------------
+
+#[test]
+fn a_complete_pull_reports_no_incomplete_chains() {
+    let seeded = seed();
+    let served = serve(&seeded);
+    let (_dir, local) = local_store();
+    let report = pull(&local, &served, &seeded.published).expect("pull");
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    // alice's after-rotation branch is chained after her revocation.
+    let branch = local
+        .get_object_branch(&seeded.after_rotation_branch)
+        .expect("branch");
+    assert_eq!(
+        branch.unsigned().previous().ids(),
+        std::slice::from_ref(&seeded.revocation)
+    );
+}
+
+/// The listing a peer serves, without alice's revocation of carol's
+/// grant: the one record a peer would want to hide.
+fn serve_withholding_the_revocation(seeded: &Seeded) -> Served {
+    let path = format!("/federation/v1/objects/{}", seeded.published);
+    let revocation = seeded.revocation.to_string();
+    serve_tampered(seeded, move |request_path, bytes| {
+        (request_path == path).then(|| {
+            let mut value: Value = serde_json::from_slice(bytes).expect("json");
+            if let Some(authority) = value["authority"].as_array_mut() {
+                authority.retain(|id| id.as_str() != Some(revocation.as_str()));
+            }
+            serde_json::to_vec(&value).expect("json")
+        })
+    })
+}
+
+#[test]
+fn a_withheld_revocation_is_a_reported_gap() {
+    let seeded = seed();
+    let served = serve_withholding_the_revocation(&seeded);
+    let (_dir, local) = local_store();
+    let report = pull(&local, &served, &seeded.published).expect("pull still succeeds");
+
+    assert!(local.get_statement_bytes(&seeded.revocation).is_err());
+    assert_eq!(
+        report.incomplete,
+        vec![IncompleteChain {
+            signer: seeded.alice.clone(),
+            scope: ChainScope::Object(seeded.published.clone()),
+            missing: vec![seeded.revocation.clone()],
+        }]
+    );
+}
+
+#[test]
+fn require_complete_fails_on_a_gap_but_keeps_what_verified() {
+    let seeded = seed();
+    let served = serve_withholding_the_revocation(&seeded);
+    let (_dir, local) = local_store();
+    let options = PullOptions {
+        require_complete: true,
+        ..PullOptions::default()
+    };
+    match pull_object(&local, &served.base_url, &seeded.published, &options) {
+        Err(PullError::IncompleteChains { chains }) => {
+            assert_eq!(chains.len(), 1);
+            assert_eq!(chains[0].missing, vec![seeded.revocation.clone()]);
+        }
+        other => panic!("expected IncompleteChains, got {other:?}"),
+    }
+    assert!(local
+        .get_statement_bytes(&seeded.after_rotation_branch)
+        .is_ok());
+
+    // The same pull from an honest peer completes the chain.
+    let honest = serve(&seeded);
+    let report =
+        pull_object(&local, &honest.base_url, &seeded.published, &options).expect("complete pull");
+    assert!(report.incomplete.is_empty());
 }

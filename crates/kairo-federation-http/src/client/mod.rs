@@ -29,7 +29,7 @@
 mod http;
 mod ingest;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -39,14 +39,16 @@ use kairo_federation_core::{
     MAX_PAGE_LIMIT, SUPPORTS_OBJECT_PULL, WELL_KNOWN_PATH,
 };
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
-use kairo_statement::{GitRevision, StatementKind};
+use kairo_statement::{ChainScope, GitRevision, StatementKind};
 use kairo_store::{
-    ActorStore, BlobStore, FilesystemStore, ObjectStore, ProvenanceEntry, ProvenanceStore,
-    StatementStore, StoreError,
+    ActorStore, BlobStore, ChainCompleteness, FilesystemStore, ObjectStore, ProvenanceEntry,
+    ProvenanceStore, StatementStore, StoreError,
 };
 
 use self::http::Peer;
-use self::ingest::{ingest_genesis, ingest_statement, peek, Ingested, Section};
+use self::ingest::{
+    ingest_genesis, ingest_statement, peek, signed_with_revoked_key, Ingested, Peek, Section,
+};
 
 /// Per-pull limits (`specs/PHASE_2_FEDERATION.md` §2.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,10 @@ pub struct PullOptions {
     /// config). `None` accepts any valid claim; the report carries
     /// it so the operator can pin it.
     pub expected_node_actor: Option<ActorId>,
+    /// Fail the pull if any actor chain it depends on is incomplete
+    /// (`DECISIONS.md` §23 sub-decision 8). What verified is still
+    /// stored.
+    pub require_complete: bool,
 }
 
 /// Normalize a peer base URL the way [`pull_object`] does: `https://`
@@ -95,8 +101,21 @@ pub fn normalize_peer_url(raw: &str) -> Result<String, PullError> {
     http::normalize_base_url(raw)
 }
 
-/// A record the pull stored but that doesn't verify as valid: today,
-/// a statement signed with a key revoked at its `created_at`.
+/// An actor chain the pull depends on that names statements this node
+/// still lacks (`DECISIONS.md` §23): a peer withheld them, or doesn't
+/// have them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncompleteChain {
+    pub signer: ActorId,
+    pub scope: ChainScope,
+    /// Named by some held statement's `previous` and not held. A
+    /// missing grant stands in for a revocation that waits on it.
+    pub missing: Vec<StatementId>,
+}
+
+/// A record the pull stored but that doesn't verify as valid: a
+/// statement signed with a key revoked at its `created_at`, or one
+/// whose `previous` names a statement outside its chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlaggedRecord {
     pub record: KairoRef,
@@ -116,6 +135,10 @@ pub struct PullReport {
     /// Stored records (counted in `fetched`) that verification will
     /// report as invalid.
     pub flagged: Vec<FlaggedRecord>,
+    /// Chains of this object's actors (its `object:` scope, and each
+    /// actor's `keys`) that are incomplete after the pull, by signer
+    /// then scope.
+    pub incomplete: Vec<IncompleteChain>,
     pub git: GitOutcome,
 }
 
@@ -224,6 +247,11 @@ pub enum PullError {
     GitIncomplete {
         missing: Vec<String>,
     },
+    /// `require_complete` was set and some chain is still incomplete.
+    /// Everything that verified is stored.
+    IncompleteChains {
+        chains: Vec<IncompleteChain>,
+    },
 }
 
 impl fmt::Display for PullError {
@@ -282,6 +310,21 @@ impl fmt::Display for PullError {
                 missing.len(),
                 missing.join(", ")
             ),
+            Self::IncompleteChains { chains } => {
+                write!(f, "{} actor chain(s) are incomplete:", chains.len())?;
+                for chain in chains {
+                    let missing: Vec<String> =
+                        chain.missing.iter().map(ToString::to_string).collect();
+                    write!(
+                        f,
+                        " {} in {} lacks {};",
+                        chain.signer,
+                        chain.scope,
+                        missing.join(", ")
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -354,6 +397,7 @@ pub fn pull_object(
         fetched: 0,
         already_held: 0,
         flagged: Vec::new(),
+        incomplete: Vec::new(),
         git: GitOutcome::NoGitRevisions,
     };
     let mut pull = Pull {
@@ -364,6 +408,11 @@ pub fn pull_object(
         report,
     };
     pull.run(object)?;
+    if options.require_complete && !pull.report.incomplete.is_empty() {
+        return Err(PullError::IncompleteChains {
+            chains: pull.report.incomplete,
+        });
+    }
     Ok(pull.report)
 }
 
@@ -392,6 +441,37 @@ impl Pull<'_> {
 
         let git_available = listing.git.is_some_and(|git| git.available);
         self.report.git = self.git(object, &listing.statements, git_available)?;
+        self.chains(object, &listing.actors)
+    }
+
+    /// Check the chains this object depends on: each closure actor's
+    /// `object:` chain and its `keys` chain (`DECISIONS.md` §23
+    /// sub-decision 8). Gaps are reported; contradictions are flagged.
+    fn chains(&mut self, object: &ObjectId, actors: &[ActorId]) -> Result<(), PullError> {
+        let store = self.store;
+        let discount = |id: &StatementId| signed_with_revoked_key(store, id).unwrap_or(false);
+        for actor in actors {
+            for scope in [ChainScope::Object(object.clone()), ChainScope::Keys] {
+                let report = store
+                    .actor_chain_report(actor, &scope, discount)
+                    .map_err(PullError::Store)?;
+                for id in report.contradictions {
+                    self.report.flagged.push(FlaggedRecord {
+                        record: KairoRef::Statement(id),
+                        reason: format!(
+                            "its previous names a statement outside {actor}'s {scope} chain"
+                        ),
+                    });
+                }
+                if let ChainCompleteness::Incomplete { missing } = report.completeness {
+                    self.report.incomplete.push(IncompleteChain {
+                        signer: actor.clone(),
+                        scope,
+                        missing,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -420,7 +500,13 @@ impl Pull<'_> {
                 Err(StoreError::Missing) => continue,
                 Err(error) => return Err(PullError::Store(error)),
             };
-            if !matches!(peek(&bytes), Ok((StatementKind::ObjectRevision, _))) {
+            if !matches!(
+                peek(&bytes),
+                Ok(Peek {
+                    kind: StatementKind::ObjectRevision,
+                    ..
+                })
+            ) {
                 continue;
             }
             let revision = self
@@ -612,8 +698,9 @@ impl Pull<'_> {
         self.check_budget(*budget)?;
 
         // Key events verify against the keys before them, so fetch the
-        // missing ones and ingest in `created_at` order.
-        let mut missing: Vec<(Timestamp, StatementId, Vec<u8>)> = Vec::new();
+        // missing ones and ingest in chain order (`created_at` between
+        // statements the chain leaves unordered).
+        let mut missing: Vec<Pending<Timestamp>> = Vec::new();
         for id in dedup_ids(&listing.key_events) {
             if Self::held(self.store.get_statement_bytes(&id))? {
                 self.report.already_held += 1;
@@ -621,14 +708,18 @@ impl Pull<'_> {
                 continue;
             }
             let bytes = self.fetch_statement(&id)?;
-            let (_, created_at) = peek(&bytes).map_err(|reason| PullError::Record {
+            let peeked = peek(&bytes).map_err(|reason| PullError::Record {
                 record: KairoRef::Statement(id.clone()),
                 reason,
             })?;
-            missing.push((created_at, id, bytes));
+            missing.push(Pending {
+                key: peeked.created_at,
+                id,
+                previous: peeked.previous,
+                bytes,
+            });
         }
-        missing.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-        for (_, id, bytes) in missing {
+        for (id, bytes) in chain_order(missing) {
             self.ingest(&id, &bytes, Section::KeyEvent(actor))?;
         }
         Ok(())
@@ -660,7 +751,7 @@ impl Pull<'_> {
     }
 
     fn statements(&mut self, ids: &[StatementId], section: Section<'_>) -> Result<(), PullError> {
-        let mut missing: Vec<((u8, Timestamp), StatementId, Vec<u8>)> = Vec::new();
+        let mut missing: Vec<Pending<(u8, Timestamp)>> = Vec::new();
         for id in ids {
             if Self::held(self.store.get_statement_bytes(id))? {
                 self.report.already_held += 1;
@@ -668,14 +759,18 @@ impl Pull<'_> {
                 continue;
             }
             let bytes = self.fetch_statement(id)?;
-            let (kind, created_at) = peek(&bytes).map_err(|reason| PullError::Record {
+            let peeked = peek(&bytes).map_err(|reason| PullError::Record {
                 record: KairoRef::Statement(id.clone()),
                 reason,
             })?;
-            missing.push(((rank(kind), created_at), id.clone(), bytes));
+            missing.push(Pending {
+                key: (rank(peeked.kind), peeked.created_at),
+                id: id.clone(),
+                previous: peeked.previous,
+                bytes,
+            });
         }
-        missing.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-        for (_, id, bytes) in missing {
+        for (id, bytes) in chain_order(missing) {
             self.ingest(&id, &bytes, section)?;
         }
         Ok(())
@@ -731,6 +826,75 @@ impl Pull<'_> {
     }
 }
 
+/// A fetched statement waiting to be ingested.
+struct Pending<K> {
+    /// Order between statements no chain orders.
+    key: K,
+    id: StatementId,
+    previous: Vec<StatementId>,
+    bytes: Vec<u8>,
+}
+
+/// `pending` in chain order (`DECISIONS.md` §23 sub-decision 7): a
+/// statement after every pending statement its `previous` names, and
+/// otherwise by `(key, id)`. Names outside the batch impose nothing
+/// (already held, or missing). Content-addressed ids can't form a
+/// cycle; if a peer's records claim one anyway, the rest are ingested
+/// in `(key, id)` order and verification judges each statement.
+fn chain_order<K: Ord + Clone>(pending: Vec<Pending<K>>) -> Vec<(StatementId, Vec<u8>)> {
+    let ids: BTreeSet<StatementId> = pending.iter().map(|p| p.id.clone()).collect();
+    let mut waiting_on: BTreeMap<StatementId, usize> = BTreeMap::new();
+    let mut unblocks: BTreeMap<StatementId, Vec<StatementId>> = BTreeMap::new();
+    let mut by_id: BTreeMap<StatementId, Pending<K>> = BTreeMap::new();
+    for item in pending {
+        let named: BTreeSet<&StatementId> = item
+            .previous
+            .iter()
+            .filter(|p| ids.contains(*p) && **p != item.id)
+            .collect();
+        waiting_on.insert(item.id.clone(), named.len());
+        for p in named {
+            unblocks.entry(p.clone()).or_default().push(item.id.clone());
+        }
+        by_id.insert(item.id.clone(), item);
+    }
+    let mut ready: BTreeSet<(K, StatementId)> = by_id
+        .values()
+        .filter(|item| waiting_on.get(&item.id) == Some(&0))
+        .map(|item| (item.key.clone(), item.id.clone()))
+        .collect();
+    let mut ordered = Vec::with_capacity(by_id.len());
+    while !by_id.is_empty() {
+        let next = match ready.pop_first() {
+            Some((_, id)) => id,
+            // A claimed cycle: release the least remaining statement.
+            None => match by_id
+                .values()
+                .map(|item| (item.key.clone(), item.id.clone()))
+                .min()
+            {
+                Some((_, id)) => id,
+                None => break,
+            },
+        };
+        let Some(item) = by_id.remove(&next) else {
+            continue;
+        };
+        for later in unblocks.remove(&next).unwrap_or_default() {
+            if let Some(count) = waiting_on.get_mut(&later) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    if let Some(waiting) = by_id.get(&later) {
+                        ready.insert((waiting.key.clone(), later.clone()));
+                    }
+                }
+            }
+        }
+        ordered.push((item.id, item.bytes));
+    }
+    ordered
+}
+
 fn dedup<T: Ord + Clone>(list: &mut Vec<T>) {
     let mut seen = BTreeSet::new();
     list.retain(|item| seen.insert(item.clone()));
@@ -769,4 +933,73 @@ fn local_has_commit(
     repo.find_commit(commit)
         .map(|found| found.is_some())
         .map_err(|e| PullError::Git(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{chain_order, Pending};
+    use kairo_core::StatementId;
+
+    fn id(n: u8) -> StatementId {
+        StatementId::from_sha256_digest([n; 32])
+    }
+
+    fn pending(n: u8, key: u8, previous: &[u8]) -> Pending<u8> {
+        Pending {
+            key,
+            id: id(n),
+            previous: previous.iter().map(|p| id(*p)).collect(),
+            bytes: vec![n],
+        }
+    }
+
+    fn order(items: Vec<Pending<u8>>) -> Vec<u8> {
+        chain_order(items)
+            .into_iter()
+            .map(|(_, bytes)| bytes[0])
+            .collect()
+    }
+
+    #[test]
+    fn a_chain_orders_before_the_tiebreak_key() {
+        // 3 names 2, which names 1, though their keys say the reverse.
+        assert_eq!(
+            order(vec![
+                pending(1, 9, &[]),
+                pending(2, 5, &[1]),
+                pending(3, 1, &[2]),
+            ]),
+            vec![1, 2, 3]
+        );
+        // Unrelated statements, and names outside the batch, fall back
+        // to the key.
+        assert_eq!(
+            order(vec![
+                pending(1, 3, &[]),
+                pending(2, 1, &[7]),
+                pending(4, 2, &[]),
+            ]),
+            vec![2, 4, 1]
+        );
+        // A merge waits for both tips.
+        assert_eq!(
+            order(vec![
+                pending(4, 0, &[2, 3]),
+                pending(3, 2, &[1]),
+                pending(2, 1, &[1]),
+                pending(1, 5, &[]),
+            ]),
+            vec![1, 2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn a_claimed_cycle_still_ingests_everything_once() {
+        let ordered = order(vec![
+            pending(1, 1, &[2]),
+            pending(2, 2, &[1]),
+            pending(3, 0, &[]),
+        ]);
+        assert_eq!(ordered, vec![3, 1, 2]);
+    }
 }

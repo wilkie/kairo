@@ -6102,7 +6102,7 @@ fn parses_fetch_and_provenance_commands() {
             "kairo", "fetch", "--object", OBJECT_ID, "--from", "https://archive.example.org",
         ]),
         Ok(Cli {
-            command: Some(Command::Fetch { object, from, allow_peer: false, json: false }),
+            command: Some(Command::Fetch { object, from, allow_peer: false, require_complete: false, json: false }),
             ..
         }) if object == OBJECT_ID && from == "https://archive.example.org"
     ));
@@ -6158,6 +6158,7 @@ fn fetch_refuses_plain_http_to_a_remote_host() -> Result<(), Box<dyn std::error:
             object: OBJECT_ID.to_owned(),
             from: "http://archive.example.org".to_owned(),
             allow_peer: true,
+            require_complete: false,
             json: false,
         },
     )
@@ -6329,6 +6330,7 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
             object: object.clone(),
             from: base_url.clone(),
             allow_peer: false,
+            require_complete: false,
             json: false,
         },
     )?;
@@ -6394,6 +6396,7 @@ fn fetch_command(from: &str, allow_peer: bool) -> Command {
         // Port 9 (discard) on loopback: nothing should ever connect.
         from: from.to_owned(),
         allow_peer,
+        require_complete: false,
         json: false,
     }
 }

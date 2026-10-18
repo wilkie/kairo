@@ -148,6 +148,12 @@ pub(crate) enum Command {
         /// run only. The config is not edited.
         #[arg(long)]
         allow_peer: bool,
+        /// Fail (exit 11) if an actor chain this object depends on is
+        /// still incomplete after the pull: a peer withheld statements
+        /// a signer's later statements name (`specs/DECISIONS.md`
+        /// §23). Without it, gaps are reported and the pull succeeds.
+        #[arg(long)]
+        require_complete: bool,
         #[arg(long)]
         json: bool,
     },

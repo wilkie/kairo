@@ -56,6 +56,34 @@ pub(crate) fn sign<B: StatementBody>(
     SignedStatement::new(unsigned, signature)
 }
 
+/// [`sign`], with `previous` set to the signer's current chain tips
+/// in `store`, as every real write path signs (`DECISIONS.md` §23).
+pub(crate) fn sign_chained<B: StatementBody>(
+    store: &FilesystemStore,
+    signer: &CreatedActor,
+    subject: &str,
+    seconds: i64,
+    body: B,
+) -> SignedStatement<B> {
+    let subject: KairoRef = subject.parse().expect("subject parses");
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(
+            signer.actor_id.clone(),
+            subject,
+            Timestamp::from_seconds(seconds),
+            body,
+        ))
+        .expect("chain tips");
+    let bytes = signer.signing.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        signer.actor_id.clone(),
+        signer.signing.public_key().key_id().to_string(),
+        "ed25519",
+        bytes.bytes().to_vec(),
+    );
+    SignedStatement::new(unsigned, signature)
+}
+
 pub(crate) fn grant(
     store: &FilesystemStore,
     grantor: &CreatedActor,
@@ -71,7 +99,8 @@ pub(crate) fn grant(
     )
     .expect("capability");
     let body = ActorCapabilityGrantBody::new(grantee.actor_id.clone(), capability, None);
-    let signed = sign(
+    let signed = sign_chained(
+        store,
         grantor,
         &format!("actor:{}", grantee.actor_id),
         seconds,
@@ -119,6 +148,9 @@ pub(crate) struct Seeded {
     pub(crate) after_rotation_branch: StatementId,
     pub(crate) trust: StatementId,
     pub(crate) unpublished_statements: Vec<StatementId>,
+    /// alice's revocation of carol's grant. alice's later
+    /// `after-rotation` branch names it in her chain (`previous`).
+    pub(crate) revocation: StatementId,
 }
 
 /// alice owns `published`: one revision, her `main` branch, a grant
@@ -147,7 +179,8 @@ pub(crate) fn seed() -> Seeded {
     let bob_branch = fixture.set_branch(&bob, &object, &revision, "bob");
     let carol_grant = grant(&store, &alice, &carol, &object.object_id, 1_700_000_200);
     let revocation = store
-        .put_actor_capability_revocation(&sign(
+        .put_actor_capability_revocation(&sign_chained(
+            &store,
             &alice,
             &format!("statement:{carol_grant}"),
             1_700_000_300,
@@ -155,7 +188,8 @@ pub(crate) fn seed() -> Seeded {
         ))
         .expect("put revocation");
     let alice_rotation = store
-        .put_actor_key_rotation(&sign(
+        .put_actor_key_rotation(&sign_chained(
+            &store,
             &alice,
             &format!("actor:{}", alice.actor_id),
             1_700_000_400,
@@ -167,7 +201,8 @@ pub(crate) fn seed() -> Seeded {
         ..alice.clone()
     };
     let after_rotation_branch = store
-        .put_object_branch(&sign(
+        .put_object_branch(&sign_chained(
+            &store,
             &alice_rotated,
             &format!("object:{}", object.object_id),
             1_700_000_450,
@@ -224,7 +259,8 @@ pub(crate) fn seed() -> Seeded {
             after_rotation_branch.clone(),
         ]
         .into(),
-        authority: [bob_grant, carol_grant, revocation].into(),
+        authority: [bob_grant, carol_grant, revocation.clone()].into(),
+        revocation,
         manifest: revision.manifest_blob_id,
         alice_rotation,
         alice_actor: alice.clone(),

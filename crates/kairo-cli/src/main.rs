@@ -144,12 +144,14 @@ fn run(cli: Cli) -> Result<String, CliError> {
             object,
             from,
             allow_peer,
+            require_complete,
             json,
         }) => commands::federation::run_fetch(
             &commands::federation::FetchArgs {
                 object: &object,
                 from: &from,
                 allow_peer,
+                require_complete,
                 json,
                 offline: cli.offline,
             },

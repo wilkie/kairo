@@ -33,6 +33,15 @@ rather than per-commit.
     envelope's `previous`) and daemon session signing. Unchained kinds
     are unaffected. `GET /api/v1/actors/{id}/chains` lists an actor's
     chains and tips for clients that sign their own statements.
+  - Federation pulls use the chains:
+    - Fetched key events and statements are ingested in chain order.
+    - Each closure actor's object chain and `keys` chain are checked
+      afterwards. `kairo fetch` reports `incomplete_chains` with the
+      missing ids, and flags statements whose `previous` names a
+      statement outside their chain. Revoked-key statements don't
+      count toward gaps.
+    - `--require-complete` fails the fetch (exit 11) on any gap, after
+      storing what verified. The two-node smoke now fetches with it.
   - The store indexes every actor chain per signer
     (`actor_chains/`, rebuilt by `rebuild-indexes`). It reports each
     chain's tips, and completeness with the missing ids. It also

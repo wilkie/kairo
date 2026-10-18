@@ -980,12 +980,20 @@ The CLI must return validation-specific exit codes.
 **[post-v1].** Depends on Phase 2 §4 federation. The Git-side
 of fetch (per-object Git mirror) ships in v1 as `kairo git
 fetch` (Phase 2 §1). The first federated form is `kairo fetch
---object <id> --from <url> [--allow-peer] [--json]`. The peer must
-be listed in `<store>/config.toml` unless `--allow-peer` is given,
-and a pinned node actor must match (`DECISIONS.md` §17). It is a direct federation client that
-pulls a published object's closure from one peer
-(`DECISIONS.md` §16, `PHASE_2_FEDERATION.md` slice 3); the
-options below come later.
+--object <id> --from <url> [--allow-peer] [--require-complete]
+[--json]`. The peer must be listed in `<store>/config.toml` unless
+`--allow-peer` is given, and a pinned node actor must match
+(`DECISIONS.md` §17). It is a direct federation client that pulls a
+published object's closure from one peer (`DECISIONS.md` §16,
+`PHASE_2_FEDERATION.md` slice 3); the options below come later.
+
+After the pull, each closure actor's chain for the object and its
+`keys` chain are checked (`DECISIONS.md` §23). Output reports
+`incomplete_chains = <n>` with one `signer= scope= missing=` line per
+gap (JSON: `incomplete_chains`), and records whose `previous` names a
+statement outside their chain under `flagged`. Gaps don't fail the
+pull unless `--require-complete` is given, which exits 11 after
+storing what verified.
 
 Fetches object data from federation or a remote source.
 

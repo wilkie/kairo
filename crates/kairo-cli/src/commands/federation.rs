@@ -99,6 +99,7 @@ pub(crate) struct FetchArgs<'a> {
     pub(crate) object: &'a str,
     pub(crate) from: &'a str,
     pub(crate) allow_peer: bool,
+    pub(crate) require_complete: bool,
     pub(crate) json: bool,
     /// The global `--offline` flag.
     pub(crate) offline: bool,
@@ -142,6 +143,7 @@ pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<Stri
     let options = PullOptions {
         limits: limits_from(&config.federation.limits),
         expected_node_actor: pinned.clone(),
+        require_complete: args.require_complete,
     };
 
     let store = open_store(paths)?;
@@ -337,6 +339,19 @@ fn format_fetch(report: &PullReport, pin: Pin) -> String {
         ));
     }
     output.push_str(&format!("git = {}\n", describe_git(&report.git)));
+    output.push_str(&format!(
+        "incomplete_chains = {}\n",
+        report.incomplete.len()
+    ));
+    for chain in &report.incomplete {
+        let missing: Vec<String> = chain.missing.iter().map(ToString::to_string).collect();
+        output.push_str(&format!(
+            "  signer={} scope={} missing={}\n",
+            chain.signer,
+            chain.scope,
+            missing.join(",")
+        ));
+    }
     output
 }
 
@@ -381,6 +396,15 @@ fn format_fetch_json(report: &PullReport, pin: Pin) -> String {
             .map(|s| serde_json::json!({ "record": s.record.to_string(), "reason": s.reason }))
             .collect::<Vec<_>>(),
         "git": git_json(&report.git),
+        "incomplete_chains": report
+            .incomplete
+            .iter()
+            .map(|chain| serde_json::json!({
+                "signer": chain.signer.to_string(),
+                "scope": chain.scope.key(),
+                "missing": chain.missing.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>(),
     });
     let mut output = serde_json::to_string_pretty(&value).unwrap_or_default();
     output.push('\n');

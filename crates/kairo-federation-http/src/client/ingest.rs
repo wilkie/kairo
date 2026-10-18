@@ -69,16 +69,29 @@ pub(crate) enum Ingested {
     StoredRevokedKey,
 }
 
-/// The two envelope fields ordering needs, read before full parsing.
+/// The envelope fields ordering needs, read before full parsing.
 #[derive(Debug, Deserialize)]
-pub(crate) struct Peek {
+struct PeekJson {
     #[serde(rename = "type")]
-    pub kind: String,
-    pub created_at: String,
+    kind: String,
+    created_at: String,
+    /// Required by full parsing; tolerated here so a malformed record
+    /// is refused there, with the precise error.
+    #[serde(default)]
+    previous: Vec<String>,
 }
 
-pub(crate) fn peek(bytes: &[u8]) -> Result<(StatementKind, Timestamp), RecordRejection> {
-    let peek: Peek = serde_json::from_slice(bytes)
+#[derive(Debug, Clone)]
+pub(crate) struct Peek {
+    pub kind: StatementKind,
+    pub created_at: Timestamp,
+    /// The signer's chain tips (`DECISIONS.md` §23): ingest orders a
+    /// chain's statements after what they name.
+    pub previous: Vec<StatementId>,
+}
+
+pub(crate) fn peek(bytes: &[u8]) -> Result<Peek, RecordRejection> {
+    let peek: PeekJson = serde_json::from_slice(bytes)
         .map_err(|e| RecordRejection::Schema(format!("missing type or created_at: {e}")))?;
     let kind = StatementKind::parse(&peek.kind)
         .map_err(|e| RecordRejection::Schema(format!("unknown statement kind: {e}")))?;
@@ -86,7 +99,93 @@ pub(crate) fn peek(bytes: &[u8]) -> Result<(StatementKind, Timestamp), RecordRej
         .created_at
         .parse()
         .map_err(|e| RecordRejection::Schema(format!("invalid created_at: {e}")))?;
-    Ok((kind, created_at))
+    let previous = peek
+        .previous
+        .into_iter()
+        .map(|id| {
+            StatementId::new(id)
+                .map_err(|e| RecordRejection::Schema(format!("invalid previous: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(Peek {
+        kind,
+        created_at,
+        previous,
+    })
+}
+
+/// Whether the held statement `id` was signed with a key revoked at
+/// its `created_at`. Such a statement is stored and flagged (§16), and
+/// its `previous` doesn't count toward completeness (`DECISIONS.md`
+/// §23 sub-decision 6). Statements that don't parse or verify at all
+/// were never stored by a pull; they count as not revoked.
+pub(crate) fn signed_with_revoked_key(
+    store_: &FilesystemStore,
+    id: &StatementId,
+) -> Result<bool, StoreError> {
+    let bytes = store_.get_statement_bytes(id)?;
+    let Ok(Peek { kind, .. }) = peek(&bytes) else {
+        return Ok(false);
+    };
+    macro_rules! status {
+        ($dto:ty, $verify:ident) => {{
+            let Ok(dto) = serde_json::from_slice::<$dto>(&bytes) else {
+                return Ok(false);
+            };
+            let Ok(signed) = dto.to_statement() else {
+                return Ok(false);
+            };
+            $verify(&signed, store_).signature
+        }};
+    }
+    let status = match kind {
+        StatementKind::ObjectBranch => {
+            status!(ObjectBranchStatementJson, verify_envelope_statement)
+        }
+        StatementKind::ObjectVersionTag => {
+            status!(ObjectVersionTagStatementJson, verify_envelope_statement)
+        }
+        StatementKind::ActorCapabilityGrant => {
+            status!(ActorCapabilityGrantStatementJson, verify_envelope_statement)
+        }
+        StatementKind::ActorCapabilityRevocation => {
+            status!(
+                ActorCapabilityRevocationStatementJson,
+                verify_envelope_statement
+            )
+        }
+        StatementKind::ActorKeyRotation => {
+            status!(ActorKeyRotationStatementJson, verify_envelope_statement)
+        }
+        StatementKind::ActorKeyRevocation => {
+            status!(ActorKeyRevocationStatementJson, verify_envelope_statement)
+        }
+        StatementKind::ActorEmergencyKeyRotation => status!(
+            ActorEmergencyKeyRotationStatementJson,
+            verify_envelope_multi_statement
+        ),
+        StatementKind::ActorEmergencyKeyRevocation => status!(
+            ActorEmergencyKeyRevocationStatementJson,
+            verify_envelope_multi_statement
+        ),
+        StatementKind::ActorAttestationKeyAdd => status!(
+            ActorAttestationKeyAddStatementJson,
+            verify_envelope_multi_statement
+        ),
+        StatementKind::ActorAttestationKeyRevocation => status!(
+            ActorAttestationKeyRevocationStatementJson,
+            verify_envelope_multi_statement
+        ),
+        StatementKind::ActorAttestationThresholdChange => status!(
+            ActorAttestationThresholdChangeStatementJson,
+            verify_envelope_multi_statement
+        ),
+        // Unchained kinds are never chain members.
+        StatementKind::ObjectRevision
+        | StatementKind::ActorTrust
+        | StatementKind::ObjectGenesis => return Ok(false),
+    };
+    Ok(status == SignatureStatus::KeyRevoked)
 }
 
 fn schema(error: impl std::fmt::Display) -> RecordRejection {
@@ -145,7 +244,7 @@ pub(crate) fn ingest_statement(
     bytes: &[u8],
     section: Section<'_>,
 ) -> Result<Ingested, RecordRejection> {
-    let (kind, _) = peek(bytes)?;
+    let kind = peek(bytes)?.kind;
 
     // Single-signed envelope kinds.
     macro_rules! single {
