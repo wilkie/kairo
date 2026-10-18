@@ -28,8 +28,15 @@ rather than per-commit.
   - Branches, version tags, capability grants and revocations, and key
     events are chained kinds. `ObjectRevision` and `ActorTrust` are
     unchained and refuse a non-empty `previous`.
-  - Write paths still sign with an empty `previous`. Setting the tips,
-    and completeness checking, come in the next steps.
+  - Write paths still sign with an empty `previous`. Setting the tips
+    comes in the next step.
+  - The store indexes every actor chain per signer
+    (`actor_chains/`, rebuilt by `rebuild-indexes`). It reports each
+    chain's tips, and completeness with the missing ids. It also
+    reports contradictions: statements whose `previous` names a held
+    statement outside the chain. A revocation chains in its grant's
+    scope, and while that grant is missing, the grant is reported as
+    the gap. Callers can discount statements signed with revoked keys.
 
 - **Git history federates over Git's smart HTTP protocol v2
   (`DECISIONS.md` §22).**

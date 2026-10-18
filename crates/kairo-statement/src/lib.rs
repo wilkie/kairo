@@ -157,6 +157,57 @@ impl Previous {
     }
 }
 
+/// The scope of an actor chain: with the signer, the chain's key
+/// (`specs/DECISIONS.md` §23 sub-decision 2).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ChainScope {
+    /// Branches, version tags, and object-scoped grants and their
+    /// revocations.
+    Object(ObjectId),
+    /// Actor-scoped grants and their revocations.
+    Actor(ActorId),
+    /// The signer's own key events.
+    Keys,
+}
+
+impl ChainScope {
+    /// The scope a capability grant chains in.
+    pub fn for_capability(scope: &CapabilityScope) -> Self {
+        match scope {
+            CapabilityScope::Object(object) => Self::Object(object.clone()),
+            CapabilityScope::Actor(actor) => Self::Actor(actor.clone()),
+        }
+    }
+
+    /// Stable string key: `object:<id>`, `actor:<id>`, or `keys`.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Object(object) => format!("object:{object}"),
+            Self::Actor(actor) => format!("actor:{actor}"),
+            Self::Keys => "keys".to_owned(),
+        }
+    }
+
+    /// Parse [`Self::key`]'s output.
+    pub fn parse_key(raw: &str) -> Option<Self> {
+        if raw == "keys" {
+            return Some(Self::Keys);
+        }
+        if let Some(id) = raw.strip_prefix("object:") {
+            return ObjectId::new(id.to_owned()).ok().map(Self::Object);
+        }
+        raw.strip_prefix("actor:")
+            .and_then(|id| ActorId::new(id.to_owned()).ok())
+            .map(Self::Actor)
+    }
+}
+
+impl fmt::Display for ChainScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.key())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsignedStatement<B> {
     actor: ActorId,

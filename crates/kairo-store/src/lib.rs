@@ -42,6 +42,7 @@
 //! - Canonical-binary sidecars (`.canonical` files) preserving exact signed
 //!   bytes for federation/package exchange: revisit at TODO §9.
 
+mod actor_chains;
 mod branches;
 mod capabilities;
 mod capabilities_by_object;
@@ -65,6 +66,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use actor_chains::ChainPlacement;
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{
@@ -83,11 +85,12 @@ use kairo_statement::{
     ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
     ActorAttestationThresholdChangeBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
     ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
-    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, MultiSignedStatement, ObjectBranchBody,
-    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, SignedStatement,
-    StatementKind,
+    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ChainScope, MultiSignedStatement,
+    ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody,
+    SignedStatement, StatementKind,
 };
 
+pub use actor_chains::{ChainCompleteness, ChainReport};
 pub use branches::BranchTip;
 pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
@@ -666,6 +669,7 @@ impl FilesystemStore {
             STATEMENTS_BY_ACTOR_DIR,
             OBJECTS_BY_ACTOR_DIR,
             revisions::OBJECT_REVISIONS_DIR,
+            actor_chains::ACTOR_CHAINS_DIR,
         ] {
             let path = self.root.join(dir);
             match fs::remove_dir_all(&path) {
@@ -1696,6 +1700,13 @@ impl FilesystemStore {
             created_at,
             body.supersedes(),
         )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Object(body.object().clone())),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(actor, id, StatementKind::ObjectBranch, created_at)
     }
 
@@ -1714,6 +1725,13 @@ impl FilesystemStore {
             id,
             created_at,
             body.supersedes(),
+        )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Object(body.object().clone())),
+            id,
+            statement.unsigned().previous(),
+            created_at,
         )?;
         self.upsert_statement_by_actor_index(actor, id, StatementKind::ObjectVersionTag, created_at)
     }
@@ -1758,6 +1776,13 @@ impl FilesystemStore {
                 object, grantee, grantor, id, created_at, supersedes,
             )?;
         }
+        self.upsert_actor_chain(
+            grantor,
+            &ChainPlacement::Scope(ChainScope::for_capability(scope)),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(
             grantor,
             id,
@@ -1780,6 +1805,13 @@ impl FilesystemStore {
             id,
             created_at,
             body.retroactive(),
+        )?;
+        self.upsert_actor_chain(
+            grantor,
+            &ChainPlacement::RevokedGrant(body.revoked_grant().clone()),
+            id,
+            statement.unsigned().previous(),
+            created_at,
         )?;
         self.upsert_statement_by_actor_index(
             grantor,
@@ -1805,6 +1837,13 @@ impl FilesystemStore {
             body.supersedes(),
             KeySurface::Operational,
         )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(actor, id, StatementKind::ActorKeyRotation, created_at)
     }
 
@@ -1823,6 +1862,13 @@ impl FilesystemStore {
             body.retroactive(),
             created_at,
             KeySurface::Operational,
+        )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
+            created_at,
         )?;
         self.upsert_statement_by_actor_index(
             actor,
@@ -1848,6 +1894,13 @@ impl FilesystemStore {
             body.supersedes(),
             KeySurface::Attestation,
         )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(
             actor,
             id,
@@ -1872,6 +1925,13 @@ impl FilesystemStore {
             created_at,
             KeySurface::Attestation,
         )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(
             actor,
             id,
@@ -1889,6 +1949,13 @@ impl FilesystemStore {
         let body = statement.unsigned().body();
         let created_at = statement.unsigned().created_at();
         self.upsert_attestation_add_index(actor, id, body.new_key(), created_at)?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(
             actor,
             id,
@@ -1906,6 +1973,13 @@ impl FilesystemStore {
         let body = statement.unsigned().body();
         let created_at = statement.unsigned().created_at();
         self.upsert_attestation_revocation_index(actor, id, body.revoked_key(), created_at)?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
         self.upsert_statement_by_actor_index(
             actor,
             id,
@@ -1926,6 +2000,13 @@ impl FilesystemStore {
             actor,
             id,
             body.new_threshold(),
+            created_at,
+        )?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainPlacement::Scope(ChainScope::Keys),
+            id,
+            statement.unsigned().previous(),
             created_at,
         )?;
         self.upsert_statement_by_actor_index(
@@ -7013,6 +7094,240 @@ mod tests {
         store.rebuild_indexes()?;
         let log = store.revision_log(&object, std::slice::from_ref(&r2), 0, 10)?;
         assert_eq!(log_ids(&log), vec![r2, r1]);
+        Ok(())
+    }
+
+    // --- actor chains (`specs/DECISIONS.md` §23) ---------------------
+
+    /// `signed`, re-signed with `previous` as its chain tips.
+    fn rechain<B: kairo_statement::StatementBody + Clone>(
+        signed: &SignedStatement<B>,
+        previous: &[StatementId],
+    ) -> Result<SignedStatement<B>, Box<dyn std::error::Error>> {
+        let unsigned =
+            signed
+                .unsigned()
+                .clone()
+                .with_previous(kairo_statement::Previous::from_tips(
+                    previous.iter().cloned(),
+                )?)?;
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            unsigned.actor().clone(),
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    /// A branch move `n` in a chain, with `previous` tips.
+    fn chained_branch(
+        actor: &ActorId,
+        n: u8,
+        previous: &[StatementId],
+    ) -> Result<SignedStatement<ObjectBranchBody>, Box<dyn std::error::Error>> {
+        let branch = signed_branch(
+            actor.clone(),
+            ObjectId::new(OBJECT_ID)?,
+            "head",
+            StatementId::from_sha256_digest([n; 32]),
+            None,
+            Timestamp::from_seconds(1_700_000_000 + i64::from(n)),
+        )?;
+        rechain(&branch, previous)
+    }
+
+    fn object_scope() -> Result<ChainScope, Box<dyn std::error::Error>> {
+        Ok(ChainScope::Object(ObjectId::new(OBJECT_ID)?))
+    }
+
+    fn count_all(_: &StatementId) -> bool {
+        false
+    }
+
+    #[test]
+    fn chain_tips_follow_previous_and_merge_forks() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let scope = object_scope()?;
+        assert!(store.actor_chain_tips(&actor, &scope)?.is_empty());
+
+        let b1 = store.put_object_branch(&chained_branch(&actor, 1, &[])?)?;
+        let b2 = store.put_object_branch(&chained_branch(&actor, 2, std::slice::from_ref(&b1))?)?;
+        assert_eq!(store.actor_chain_tips(&actor, &scope)?, vec![b2.clone()]);
+
+        // A second device extends b1 too: two tips, still complete.
+        let b3 = store.put_object_branch(&chained_branch(&actor, 3, std::slice::from_ref(&b1))?)?;
+        let mut forked = vec![b2.clone(), b3.clone()];
+        forked.sort();
+        assert_eq!(store.actor_chain_tips(&actor, &scope)?, forked);
+        let report = store.actor_chain_report(&actor, &scope, count_all)?;
+        assert_eq!(report.completeness, ChainCompleteness::Complete);
+        assert!(report.contradictions.is_empty());
+
+        // The next write names both and merges them.
+        let b4 = store.put_object_branch(&chained_branch(&actor, 4, &forked)?)?;
+        assert_eq!(store.actor_chain_tips(&actor, &scope)?, vec![b4]);
+        Ok(())
+    }
+
+    #[test]
+    fn a_withheld_predecessor_is_a_named_gap() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let scope = object_scope()?;
+        let first = chained_branch(&actor, 1, &[])?;
+        let b1 = first.statement_id();
+        let b2 = store.put_object_branch(&chained_branch(&actor, 2, std::slice::from_ref(&b1))?)?;
+
+        let report = store.actor_chain_report(&actor, &scope, count_all)?;
+        assert_eq!(
+            report.completeness,
+            ChainCompleteness::Incomplete {
+                missing: vec![b1.clone()]
+            }
+        );
+        assert_eq!(report.tips, vec![b2]);
+
+        store.put_object_branch(&first)?;
+        assert_eq!(
+            store
+                .actor_chain_report(&actor, &scope, count_all)?
+                .completeness,
+            ChainCompleteness::Complete
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn chains_are_separate_per_scope() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let branch = store.put_object_branch(&chained_branch(&actor, 1, &[])?)?;
+        let rotation = rechain(
+            &signed_key_rotation(actor.clone(), attestation_key(), None, timestamp())?,
+            &[],
+        )?;
+        let rotation = store.put_actor_key_rotation(&rotation)?;
+
+        assert_eq!(
+            store.actor_chain_scopes(&actor)?,
+            vec![ChainScope::Keys, object_scope()?]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            store.actor_chain_tips(&actor, &object_scope()?)?,
+            vec![branch]
+        );
+        assert_eq!(
+            store.actor_chain_tips(&actor, &ChainScope::Keys)?,
+            vec![rotation]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn naming_a_statement_outside_the_chain_is_a_contradiction() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        // A revision is held but unchained, so no chain contains it.
+        let revision = store.put_object_revision(&signed_revision(actor.clone())?)?;
+        let branch = store.put_object_branch(&chained_branch(&actor, 1, &[revision])?)?;
+
+        let report = store.actor_chain_report(&actor, &object_scope()?, count_all)?;
+        assert_eq!(report.contradictions, vec![branch]);
+        assert_eq!(report.completeness, ChainCompleteness::Complete);
+        Ok(())
+    }
+
+    #[test]
+    fn a_revocation_chains_in_its_grants_scope_once_the_grant_arrives() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let grantor = fresh_genesis().actor_id();
+        let grantee = trusted_actor_id();
+        let scope = object_scope()?;
+        let grant = signed_capability_grant(
+            grantor.clone(),
+            grantee,
+            CapabilityScope::Object(ObjectId::new(OBJECT_ID)?),
+            None,
+            timestamp(),
+        )?;
+        let grant_id = grant.statement_id();
+        let revocation = rechain(
+            &signed_capability_revocation(grantor.clone(), grant_id.clone(), false, timestamp())?,
+            std::slice::from_ref(&grant_id),
+        )?;
+        let revocation_id = store.put_actor_capability_revocation(&revocation)?;
+        let branch = store.put_object_branch(&chained_branch(
+            &grantor,
+            1,
+            std::slice::from_ref(&revocation_id),
+        )?)?;
+
+        // The revocation's scope is unknown, so the branch's gap is
+        // reported as the grant it waits on.
+        assert_eq!(store.actor_chain_scopes(&grantor)?, vec![scope.clone()]);
+        let report = store.actor_chain_report(&grantor, &scope, count_all)?;
+        assert_eq!(
+            report.completeness,
+            ChainCompleteness::Incomplete {
+                missing: vec![grant_id.clone()]
+            }
+        );
+        assert!(report.contradictions.is_empty());
+
+        store.put_actor_capability_grant(&grant)?;
+        let report = store.actor_chain_report(&grantor, &scope, count_all)?;
+        assert_eq!(report.completeness, ChainCompleteness::Complete);
+        assert_eq!(report.tips, vec![branch]);
+        Ok(())
+    }
+
+    #[test]
+    fn discounted_statements_do_not_make_a_chain_incomplete() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let invented = StatementId::from_sha256_digest([0xEE; 32]);
+        let forged = store.put_object_branch(&chained_branch(
+            &actor,
+            1,
+            std::slice::from_ref(&invented),
+        )?)?;
+
+        let counted = store.actor_chain_report(&actor, &object_scope()?, count_all)?;
+        assert_eq!(
+            counted.completeness,
+            ChainCompleteness::Incomplete {
+                missing: vec![invented]
+            }
+        );
+        let discounted = store.actor_chain_report(&actor, &object_scope()?, |id| id == &forged)?;
+        assert_eq!(discounted.completeness, ChainCompleteness::Complete);
+        assert_eq!(discounted.tips, vec![forged], "still held");
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_indexes_reproduces_actor_chains() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let b1 = store.put_object_branch(&chained_branch(&actor, 1, &[])?)?;
+        let b2 = store.put_object_branch(&chained_branch(&actor, 2, &[b1])?)?;
+        let before = store.actor_chain_report(&actor, &object_scope()?, count_all)?;
+
+        fs::remove_dir_all(store.root().join(actor_chains::ACTOR_CHAINS_DIR))?;
+        assert!(store.actor_chain_tips(&actor, &object_scope()?)?.is_empty());
+        store.rebuild_indexes()?;
+        assert_eq!(
+            store.actor_chain_report(&actor, &object_scope()?, count_all)?,
+            before
+        );
+        assert_eq!(before.tips, vec![b2]);
         Ok(())
     }
 }

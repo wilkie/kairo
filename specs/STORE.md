@@ -138,6 +138,13 @@ characters from the record id's base58 payload:
                                          # object-scoped grants, nested
                                          # grantee → grantor; drives the
                                          # §6.1 evaluator's hot query
+  actor_chains/<XX>/<YY>/<signer-id>.json
+                                         # per-signer actor chains
+                                         # (DECISIONS.md §23): each
+                                         # chained statement's previous,
+                                         # grouped by scope; revocations
+                                         # filed under their grant and
+                                         # resolved on read
   blobs/<XX>/<YY>/<blob-id>              # raw blob bytes
   keys/<actor-id>.json                   # FilesystemKeystore (mode 0600
                                          # on Unix; not part of the store
