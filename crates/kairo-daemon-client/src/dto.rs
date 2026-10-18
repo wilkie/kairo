@@ -357,10 +357,28 @@ pub struct ValidationResult {
     pub object_id: String,
     pub status: ValidationStatus,
     pub issues: Vec<ValidationIssue>,
+    /// The actor chains the result depends on (`specs/DECISIONS.md`
+    /// §23 sub-decision 8), complete or not. Any gap or contradiction
+    /// also appears in `issues` and makes `status` `Indeterminate`.
+    pub chains: Vec<ChainCompletenessDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision_statement_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<String>,
+}
+
+/// One actor chain a verification consulted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ChainCompletenessDto {
+    pub signer: String,
+    /// `object:<id>` or `keys`.
+    pub scope: String,
+    /// Every statement the chain's held statements name is held.
+    pub complete: bool,
+    /// Named but not held: what a peer may have withheld.
+    pub missing: Vec<String>,
+    /// Statements whose `previous` names something outside the chain.
+    pub contradictions: Vec<String>,
 }
 
 /// Response payload returned by `POST /api/v1/statements`.

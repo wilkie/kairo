@@ -686,6 +686,7 @@ const aliceObjectsByActor: Schemas['ObjectByActorDto'][] = [
 const alphaValidation: Schemas['ValidationResult'] = {
   object_id: mockIds.alpha,
   status: 'indeterminate',
+  chains: [],
   issues: [
     {
       kind: 'manifest_not_provided',
@@ -709,12 +710,14 @@ const alphaValidation: Schemas['ValidationResult'] = {
 const betaValidation: Schemas['ValidationResult'] = {
   object_id: mockIds.beta,
   status: 'valid',
+  chains: [],
   issues: [],
 };
 
 const gammaValidation: Schemas['ValidationResult'] = {
   object_id: mockIds.gamma,
   status: 'invalid',
+  chains: [],
   issues: [
     {
       kind: 'signature_invalid',
@@ -728,6 +731,7 @@ const gammaValidation: Schemas['ValidationResult'] = {
 const deltaValidation: Schemas['ValidationResult'] = {
   object_id: mockIds.delta,
   status: 'conflicted',
+  chains: [],
   issues: [
     {
       kind: 'cross_actor_conflict',

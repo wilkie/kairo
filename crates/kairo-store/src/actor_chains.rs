@@ -331,3 +331,127 @@ fn tips(links: &BTreeMap<StatementId, Vec<StatementId>>) -> Vec<StatementId> {
         .cloned()
         .collect()
 }
+
+/// The envelope's `type`, read without parsing the rest.
+#[derive(Deserialize)]
+struct KindOnly {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+impl FilesystemStore {
+    /// Whether the held statement `id` was signed with a key revoked
+    /// at its `created_at`. Such a statement is stored and flagged
+    /// (`DECISIONS.md` §16), and its `previous` doesn't count toward
+    /// completeness (§23 sub-decision 6). Unchained kinds are never
+    /// chain members, so they answer `false`.
+    pub fn signed_with_revoked_key(&self, id: &StatementId) -> Result<bool, StoreError> {
+        use kairo_statement::verify::{
+            verify_envelope_multi_statement, verify_envelope_statement, SignatureStatus,
+        };
+        use kairo_statement::StatementKind;
+
+        let bytes = self.get_statement_bytes(id)?;
+        let kind: KindOnly =
+            serde_json::from_slice(&bytes).map_err(|error| StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::Parse(error.to_string()),
+            })?;
+        let kind = StatementKind::parse(&kind.kind).map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let status = match kind {
+            StatementKind::ObjectBranch => {
+                verify_envelope_statement(&self.get_object_branch(id)?, self).signature
+            }
+            StatementKind::ObjectVersionTag => {
+                verify_envelope_statement(&self.get_object_version_tag(id)?, self).signature
+            }
+            StatementKind::ActorCapabilityGrant => {
+                verify_envelope_statement(&self.get_actor_capability_grant(id)?, self).signature
+            }
+            StatementKind::ActorCapabilityRevocation => {
+                verify_envelope_statement(&self.get_actor_capability_revocation(id)?, self)
+                    .signature
+            }
+            StatementKind::ActorKeyRotation => {
+                verify_envelope_statement(&self.get_actor_key_rotation(id)?, self).signature
+            }
+            StatementKind::ActorKeyRevocation => {
+                verify_envelope_statement(&self.get_actor_key_revocation(id)?, self).signature
+            }
+            StatementKind::ActorEmergencyKeyRotation => {
+                verify_envelope_multi_statement(&self.get_actor_emergency_key_rotation(id)?, self)
+                    .signature
+            }
+            StatementKind::ActorEmergencyKeyRevocation => {
+                verify_envelope_multi_statement(&self.get_actor_emergency_key_revocation(id)?, self)
+                    .signature
+            }
+            StatementKind::ActorAttestationKeyAdd => {
+                verify_envelope_multi_statement(&self.get_actor_attestation_key_add(id)?, self)
+                    .signature
+            }
+            StatementKind::ActorAttestationKeyRevocation => {
+                verify_envelope_multi_statement(
+                    &self.get_actor_attestation_key_revocation(id)?,
+                    self,
+                )
+                .signature
+            }
+            StatementKind::ActorAttestationThresholdChange => {
+                verify_envelope_multi_statement(
+                    &self.get_actor_attestation_threshold_change(id)?,
+                    self,
+                )
+                .signature
+            }
+            StatementKind::ObjectRevision
+            | StatementKind::ActorTrust
+            | StatementKind::ObjectGenesis => return Ok(false),
+        };
+        Ok(status == SignatureStatus::KeyRevoked)
+    }
+
+    /// The chains a verification of `object` depends on
+    /// (`DECISIONS.md` §23 sub-decision 8), as this node holds them,
+    /// revoked-key statements discounted:
+    ///
+    /// - the actors consulted: the genesis creator, every actor in
+    ///   `signers` (the signers of the resolved branch, tag, and
+    ///   revision), and the grantors of any object-scoped grant held
+    ///   to one of those signers (the authority path);
+    /// - for each, its chain in the object's scope and its `keys`
+    ///   chain.
+    ///
+    /// Ordered by signer, then scope. A chain with no statements is
+    /// trivially complete and is included, so callers can show what
+    /// was checked.
+    pub fn consulted_chains(
+        &self,
+        object: &kairo_core::ObjectId,
+        signers: &[ActorId],
+    ) -> Result<Vec<ChainReport>, StoreError> {
+        use crate::{CapabilityResolver, ObjectStore};
+
+        let mut actors: BTreeSet<ActorId> = signers.iter().cloned().collect();
+        actors.insert(self.get_object_genesis(object)?.body().created_by().clone());
+        let grantors: Vec<ActorId> = self
+            .list_capabilities_for_object(object)?
+            .into_iter()
+            .filter(|head| actors.contains(&head.grantee))
+            .map(|head| head.grantor)
+            .collect();
+        actors.extend(grantors);
+
+        let discount = |id: &StatementId| self.signed_with_revoked_key(id).unwrap_or(false);
+        let mut reports = Vec::new();
+        for actor in &actors {
+            for scope in [ChainScope::Object(object.clone()), ChainScope::Keys] {
+                reports.push(self.actor_chain_report(actor, &scope, discount)?);
+            }
+        }
+        Ok(reports)
+    }
+}

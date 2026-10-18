@@ -766,7 +766,12 @@ function handleSessionObjectGenesis(byActor: string, body: unknown, registry: Mo
     { actor: byActor, object_id: objectId, object_kind: fields.object_kind, created_at: createdAt },
   ];
   // Genesis-only objects verify `valid`, like the seeded Beta.
-  registry.verifyObject[objectId] = { object_id: objectId, status: 'valid', issues: [] };
+  registry.verifyObject[objectId] = {
+    object_id: objectId,
+    status: 'valid',
+    issues: [],
+    chains: [],
+  };
 
   const result: components['schemas']['PutStatementResult'] = {
     statement_id: objectId,

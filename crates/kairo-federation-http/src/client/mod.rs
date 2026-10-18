@@ -46,9 +46,7 @@ use kairo_store::{
 };
 
 use self::http::Peer;
-use self::ingest::{
-    ingest_genesis, ingest_statement, peek, signed_with_revoked_key, Ingested, Peek, Section,
-};
+use self::ingest::{ingest_genesis, ingest_statement, peek, Ingested, Peek, Section};
 
 /// Per-pull limits (`specs/PHASE_2_FEDERATION.md` §2.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,7 +447,7 @@ impl Pull<'_> {
     /// sub-decision 8). Gaps are reported; contradictions are flagged.
     fn chains(&mut self, object: &ObjectId, actors: &[ActorId]) -> Result<(), PullError> {
         let store = self.store;
-        let discount = |id: &StatementId| signed_with_revoked_key(store, id).unwrap_or(false);
+        let discount = |id: &StatementId| store.signed_with_revoked_key(id).unwrap_or(false);
         for actor in actors {
             for scope in [ChainScope::Object(object.clone()), ChainScope::Keys] {
                 let report = store

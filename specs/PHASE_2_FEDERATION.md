@@ -437,8 +437,8 @@ inventory step, and 7 come from comparing this design with Radicle
    HTTP v2). Next on the content plane: reachability bitmaps, then
    bundle or packfile URIs for static hosting, both Git
    configuration now.
-1. **Actor chains** (signed statement heads), *decided in
-   `DECISIONS.md` §23*. The statement envelope gains `previous`, the
+1. ~~**Actor chains** (signed statement heads)~~, *decided in
+   `DECISIONS.md` §23, shipped*. The statement envelope gains `previous`, the
    signer's tips in the statement's chain (per object, per capability
    target, or the actor's key events). Every chained statement is its
    own head, so there are no extra records. Withholding inside a chain
@@ -451,7 +451,7 @@ inventory step, and 7 come from comparing this design with Radicle
    3. ~~every write path signs with the tips, and the daemon API
       exposes them~~ (shipped);
    4. ~~ingest order and the pull report~~ (shipped);
-   5. verification and the daemon API's completeness.
+   5. ~~verification and the daemon API's completeness~~ (shipped).
 2. **Batch record fetch.** One request names many record ids and
    returns them together, each still verified on its own. A pull
    today costs one round trip per statement, actor, and blob, which

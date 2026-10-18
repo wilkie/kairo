@@ -2033,7 +2033,12 @@ Sub-decisions:
      - the `keys` chain of every signer whose signature is checked.
 
      `Incomplete` on any of these makes the result `Indeterminate`,
-     naming the signer, the scope, and the missing ids. An incomplete
+     naming the signer, the scope, and the missing ids. So does a
+     contradiction (a statement whose `previous` names something
+     outside its chain): that statement is `Invalid`, and the result
+     can't rule out that it was the one that mattered. The grantors
+     consulted are those of object-scoped grants to a consulted signer,
+     one hop. An incomplete
      chain the result doesn't consult is reported and changes nothing.
      The daemon API exposes the same, for the web client.
 

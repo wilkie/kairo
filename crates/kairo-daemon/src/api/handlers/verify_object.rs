@@ -24,7 +24,8 @@
 use axum::extract::{Path, State};
 use kairo_core::{ActorId, ObjectId};
 use kairo_daemon_client::dto::{
-    ValidationIssue, ValidationIssueSeverity, ValidationResult, ValidationStatus,
+    ChainCompletenessDto, ValidationIssue, ValidationIssueSeverity, ValidationResult,
+    ValidationStatus,
 };
 use kairo_object::{
     validate_object_revision, ContentLayerCheck, ManifestBindingCheck, ObjectConsistencyCheck,
@@ -33,7 +34,10 @@ use kairo_object::{
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, VerificationReport,
 };
-use kairo_store::{BranchResolver, FilesystemStore, ObjectStore, StatementStore, StoreError};
+use kairo_store::{
+    BranchResolver, ChainCompleteness, ChainReport, FilesystemStore, ObjectStore, StatementStore,
+    StoreError,
+};
 
 use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
@@ -96,6 +100,9 @@ fn verify_object(
         Err(error) => return Err(map_store_error(error, "latest_branch")),
     };
 
+    // Signers whose chains the result depends on, beyond the creator
+    // (`DECISIONS.md` §23 sub-decision 8).
+    let mut signers = vec![default_actor.clone()];
     let (revision_statement_id, branch_name) = match branch_tip {
         None => {
             acc.push(
@@ -120,6 +127,7 @@ fn verify_object(
                 .get_object_revision(&revision_id)
                 .map_err(|error| map_store_error(error, "get_object_revision"))?;
             let revision_statement_id = revision.statement_id().to_string();
+            signers.push(revision.unsigned().actor().clone());
 
             let report = verify_envelope_statement(&revision, store);
             record_signature_issues(&mut acc, &report);
@@ -134,13 +142,81 @@ fn verify_object(
         }
     };
 
+    let chains = store
+        .consulted_chains(object_id, &signers)
+        .map_err(|error| map_store_error(error, "consulted_chains"))?;
+    let chains = record_chain_issues(&mut acc, chains);
+
     Ok(ValidationResult {
         object_id: object_id.to_string(),
         status: acc.status,
         issues: acc.issues,
+        chains,
         revision_statement_id,
         branch_name,
     })
+}
+
+/// Turn consulted chains into DTOs, recording an `Indeterminate` issue
+/// for each gap and each contradiction: a peer may have withheld what
+/// would change the result.
+fn record_chain_issues(
+    acc: &mut IssueAccumulator,
+    chains: Vec<ChainReport>,
+) -> Vec<ChainCompletenessDto> {
+    let ids = |ids: &[kairo_core::StatementId]| -> Vec<String> {
+        ids.iter().map(ToString::to_string).collect()
+    };
+    chains
+        .into_iter()
+        .map(|chain| {
+            let missing = match &chain.completeness {
+                ChainCompleteness::Complete => Vec::new(),
+                ChainCompleteness::Incomplete { missing } => missing.clone(),
+            };
+            let signer = chain.signer.to_string();
+            let scope = chain.scope.key();
+            if !missing.is_empty() {
+                acc.push(
+                    ValidationIssue {
+                        kind: "chain_incomplete".to_owned(),
+                        severity: ValidationIssueSeverity::Warning,
+                        message: format!(
+                            "{signer}'s {scope} chain names {} statement(s) this node lacks",
+                            missing.len()
+                        ),
+                        statement_id: None,
+                        actor_id: Some(signer.clone()),
+                        details: serde_json::json!({ "scope": scope, "missing": ids(&missing) }),
+                    },
+                    ValidationStatus::Indeterminate,
+                );
+            }
+            for contradiction in &chain.contradictions {
+                acc.push(
+                    ValidationIssue {
+                        kind: "chain_contradiction".to_owned(),
+                        severity: ValidationIssueSeverity::Error,
+                        message: format!(
+                            "statement's previous names a statement outside {signer}'s {scope} \
+                             chain"
+                        ),
+                        statement_id: Some(contradiction.to_string()),
+                        actor_id: Some(signer.clone()),
+                        details: serde_json::json!({ "scope": scope }),
+                    },
+                    ValidationStatus::Indeterminate,
+                );
+            }
+            ChainCompletenessDto {
+                complete: missing.is_empty(),
+                missing: ids(&missing),
+                contradictions: ids(&chain.contradictions),
+                signer,
+                scope,
+            }
+        })
+        .collect()
 }
 
 fn record_signature_issues(acc: &mut IssueAccumulator, report: &VerificationReport) {

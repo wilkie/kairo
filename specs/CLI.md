@@ -595,14 +595,26 @@ so callers can compose it independently.
 Aggregation:
 
 - `VALID` — every check returned valid: genesis fixity, signature,
-  actor resolution, object consistency, manifest binding, and content
-  layer (commit found + parents agree).
+  actor resolution, object consistency, manifest binding, content
+  layer (commit found + parents agree), and every consulted actor
+  chain complete.
 - `INVALID` — at least one check actively failed (signature invalid,
   actor mismatch, object id mismatch, manifest hash mismatch, commit
   not in repo, parent disagreement). Exits non-zero.
 - `INDETERMINATE` — no failures, but at least one check could not be
   evaluated (no manifest available, no Git lookup performed, non-Git
-  revision scheme). Exits zero with the marker in the report.
+  revision scheme), or a consulted actor chain has a gap or a
+  contradiction. Exits zero with the marker in the report.
+
+Actor chains (`DECISIONS.md` §23): the report's `chains:` section
+(`chains` in JSON) lists the chains the result depends on. Those are
+the object-scope and `keys` chains of the genesis creator, the
+revision's and branch's signers, and the grantors of object-scoped
+grants to them. Each line is `<signer> <scope> = complete`, or
+`INDETERMINATE (missing <ids>)` when a held statement names one this
+node lacks. A statement whose `previous` names something outside its
+chain is reported as `INVALID previous in <id>`. Revoked-key statements
+don't count toward gaps.
 
 These commands do not validate actor authority, actor key-active status,
 or snapshot closure completeness. They do verify that signed Git commits

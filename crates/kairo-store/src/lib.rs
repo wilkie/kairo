@@ -7329,4 +7329,59 @@ mod tests {
         assert_eq!(before.tips, vec![b2]);
         Ok(())
     }
+
+    #[test]
+    fn consulted_chains_cover_the_creator_signers_and_their_grantors() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let creator = fresh_genesis().actor_id();
+        let grantor = trusted_actor_id();
+        let object = store.put_object_genesis(&signed_object_genesis(creator.clone()))?;
+
+        let branch = signed_branch(
+            creator.clone(),
+            object.clone(),
+            "head",
+            StatementId::from_sha256_digest([1; 32]),
+            None,
+            timestamp(),
+        )?;
+        store.put_object_branch(&rechain(&branch, &[])?)?;
+        // The grantor's grant to the creator names a statement this
+        // node never received.
+        let withheld = StatementId::from_sha256_digest([0xEE; 32]);
+        let grant = signed_capability_grant(
+            grantor.clone(),
+            creator.clone(),
+            CapabilityScope::Object(object.clone()),
+            None,
+            timestamp(),
+        )?;
+        store.put_actor_capability_grant(&rechain(&grant, std::slice::from_ref(&withheld))?)?;
+
+        let chains = store.consulted_chains(&object, &[])?;
+        let summary: Vec<(ActorId, ChainScope, ChainCompleteness)> = chains
+            .into_iter()
+            .map(|chain| (chain.signer, chain.scope, chain.completeness))
+            .collect();
+        let object_scope = ChainScope::Object(object);
+        let mut expected = vec![
+            (
+                creator.clone(),
+                object_scope.clone(),
+                ChainCompleteness::Complete,
+            ),
+            (creator, ChainScope::Keys, ChainCompleteness::Complete),
+            (
+                grantor.clone(),
+                object_scope,
+                ChainCompleteness::Incomplete {
+                    missing: vec![withheld],
+                },
+            ),
+            (grantor, ChainScope::Keys, ChainCompleteness::Complete),
+        ];
+        expected.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        assert_eq!(summary, expected);
+        Ok(())
+    }
 }

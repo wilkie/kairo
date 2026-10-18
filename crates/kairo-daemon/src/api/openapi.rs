@@ -103,6 +103,7 @@ entirely and streams `application/octet-stream` bytes.\
         kairo_daemon_client::dto::ProvenanceDto,
         kairo_daemon_client::dto::ActorChainDto,
         kairo_daemon_client::dto::ActorChainsDto,
+        kairo_daemon_client::dto::ChainCompletenessDto,
         kairo_daemon_client::dto::ProvenanceEntryDto,
         kairo_daemon_client::dto::ValidationStatus,
         kairo_daemon_client::dto::ValidationIssueSeverity,

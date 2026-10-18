@@ -1526,9 +1526,25 @@ Validation result DTO:
 {
   "status": "valid",
   "issues": [],
+  "chains": [
+    {
+      "signer": "z6MkActor...",
+      "scope": "object:z6MkObject...",
+      "complete": true,
+      "missing": [],
+      "contradictions": []
+    }
+  ],
   "resolved_snapshot": {}
 }
 ```
+
+`chains` lists the actor chains the result consulted (`DECISIONS.md`
+§23 sub-decision 8). Each gap also appears as a `chain_incomplete`
+issue (severity `warning`), and each contradiction as a
+`chain_contradiction` issue (severity `error`). Either makes `status`
+`indeterminate`: a peer may have withheld what would change the
+result.
 
 Validation issue DTO:
 

@@ -280,3 +280,75 @@ async fn verify_object_returns_400_for_malformed_id() {
     handle.shutdown().await;
     drop(dir);
 }
+
+#[tokio::test]
+async fn verify_object_is_indeterminate_when_a_consulted_chain_has_a_gap() {
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        kairo_statement::RevisionId::new("git:sha256:r1"),
+        SAMPLE_MANIFEST,
+        Vec::new(),
+    );
+    // Two moves of a non-head branch: the second names the first in
+    // the creator's chain (DECISIONS.md §23). Then lose the first, as
+    // if a peer had withheld it.
+    let first = fixture.set_branch(&actor, &object, &revision, "other");
+    fixture.set_branch(&actor, &object, &revision, "other");
+    let statements = dir.path().join("statements");
+    let file =
+        find_file(&statements, &format!("{}.json", first.statement_id)).expect("first branch file");
+    std::fs::remove_file(file).expect("remove");
+    fixture.store.rebuild_indexes().expect("rebuild");
+    let object_id = object.object_id.clone();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path).await;
+    let client = Client::new(handle.socket_path());
+    let result = client
+        .verify_object(object_id.as_str())
+        .await
+        .expect("verify_object");
+
+    // Genesis-only on `head` would be Valid; the gap makes it
+    // Indeterminate.
+    assert_eq!(result.status, ValidationStatus::Indeterminate);
+    let issue = result
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "chain_incomplete")
+        .expect("chain_incomplete issue");
+    assert_eq!(issue.actor_id.as_deref(), Some(actor.actor_id.as_str()));
+    let chain = result
+        .chains
+        .iter()
+        .find(|chain| chain.scope == format!("object:{object_id}"))
+        .expect("object chain");
+    assert!(!chain.complete);
+    assert_eq!(chain.missing, vec![first.statement_id.to_string()]);
+    assert!(result
+        .chains
+        .iter()
+        .any(|chain| chain.scope == "keys" && chain.complete));
+
+    handle.shutdown().await;
+    drop(dir);
+}
+
+fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(path);
+        }
+    }
+    None
+}

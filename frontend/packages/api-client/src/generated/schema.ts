@@ -566,6 +566,18 @@ export interface components {
         } | {
             actor: string;
         };
+        /** @description One actor chain a verification consulted. */
+        ChainCompletenessDto: {
+            /** @description Every statement the chain's held statements name is held. */
+            complete: boolean;
+            /** @description Statements whose `previous` names something outside the chain. */
+            contradictions: string[];
+            /** @description Named but not held: what a peer may have withheld. */
+            missing: string[];
+            /** @description `object:<id>` or `keys`. */
+            scope: string;
+            signer: string;
+        };
         /**
          * @description One entry in the response from
          *     `GET /api/v1/keystore/actors` — the local keystore's listing
@@ -920,6 +932,12 @@ export interface components {
          */
         ValidationResult: {
             branch_name?: string | null;
+            /**
+             * @description The actor chains the result depends on (`specs/DECISIONS.md`
+             *     §23 sub-decision 8), complete or not. Any gap or contradiction
+             *     also appears in `issues` and makes `status` `Indeterminate`.
+             */
+            chains: components["schemas"]["ChainCompletenessDto"][];
             issues: components["schemas"]["ValidationIssue"][];
             object_id: string;
             revision_statement_id?: string | null;

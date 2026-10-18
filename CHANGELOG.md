@@ -42,6 +42,14 @@ rather than per-commit.
       count toward gaps.
     - `--require-complete` fails the fetch (exit 11) on any gap, after
       storing what verified. The two-node smoke now fetches with it.
+  - Verification uses the chains:
+    - `kairo verify object` and `GET /api/v1/verify-object/{id}` check
+      the chains the result depends on. Those are the object and
+      `keys` chains of the creator, the revision's and branch's
+      signers, and their grantors.
+    - A gap or a contradiction makes the result `INDETERMINATE`. The
+      CLI lists each chain under `chains:`; the API adds `chains` and
+      `chain_incomplete` / `chain_contradiction` issues.
   - The store indexes every actor chain per signer
     (`actor_chains/`, rebuilt by `rebuild-indexes`). It reports each
     chain's tips, and completeness with the missing ids. It also

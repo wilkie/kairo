@@ -4419,6 +4419,10 @@ struct ObjectVerificationReport {
     genesis: GenesisCheck,
     frontier: FrontierResolution,
     revision: RevisionChecks,
+    /// The actor chains the result depends on (`specs/DECISIONS.md`
+    /// §23 sub-decision 8). A gap or a contradiction in any makes the
+    /// result `Indeterminate`.
+    chains: Vec<kairo_store::ChainReport>,
     overall: OverallStatus,
     /// Where the storage commit was looked up. Diagnostic only —
     /// does not contribute to `overall`. Surfaced as a single line
@@ -4656,13 +4660,30 @@ fn run_verify_command(command: VerifyCommand, paths: &StorePaths) -> Result<Stri
                 truster,
             };
 
-            let overall = aggregate_overall_status(&genesis, &revision_checks, &object_id);
+            // The chains this result consults: the creator's, the
+            // revision's and branch's signers', and their grantors'.
+            let mut signers = vec![revision_statement.unsigned().actor().clone()];
+            if let FrontierResolution::BranchTip { actor, .. } = &frontier {
+                signers.push(actor.clone());
+            }
+            let chains = store
+                .consulted_chains(&object_id, &signers)
+                .map_err(|source| CliError::ReadActorChain {
+                    actor: revision_statement.unsigned().actor().clone(),
+                    source,
+                })?;
+
+            let overall = fold_status(&[
+                aggregate_overall_status(&genesis, &revision_checks, &object_id),
+                chains_status(&chains),
+            ]);
 
             let report = ObjectVerificationReport {
                 object: object_id,
                 genesis,
                 frontier,
                 revision: revision_checks,
+                chains,
                 overall,
                 repo_source,
             };
@@ -4941,6 +4962,46 @@ fn aggregate_overall_status(
     ])
 }
 
+/// `Indeterminate` if any consulted chain has a gap, or a statement
+/// whose `previous` names something outside its chain: a peer may have
+/// withheld what would change the result (`specs/DECISIONS.md` §23).
+fn chains_status(chains: &[kairo_store::ChainReport]) -> OverallStatus {
+    let doubtful = chains.iter().any(|chain| {
+        !chain.contradictions.is_empty()
+            || matches!(
+                chain.completeness,
+                kairo_store::ChainCompleteness::Incomplete { .. }
+            )
+    });
+    if doubtful {
+        OverallStatus::Indeterminate
+    } else {
+        OverallStatus::Valid
+    }
+}
+
+fn format_chain(chain: &kairo_store::ChainReport) -> String {
+    let ids = |ids: &[kairo_core::StatementId]| {
+        ids.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut line = match &chain.completeness {
+        kairo_store::ChainCompleteness::Complete => "complete".to_owned(),
+        kairo_store::ChainCompleteness::Incomplete { missing } => {
+            format!("INDETERMINATE (missing {})", ids(missing))
+        }
+    };
+    if !chain.contradictions.is_empty() {
+        line.push_str(&format!(
+            "; INVALID previous in {}",
+            ids(&chain.contradictions)
+        ));
+    }
+    line
+}
+
 /// Worst-of fold: any Invalid wins; otherwise any Indeterminate wins;
 /// otherwise Valid.
 fn fold_status(items: &[OverallStatus]) -> OverallStatus {
@@ -5026,6 +5087,15 @@ fn format_object_verification(report: &ObjectVerificationReport) -> String {
         "  content = {}\n",
         format_content_layer(&report.revision.validation.content)
     ));
+    out.push_str("chains:\n");
+    for chain in &report.chains {
+        out.push_str(&format!(
+            "  {} {} = {}\n",
+            chain.signer,
+            chain.scope,
+            format_chain(chain)
+        ));
+    }
     out
 }
 
@@ -5126,6 +5196,19 @@ fn format_object_verification_json(report: &ObjectVerificationReport) -> String 
             "parents": parents_value,
             "content": content_layer_json(&report.revision.validation.content),
         },
+        "chains": report.chains.iter().map(|chain| {
+            let (complete, missing) = match &chain.completeness {
+                kairo_store::ChainCompleteness::Complete => (true, Vec::new()),
+                kairo_store::ChainCompleteness::Incomplete { missing } => (false, missing.clone()),
+            };
+            serde_json::json!({
+                "signer": chain.signer.to_string(),
+                "scope": chain.scope.key(),
+                "complete": complete,
+                "missing": missing.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "contradictions": chain.contradictions.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
     });
     let mut output = serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
     output.push('\n');

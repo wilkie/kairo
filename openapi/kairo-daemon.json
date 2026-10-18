@@ -1311,6 +1311,44 @@
           }
         ]
       },
+      "ChainCompletenessDto": {
+        "type": "object",
+        "description": "One actor chain a verification consulted.",
+        "required": [
+          "signer",
+          "scope",
+          "complete",
+          "missing",
+          "contradictions"
+        ],
+        "properties": {
+          "complete": {
+            "type": "boolean",
+            "description": "Every statement the chain's held statements name is held."
+          },
+          "contradictions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Statements whose `previous` names something outside the chain."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Named but not held: what a peer may have withheld."
+          },
+          "scope": {
+            "type": "string",
+            "description": "`object:<id>` or `keys`."
+          },
+          "signer": {
+            "type": "string"
+          }
+        }
+      },
       "KeystoreActorDto": {
         "type": "object",
         "description": "One entry in the response from\n`GET /api/v1/keystore/actors` — the local keystore's listing\nof actors with private keys available for daemon-side signing.\n\n`display_name` is intentionally absent in v1; per\n`PHASE_2_WEB_CLIENT_AUTH.md` §1.2 it lives in a future\n`ActorProfile` statement and is additive when it lands.",
@@ -2011,7 +2049,8 @@
         "required": [
           "object_id",
           "status",
-          "issues"
+          "issues",
+          "chains"
         ],
         "properties": {
           "branch_name": {
@@ -2019,6 +2058,13 @@
               "string",
               "null"
             ]
+          },
+          "chains": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChainCompletenessDto"
+            },
+            "description": "The actor chains the result depends on (`specs/DECISIONS.md`\n§23 sub-decision 8), complete or not. Any gap or contradiction\nalso appears in `issues` and makes `status` `Indeterminate`."
           },
           "issues": {
             "type": "array",

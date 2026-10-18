@@ -1772,6 +1772,108 @@ fn verify_object_json_output_is_well_formed() -> Result<(), Box<dyn std::error::
     Ok(())
 }
 
+fn verify_object_json(
+    store_dir: &std::path::Path,
+    object_id: &str,
+    manifest_path: std::path::PathBuf,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let json = run(Cli {
+        store: Some(store_dir.to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Verify {
+            command: VerifyCommand::Object {
+                object: object_id.to_owned(),
+                statement: None,
+                actor: None,
+                name: "head".to_owned(),
+                repo: None,
+                no_repo: true,
+                no_cache: false,
+                no_cwd_repo: false,
+                r#as: None,
+                no_as: true,
+                manifest: Some(manifest_path),
+                json: true,
+            },
+        }),
+    })?;
+    Ok(serde_json::from_str(&json)?)
+}
+
+#[test]
+fn verify_object_reports_a_gap_in_a_consulted_chain() -> Result<(), Box<dyn std::error::Error>> {
+    let (store_dir, _manifest_dir, actor_id, object_id, revision_statement, manifest_path) =
+        fixture_with_branch()?;
+    let chain = |value: &serde_json::Value| -> Option<serde_json::Value> {
+        value["chains"]
+            .as_array()?
+            .iter()
+            .find(|chain| {
+                chain["signer"].as_str() == Some(actor_id.as_str())
+                    && chain["scope"].as_str() == Some(format!("object:{object_id}").as_str())
+            })
+            .cloned()
+    };
+    let before = verify_object_json(store_dir.path(), &object_id, manifest_path.clone())?;
+    assert_eq!(chain(&before).ok_or("no chain")?["complete"], true);
+
+    // Move the branch again: the new branch statement chains after the
+    // first. Then lose the first, as if a peer had withheld it.
+    run(Cli {
+        store: Some(store_dir.path().to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Branch {
+            command: BranchCommand::Set {
+                actor: actor_id.clone(),
+                object: object_id.clone(),
+                revision: revision_statement,
+                name: "head".to_owned(),
+            },
+        }),
+    })?;
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let scope = kairo_statement::ChainScope::Object(kairo_core::ObjectId::new(object_id.clone())?);
+    let actor = kairo_core::ActorId::new(actor_id.clone())?;
+    let tips = store.actor_chain_tips(&actor, &scope)?;
+    let second = store.get_object_branch(&tips[0])?;
+    let first = second.unsigned().previous().ids()[0].clone();
+    let file = walkdir_find(
+        &store_dir.path().join("statements"),
+        &format!("{first}.json"),
+    )
+    .ok_or("first branch statement file")?;
+    std::fs::remove_file(file)?;
+    store.rebuild_indexes()?;
+
+    let after = verify_object_json(store_dir.path(), &object_id, manifest_path)?;
+    let gap = chain(&after).ok_or("no chain")?;
+    assert_eq!(gap["complete"], false);
+    assert_eq!(gap["missing"], serde_json::json!([first.to_string()]));
+    assert_eq!(after["overall"].as_str(), Some("INDETERMINATE"));
+    Ok(())
+}
+
+/// The first file named `name` under `dir`, depth-first.
+fn walkdir_find(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = walkdir_find(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
 #[test]
 fn verify_object_branch_not_found_returns_error() -> Result<(), Box<dyn std::error::Error>> {
     // Build a fixture without a branch.
@@ -1945,6 +2047,23 @@ fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std:
         }),
     })?;
     let revision_statement = parse_field(&revision_output, "statement = ")?;
+    let set_branch = |name: &str| {
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
+            command: Some(Command::Branch {
+                command: BranchCommand::Set {
+                    actor: actor_id.clone(),
+                    object: object_id.clone(),
+                    revision: revision_statement.clone(),
+                    name: name.to_owned(),
+                },
+            }),
+        })
+    };
     run(Cli {
         store: Some(store_dir.path().to_path_buf()),
         keys: None,
@@ -1953,9 +2072,9 @@ fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std:
         offline: false,
         command: Some(Command::Branch {
             command: BranchCommand::Set {
-                actor: actor_id,
+                actor: actor_id.clone(),
                 object: object_id.clone(),
-                revision: revision_statement,
+                revision: revision_statement.clone(),
                 name: "head".to_owned(),
             },
         }),
@@ -1964,29 +2083,32 @@ fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std:
     // Verify with --repo pointing at the real git repo. No
     // --manifest — the verifier must read kairo.toml from the
     // commit's tree itself.
-    let output = run(Cli {
-        store: Some(store_dir.path().to_path_buf()),
-        keys: None,
-        daemon: false,
-        direct: false,
-        offline: false,
-        command: Some(Command::Verify {
-            command: VerifyCommand::Object {
-                object: object_id,
-                statement: None,
-                actor: None,
-                name: "head".to_owned(),
-                repo: Some(git_dir.path().to_path_buf()),
-                no_repo: false,
-                no_cache: false,
-                no_cwd_repo: false,
-                r#as: None,
-                no_as: true,
-                manifest: None,
-                json: false,
-            },
-        }),
-    })?;
+    let verify = || {
+        run(Cli {
+            store: Some(store_dir.path().to_path_buf()),
+            keys: None,
+            daemon: false,
+            direct: false,
+            offline: false,
+            command: Some(Command::Verify {
+                command: VerifyCommand::Object {
+                    object: object_id.clone(),
+                    statement: None,
+                    actor: None,
+                    name: "head".to_owned(),
+                    repo: Some(git_dir.path().to_path_buf()),
+                    no_repo: false,
+                    no_cache: false,
+                    no_cwd_repo: false,
+                    r#as: None,
+                    no_as: true,
+                    manifest: None,
+                    json: false,
+                },
+            }),
+        })
+    };
+    let output = verify()?;
     assert!(
         output.contains("verify object: VALID"),
         "expected VALID, got:\n{output}"
@@ -2001,6 +2123,37 @@ fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std:
         output.contains("commit lookup: repo at "),
         "expected cwd repo lookup, got:\n{output}"
     );
+    // Every consulted chain is complete.
+    assert!(
+        output.contains(&format!("{actor_id} object:{object_id} = complete")),
+        "expected a complete chain, got:\n{output}"
+    );
+
+    // A gap in the creator's chain for the object (a peer withheld a
+    // statement the creator's later one names) makes the same VALID
+    // result INDETERMINATE (DECISIONS.md §23 sub-decision 8).
+    set_branch("other")?;
+    set_branch("other")?;
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let scope = kairo_statement::ChainScope::Object(kairo_core::ObjectId::new(object_id.clone())?);
+    let actor = kairo_core::ActorId::new(actor_id.clone())?;
+    let tip = store.actor_chain_tips(&actor, &scope)?[0].clone();
+    let middle = store.get_object_branch(&tip)?.unsigned().previous().ids()[0].clone();
+    let file = walkdir_find(
+        &store_dir.path().join("statements"),
+        &format!("{middle}.json"),
+    )
+    .ok_or("middle branch statement file")?;
+    std::fs::remove_file(file)?;
+    store.rebuild_indexes()?;
+    let output = verify()?;
+    assert!(
+        output.contains("verify object: INDETERMINATE"),
+        "expected INDETERMINATE, got:\n{output}"
+    );
+    assert!(output.contains(&format!(
+        "{actor_id} object:{object_id} = INDETERMINATE (missing {middle})"
+    )));
     Ok(())
 }
 
