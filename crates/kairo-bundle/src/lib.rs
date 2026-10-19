@@ -45,6 +45,7 @@
 //! blobs/<blob-id>                  # raw bytes
 //! ```
 
+pub mod closure;
 mod error;
 mod export;
 mod import;

@@ -597,6 +597,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d"
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1618,12 +1628,14 @@ version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
  "kairo-core",
+ "kairo-federation-core",
  "kairo-identity",
  "kairo-object",
  "kairo-statement",
  "kairo-store",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
 ]
 
@@ -1750,6 +1762,7 @@ dependencies = [
  "flate2",
  "http-body",
  "http-body-util",
+ "kairo-bundle",
  "kairo-config",
  "kairo-core",
  "kairo-federation-core",
@@ -1762,6 +1775,7 @@ dependencies = [
  "kairo-test-support",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tower",
@@ -2582,6 +2596,16 @@ name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+]
 
 [[package]]
 name = "tempfile"

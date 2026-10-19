@@ -19,12 +19,18 @@
 //! }
 //! ```
 //!
+//! An upload (§26 sub-decision 6) is `push-<received_at>-<from>-<token>.json`,
+//! with `"object"` in place of `"base_url"` and `"objects"`, and its
+//! closure bundle beside it as the same name with `.tar`. The body
+//! streams into `.incoming-<token>.tar` first and is renamed into place
+//! only once the request has verified.
+//!
 //! The sender and seconds are in the name, so entries list in arrival
 //! order and the per-node bound counts names without parsing files.
 //! Like the pull log, this is primary state that `rebuild_indexes()`
 //! leaves alone.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use kairo_core::{ActorId, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -35,6 +41,8 @@ use crate::{atomic_write, json_to_corrupt, read_or_missing, FilesystemStore};
 
 const INBOX_DIR: &str = "inbox";
 const ANNOUNCE_PREFIX: &str = "announce-";
+const PUSH_PREFIX: &str = "push-";
+const BUNDLE_SUFFIX: &str = ".tar";
 const ENTRY_SUFFIX: &str = ".json";
 
 /// An accepted announcement waiting to be pulled.
@@ -51,9 +59,21 @@ pub struct InboxAnnouncement {
     pub received_at: Timestamp,
 }
 
+/// An accepted upload waiting to be ingested.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxUpload {
+    /// The authenticated pushing node.
+    pub from: ActorId,
+    pub to: ActorId,
+    pub object: ObjectId,
+    pub received_at: Timestamp,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InboxItem {
     Announcement(InboxAnnouncement),
+    /// With the path of its closure bundle tar.
+    Upload(InboxUpload, PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +93,15 @@ pub enum InboxPut {
     Full {
         held: u64,
     },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UploadFile {
+    from: String,
+    to: String,
+    object: String,
+    received_at: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -100,8 +129,27 @@ pub trait InboxStore {
     /// `Corrupt`.
     fn list_inbox(&self) -> Result<Vec<InboxEntry>, StoreError>;
 
-    /// Remove a processed entry. Removing one already gone is fine.
+    /// Remove a processed entry, and an upload's bundle with it.
+    /// Removing one already gone is fine.
     fn remove_inbox_entry(&self, name: &str) -> Result<(), StoreError>;
+
+    /// Unprocessed entries from `node`.
+    fn inbox_held(&self, node: &ActorId) -> Result<u64, StoreError>;
+
+    /// Where an upload's body streams to before it's accepted. Delete
+    /// it if the request fails.
+    fn inbox_incoming_path(&self, token: &str) -> Result<PathBuf, StoreError>;
+
+    /// Accept the upload streamed to `incoming`, unless its sender
+    /// already holds `max_per_node` entries (then `incoming` is
+    /// deleted). `token` is as for announcements.
+    fn put_inbox_upload(
+        &self,
+        upload: &InboxUpload,
+        incoming: &Path,
+        token: &str,
+        max_per_node: u64,
+    ) -> Result<InboxPut, StoreError>;
 }
 
 impl FilesystemStore {
@@ -121,12 +169,15 @@ impl FilesystemStore {
             // Temporary files from an interrupted write, and the lock,
             // aren't entries.
             if let Some(name) = name.to_str() {
-                if name.starts_with(ANNOUNCE_PREFIX) && name.ends_with(ENTRY_SUFFIX) {
+                if (name.starts_with(ANNOUNCE_PREFIX) || name.starts_with(PUSH_PREFIX))
+                    && name.ends_with(ENTRY_SUFFIX)
+                {
                     names.push(name.to_owned());
                 }
             }
         }
-        names.sort();
+        // By arrival across kinds, then by name.
+        names.sort_by(|a, b| (seconds_of(a), a).cmp(&(seconds_of(b), b)));
         Ok(names)
     }
 }
@@ -139,9 +190,42 @@ fn corrupt(name: &str, error: &dyn std::fmt::Display) -> StoreError {
 }
 
 fn sender_of(name: &str) -> Option<&str> {
-    // announce-<20-digit seconds>-<from>-<token>.json
-    let rest = name.strip_prefix(ANNOUNCE_PREFIX)?;
+    // <kind>-<20-digit seconds>-<from>-<token>.json
+    let rest = name
+        .strip_prefix(ANNOUNCE_PREFIX)
+        .or_else(|| name.strip_prefix(PUSH_PREFIX))?;
     rest.split('-').nth(1)
+}
+
+fn seconds_of(name: &str) -> Option<&str> {
+    let rest = name
+        .strip_prefix(ANNOUNCE_PREFIX)
+        .or_else(|| name.strip_prefix(PUSH_PREFIX))?;
+    rest.split('-').next()
+}
+
+fn check_token(token: &str) -> Result<(), StoreError> {
+    if token.is_empty()
+        || !token
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(StoreError::Rejected {
+            reason: format!("inbox token {token:?} is not lowercase hex"),
+        });
+    }
+    Ok(())
+}
+
+fn entry_name(prefix: &str, at: Timestamp, from: &ActorId, token: &str) -> String {
+    // Seconds since the epoch, zero-padded so names sort by arrival; a
+    // pre-1970 clock sorts first.
+    let seconds = at.seconds().max(0);
+    format!("{prefix}{seconds:020}-{from}-{token}{ENTRY_SUFFIX}")
+}
+
+fn bundle_name(entry: &str) -> String {
+    format!("{}{BUNDLE_SUFFIX}", entry.trim_end_matches(ENTRY_SUFFIX))
 }
 
 impl InboxStore for FilesystemStore {
@@ -151,30 +235,20 @@ impl InboxStore for FilesystemStore {
         token: &str,
         max_per_node: u64,
     ) -> Result<InboxPut, StoreError> {
-        if token.is_empty()
-            || !token
-                .bytes()
-                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            return Err(StoreError::Rejected {
-                reason: format!("inbox token {token:?} is not lowercase hex"),
-            });
-        }
+        check_token(token)?;
         let dir = self.inbox_dir();
         with_index_lock(&dir, || {
             let from = announcement.from.as_str();
-            let held = self
-                .inbox_names()?
-                .iter()
-                .filter(|name| sender_of(name) == Some(from))
-                .count() as u64;
+            let held = self.inbox_held(&announcement.from)?;
             if held >= max_per_node {
                 return Ok(InboxPut::Full { held });
             }
-            // Seconds since the epoch, zero-padded so names sort by
-            // arrival; a pre-1970 clock sorts first.
-            let seconds = announcement.received_at.seconds().max(0);
-            let name = format!("{ANNOUNCE_PREFIX}{seconds:020}-{from}-{token}{ENTRY_SUFFIX}");
+            let name = entry_name(
+                ANNOUNCE_PREFIX,
+                announcement.received_at,
+                &announcement.from,
+                token,
+            );
             let file = AnnouncementFile {
                 from: from.to_owned(),
                 to: announcement.to.to_string(),
@@ -203,6 +277,22 @@ impl InboxStore for FilesystemStore {
                 Err(StoreError::Missing) => continue,
                 Err(error) => return Err(error),
             };
+            if name.starts_with(PUSH_PREFIX) {
+                let file: UploadFile =
+                    serde_json::from_slice(&bytes).map_err(|e| corrupt(&name, &e))?;
+                let upload = InboxUpload {
+                    from: ActorId::new(&file.from).map_err(|e| corrupt(&name, &e))?,
+                    to: ActorId::new(&file.to).map_err(|e| corrupt(&name, &e))?,
+                    object: ObjectId::new(&file.object).map_err(|e| corrupt(&name, &e))?,
+                    received_at: file.received_at.parse().map_err(|e| corrupt(&name, &e))?,
+                };
+                let bundle = dir.join(bundle_name(&name));
+                entries.push(InboxEntry {
+                    name,
+                    item: InboxItem::Upload(upload, bundle),
+                });
+                continue;
+            }
             let file: AnnouncementFile =
                 serde_json::from_slice(&bytes).map_err(|e| corrupt(&name, &e))?;
             let objects = file
@@ -232,11 +322,68 @@ impl InboxStore for FilesystemStore {
                 reason: format!("{name:?} is not an inbox entry name"),
             });
         }
-        match std::fs::remove_file(self.inbox_dir().join(name)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(StoreError::Unavailable(error)),
+        let dir = self.inbox_dir();
+        // The record first: a bundle without one is ignored, while a
+        // record without its bundle would fail to ingest.
+        remove_if_present(&dir.join(name))?;
+        if name.starts_with(PUSH_PREFIX) {
+            remove_if_present(&dir.join(bundle_name(name)))?;
         }
+        Ok(())
+    }
+
+    fn inbox_held(&self, node: &ActorId) -> Result<u64, StoreError> {
+        Ok(self
+            .inbox_names()?
+            .iter()
+            .filter(|name| sender_of(name) == Some(node.as_str()))
+            .count() as u64)
+    }
+
+    fn inbox_incoming_path(&self, token: &str) -> Result<PathBuf, StoreError> {
+        check_token(token)?;
+        let dir = self.inbox_dir();
+        std::fs::create_dir_all(&dir).map_err(StoreError::Unavailable)?;
+        Ok(dir.join(format!(".incoming-{token}{BUNDLE_SUFFIX}")))
+    }
+
+    fn put_inbox_upload(
+        &self,
+        upload: &InboxUpload,
+        incoming: &Path,
+        token: &str,
+        max_per_node: u64,
+    ) -> Result<InboxPut, StoreError> {
+        check_token(token)?;
+        let dir = self.inbox_dir();
+        with_index_lock(&dir, || {
+            let held = self.inbox_held(&upload.from)?;
+            if held >= max_per_node {
+                remove_if_present(incoming)?;
+                return Ok(InboxPut::Full { held });
+            }
+            let name = entry_name(PUSH_PREFIX, upload.received_at, &upload.from, token);
+            std::fs::rename(incoming, dir.join(bundle_name(&name)))
+                .map_err(StoreError::Unavailable)?;
+            let file = UploadFile {
+                from: upload.from.to_string(),
+                to: upload.to.to_string(),
+                object: upload.object.to_string(),
+                received_at: upload.received_at.to_string(),
+            };
+            let mut bytes = serde_json::to_vec_pretty(&file).map_err(json_to_corrupt(&name))?;
+            bytes.push(b'\n');
+            atomic_write(&dir.join(&name), &bytes)?;
+            Ok(InboxPut::Stored { name })
+        })
+    }
+}
+
+fn remove_if_present(path: &Path) -> Result<(), StoreError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(StoreError::Unavailable(error)),
     }
 }
 
@@ -292,6 +439,56 @@ mod tests {
             .expect("already gone");
         assert_eq!(store.list_inbox().expect("list").len(), 1);
         assert!(store.remove_inbox_entry("../config.toml").is_err());
+    }
+
+    #[test]
+    fn uploads_are_renamed_into_place_and_share_the_bound() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let store = FilesystemStore::open(dir.path()).expect("store");
+        let from = ActorId::from_sha256_digest([1; 32]);
+        let upload = InboxUpload {
+            from: from.clone(),
+            to: ActorId::from_sha256_digest([0xee; 32]),
+            object: ObjectId::from_sha256_digest([2; 32]),
+            received_at: Timestamp::from_seconds(1_000),
+        };
+        let incoming = store.inbox_incoming_path("0a").expect("incoming");
+        std::fs::write(&incoming, b"TAR").expect("write");
+        // Not an entry until accepted.
+        assert!(store.list_inbox().expect("list").is_empty());
+        let put = store
+            .put_inbox_upload(&upload, &incoming, "0a", 2)
+            .expect("put");
+        assert!(matches!(put, InboxPut::Stored { .. }));
+        assert!(!incoming.exists());
+        store
+            .put_inbox_announcement(&announcement(1, 1_001), "0b", 2)
+            .expect("announce");
+        assert_eq!(store.inbox_held(&from).expect("held"), 2);
+
+        let full = store.inbox_incoming_path("0c").expect("incoming");
+        std::fs::write(&full, b"TAR").expect("write");
+        assert_eq!(
+            store
+                .put_inbox_upload(&upload, &full, "0c", 2)
+                .expect("put"),
+            InboxPut::Full { held: 2 }
+        );
+        assert!(!full.exists(), "a refused upload's body is deleted");
+
+        let entries = store.list_inbox().expect("list");
+        let first = &entries[0].item;
+        assert!(
+            matches!(first, InboxItem::Upload(listed, _) if listed == &upload),
+            "{entries:?}"
+        );
+        let bundle = dir
+            .path()
+            .join("federation/inbox")
+            .join(entries[0].name.replace(".json", ".tar"));
+        assert_eq!(std::fs::read(&bundle).expect("bundle"), b"TAR");
+        store.remove_inbox_entry(&entries[0].name).expect("remove");
+        assert!(!bundle.exists());
     }
 
     #[test]

@@ -99,6 +99,31 @@ impl Peer {
         Self::read_body(url, response, limit)
     }
 
+    /// [`Peer::post_signed`] with a file of `length` bytes as the body,
+    /// streamed rather than read into memory (an upload, §26).
+    pub(crate) fn post_signed_file(
+        &self,
+        path: &str,
+        mut file: std::fs::File,
+        length: u64,
+        authorization: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>, PullError> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .agent
+            .post(&url)
+            .header("content-type", "application/x-tar")
+            .header("content-length", length.to_string())
+            .header("authorization", authorization)
+            .send(ureq::SendBody::from_reader(&mut file))
+            .map_err(|error| PullError::Transport {
+                url: url.clone(),
+                message: error.to_string(),
+            })?;
+        Self::read_body(url, response, limit)
+    }
+
     /// A response's body, at most `limit` bytes for a 2xx; a non-2xx
     /// becomes [`PullError::Status`] with the envelope's code.
     fn read_body(

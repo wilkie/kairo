@@ -38,18 +38,23 @@
 
 mod http;
 mod ingest;
+mod push;
+
+pub use self::push::{closure_inventory, ingest_closure_bundle, push, PushReceipt, PushSent};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
+use kairo_bundle::closure::{ClosureBundle, ClosureBundleError};
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
+use kairo_federation_core::GitAvailability;
 use kairo_federation_core::{
     random_node_nonce, ActorListing, Announcement, AnnouncementAccepted, FedErrorCode,
-    NodeAuthorization, NodeDocument, NodeDocumentError, NodeRequest, ObjectListing, StatementBatch,
-    StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, MAX_BATCH_IDS, MAX_PAGE_LIMIT,
-    STATEMENT_BATCH_PATH, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL, SUPPORTS_STATEMENT_BATCH,
-    WELL_KNOWN_PATH,
+    NodeAuthorization, NodeDocument, NodeDocumentError, NodeRequest, ObjectListing, RequestBody,
+    StatementBatch, StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, MAX_BATCH_IDS,
+    MAX_PAGE_LIMIT, STATEMENT_BATCH_PATH, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL,
+    SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
 use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
@@ -245,6 +250,13 @@ pub enum PullError {
     },
     /// A request nonce couldn't be generated.
     Signing(String),
+    /// A pushed bundle lists a record this node lacks but doesn't carry
+    /// it (the push plan was stale, or the pusher left it out).
+    NotInBundle {
+        record: KairoRef,
+    },
+    /// A pushed bundle couldn't be read or built.
+    Bundle(String),
     /// The peer claims a different node actor than the one pinned
     /// for its URL.
     NodeActorMismatch {
@@ -325,6 +337,11 @@ impl fmt::Display for PullError {
             ),
             Self::Unsupported { feature } => write!(f, "peer does not support {feature}"),
             Self::Signing(message) => write!(f, "could not sign the request: {message}"),
+            Self::NotInBundle { record } => write!(
+                f,
+                "the bundle lists {record}, which this node lacks, but doesn't carry it"
+            ),
+            Self::Bundle(message) => write!(f, "closure bundle: {message}"),
             Self::NodeActorMismatch { expected, claimed } => write!(
                 f,
                 "peer claims node actor {claimed}, but this node pins {expected} for it; \
@@ -383,9 +400,26 @@ fn rank(kind: StatementKind) -> u8 {
     }
 }
 
+/// Where a pull's records come from: a peer over HTTP, or an unpacked
+/// closure bundle a node pushed (`DECISIONS.md` §26 sub-decision 8).
+/// Every check after reading a record is the same for both.
+enum Source {
+    Peer(Peer),
+    Bundle(ClosureBundle),
+}
+
+impl Source {
+    fn peer(&self) -> Option<&Peer> {
+        match self {
+            Self::Peer(peer) => Some(peer),
+            Self::Bundle(_) => None,
+        }
+    }
+}
+
 struct Pull<'a> {
     store: &'a FilesystemStore,
-    peer: Peer,
+    source: Source,
     /// The peer advertises `statement-batch` (`DECISIONS.md` §24).
     batch: bool,
     limits: &'a Limits,
@@ -530,7 +564,9 @@ pub fn announce(
         });
     }
     let pull = authenticated(store, peer, &document, &options.limits)?;
-    let peer = &pull.peer;
+    let Some(peer) = pull.source.peer() else {
+        return Err(PullError::Bundle("announce needs a peer".to_owned()));
+    };
     let path = format!("{API_PREFIX}{ANNOUNCE_PATH}");
     let body = serde_json::to_vec(announcement).map_err(|error| PullError::Parse {
         url: format!("{}{path}", peer.base_url()),
@@ -541,7 +577,7 @@ pub fn announce(
         method: "POST",
         receiver_base_url: peer.base_url(),
         path_and_query: &path,
-        body: &body,
+        body: RequestBody::Bytes(&body),
     };
     let authorization = NodeAuthorization::sign(
         &request,
@@ -576,15 +612,38 @@ impl<'a> Pull<'a> {
         object: &ObjectId,
         limits: &'a Limits,
     ) -> Self {
+        let peer_url = peer.base_url().to_owned();
+        let batch = document.supports(SUPPORTS_STATEMENT_BATCH);
+        Self::from_source(
+            store,
+            Source::Peer(peer),
+            (peer_url, document.node_actor.clone()),
+            batch,
+            object,
+            limits,
+        )
+    }
+
+    /// `from` is the peer URL (or `push:<node>`) and node actor that
+    /// provenance and the report name.
+    fn from_source(
+        store: &'a FilesystemStore,
+        source: Source,
+        from: (String, ActorId),
+        batch: bool,
+        object: &ObjectId,
+        limits: &'a Limits,
+    ) -> Self {
+        let (peer_url, peer_actor) = from;
         let provenance = ProvenanceEntry {
-            peer_url: peer.base_url().to_owned(),
-            peer_actor: document.node_actor.clone(),
+            peer_url: peer_url.clone(),
+            peer_actor: peer_actor.clone(),
             fetched_at: Timestamp::now(),
         };
         let report = PullReport {
             object: object.clone(),
-            peer_url: peer.base_url().to_owned(),
-            peer_actor: document.node_actor.clone(),
+            peer_url,
+            peer_actor,
             fetched: 0,
             already_held: 0,
             flagged: Vec::new(),
@@ -593,8 +652,8 @@ impl<'a> Pull<'a> {
         };
         Pull {
             store,
-            batch: document.supports(SUPPORTS_STATEMENT_BATCH),
-            peer,
+            batch,
+            source,
             limits,
             provenance,
             report,
@@ -773,7 +832,31 @@ impl Pull<'_> {
         // `have`s, so the peer sends only what's missing, and the
         // fetch lands in a quarantine that reaches the pool only if
         // every missing commit's full closure arrived (§21).
-        let url = format!("{}{API_PREFIX}/objects/{object}/git", self.peer.base_url());
+        let peer = match &self.source {
+            Source::Peer(peer) => peer,
+            Source::Bundle(bundle) => {
+                // The bundle's pack, possibly thin against what this
+                // cache holds (§26 sub-decision 6), through the same
+                // quarantine.
+                let Some(pack) = bundle.pack() else {
+                    return Ok(GitOutcome::Unavailable {
+                        missing: missing.len(),
+                    });
+                };
+                let file = std::fs::File::open(&pack)
+                    .map_err(|error| PullError::Git(format!("{}: {error}", pack.display())))?;
+                cache
+                    .ingest_pack_from(format, file, &missing)
+                    .map_err(|error| match error {
+                        kairo_git::GitError::IncompletePack { missing } => {
+                            PullError::GitIncomplete { missing }
+                        }
+                        other => PullError::Git(other.to_string()),
+                    })?;
+                return self.pin(&cache, object, &missing);
+            }
+        };
+        let url = format!("{}{API_PREFIX}/objects/{object}/git", peer.base_url());
         let limits = kairo_git::FetchLimits {
             max_bytes: self.limits.max_git_bytes,
             timeout: self.limits.git_timeout,
@@ -794,7 +877,17 @@ impl Pull<'_> {
                 },
                 other => PullError::Git(other.to_string()),
             })?;
-        for commit in &missing {
+        self.pin(&cache, object, &missing)
+    }
+
+    /// Pin each newly ingested commit under `refs/kairo/imported/`.
+    fn pin(
+        &self,
+        cache: &kairo_git::GitCache,
+        object: &ObjectId,
+        missing: &[GitRevision],
+    ) -> Result<GitOutcome, PullError> {
+        for commit in missing {
             cache
                 .set_ref(
                     object.as_str(),
@@ -818,13 +911,45 @@ impl Pull<'_> {
         }
     }
 
-    /// Every page of the object listing, merged.
+    /// Every page of the object listing, merged. A bundle's listing is
+    /// its manifest's inventory.
     fn listing(&self, object: &ObjectId) -> Result<ObjectListing, PullError> {
+        let peer = match &self.source {
+            Source::Peer(peer) => peer,
+            Source::Bundle(bundle) => {
+                let inventory = &bundle.manifest().inventory;
+                let mut listing = ObjectListing {
+                    schema: Default::default(),
+                    object: bundle.object().clone(),
+                    statements: inventory.statements.clone(),
+                    authority: inventory.authority.clone(),
+                    actors: inventory.actors.iter().map(|a| a.actor.clone()).collect(),
+                    blobs: inventory.blobs.clone(),
+                    git: Some(GitAvailability {
+                        available: bundle.pack().is_some(),
+                    }),
+                    next_cursor: None,
+                };
+                if &listing.object != object {
+                    return Err(PullError::ListingMismatch {
+                        expected: object.clone(),
+                        found: listing.object,
+                    });
+                }
+                self.check_budget(listing.len())?;
+                for list in [&mut listing.statements, &mut listing.authority] {
+                    dedup(list);
+                }
+                dedup(&mut listing.actors);
+                dedup(&mut listing.blobs);
+                return Ok(listing);
+            }
+        };
         let base = format!("{API_PREFIX}/objects/{object}?limit={MAX_PAGE_LIMIT}");
         let mut path = base.clone();
         let mut merged: Option<ObjectListing> = None;
         loop {
-            let page: ObjectListing = self.peer.get_json(&path, self.limits.max_json_bytes)?;
+            let page: ObjectListing = peer.get_json(&path, self.limits.max_json_bytes)?;
             if &page.object != object {
                 return Err(PullError::ListingMismatch {
                     expected: object.clone(),
@@ -882,10 +1007,7 @@ impl Pull<'_> {
     }
 
     fn actor(&mut self, actor: &ActorId, budget: &mut usize) -> Result<(), PullError> {
-        let listing: ActorListing = self.peer.get_json(
-            &format!("{API_PREFIX}/actors/{actor}"),
-            self.limits.max_json_bytes,
-        )?;
+        let listing = self.actor_listing(actor)?;
         let bad = |message: String| PullError::BadActor {
             actor: actor.clone(),
             message,
@@ -942,10 +1064,15 @@ impl Pull<'_> {
         if Self::held(self.store.get_object_genesis(object))? {
             self.report.already_held += 1;
         } else {
-            let bytes = self.peer.get_bytes(
-                &format!("{API_PREFIX}/objects/{object}/genesis"),
-                self.limits.max_json_bytes,
-            )?;
+            let bytes = match &self.source {
+                Source::Peer(peer) => peer.get_bytes(
+                    &format!("{API_PREFIX}/objects/{object}/genesis"),
+                    self.limits.max_json_bytes,
+                )?,
+                Source::Bundle(bundle) => {
+                    bundled(bundle.genesis(), KairoRef::Object(object.clone()))?
+                }
+            };
             ingest_genesis(self.store, object, &bytes).map_err(|reason| PullError::Record {
                 record: record.clone(),
                 reason,
@@ -956,10 +1083,56 @@ impl Pull<'_> {
     }
 
     fn fetch_statement(&self, id: &StatementId) -> Result<Vec<u8>, PullError> {
-        self.peer.get_bytes(
-            &format!("{API_PREFIX}/statements/{id}"),
-            self.limits.max_json_bytes,
-        )
+        match &self.source {
+            Source::Peer(peer) => peer.get_bytes(
+                &format!("{API_PREFIX}/statements/{id}"),
+                self.limits.max_json_bytes,
+            ),
+            Source::Bundle(bundle) => {
+                bundled(bundle.statement(id), KairoRef::Statement(id.clone()))
+            }
+        }
+    }
+
+    /// An actor's genesis and key-event ids: the peer's actor listing,
+    /// or, from a bundle, the bundled genesis (or the one this store
+    /// already holds) with the inventory's key events.
+    fn actor_listing(&self, actor: &ActorId) -> Result<ActorListing, PullError> {
+        let bundle = match &self.source {
+            Source::Peer(peer) => {
+                return peer.get_json(
+                    &format!("{API_PREFIX}/actors/{actor}"),
+                    self.limits.max_json_bytes,
+                )
+            }
+            Source::Bundle(bundle) => bundle,
+        };
+        let key_events = bundle
+            .manifest()
+            .inventory
+            .actors
+            .iter()
+            .find(|entry| &entry.actor == actor)
+            .map(|entry| entry.key_events.clone())
+            .unwrap_or_default();
+        let record = KairoRef::Actor(actor.clone());
+        let genesis = match bundle.actor(actor).map_err(bundle_error)? {
+            Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| PullError::Record {
+                record,
+                reason: RecordRejection::Schema(error.to_string()),
+            })?,
+            None => match self.store.get_actor(actor) {
+                Ok(genesis) => kairo_identity::json::ActorGenesisJson::from_body(&genesis),
+                Err(StoreError::Missing) => return Err(PullError::NotInBundle { record }),
+                Err(error) => return Err(PullError::Store(error)),
+            },
+        };
+        Ok(ActorListing {
+            schema: Default::default(),
+            actor: actor.clone(),
+            genesis,
+            key_events,
+        })
     }
 
     /// Fetch `ids`, in batches of [`MAX_BATCH_IDS`] when the peer
@@ -971,23 +1144,26 @@ impl Pull<'_> {
         &self,
         ids: &[StatementId],
     ) -> Result<Vec<(StatementId, Vec<u8>)>, PullError> {
-        if !self.batch {
-            return ids
-                .iter()
-                .map(|id| Ok((id.clone(), self.fetch_statement(id)?)))
-                .collect();
-        }
+        let peer = match &self.source {
+            Source::Peer(peer) if self.batch => peer,
+            _ => {
+                return ids
+                    .iter()
+                    .map(|id| Ok((id.clone(), self.fetch_statement(id)?)))
+                    .collect()
+            }
+        };
         let path = format!("{API_PREFIX}{STATEMENT_BATCH_PATH}");
         let mut fetched = Vec::with_capacity(ids.len());
         for chunk in ids.chunks(MAX_BATCH_IDS) {
-            let bytes = self.peer.post_json(
+            let bytes = peer.post_json(
                 &path,
                 &StatementBatchRequest::new(chunk.to_vec()),
                 self.limits.max_batch_bytes,
             )?;
             let batch: StatementBatch =
                 serde_json::from_slice(&bytes).map_err(|error| PullError::Parse {
-                    url: format!("{}{path}", self.peer.base_url()),
+                    url: format!("{}{path}", peer.base_url()),
                     message: error.to_string(),
                 })?;
             let mut served: BTreeMap<StatementId, Vec<u8>> = batch
@@ -1000,7 +1176,7 @@ impl Pull<'_> {
                     Some(bytes) if bytes.len() as u64 <= self.limits.max_json_bytes => bytes,
                     Some(_) => {
                         return Err(PullError::TooLarge {
-                            url: format!("{}{path}", self.peer.base_url()),
+                            url: format!("{}{path}", peer.base_url()),
                             limit: self.limits.max_json_bytes,
                         })
                     }
@@ -1071,10 +1247,13 @@ impl Pull<'_> {
             self.report.already_held += 1;
             return self.note(&record);
         }
-        let bytes = self.peer.get_bytes(
-            &format!("{API_PREFIX}/blobs/{id}"),
-            self.limits.max_blob_bytes,
-        )?;
+        let bytes = match &self.source {
+            Source::Peer(peer) => peer.get_bytes(
+                &format!("{API_PREFIX}/blobs/{id}"),
+                self.limits.max_blob_bytes,
+            )?,
+            Source::Bundle(bundle) => bundled(bundle.blob(id), record.clone())?,
+        };
         // Every MVP blob is a revision manifest.
         let actual = BlobId::from_bytes(OBJECT_MANIFEST_DOMAIN, &bytes);
         if &actual != id {
@@ -1089,6 +1268,20 @@ impl Pull<'_> {
         self.report.fetched += 1;
         self.note(&record)
     }
+}
+
+/// A bundled record, or [`PullError::NotInBundle`] when the bundle
+/// doesn't carry it.
+fn bundled(
+    read: Result<Option<Vec<u8>>, ClosureBundleError>,
+    record: KairoRef,
+) -> Result<Vec<u8>, PullError> {
+    read.map_err(bundle_error)?
+        .ok_or(PullError::NotInBundle { record })
+}
+
+fn bundle_error(error: ClosureBundleError) -> PullError {
+    PullError::Bundle(error.to_string())
 }
 
 /// A fetched statement waiting to be ingested.

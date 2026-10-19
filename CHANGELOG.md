@@ -18,6 +18,26 @@ rather than per-commit.
 
 ### Added
 
+- **Upload by push, sending only the delta (`DECISIONS.md` §26
+  sub-decisions 6 and 8).**
+  - `kairo push --object <id> --to <url>` sends the peer the object's
+    closure inventory (`POST /federation/v1/push/plan`), learns what it
+    lacks and which commits it has, and uploads a closure bundle of
+    just that (`POST /federation/v1/push?object=<id>`), with Git
+    history as a thin pack. Nothing is uploaded when the peer holds
+    everything.
+  - The receiver checks everything but the signature before reading
+    the body, streams it into the inbox up to `max_push_bytes`
+    (`413 fed_too_large`), and deletes it unless the signature over its
+    SHA-256 verifies. New codes: `fed_bad_push`, `fed_too_large`. Nodes
+    advertise `push`.
+  - Closure bundles (`kairo.closure-bundle.v1`, a tar) are a new bundle
+    type: a published closure, including authority and key events.
+    `kairo federation receive` ingests them through the pull verifier,
+    with provenance naming `push:<node>`.
+  - Git ingest runs `index-pack --fix-thin`, so thin packs complete
+    against the pool.
+
 - **Push by announcement (`DECISIONS.md` §26).**
   - `POST /federation/v1/announce` takes a `KairoNode1`-signed list of
     objects with the announcer's base URL. The receiving node requires

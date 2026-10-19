@@ -96,7 +96,7 @@ pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
 pub use federation::ObjectClosure;
-pub use inbox::{InboxAnnouncement, InboxEntry, InboxItem, InboxPut, InboxStore};
+pub use inbox::{InboxAnnouncement, InboxEntry, InboxItem, InboxPut, InboxStore, InboxUpload};
 pub use objects_by_actor::ObjectByActor;
 pub use provenance::{ProvenanceEntry, ProvenanceStore};
 pub use published::{PublishedObject, PublishedObjectStore};

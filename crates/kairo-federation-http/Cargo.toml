@@ -12,13 +12,14 @@ repository.workspace = true
 # proxy and links no TLS stack of its own when built alone.
 [features]
 default = ["server", "client"]
-server = ["dep:axum", "dep:flate2", "dep:http-body", "dep:kairo-config", "dep:kairo-keystore", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
-client = ["dep:kairo-object", "dep:ureq"]
+server = ["dep:axum", "dep:sha2", "dep:flate2", "dep:http-body", "dep:kairo-config", "dep:kairo-keystore", "dep:tokio", "dep:tracing", "dep:tracing-subscriber"]
+client = ["dep:kairo-bundle", "dep:kairo-object", "dep:sha2", "dep:ureq"]
 
 [dependencies]
 axum = { version = "0.7", optional = true }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"], optional = true }
 http-body = { version = "1", optional = true }
+kairo-bundle = { path = "../kairo-bundle", optional = true }
 kairo-config = { path = "../kairo-config", optional = true }
 kairo-core = { path = "../kairo-core" }
 kairo-federation-core = { path = "../kairo-federation-core" }
@@ -30,6 +31,7 @@ kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+sha2 = { version = "0.10", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "io-util", "process", "time"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }

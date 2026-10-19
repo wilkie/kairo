@@ -52,7 +52,7 @@ mod upload;
 mod view;
 
 #[cfg(feature = "server")]
-pub use auth::{AuthenticatedNode, NodeAuthError};
+pub use auth::{AuthenticatedNode, NodeAuthError, PendingAuth};
 #[cfg(feature = "server")]
 pub use error::Error;
 #[cfg(feature = "server")]

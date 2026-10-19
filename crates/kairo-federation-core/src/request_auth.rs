@@ -51,7 +51,7 @@ pub fn node_request_signing_string(
     method: &str,
     receiver_base_url: &str,
     path_and_query: &str,
-    body: &[u8],
+    body: RequestBody<'_>,
     timestamp: i64,
     nonce: &[u8; NODE_NONCE_LEN],
 ) -> String {
@@ -60,7 +60,7 @@ pub fn node_request_signing_string(
         method,
         receiver_base_url,
         path_and_query,
-        &encode_hex(&Sha256::digest(body)),
+        &encode_hex(&body.sha256()),
         &timestamp.to_string(),
         &encode_hex(nonce),
     ];
@@ -79,13 +79,30 @@ pub fn random_node_nonce() -> Result<[u8; NODE_NONCE_LEN], getrandom::Error> {
     Ok(nonce)
 }
 
+/// A request body as the signature sees it: the bytes, or, for a body
+/// streamed through (an upload, `DECISIONS.md` §26), its SHA-256.
+#[derive(Debug, Clone, Copy)]
+pub enum RequestBody<'a> {
+    Bytes(&'a [u8]),
+    Sha256([u8; 32]),
+}
+
+impl RequestBody<'_> {
+    pub fn sha256(&self) -> [u8; 32] {
+        match self {
+            Self::Bytes(bytes) => Sha256::digest(bytes).into(),
+            Self::Sha256(digest) => *digest,
+        }
+    }
+}
+
 /// What a request a node signs is made of.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeRequest<'a> {
     pub method: &'a str,
     pub receiver_base_url: &'a str,
     pub path_and_query: &'a str,
-    pub body: &'a [u8],
+    pub body: RequestBody<'a>,
 }
 
 impl NodeRequest<'_> {

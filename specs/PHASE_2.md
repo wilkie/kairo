@@ -562,7 +562,11 @@ Deferred from Phase 1 §9 (`specs/PACKAGE.md` "MVP slice").
       checks federation pull uses (schema, fixity, revision ids,
       signature against stored key events). Today bundle import only
       fixity-checks, so the store has two entry points with different
-      guarantees.
+      guarantees. *Partly done:* closure bundles (push uploads,
+      `DECISIONS.md` §26 sub-decision 8) ingest through the pull
+      verifier. Object bundles (`kairo bundle import`) still only
+      fixity-check; routing them through the same verifier needs the
+      signers' key events, which object bundles leave out.
 - [x] Per-truster reverse trust index. Both `list_trust(by_actor)` and
       `list_opinions_about(trusted_actor)` are now indexed lookups in
       `FilesystemStore` rather than directory walks.

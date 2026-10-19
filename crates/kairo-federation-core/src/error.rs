@@ -53,6 +53,11 @@ pub enum FedErrorCode {
     FedNotAccepted,
     /// An announcement that doesn't parse or validate.
     FedBadAnnouncement,
+    /// A push plan or upload that doesn't parse, validate, or unpack
+    /// (`specs/DECISIONS.md` §26 sub-decisions 6 and 8).
+    FedBadPush,
+    /// An upload over the receiver's `max_push_bytes`.
+    FedTooLarge,
     /// A code this client doesn't know, from a newer node.
     #[serde(other)]
     Unknown,
@@ -69,9 +74,11 @@ impl FedErrorCode {
             | Self::FedBadLimit
             | Self::FedBadBatch
             | Self::FedBadGitRequest
-            | Self::FedBadAnnouncement => 400,
+            | Self::FedBadAnnouncement
+            | Self::FedBadPush => 400,
             Self::FedUnauthenticated => 401,
             Self::FedNotTrusted | Self::FedNotAccepted => 403,
+            Self::FedTooLarge => 413,
             Self::FedMethodNotAllowed => 405,
             Self::FedStoreError | Self::Unknown => 500,
             Self::FedBusy => 503,
@@ -93,6 +100,8 @@ impl FedErrorCode {
             Self::FedNotTrusted => "fed_not_trusted",
             Self::FedNotAccepted => "fed_not_accepted",
             Self::FedBadAnnouncement => "fed_bad_announcement",
+            Self::FedBadPush => "fed_bad_push",
+            Self::FedTooLarge => "fed_too_large",
             Self::Unknown => "unknown",
         }
     }

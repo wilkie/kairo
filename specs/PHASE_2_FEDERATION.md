@@ -60,6 +60,8 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `POST` | `/federation/v1/statement-batch` | up to 256 statements, each exactly as stored, in request order; unserved ids left out (`DECISIONS.md` §24) |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
+| `POST` | `/federation/v1/push/plan` | `KairoNode1`-signed `{ schema: "kairo.fed.push-plan-request.v1", object, inventory }`; `200` `{ schema: "kairo.fed.push-plan.v1", genesis, actors, statements, blobs, have_commits }`: what this node lacks (`DECISIONS.md` §26 sub-decision 6) |
+| `POST` | `/federation/v1/push?object={id}` | `KairoNode1`-signed closure bundle tar (§26 sub-decision 8), at most `max_push_bytes`; `202` `{ schema: "kairo.fed.push-accepted.v1", entry }` |
 | `POST` | `/federation/v1/announce` | `KairoNode1`-signed `{ schema: "kairo.fed.announce.v1", base_url, objects }` (at most 256 objects); `202` `{ schema: "kairo.fed.announce-accepted.v1", entry }` once it is in the inbox (`DECISIONS.md` §26) |
 
 Every other method or path is `405` / `404`. `{id}` is a bare id.
@@ -129,10 +131,12 @@ sub-decision 2).
 | 400 | `fed_bad_batch` | statement batch request that doesn't parse, or names no ids or more than 256 (`DECISIONS.md` §24) |
 | 400 | `fed_bad_git_request` | Git request the node won't serve: not protocol v2, a command other than `ls-refs` / `fetch`, an unpublished `want`, a malformed body (`DECISIONS.md` §22) |
 | 400 | `fed_bad_announcement` | an authenticated announcement that doesn't parse, or names no objects, more than 256, an object twice, or an invalid `base_url` (`DECISIONS.md` §26) |
+| 400 | `fed_bad_push` | a plan request that doesn't parse, or whose inventory is over 100 000 ids, names one twice, or names a commit that isn't a `git:` revision; an upload without `?object=` or whose body stream fails (`DECISIONS.md` §26) |
+| 413 | `fed_too_large` | an upload over this node's `max_push_bytes`; nothing is kept |
 | 403 | `fed_not_trusted` | the receiving node actor has no `trusted` `federation:push` opinion of the announcer (§26 sub-decision 1) |
 | 403 | `fed_not_accepted` | no `[[federation.accept]]` entry covers an announced object for this announcer; the message names them (§26 sub-decision 2) |
 | 401 | `fed_unauthenticated` | an endpoint that acts on who is asking got no valid `KairoNode1` signature: missing, malformed, outside ±300 s, a replayed nonce, an unknown or non-`node` signer, a key not active or revoked at the request's `timestamp`, or a signature that doesn't verify over this node's base URL (`DECISIONS.md` §25 sub-decision 3). Read endpoints never send it |
-| 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack`, `statement-batch`, and `announce` `POST`s |
+| 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack`, `statement-batch`, `announce`, `push/plan`, and `push` `POST`s |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
 | 503 | `fed_busy` | concurrent Git fetches at capacity, or an announcer's inbox share (`max_inbox_entries`) is full; `Retry-After` says when to retry (`DECISIONS.md` §21, §22, §26) |
 
@@ -477,7 +481,7 @@ inventory step, and 7 come from comparing this design with Radicle
    instead of one request each, still verifying every statement on
    its own. Absence stays ambiguous, and a statement a batch leaves
    out is fetched per record. Blobs stay per record.
-3. **Push** with node authentication, *decided in `DECISIONS.md` §25
+3. ~~**Push**~~ *(shipped)* with node authentication, *decided in `DECISIONS.md` §25
    (node authentication) and §26 (push)*. Slices, in order:
    1. ~~**Scoped `ActorTrust`**~~ (§18; shipped): the `scope` field,
       the chain key `(truster, trusted, scope)`, and `kairo trust
@@ -497,9 +501,15 @@ inventory step, and 7 come from comparing this design with Radicle
       7; shipped), plus `kairo federation announce`, `receive`, and
       `learn` for announcements. The server reads the accept list and
       push limits from `<store>/config.toml` at startup.
-   5. **Upload** (`kairo push`, `POST /federation/v1/push`), with
-      bundle ingest through the pull verifier, which completes bundle
-      import's signature verification (§26 sub-decision 4).
+   5. ~~**Upload**~~ (`kairo push`, `POST /federation/v1/push/plan`
+      and `/push`; shipped), sending only the delta, with closure
+      bundles ingested by `kairo federation receive` through the pull
+      verifier (§26 sub-decisions 4, 6, 8).
+   - **Open:** a receiver must hold a pushing node's actor before it
+     can check the upload's signature, and `kairo federation learn`
+     needs the pusher reachable once. A laptop that is never reachable
+     needs another way in: an exported, self-verifying node-actor
+     record the receiver imports, checked by the same verifier.
 4. **Trust transport** (opt-in, never auto-trusted) and `forget`.
 5. **Daemon `FederationService`**: background sync, on-demand
    fetch of missing closure data (`DAEMON.md` §9). The operator

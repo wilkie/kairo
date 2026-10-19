@@ -15,7 +15,7 @@ use kairo_config::{AcceptConfig, FederationConfig, LimitsConfig};
 use kairo_core::{ActorId, ObjectId, Timestamp};
 use kairo_federation_core::{
     Announcement, AnnouncementAccepted, FedErrorCode, FedErrorEnvelope, NodeAuthorization,
-    NodeDocument, NodeRequest,
+    NodeDocument, NodeRequest, RequestBody,
 };
 use kairo_federation_http::client::{announce, learn_peer, NodeSigner, PullError, PullOptions};
 use kairo_federation_http::Node;
@@ -36,6 +36,7 @@ use kairo_keystore as _;
 use kairo_object as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
 use tokio as _;
 use tracing as _;
 use tracing_subscriber as _;
@@ -134,7 +135,7 @@ fn signed(sender: &CreatedActor, body: &[u8], nonce: u8) -> String {
         method: "POST",
         receiver_base_url: BASE_URL,
         path_and_query: PATH,
-        body,
+        body: RequestBody::Bytes(body),
     };
     NodeAuthorization::sign(
         &request,
@@ -200,7 +201,9 @@ async fn an_accepted_announcement_lands_in_the_inbox() {
     let entries = seeded.store.list_inbox().expect("inbox");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, accepted.entry);
-    let InboxItem::Announcement(entry) = &entries[0].item;
+    let InboxItem::Announcement(entry) = &entries[0].item else {
+        panic!("expected an announcement");
+    };
     assert_eq!(entry.from, sender.actor_id);
     assert_eq!(entry.to, seeded.node_actor);
     assert_eq!(entry.base_url, SENDER_URL);
@@ -423,7 +426,9 @@ fn a_learned_and_trusted_peer_announces_and_the_receiver_can_pull() {
     let entries = receiver.store.list_inbox().expect("inbox");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, receipt.entry);
-    let InboxItem::Announcement(entry) = &entries[0].item;
+    let InboxItem::Announcement(entry) = &entries[0].item else {
+        panic!("expected an announcement");
+    };
     // What `kairo federation receive` does with it.
     let pulled = kairo_federation_http::client::pull_object(
         &receiver.store,

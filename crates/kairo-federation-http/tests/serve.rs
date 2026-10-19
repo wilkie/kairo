@@ -36,6 +36,7 @@ use kairo_git as _;
 use kairo_object as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
 use tracing as _;
 use tracing_subscriber as _;
 use ureq as _;

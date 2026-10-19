@@ -10,8 +10,8 @@ use crate::{
     ActorListing, ActorListingError, Announcement, AnnouncementError, Cursor, CursorError,
     FedErrorCode, FedErrorEnvelope, GitAvailability, NodeAuthHeaderError, NodeAuthorization,
     NodeDocument, NodeDocumentError, NodeRequest, ObjectListing, PageRequest, PageRequestError,
-    PublishedObjects, UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT,
-    PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL,
+    PublishedObjects, RequestBody, UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN,
+    MAX_PAGE_LIMIT, PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -498,7 +498,7 @@ const REQUEST: NodeRequest<'static> = NodeRequest {
     method: "POST",
     receiver_base_url: "https://archive.example.org",
     path_and_query: "/federation/v1/announce",
-    body: b"{}",
+    body: RequestBody::Bytes(b"{}"),
 };
 
 #[test]

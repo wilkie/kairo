@@ -7056,3 +7056,100 @@ fn announcing_needs_a_published_object_and_one_node_actor() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[test]
+fn a_pushed_object_is_received_without_reaching_the_pusher(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §26: the home node learns the laptop once, while the
+    // laptop is reachable; after that the laptop pushes and the home
+    // node never connects back to it.
+    let laptop_dir = tempfile::TempDir::new()?;
+    let laptop = laptop_dir.path();
+    let laptop_node = create_node_actor(laptop)?;
+    let object = create_cli_object(laptop)?;
+    run_in(
+        laptop,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+
+    let home_dir = tempfile::TempDir::new()?;
+    let home = home_dir.path();
+    let home_node = create_node_actor(home)?;
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[[federation.accept]]\nobject = \"{object}\"\nfrom = \"{laptop_node}\"\n\
+             publish = true\n"
+        ),
+    )?;
+    {
+        let (laptop_url, stop, server) = serve_federation(laptop, &laptop_node)?;
+        run_in(
+            home,
+            federation(FederationCommand::Learn {
+                from: laptop_url,
+                allow_peer: true,
+            }),
+        )?;
+        drop(stop);
+        server.join().map_err(|_| "laptop server panicked")?;
+    }
+    run_in(
+        home,
+        Command::Trust {
+            command: TrustCommand::Grant {
+                by: home_node.clone(),
+                of: laptop_node.clone(),
+                scope: "federation:push".to_owned(),
+                reason: None,
+            },
+        },
+    )?;
+    let (home_url, _home_stop, _home_server) = serve_federation(home, &home_node)?;
+
+    let push = || {
+        run_in(
+            laptop,
+            Command::Push {
+                object: object.clone(),
+                to: home_url.clone(),
+                node: None,
+                allow_peer: true,
+            },
+        )
+    };
+    let pushed = push()?;
+    assert!(
+        pushed.contains("sent = genesis=true actors=1 statements=0"),
+        "{pushed}"
+    );
+    assert!(pushed.contains("entry = push-"), "{pushed}");
+
+    let received = run_in(home, federation(FederationCommand::Receive))?;
+    assert!(
+        received.contains(&format!("ingested object={object} from={laptop_node}")),
+        "{received}"
+    );
+    assert!(received.contains("published=true"), "{received}");
+    assert!(received.ends_with("not_pulled = 0\n"), "{received}");
+    let provenance = run_in(
+        home,
+        federation(FederationCommand::Provenance {
+            record: format!("object:{object}"),
+        }),
+    )?;
+    assert!(
+        provenance.contains(&format!("peer_url=push:{laptop_node}")),
+        "{provenance}"
+    );
+
+    // The home node holds it all now: the second push sends nothing.
+    let again = push()?;
+    assert!(
+        again.contains("entry = none (the peer holds everything)"),
+        "{again}"
+    );
+    Ok(())
+}

@@ -312,7 +312,29 @@ impl GitCache {
         sink: impl Write,
     ) -> Result<(), GitError> {
         let repo_path = self.require_repo(object_id)?;
-        git_pack_revs(&repo_path, snapshot.oids(), sink)
+        git_pack_revs(&repo_path, snapshot.oids().map(str::to_owned), false, sink)
+    }
+
+    /// Stream a thin Git pack of what `wants` reach and `haves` don't
+    /// into `sink` (`specs/DECISIONS.md` §26 sub-decision 6): the delta
+    /// for a receiver that already holds `haves`. Objects may be stored
+    /// as deltas against objects the haves reach, so the receiver
+    /// completes the pack against its pool on ingest
+    /// ([`Self::ingest_pack_from`] does). All revisions must be in the
+    /// object repo's format.
+    pub fn pack_delta_to(
+        &self,
+        object_id: &str,
+        wants: &[GitRevision],
+        haves: &[GitRevision],
+        sink: impl Write,
+    ) -> Result<(), GitError> {
+        let repo_path = self.require_repo(object_id)?;
+        let lines = wants
+            .iter()
+            .map(|want| want.oid().to_owned())
+            .chain(haves.iter().map(|have| format!("^{}", have.oid())));
+        git_pack_revs(&repo_path, lines, true, sink)
     }
 
     /// [`Self::pack_snapshot_to`] from the object's current refs.
@@ -349,7 +371,7 @@ impl GitCache {
     /// quarantine, as Git's `receive-pack` does (`specs/DECISIONS.md`
     /// §21):
     ///
-    /// 1. `git index-pack --stdin` writes the pack into a fresh
+    /// 1. `git index-pack --stdin --fix-thin` writes the pack into a fresh
     ///    quarantine object directory under `<root>/incoming/`, whose
     ///    alternates point at the pool so existing objects resolve. No
     ///    lock is held, so a slow `source` (a network download) blocks
@@ -841,6 +863,10 @@ fn git_index_pack_stream(pool: &Path, mut source: impl Read) -> Result<(), GitEr
         .arg(pool)
         .arg("index-pack")
         .arg("--stdin")
+        // Completes a thin pack (an upload's delta, §26) from the
+        // objects the quarantine reaches through the pool; a no-op for
+        // a self-contained pack.
+        .arg("--fix-thin")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -897,17 +923,26 @@ fn git_index_pack_stream(pool: &Path, mut source: impl Read) -> Result<(), GitEr
 /// commits, independent of what the refs say by the time it runs.
 /// Drains stderr in a separate thread to avoid pipe-buffer deadlock
 /// when stdout is large.
-fn git_pack_revs<'a>(
+/// `git pack-objects --revs` over `lines` (an oid, or `^<oid>` to
+/// exclude what it reaches), `--thin` when the receiver holds the
+/// excluded objects.
+fn git_pack_revs(
     repo_path: &Path,
-    oids: impl Iterator<Item = &'a str>,
+    lines: impl Iterator<Item = String>,
+    thin: bool,
     mut sink: impl Write,
 ) -> Result<(), GitError> {
     use std::process::Stdio;
 
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo_path)
-        .args(["pack-objects", "--revs", "--stdout"])
+        .args(["pack-objects", "--revs", "--stdout"]);
+    if thin {
+        command.arg("--thin");
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -932,8 +967,8 @@ fn git_pack_revs<'a>(
                 "git pack-objects stdin not captured",
             ))
         })?;
-        for oid in oids {
-            writeln!(stdin, "{oid}").map_err(io_error)?;
+        for line in lines {
+            writeln!(stdin, "{line}").map_err(io_error)?;
         }
         // Dropping stdin sends EOF: the revision list is complete.
     }
@@ -1094,6 +1129,84 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let cache = GitCache::open(dir.path()).expect("open cache");
         (dir, cache)
+    }
+
+    #[test]
+    fn a_delta_pack_sends_only_what_the_receiver_lacks() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (src, url, branch, head_oid) = init_source_repo();
+        let parent = std::process::Command::new("git")
+            .arg("-C")
+            .arg(src.path())
+            .args(["rev-parse", "HEAD~1"])
+            .output()
+            .expect("rev-parse");
+        let parent = sha1(String::from_utf8(parent.stdout).expect("utf8").trim());
+        let head = sha1(&head_oid);
+        let (_pusher_dir, pusher) = open_temp();
+        pusher
+            .fetch(
+                SAMPLE_ID,
+                &url,
+                &branch,
+                GitObjectFormat::Sha1,
+                &GitCli::new(),
+            )
+            .expect("fetch");
+
+        // The receiver holds the parent only.
+        let (_receiver_dir, receiver) = open_temp();
+        let mut base = Vec::new();
+        pusher
+            .pack_delta_to(SAMPLE_ID, std::slice::from_ref(&parent), &[], &mut base)
+            .expect("base pack");
+        receiver
+            .ingest_pack_from(
+                GitObjectFormat::Sha1,
+                &base[..],
+                std::slice::from_ref(&parent),
+            )
+            .expect("ingest base");
+
+        let mut delta = Vec::new();
+        pusher
+            .pack_delta_to(
+                SAMPLE_ID,
+                std::slice::from_ref(&head),
+                std::slice::from_ref(&parent),
+                &mut delta,
+            )
+            .expect("delta pack");
+        let full = pusher.pack_for_object(SAMPLE_ID).expect("full pack");
+        assert!(
+            delta.len() < full.len(),
+            "{} >= {}",
+            delta.len(),
+            full.len()
+        );
+        receiver
+            .ingest_pack_from(
+                GitObjectFormat::Sha1,
+                &delta[..],
+                std::slice::from_ref(&head),
+            )
+            .expect("the delta completes against the pool");
+        assert!(receiver
+            .missing_objects(std::slice::from_ref(&head))
+            .expect("check")
+            .is_empty());
+
+        // Without the parent, the delta can't stand alone.
+        let (_empty_dir, empty) = open_temp();
+        assert!(empty
+            .ingest_pack_from(
+                GitObjectFormat::Sha1,
+                &delta[..],
+                std::slice::from_ref(&head)
+            )
+            .is_err());
     }
 
     #[test]

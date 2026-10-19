@@ -157,6 +157,21 @@ fn run(cli: Cli) -> Result<String, CliError> {
             },
             &paths,
         ),
+        Some(Command::Push {
+            object,
+            to,
+            node,
+            allow_peer,
+        }) => commands::federation::run_push(
+            &commands::federation::PushArgs {
+                object: &object,
+                to: &to,
+                node: node.as_deref(),
+                allow_peer,
+                offline: cli.offline,
+            },
+            &paths,
+        ),
         Some(Command::Config { command }) => commands::config::run_config_command(command, &paths),
         Some(Command::Federation { command }) => {
             commands::federation::run_federation_command(command, &paths, cli.offline)

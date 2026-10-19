@@ -1338,6 +1338,7 @@ kairo federation provenance --ref <typed-ref>
 kairo federation learn --from <url> [--allow-peer]
 kairo federation announce --object <id>... --to <url> --base-url <url> [--node <actor>] [--allow-peer]
 kairo federation receive
+kairo push --object <id> --to <url> [--node <actor>] [--allow-peer]
 ```
 
 Federation commands require daemon/federation support unless a direct federation client is explicitly implemented.
@@ -1373,7 +1374,18 @@ federation must be enabled, and the peer must be listed unless
   the pull, and publishes the object if its accept entry says
   `publish = true`. It prints one line per object (`pulled ...`,
   `refused ...`, or `failed ...`) and `not_pulled = <n>`, and removes
-  each entry either way.
+  each entry either way. An upload's closure bundle is ingested
+  through the same verifier as a pull (`ingested ...` lines), with
+  provenance naming `push:<node-actor-id>`.
+
+`kairo push` (`DECISIONS.md` §26 sub-decisions 5–6) is for a node the
+peer can't pull from. It sends the peer the object's closure
+inventory, gets back what the peer lacks, and uploads a closure bundle
+of just that, with Git history as a thin pack against the commits the
+peer has. When the peer already holds everything it uploads nothing
+(`entry = none`). It prints the inventory size and what was sent. The
+same policy, signing, and refusals as `announce` apply, plus `413
+fed_too_large` past the peer's `max_push_bytes`.
 
 Search results must be labeled as unverified until core validation occurs.
 

@@ -34,6 +34,7 @@ use kairo_identity as _;
 use kairo_keystore as _;
 use kairo_object as _;
 use serde as _;
+use sha2 as _;
 use tokio as _;
 use tower as _;
 use tracing as _;
@@ -700,4 +701,51 @@ fn sha256_history_federates_into_its_own_pool() {
         .expect("has_commit"));
     assert!(local.root().join("git").join("pool-sha256").exists());
     assert!(!local.root().join("git").join("pool-sha1").exists());
+}
+
+// --- push (DECISIONS.md §26 sub-decision 6) ---------------------------
+
+#[test]
+fn a_push_sends_git_history_the_receiver_lacks() {
+    if kairo_test_support::git::skip_if_no_git() {
+        return;
+    }
+    use kairo_federation_http::client::{push, NodeSigner};
+    let origin = origin(true);
+    let receiver = common::receiver(&origin.object, None);
+    receiver.trusts(&origin.store, &origin.node_actor);
+    let key = common::node_key();
+    let signer = NodeSigner {
+        node: &origin.node_actor,
+        key: &key,
+    };
+    let send = || {
+        push(
+            &origin.store,
+            &receiver.served.base_url,
+            &origin.object,
+            signer,
+            &PullOptions::default(),
+        )
+        .expect("push")
+    };
+
+    let first = send();
+    assert_eq!(first.sent.commits, 1);
+    let report = receiver.receive().remove(0).expect("ingest");
+    assert_eq!(report.git, GitOutcome::Ingested { commits: 1 });
+    assert!(local_has_commit(
+        &receiver.store,
+        &origin.object,
+        &origin.commit
+    ));
+
+    // The receiver has the first commit, so only the second is wanted,
+    // in a pack thin against the first.
+    let next = origin.advance(&[("notes.txt", "more\n")]);
+    let second = send();
+    assert_eq!(second.sent.commits, 1, "{second:?}");
+    let report = receiver.receive().remove(0).expect("ingest the delta");
+    assert_eq!(report.git, GitOutcome::Ingested { commits: 1 });
+    assert!(local_has_commit(&receiver.store, &origin.object, &next));
 }

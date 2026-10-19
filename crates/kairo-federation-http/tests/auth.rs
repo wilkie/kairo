@@ -7,7 +7,7 @@
 mod common;
 
 use kairo_core::{ActorId, Timestamp};
-use kairo_federation_core::{FedErrorCode, NodeAuthorization, NodeRequest};
+use kairo_federation_core::{FedErrorCode, NodeAuthorization, NodeRequest, RequestBody};
 use kairo_federation_http::{AuthenticatedNode, Node, NodeAuthError};
 use kairo_identity::{ActorGenesisBody, ActorKind, SecretSigningKey};
 use kairo_statement::{ActorKeyRevocationBody, ActorKeyRotationBody};
@@ -27,6 +27,7 @@ use kairo_keystore as _;
 use kairo_object as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
 use tempfile as _;
 use tokio as _;
 use tower as _;
@@ -70,7 +71,7 @@ fn header(
         method: "POST",
         receiver_base_url: receiver,
         path_and_query: PATH,
-        body,
+        body: RequestBody::Bytes(body),
     };
     NodeAuthorization::sign(&request, signer.clone(), key, timestamp, [nonce; 16]).format()
 }

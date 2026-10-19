@@ -8,7 +8,7 @@ use kairo_config::FederationConfig;
 use kairo_core::{ActorId, Timestamp};
 use kairo_federation_core::{
     NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL,
-    SUPPORTS_STATEMENT_BATCH,
+    SUPPORTS_PUSH, SUPPORTS_STATEMENT_BATCH,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorKind, ActorResolver, SecretSigningKey};
@@ -119,6 +119,7 @@ impl Node {
                 SUPPORTS_OBJECT_PULL.to_owned(),
                 SUPPORTS_STATEMENT_BATCH.to_owned(),
                 SUPPORTS_ANNOUNCE.to_owned(),
+                SUPPORTS_PUSH.to_owned(),
             ],
         }
         .sign(signer, signed_at);

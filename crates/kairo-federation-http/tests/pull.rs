@@ -40,6 +40,7 @@ use kairo_keystore as _;
 use kairo_object as _;
 use kairo_test_support as _;
 use serde as _;
+use sha2 as _;
 use tokio as _;
 use tower as _;
 use tracing as _;

@@ -2319,11 +2319,44 @@ Sub-decisions:
    Both sign with the local node actor's key, so a pushing node needs
    a node actor in its keystore.
 
-6. **Incremental upload is later work.** The first upload carries the
-   object's whole closure each time. Chain tips (§23) give the natural
-   increment: the receiver could advertise what it holds, and the
-   pusher could send only what follows. That waits until whole-closure
-   uploads prove too large.
+6. **Uploads send the delta.** *Replaces "incremental upload is later
+   work", decided when slice 5 was built.* An upload is two signed
+   requests, as a Git push is: the receiver says what it has, and the
+   pusher sends the rest.
+   - **Plan.** `POST /federation/v1/push/plan` carries the pusher's
+     inventory of the object's published closure: `{ schema:
+     "kairo.fed.push-plan-request.v1", object, inventory: { statements,
+     authority, actors: [{ actor, key_events }], blobs, commits } }`,
+     the same ids a pull would list, and the typed Git revisions the
+     revisions name.
+     After the announce checks (signature, `federation:push` trust,
+     an accept entry for the object), the receiver answers `{ schema:
+     "kairo.fed.push-plan.v1", genesis, actors, statements, blobs,
+     have_commits }`: whether it lacks the object genesis, the actors
+     whose genesis it lacks, the statements (object statements,
+     authority, and key events) and blobs it lacks, and which of the
+     commits it already has. A plan request is at most 8 MiB and
+     100 000 ids (`fed_bad_push`).
+   - **Upload.** `POST /federation/v1/push?object=<id>` carries a
+     closure bundle (sub-decision 8) of just what the plan asked for.
+     Its Git pack is thin: built with the receiver's `have_commits`
+     excluded, so shared history isn't resent, and completed against
+     the receiver's pool on ingest. The object is in the signed query
+     so every check but the signature runs before the body is read: a
+     stranger can't make the receiver write anything. The body streams
+     into the inbox up to `max_push_bytes` (`413 fed_too_large` past
+     it) and is deleted if the signature over its SHA-256 then fails.
+   - **The plan is advisory.** The receiver may have gained or lost
+     records in between. Ingest verifies against whatever the store
+     holds then, and a listed record that is neither held nor in the
+     bundle fails the ingest as an unserved record fails a pull.
+   - **What the plan reveals.** Which of the pusher's own ids the
+     receiver holds, to an authenticated node it trusts with
+     `federation:push`. Nothing about records the pusher didn't name.
+   - Chain tips (§23) could later shrink plans for large objects:
+     the receiver advertises its tips and the pusher sends what follows.
+     Revisions and blobs are unchained and forks make "what follows"
+     fuzzy, so the id inventory stays the exact form.
 
 7. **Learning a pusher's keys, and the announcement's shape.** Added
    when slice 4 was built.
@@ -2347,6 +2380,40 @@ Sub-decisions:
    - The server reads the accept list and push limits from
      `<store>/config.toml` at startup; `receive` re-reads them.
 
+8. **The closure bundle.** An upload is a new bundle type, the
+   transfer form of a published closure: exactly what a pull fetches,
+   including authority and every actor's key events, which object
+   bundles deliberately leave out (`PACKAGE.md` MVP slice). That makes
+   a push verify as a pull does even when the pusher can't be reached
+   afterwards, as a laptop usually can't. It exposes nothing new: the
+   pusher's node already serves all of it to anyone who pulls.
+   - **Layout.** An uncompressed POSIX tar (`PACKAGE.md` §5's
+     reference archive) of:
+
+     ```text
+     manifest.json                 kairo.closure-bundle.v1
+     genesis.json                  the object genesis, if included
+     actors/<actor-id>.json        actor geneses included
+     statements/<statement-id>.json
+     blobs/<blob-id>
+     git/pack                      a (thin) Git pack, if any
+     ```
+
+   - **Manifest.** `{ schema: "kairo.closure-bundle.v1", object,
+     created_at, inventory: { statements, authority, actors: [{
+     actor, key_events }], blobs, commits }, git: { format, pack } }`.
+     The inventory is the whole closure as the pusher holds it; the
+     files are the part sent. Nothing in the manifest is trusted: the
+     inventory plays the object listing's role, and every file is
+     checked as the pull checks the record it stands for.
+   - **Unpacking.** Only regular files at exactly these paths, named
+     by valid ids; anything else (links, devices, `..`, absolute
+     paths, a duplicate) refuses the bundle.
+   - **Ingest** is the pull verifier reading from the unpacked bundle
+     instead of HTTP: the same order, fixity, section, signature,
+     actor-chain, and Git quarantine checks. Provenance and the pull
+     log name the pusher as `push:<node-actor-id>` in place of a URL.
+
 Rationale: the inbox keeps one ingestion path (the pull verifier) for
 everything a node accepts from outside, whether pulled, announced, or
 uploaded. It also keeps the network-facing server out of the store.
@@ -2354,9 +2421,9 @@ Accepting only from `federation:push`-trusted nodes, and only for
 listed objects, means a node mirrors what its operator chose, never
 what a peer volunteers.
 
-Affected specs (sub-decisions 1–3, the announcement half of 4, and 7
-implemented: `PHASE_2_FEDERATION.md` §2.1 and §2.3, `CLI.md` §25,
-§17 below, and `THREAT_MODEL.md` §5.20; uploads are slice 5):
+Affected specs (all sub-decisions implemented: `PHASE_2_FEDERATION.md`
+§2.1 and §2.3, `CLI.md` §15 and §25, §17 above, `PACKAGE.md`,
+`PHASE_2.md` §11, and `THREAT_MODEL.md` §5.20):
 
 - `PHASE_2_FEDERATION.md` — §2.1 (the announce and push endpoints),
   §2.3 (`fed_not_trusted`, `fed_not_accepted`), §4 items 3 and 5.

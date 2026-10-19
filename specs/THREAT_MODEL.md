@@ -350,7 +350,8 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Adversary** | §4.2 (a peer, including a node the operator trusts with `federation:push`) |
 | **Attack** | Make a node store or serve what its operator didn't choose: announce arbitrary objects, fill the inbox so honest pushes are refused, or point an announcement's `base_url` at someone else's node so the receiver ingests their data under the announcer's name. |
 | **Mechanism** | `DECISIONS.md` §26. An announcement passes, in order: a `KairoNode1` signature (§5.19), then a `trusted` `federation:push` opinion by the receiving node actor (no fallback from `general`), then a `[[federation.accept]]` entry for every object (optionally naming the announcer). Only then is it written to the inbox, where each announcer holds at most `max_inbox_entries` entries (`503 fed_busy` past that). Bodies are capped at 64 KiB and 256 objects. `kairo federation receive` re-checks trust and the accept list, then pulls through the ordinary verifier with the announcer's node actor pinned, so a `base_url` serving another node fails the pull. Nothing is published onward unless the accept entry says `publish = true`. |
-| **Residual risk** | A trusted announcer can make the receiver issue requests to any `https://` URL (or loopback `http://`) at receive time. Those are only reads, and the pull refuses anything not from the announcer's node actor. A trusted announcer can also fill its own inbox share, which delays only its own pushes. A malicious one can still withhold data like any peer (§5.15). |
+| **Uploads** | `POST /federation/v1/push` puts the object in the signed query, so the signature header, the window, the signer's key, `federation:push` trust, the accept entry, and the sender's inbox share are all checked before any of the body is read; a stranger can't make the receiver write a byte. The body streams to a temporary inbox file, capped at `max_push_bytes` (`413`), and is deleted unless the signature over its SHA-256 then verifies. The tar unpacks only regular files at the closure bundle's exact paths, and every record ingests through the pull verifier. A plan reveals which of the pusher's own ids the receiver holds, only to a trusted node. |
+| **Residual risk** | A trusted pusher can make the receiver store up to `max_push_bytes` × `max_inbox_entries` of bundle data until it's received. A trusted announcer can make the receiver issue requests to any `https://` URL (or loopback `http://`) at receive time. Those are only reads, and the pull refuses anything not from the announcer's node actor. A trusted announcer can also fill its own inbox share, which delays only its own pushes. A malicious one can still withhold data like any peer (§5.15). |
 
 ## 6. Known gaps and explicit non-goals
 
@@ -620,7 +621,7 @@ shipped):
   §5.13 fork preservation, §5.14 genesis-asymmetry impersonation,
   §5.18 node impersonation (federation pulls), §5.19 forged or
   replayed node requests, §5.20 push flooding and unwanted mirroring
-  (announcements): all defended.
+  (announcements and uploads): all defended.
 - §5.11 attestation-key compromise, §5.12 malicious attestation-key
   add: defended **only by detection** in shipped v1, not by
   in-protocol response. `ActorAttestationKeyRevocation` is designed

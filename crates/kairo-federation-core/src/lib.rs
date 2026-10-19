@@ -25,6 +25,7 @@ mod error;
 mod listing;
 mod node;
 mod page;
+mod push;
 mod request_auth;
 mod schema;
 mod wire_id;
@@ -54,9 +55,15 @@ pub use page::{
     Cursor, CursorError, PageRequest, PageRequestError, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN,
     MAX_PAGE_LIMIT,
 };
+pub use push::{
+    ClosureInventory, InventoryActor, InventoryError, PushAccepted, PushAcceptedSchema, PushPlan,
+    PushPlanRequest, PushPlanRequestSchema, PushPlanSchema, MAX_INVENTORY_IDS, MAX_PLAN_BYTES,
+    PUSH_PATH, PUSH_PLAN_PATH,
+};
 pub use request_auth::{
     node_request_signing_string, random_node_nonce, NodeAuthHeaderError, NodeAuthorization,
-    NodeRequest, NODE_NONCE_LEN, NODE_REQUEST_DOMAIN, NODE_REQUEST_WINDOW_SECONDS, NODE_SCHEME_TAG,
+    NodeRequest, RequestBody, NODE_NONCE_LEN, NODE_REQUEST_DOMAIN, NODE_REQUEST_WINDOW_SECONDS,
+    NODE_SCHEME_TAG,
 };
 
 /// The protocol version the MVP speaks. A node lists it in
@@ -73,6 +80,10 @@ pub const SUPPORTS_STATEMENT_BATCH: &str = "statement-batch";
 /// `supports` value for `POST /federation/v1/announce`
 /// (`specs/DECISIONS.md` §26).
 pub const SUPPORTS_ANNOUNCE: &str = "announce";
+
+/// `supports` value for the plan and upload endpoints
+/// (`specs/DECISIONS.md` §26 sub-decision 6).
+pub const SUPPORTS_PUSH: &str = "push";
 
 /// Path of the node document, relative to the node's base URL.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/kairo-node";

@@ -157,6 +157,27 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Upload a published object to a peer that can't pull from this
+    /// node (`specs/DECISIONS.md` §26): plan with the peer, then send a
+    /// closure bundle of only what it lacks, with Git history as a thin
+    /// pack. Signed with this node's node actor; the peer must have
+    /// learned it, trust it with `federation:push`, and accept the
+    /// object. The peer ingests it with `kairo federation receive`.
+    Push {
+        #[arg(long)]
+        object: String,
+        /// The receiving peer's base URL.
+        #[arg(long)]
+        to: String,
+        /// The node actor to sign as. Defaults to the one node actor in
+        /// the keystore.
+        #[arg(long)]
+        node: Option<String>,
+        /// Push to a peer that isn't listed in the config, for this run
+        /// only.
+        #[arg(long)]
+        allow_peer: bool,
+    },
     /// Inspect the node configuration file, `<store>/config.toml`
     /// (`specs/DECISIONS.md` §17).
     Config {
@@ -247,8 +268,9 @@ pub(crate) enum FederationCommand {
         #[arg(long)]
         allow_peer: bool,
     },
-    /// Process the inbox: pull every announced object this node still
-    /// trusts the announcer with and accepts, then remove the entry.
+    /// Process the inbox: pull every announced object, and ingest every
+    /// uploaded bundle, whose sender this node still trusts and whose
+    /// object it accepts, then remove the entry.
     Receive,
 }
 

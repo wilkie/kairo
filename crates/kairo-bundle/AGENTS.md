@@ -53,6 +53,23 @@ bundle type before adding it. The "what goes in" rule should remain
 mechanically derivable from the body shape, not from per-type
 bespoke logic.
 
+## Closure bundles are their own type
+
+`src/closure.rs` is the transfer form of a *published closure*
+(`specs/DECISIONS.md` §26 sub-decision 8), which a push uploads. It
+carries authority (grants, revocations) and every actor's key events,
+because it stands in for a pull from a node that may not be reachable,
+and a pull fetches those too. That is the "own bundle type" the rules
+above anticipate; it doesn't change what object bundles carry.
+
+- It may be partial: the manifest's inventory names the whole closure,
+  the files are what the receiver asked for.
+- Nothing in `closure.rs` verifies records. Ingest is the federation
+  pull verifier reading from the unpacked bundle; don't add a second,
+  weaker import path for it.
+- `unpack_tar` accepts only regular files at the layout's exact paths,
+  named by valid ids. Keep it that strict.
+
 ## Adding a new statement type to bundles
 
 1. Extend `EnvelopePeek`'s match arms in `src/export.rs` to dispatch

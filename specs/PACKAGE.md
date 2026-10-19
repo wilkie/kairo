@@ -39,6 +39,11 @@ strict subset of this spec:
   without an external Git repo or working tree. Default-on flip is
   deferred future work; for now, default-off is the safe shipping
   shape.
+- **Closure bundles** (`DECISIONS.md` §26 sub-decision 8) are a
+  second, transfer-only type: a push upload's tar of a published
+  closure, including authority and key events, possibly only the part
+  the receiver lacks. They are ingested through the federation pull
+  verifier, not `kairo bundle import`.
 - **No bundle-level signature** (§24). Every signed statement inside
   is independently verifiable on its own bytes; the manifest is an
   inventory, not an authority claim.

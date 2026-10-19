@@ -15,7 +15,7 @@ use std::sync::Mutex;
 
 use kairo_core::{ActorId, Timestamp};
 use kairo_federation_core::{
-    FedErrorCode, NodeAuthHeaderError, NodeAuthorization, NodeRequest, NODE_NONCE_LEN,
+    FedErrorCode, NodeAuthHeaderError, NodeAuthorization, NodeRequest, RequestBody, NODE_NONCE_LEN,
     NODE_REQUEST_WINDOW_SECONDS, NODE_SCHEME_TAG,
 };
 use kairo_identity::{verify_signature, ActorKind, ActorResolver, KeyId, SignatureBytes};
@@ -130,6 +130,28 @@ impl NonceCache {
     }
 }
 
+/// A request whose header checked out except for its signature, which
+/// needs the body. [`Node::precheck_request`] makes one so an upload's
+/// trust and accept checks run before its body is read.
+#[derive(Debug)]
+pub struct PendingAuth {
+    auth: NodeAuthorization,
+    active: kairo_identity::PublicKey,
+    now: i64,
+}
+
+impl PendingAuth {
+    /// The node the header names, not yet proven.
+    pub fn claimed_node(&self) -> &ActorId {
+        &self.auth.node
+    }
+
+    /// The request's nonce, which names its inbox entry.
+    pub fn nonce(&self) -> [u8; NODE_NONCE_LEN] {
+        self.auth.nonce
+    }
+}
+
 impl Node {
     /// Authenticate a request by its `Authorization: KairoNode1`
     /// header. `path_and_query` is the request target as received;
@@ -142,6 +164,17 @@ impl Node {
         authorization: Option<&str>,
         body: &[u8],
     ) -> Result<AuthenticatedNode, NodeAuthError> {
+        let pending = self.precheck_request(authorization)?;
+        self.finish_request(pending, method, path_and_query, RequestBody::Bytes(body))
+    }
+
+    /// Every check but the signature: the header parses, the timestamp
+    /// is in the window, and the signer is a `node` actor whose key
+    /// named is active and unrevoked.
+    pub fn precheck_request(
+        &self,
+        authorization: Option<&str>,
+    ) -> Result<PendingAuth, NodeAuthError> {
         let header = authorization.ok_or(NodeAuthError::Missing)?;
         let auth = NodeAuthorization::parse(header).map_err(NodeAuthError::Header)?;
         let now = Timestamp::now().seconds();
@@ -187,7 +220,18 @@ impl Node {
                 });
             }
         }
+        Ok(PendingAuth { auth, active, now })
+    }
 
+    /// Check the signature over the request, then record the nonce.
+    pub fn finish_request(
+        &self,
+        pending: PendingAuth,
+        method: &str,
+        path_and_query: &str,
+        body: RequestBody<'_>,
+    ) -> Result<AuthenticatedNode, NodeAuthError> {
+        let PendingAuth { auth, active, now } = pending;
         let request = NodeRequest {
             method,
             receiver_base_url: &self.document.base_url,
@@ -204,7 +248,10 @@ impl Node {
 
         // Only after the signature verifies, so an unauthenticated
         // client can't fill the cache.
-        if !self.nonces.insert(node, auth.nonce, auth.timestamp, now) {
+        if !self
+            .nonces
+            .insert(&auth.node, auth.nonce, auth.timestamp, now)
+        {
             return Err(NodeAuthError::Replayed);
         }
         Ok(AuthenticatedNode {

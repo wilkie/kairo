@@ -17,7 +17,7 @@ use kairo_statement::{
     Capability, CapabilityScope, ObjectBranchBody, RevisionId, Signature, SignedStatement,
     StatementBody, StatementKind, TrustDecision, UnsignedStatement,
 };
-use kairo_store::{ActorStore, FilesystemStore, PublishedObjectStore, StatementStore};
+use kairo_store::{ActorStore, FilesystemStore, InboxStore, PublishedObjectStore, StatementStore};
 use kairo_test_support::store::{CreatedActor, StoreFixture};
 use tempfile::TempDir;
 
@@ -347,5 +347,133 @@ impl Drop for Served {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+// --- push (DECISIONS.md §26) ------------------------------------------
+
+/// A node actor with operational key `[seed; 32]`, put in `store`.
+pub(crate) fn node_actor_with(store: &FilesystemStore, seed: u8) -> CreatedActor {
+    let signing = SecretSigningKey::ed25519([seed; 32]);
+    let genesis = ActorGenesisBody::new(
+        ActorKind::node(),
+        signing.public_key(),
+        vec![SecretSigningKey::ed25519([seed.wrapping_add(1); 32]).public_key()],
+        1,
+        Timestamp::from_seconds(1_700_000_000),
+        [seed; 32],
+    )
+    .expect("genesis");
+    let actor_id = store.put_actor(&genesis).expect("put node actor");
+    CreatedActor {
+        actor_id,
+        signing,
+        attestation_keys: Vec::new(),
+        genesis,
+    }
+}
+
+/// `by` trusts `of` with `federation:push`.
+pub(crate) fn trust_push(store: &FilesystemStore, by: &CreatedActor, of: &ActorId) {
+    let body = ActorTrustBody::new(
+        of.clone(),
+        kairo_statement::TrustScope::federation_push(),
+        Some(TrustDecision::Trusted),
+        None,
+        None,
+    )
+    .expect("trust body");
+    store
+        .put_actor_trust(&sign_chained(
+            store,
+            by,
+            &format!("actor:{of}"),
+            1_700_000_600,
+            body,
+        ))
+        .expect("put trust");
+}
+
+/// A receiving node in its own store, served on a loopback port, that
+/// accepts pushes of one object.
+pub(crate) struct Receiver {
+    pub(crate) _dir: TempDir,
+    pub(crate) store: FilesystemStore,
+    pub(crate) signer: CreatedActor,
+    pub(crate) served: Served,
+}
+
+pub(crate) fn receiver(accept: &ObjectId, max_push_bytes: Option<u64>) -> Receiver {
+    let dir = TempDir::new().expect("tempdir");
+    let store = FilesystemStore::open(dir.path()).expect("store");
+    let signer = node_actor_with(&store, 220);
+    let config = kairo_config::FederationConfig {
+        accept: vec![kairo_config::AcceptConfig {
+            object: accept.clone(),
+            from: None,
+            publish: false,
+        }],
+        limits: kairo_config::LimitsConfig {
+            max_push_bytes,
+            ..kairo_config::LimitsConfig::default()
+        },
+        ..kairo_config::FederationConfig::default()
+    };
+    let served = Served::spawn(|base_url| {
+        Node::from_store(
+            store.clone(),
+            &signer.actor_id,
+            &signer.signing,
+            base_url,
+            Duration::ZERO,
+        )
+        .expect("receiver node")
+        .with_federation_config(config)
+        .router()
+    });
+    Receiver {
+        _dir: dir,
+        store,
+        signer,
+        served,
+    }
+}
+
+impl Receiver {
+    /// Learn `node` (its genesis, from `from`) and trust it with
+    /// `federation:push`, as `kairo federation learn` and `kairo trust
+    /// grant --scope federation:push` would.
+    pub(crate) fn trusts(&self, from: &FilesystemStore, node: &ActorId) {
+        self.store
+            .put_actor(&from.get_actor(node).expect("pusher genesis"))
+            .expect("learn pusher");
+        trust_push(&self.store, &self.signer, node);
+    }
+
+    /// Ingest every inbox upload, as `kairo federation receive` does.
+    pub(crate) fn receive(
+        &self,
+    ) -> Vec<
+        Result<kairo_federation_http::client::PullReport, kairo_federation_http::client::PullError>,
+    > {
+        let mut reports = Vec::new();
+        for entry in self.store.list_inbox().expect("inbox") {
+            if let kairo_store::InboxItem::Upload(upload, bundle) = &entry.item {
+                let unpacked = TempDir::new().expect("tempdir");
+                let bundle = kairo_bundle::closure::unpack_tar(
+                    std::fs::File::open(bundle).expect("bundle"),
+                    unpacked.path(),
+                )
+                .expect("unpack");
+                reports.push(kairo_federation_http::client::ingest_closure_bundle(
+                    &self.store,
+                    bundle,
+                    &upload.from,
+                    &kairo_federation_http::client::PullOptions::default(),
+                ));
+            }
+            self.store.remove_inbox_entry(&entry.name).expect("remove");
+        }
+        reports
     }
 }

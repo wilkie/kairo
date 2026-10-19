@@ -19,6 +19,8 @@ use flate2 as _;
 use http_body as _;
 #[cfg(test)]
 use http_body_util as _;
+#[cfg(feature = "client")]
+use kairo_bundle as _;
 use kairo_config as _;
 use kairo_federation_core as _;
 use kairo_git as _;
@@ -32,6 +34,7 @@ use kairo_store as _;
 use kairo_test_support as _;
 use serde as _;
 use serde_json as _;
+use sha2 as _;
 #[cfg(test)]
 use tempfile as _;
 #[cfg(test)]
