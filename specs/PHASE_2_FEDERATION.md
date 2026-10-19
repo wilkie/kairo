@@ -564,6 +564,15 @@ inventory step, and 7 come from comparing this design with Radicle
    kairo://<node>/<object>` fetches over §22 and verifies every
    commit against the object's signed revisions, the way
    `git-remote-rad` makes Radicle usable with ordinary Git.
+   *Decided in `DECISIONS.md` §31.* Slices:
+   1. **The helper.** A `kairo-git-remote` crate with the
+      `git-remote-kairo` binary: the remote-helper protocol
+      (`capabilities`, `option`, `list`, `fetch`; `push` refused), the
+      pull into the user's store, refs per §31 sub-decision 3, and
+      fetch from the cache. Tested with real `git clone` against an
+      in-process node, in both object formats.
+   2. **Policy and polish.** The peer policy and `kairo.allowPeer`,
+      clear refusals, `git fetch` after new revisions, and the docs.
 8. ~~**On-demand fetch**~~ *(shipped)*, *decided in `DECISIONS.md` §30* (`DAEMON.md`
    §9). Slices:
    1. ~~**Acquire.**~~ *(shipped)* The engine's provenance-ordered acquisition over the

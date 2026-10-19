@@ -2790,3 +2790,66 @@ Affected specs:
 - §17 — `[federation.on_demand]`.
 - `PHASE_2_FEDERATION.md` §4 — the slice plan.
 
+---
+
+## 31. `git-remote-kairo`
+
+Decision: a Git remote helper, `git-remote-kairo`, makes `git clone
+kairo://<host>/<object-id>` and `git fetch` work against a Kairo node,
+and Git only ever sees history Kairo verified. The helper first runs
+an ordinary Kairo pull of the object into the user's store, then
+answers Git from that store's Git cache. Nothing goes from the peer to
+Git directly. This is `PHASE_2_FEDERATION.md` §4 item 7, after
+Radicle's `git-remote-rad`.
+
+Sub-decisions:
+
+1. **Verify, then serve locally.** On `list`, the helper pulls the
+   object from `https://<host>` (`http://` for a loopback host, as
+   `kairo fetch` allows) with the same checks as `kairo fetch`: the
+   node is authenticated by its signed document (§25), every record
+   verifies, chains are checked (§23), and Git commits enter the cache
+   only through the quarantine with their full closures (§21, §22).
+   `fetch` then copies the requested commits from the cache's
+   per-object repository into the clone. The content check of `kairo
+   verify object` (manifest in commit) is not run; the bar is the
+   pull's.
+
+2. **The user's store.** The pull goes into the default store (`$HOME/.kairo`,
+   or `KAIRO_STORE`), so records, provenance, and the Git cache are
+   shared with `kairo` and the daemon, and a second clone reuses them.
+
+3. **Refs.**
+   - The object creator's branches are `refs/heads/<name>`, with
+     `head` (when present) as `HEAD`; the creator's version tags are
+     `refs/tags/<version>`.
+   - Every other actor's branches are `refs/kairo/actors/<actor-id>/<name>`,
+     visible but never mistaken for the creator's.
+   - A ref is listed only when its signed revision names a `git:`
+     commit present in the cache. Revisions without Git history, or
+     whose commit didn't arrive, are left out, and the helper says so on
+     stderr.
+   - `list` reports the object's Git format (`:object-format`), and
+     refuses a clone in the other format.
+
+4. **Policy.** The host must be a listed `[[federation.peers]]` entry,
+   with its pin honored, unless `git config kairo.allowPeer true` is
+   set; federation must be enabled (§17 sub-decision 4). Refusals say
+   which setting to change.
+
+5. **Read-only.** `push` is refused with a pointer to `kairo push`
+   (§26). Pushing over Git would need Kairo-signed revisions for each
+   commit, which a Git push doesn't carry.
+
+Rationale: the pull already does every check Git can't, so the helper
+adds only a translation layer, and serving from the cache keeps the
+"Git sees only verified history" guarantee structural rather than a
+filter over a live connection. Namespacing other actors' branches
+keeps the creator's view unambiguous without hiding collaborators.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` §4 item 7 — the slice plan.
+- `CLI.md` — `git-remote-kairo` and `kairo://` URLs.
+- `PROJECT_LAYOUT.md` — the `kairo-git-remote` crate.
+
