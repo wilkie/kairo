@@ -243,6 +243,7 @@ pub fn fetch_into(
         return Ok(());
     }
     let cache = GitCache::open(store.join("git")).map_err(|e| RemoteError::Git(e.to_string()))?;
+    let haves = clone_tips(&cache, object, git_dir, wants[0].format())?;
     let mut child = Command::new("git")
         .arg("--git-dir")
         .arg(git_dir)
@@ -255,7 +256,7 @@ pub fn fetch_into(
         .stdin
         .take()
         .ok_or_else(|| RemoteError::Git("index-pack stdin not captured".to_owned()))?;
-    let packed = cache.pack_delta_to(object.as_str(), wants, &[], stdin);
+    let packed = cache.pack_delta_to(object.as_str(), wants, &haves, stdin);
     let output = child.wait_with_output()?;
     packed.map_err(|e| RemoteError::Git(e.to_string()))?;
     if !output.status.success() {
@@ -265,6 +266,40 @@ pub fn fetch_into(
         )));
     }
     Ok(())
+}
+
+/// The clone's ref tips that the cache also holds: what a later
+/// `git fetch` already has, so the pack is thin against them and only
+/// new history moves (`index-pack --fix-thin` completes it from the
+/// clone's own objects).
+fn clone_tips(
+    cache: &GitCache,
+    object: &ObjectId,
+    git_dir: &Path,
+    format: GitObjectFormat,
+) -> Result<Vec<GitRevision>, RemoteError> {
+    let output = Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["for-each-ref", "--format=%(objectname)"])
+        .output()?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let mut tips = Vec::new();
+    for oid in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(tip) = GitRevision::new(format, oid.trim()) else {
+            continue;
+        };
+        if !tips.contains(&tip)
+            && cache
+                .has_commit(object.as_str(), &tip)
+                .map_err(|e| RemoteError::Git(e.to_string()))?
+        {
+            tips.push(tip);
+        }
+    }
+    Ok(tips)
 }
 
 /// The policy check (§31 sub-decision 4): federation enabled, and the

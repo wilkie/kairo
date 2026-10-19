@@ -25,7 +25,9 @@ rather than per-commit.
   the creator's branches and tags as heads and tags, other actors'
   under `refs/kairo/actors/`, only refs whose signed revision's commit
   is held, in the object's Git format. It follows `kairo fetch`'s peer
-  policy (`kairo.allowPeer` to override) and refuses `git push`.
+  policy (`kairo.allowPeer` to override) and refuses `git push`. A
+  later `git fetch` brings new signed revisions and sends only history
+  the clone's refs don't already reach.
 
 - **Read-triggered acquisition (`DECISIONS.md` §30, on-demand fetch
   slice 3).** With `[federation.on_demand] on_read = true`, a `404`

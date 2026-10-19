@@ -560,7 +560,7 @@ inventory step, and 7 come from comparing this design with Radicle
    Both need scoped trust (`DECISIONS.md` §18), and the second needs
    trust transport (item 4). Both need node authentication
    (`DECISIONS.md` §16 sub-decision 9), which push (item 3) brings.
-7. **`git-remote-kairo`.** A Git remote helper so `git clone
+7. ~~**`git-remote-kairo`.**~~ *(shipped)* A Git remote helper so `git clone
    kairo://<node>/<object>` fetches over §22 and verifies every
    commit against the object's signed revisions, the way
    `git-remote-rad` makes Radicle usable with ordinary Git.
@@ -572,8 +572,10 @@ inventory step, and 7 come from comparing this design with Radicle
       pull into the user's store, refs per §31 sub-decision 3, and
       fetch from the cache. Tested with real `git clone` against an
       in-process node, in both object formats.
-   2. **Policy and polish.** The peer policy and `kairo.allowPeer`,
-      clear refusals, `git fetch` after new revisions, and the docs.
+   2. ~~**Policy and polish.**~~ *(shipped)* The peer policy and
+      `kairo.allowPeer` (in slice 1), `git fetch` after new revisions
+      sending only new history, and tests for namespaced branches,
+      tags, and left-out refs.
 8. ~~**On-demand fetch**~~ *(shipped)*, *decided in `DECISIONS.md` §30* (`DAEMON.md`
    §9). Slices:
    1. ~~**Acquire.**~~ *(shipped)* The engine's provenance-ordered acquisition over the

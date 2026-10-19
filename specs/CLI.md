@@ -1095,6 +1095,8 @@ host is reached over `http://`, anything else over `https://`.
   `git config kairo.allowPeer true` is set in the repository (`git
   clone -c kairo.allowPeer=true ...`), and federation must be
   enabled.
+- `git fetch` repeats the pull, so new signed revisions arrive; the
+  helper sends only history the clone's existing refs don't reach.
 - `git push` to a `kairo://` remote is refused; publish with
   `kairo push`.
 
