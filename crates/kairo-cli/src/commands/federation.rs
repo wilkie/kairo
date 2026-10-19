@@ -14,7 +14,7 @@ use kairo_federation_http::client::{
     announce, export_actor, fetch_trust, learn_from_export, learn_peer, normalize_peer_url,
     pull_object, push, GitOutcome, NodeSigner, PullOptions, PullReport,
 };
-use kairo_federation_service::{limits_from, ReceiveOutcome, Received, Via};
+use kairo_federation_service::{limits_from, DiscoverOutcome, ReceiveOutcome, Received, Via};
 use kairo_identity::ActorKind;
 use kairo_keystore::Keystore;
 use kairo_statement::TrustScope;
@@ -69,6 +69,8 @@ pub(crate) fn run_federation_command(
             paths,
         ),
         FederationCommand::Receive => run_receive(offline, paths),
+        FederationCommand::Discover => run_discover(offline, paths),
+        FederationCommand::Holders { object } => run_holders(&parse_object(object)?, paths),
         FederationCommand::Follow { target } => run_follow(
             &follow_of(target.object, target.trust_by, target.scope)?,
             true,
@@ -889,6 +891,63 @@ fn describe_peer_outcome(outcome: &PeerOutcome) -> String {
             format!("peer={peer_url} outcome=failed reason=\"{reason}\"")
         }
     }
+}
+
+/// `kairo federation discover` (`DECISIONS.md` §29 sub-decision 3).
+fn run_discover(offline: bool, paths: &StorePaths) -> Result<String, CliError> {
+    if offline {
+        return Err(CliError::OfflineFetch);
+    }
+    let (config, source) = load_config(paths)?;
+    let store = open_store(paths)?;
+    let outcomes =
+        kairo_federation_service::discover(&store, &config.federation, source.path().to_path_buf())
+            .map_err(|error| match error {
+                kairo_federation_service::SyncError::Disabled { config } => {
+                    CliError::FederationDisabled { config }
+                }
+                kairo_federation_service::SyncError::Store(source) => CliError::Follows { source },
+            })?;
+    let mut output = format!("sources = {}\n", outcomes.len());
+    for outcome in &outcomes {
+        output.push_str(&match outcome {
+            DiscoverOutcome::Learned {
+                source_url,
+                node_actor,
+                objects,
+                newer,
+            } => format!(
+                "  source={source_url} outcome=learned node_actor={node_actor} \
+                 objects={objects} newer={newer}\n"
+            ),
+            DiscoverOutcome::Unsupported { source_url } => {
+                format!("  source={source_url} outcome=unsupported\n")
+            }
+            DiscoverOutcome::Failed { source_url, reason } => {
+                format!("  source={source_url} outcome=failed reason=\"{reason}\"\n")
+            }
+        });
+    }
+    output.push_str("note = hints say who has what; they grant nothing\n");
+    Ok(output)
+}
+
+/// `kairo federation holders --object` (§29 sub-decision 5).
+fn run_holders(object: &ObjectId, paths: &StorePaths) -> Result<String, CliError> {
+    let (config, _) = load_config(paths)?;
+    let store = open_store(paths)?;
+    let hints = kairo_federation_service::holders(&store, &config.federation, object)
+        .map_err(|source| CliError::Follows { source })?;
+    let mut output = format!("object = {object}\nholders = {}\n", hints.len());
+    for hint in &hints {
+        let url = normalize_peer_url(&hint.base_url).unwrap_or_else(|_| hint.base_url.clone());
+        let listed = peer_entry(&config, &url).is_some();
+        output.push_str(&format!(
+            "  node_actor={} base_url={} signed_at={} learned_from={} listed={listed}\n",
+            hint.node_actor, hint.base_url, hint.signed_at, hint.learned_from,
+        ));
+    }
+    Ok(output)
 }
 
 /// `kairo federation status`.

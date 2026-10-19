@@ -60,6 +60,29 @@ pub struct FederationConfig {
     pub accept: Vec<AcceptConfig>,
     /// How the daemon schedules background sync (`DECISIONS.md` §28).
     pub sync: SyncConfig,
+    /// Nodes asked where others are (`DECISIONS.md` §18 sub-decision
+    /// 1, §29). Being asked grants nothing else.
+    pub bootstrap: Vec<PeerConfig>,
+    pub discovery: DiscoveryConfig,
+}
+
+/// `[federation.discovery]` (`DECISIONS.md` §29 sub-decision 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscoveryConfig {
+    /// Hints older than this, by the inventory's `signed_at`, are
+    /// ignored.
+    pub hint_ttl_secs: u64,
+    /// Sync followed objects from trusted hinted holders too.
+    pub use_hints: bool,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            hint_ttl_secs: 7 * 24 * 60 * 60,
+            use_hints: false,
+        }
+    }
 }
 
 /// `[federation.sync]`.
@@ -91,6 +114,8 @@ impl Default for FederationConfig {
             peers: Vec::new(),
             accept: Vec::new(),
             sync: SyncConfig::default(),
+            bootstrap: Vec::new(),
+            discovery: DiscoveryConfig::default(),
         }
     }
 }
@@ -190,6 +215,17 @@ struct RawFederation {
     accept: Vec<RawAccept>,
     #[serde(default)]
     sync: Option<RawSync>,
+    #[serde(default)]
+    bootstrap: Vec<RawPeer>,
+    #[serde(default)]
+    discovery: Option<RawDiscovery>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDiscovery {
+    hint_ttl_secs: Option<u64>,
+    use_hints: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -322,33 +358,23 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         }
     }
 
-    let mut peers: Vec<PeerConfig> = Vec::with_capacity(federation.peers.len());
-    for raw_peer in federation.peers {
-        let url = raw_peer
-            .url
-            .strip_suffix('/')
-            .unwrap_or(&raw_peer.url)
-            .to_owned();
-        if url.is_empty() {
-            return Err(invalid("federation.peers: url is empty".to_owned()));
-        }
-        if peers.iter().any(|peer| peer.url == url) {
-            return Err(invalid(format!("federation.peers: {url} is listed twice")));
-        }
-        let node_actor = raw_peer
-            .node_actor
-            .map(|raw| {
-                ActorId::new(raw.clone()).map_err(|error| {
-                    invalid(format!(
-                        "federation.peers: node_actor {raw:?} for {url} is not a bare actor id: \
-                         {error}"
-                    ))
-                })
-            })
-            .transpose()?;
-        peers.push(PeerConfig { url, node_actor });
+    let peers = parse_peers(federation.peers, "federation.peers", &invalid)?;
+    let bootstrap = parse_peers(federation.bootstrap, "federation.bootstrap", &invalid)?;
+    let raw_discovery = federation.discovery.unwrap_or_default();
+    if raw_discovery.hint_ttl_secs == Some(0) {
+        return Err(invalid(
+            "federation.discovery.hint_ttl_secs must be greater than 0".to_owned(),
+        ));
     }
-
+    let discovery_defaults = DiscoveryConfig::default();
+    let discovery = DiscoveryConfig {
+        hint_ttl_secs: raw_discovery
+            .hint_ttl_secs
+            .unwrap_or(discovery_defaults.hint_ttl_secs),
+        use_hints: raw_discovery
+            .use_hints
+            .unwrap_or(discovery_defaults.use_hints),
+    };
     let raw_sync = federation.sync.unwrap_or_default();
     for (name, value) in [
         ("interval_secs", raw_sync.interval_secs),
@@ -419,8 +445,46 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             peers,
             accept,
             sync,
+            bootstrap,
+            discovery,
         },
     })
+}
+
+/// `[[federation.peers]]` or `[[federation.bootstrap]]` entries: a
+/// non-empty URL (trailing `/` dropped), listed once, and an optional
+/// bare-id `node_actor` pin.
+fn parse_peers(
+    raw: Vec<RawPeer>,
+    table: &str,
+    invalid: &impl Fn(String) -> ConfigError,
+) -> Result<Vec<PeerConfig>, ConfigError> {
+    let mut peers: Vec<PeerConfig> = Vec::with_capacity(raw.len());
+    for raw_peer in raw {
+        let url = raw_peer
+            .url
+            .strip_suffix('/')
+            .unwrap_or(&raw_peer.url)
+            .to_owned();
+        if url.is_empty() {
+            return Err(invalid(format!("{table}: url is empty")));
+        }
+        if peers.iter().any(|peer| peer.url == url) {
+            return Err(invalid(format!("{table}: {url} is listed twice")));
+        }
+        let node_actor = raw_peer
+            .node_actor
+            .map(|raw| {
+                ActorId::new(raw.clone()).map_err(|error| {
+                    invalid(format!(
+                        "{table}: node_actor {raw:?} for {url} is not a bare actor id: {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        peers.push(PeerConfig { url, node_actor });
+    }
+    Ok(peers)
 }
 
 #[cfg(test)]
@@ -535,6 +599,29 @@ mod tests {
         assert_eq!(config.federation.sync.inbox_secs, 30);
         assert!(parse_err("[federation.sync]\ninbox_secs = 0\n").contains("inbox_secs"));
         assert!(parse_err("[federation.sync]\nevery = 5\n").contains("every"));
+    }
+
+    #[test]
+    fn parses_bootstrap_nodes_and_discovery() {
+        let config = parse_ok(&format!(
+            "[[federation.bootstrap]]\nurl = \"https://seed.example.org/\"\nnode_actor = \"{ACTOR}\"\n\n\
+             [federation.discovery]\nuse_hints = true\n"
+        ));
+        let federation = config.federation;
+        assert_eq!(federation.bootstrap.len(), 1);
+        assert_eq!(federation.bootstrap[0].url, "https://seed.example.org");
+        assert!(federation.peers.is_empty(), "bootstrap nodes are not peers");
+        assert!(federation.discovery.use_hints);
+        assert_eq!(
+            federation.discovery.hint_ttl_secs,
+            DiscoveryConfig::default().hint_ttl_secs
+        );
+        assert!(!DiscoveryConfig::default().use_hints);
+        assert!(parse_err("[federation.discovery]\nhint_ttl_secs = 0\n").contains("hint_ttl_secs"));
+        assert!(parse_err(
+            "[[federation.bootstrap]]\nurl = \"https://a.example\"\n\n[[federation.bootstrap]]\nurl = \"https://a.example/\"\n"
+        )
+        .contains("federation.bootstrap"));
     }
 
     #[test]

@@ -8,8 +8,10 @@
 //! `kairo federation sync` / `receive` call them directly. Every
 //! record goes through the same pull verifier as `kairo fetch`.
 
+mod discover;
 mod receive;
 
+pub use discover::{discover, holders, DiscoverOutcome};
 pub use receive::{receive_inbox, ReceiveOutcome, Received, Via};
 
 use std::fmt;

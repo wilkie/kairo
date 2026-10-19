@@ -891,3 +891,73 @@ fn a_statement_a_batch_leaves_out_is_fetched_on_its_own() {
         .is_ok());
     assert_eq!(requests.per_record.load(Ordering::SeqCst), 1);
 }
+
+// --- inventories (DECISIONS.md §29) -----------------------------------
+
+#[test]
+fn a_peers_inventory_is_fetched_and_verified() {
+    let seeded = seed();
+    let served = serve(&seeded);
+    let (_dir, local) = local_store();
+    let fetched = kairo_federation_http::client::fetch_inventory(
+        &local,
+        &served.base_url,
+        &PullOptions::default(),
+    )
+    .expect("inventory");
+    assert_eq!(fetched.inventory.node_actor, seeded.node_actor);
+    assert_eq!(fetched.inventory.objects, vec![seeded.published.clone()]);
+    assert_eq!(fetched.peer_url, served.base_url);
+    assert!(
+        local.get_actor(&seeded.node_actor).is_ok(),
+        "the node is authenticated first"
+    );
+}
+
+#[test]
+fn an_inventory_changed_after_signing_or_for_another_node_is_refused() {
+    let seeded = seed();
+    let extra = seeded.unpublished.to_string();
+    let added = serve_tampered(&seeded, move |path, bytes| {
+        (path == "/federation/v1/inventory").then(|| {
+            let mut value: Value = serde_json::from_slice(bytes).expect("json");
+            let mut objects: Vec<String> = value["objects"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_owned())
+                .collect();
+            objects.push(extra.clone());
+            objects.sort();
+            value["objects"] = serde_json::json!(objects);
+            serde_json::to_vec(&value).expect("json")
+        })
+    });
+    let (_dir, local) = local_store();
+    assert!(matches!(
+        kairo_federation_http::client::fetch_inventory(
+            &local,
+            &added.base_url,
+            &PullOptions::default()
+        ),
+        Err(PullError::NodeDocument(NodeDocumentError::BadSignature))
+    ));
+
+    let alice = seeded.alice.to_string();
+    let other_node = serve_tampered(&seeded, move |path, bytes| {
+        (path == "/federation/v1/inventory").then(|| {
+            let mut value: Value = serde_json::from_slice(bytes).expect("json");
+            value["node_actor"] = Value::from(alice.clone());
+            serde_json::to_vec(&value).expect("json")
+        })
+    });
+    let (_dir, local) = local_store();
+    assert!(matches!(
+        kairo_federation_http::client::fetch_inventory(
+            &local,
+            &other_node.base_url,
+            &PullOptions::default()
+        ),
+        Err(PullError::NodeActorMismatch { .. })
+    ));
+}

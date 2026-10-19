@@ -294,6 +294,15 @@ pub(crate) enum FederationCommand {
         #[command(flatten)]
         target: OptionalFollowTarget,
     },
+    /// Fetch every listed peer's and bootstrap node's signed inventory
+    /// and keep the newest per node as a hint (`specs/DECISIONS.md`
+    /// §29). Hints are never permissions.
+    Discover,
+    /// List the nodes whose fresh inventories say they hold --object.
+    Holders {
+        #[arg(long)]
+        object: String,
+    },
     /// Process the inbox: pull every announced object, and ingest every
     /// uploaded bundle, whose sender this node still trusts and whose
     /// object it accepts, then remove the entry.

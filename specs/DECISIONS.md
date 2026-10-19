@@ -1373,6 +1373,11 @@ Sub-decisions:
    - `[federation.sync]`: `interval_secs` (900), `inbox_secs` (30),
      and `max_concurrent` (2), the daemon's background sync schedule
      (§28 sub-decision 3). Zero is invalid.
+   - `[[federation.bootstrap]]` entries, shaped like peers (`url`,
+     optional `node_actor`), are asked for inventories and nothing
+     else (§18 sub-decision 1, §29).
+   - `[federation.discovery]`: `hint_ttl_secs` (604 800; zero is
+     invalid) and `use_hints` (`false`) (§29 sub-decision 5).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -2695,4 +2700,7 @@ Affected specs:
 - `THREAT_MODEL.md` — hint poisoning.
 - `schemas/canonical/` — `inventory-v1.md` (implemented, with the
   endpoint, in slice 1).
+- Slice 2 implemented `hints.json`, `[[federation.bootstrap]]`,
+  `[federation.discovery]`, `kairo federation discover`, and
+  `holders`.
 

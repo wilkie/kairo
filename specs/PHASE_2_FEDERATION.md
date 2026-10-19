@@ -537,7 +537,7 @@ inventory step, and 7 come from comparing this design with Radicle
    1. ~~**Signed inventory.**~~ *(shipped)* `kairo.fed.inventory.v1` and its signing
       bytes; served at `GET /federation/v1/inventory`, signed when the
       published view is rebuilt.
-   2. **Hints.** `hints.json`, `[[federation.bootstrap]]` and
+   2. ~~**Hints.**~~ *(shipped)* `hints.json`, `[[federation.bootstrap]]` and
       `[federation.discovery]`, fetching and verifying direct
       inventories (`kairo federation discover`), `kairo federation
       holders`.

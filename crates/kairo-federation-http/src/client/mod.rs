@@ -56,7 +56,8 @@ use kairo_federation_core::{
     SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
 use kairo_federation_core::{
-    ActorExport, BatchedStatement, GitAvailability, TrustListing, SUPPORTS_TRUST, TRUST_PATH,
+    ActorExport, BatchedStatement, GitAvailability, Inventory, TrustListing, INVENTORY_PATH,
+    SUPPORTS_INVENTORY, SUPPORTS_TRUST, TRUST_PATH,
 };
 use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
@@ -616,6 +617,77 @@ pub fn learn_from_export(
         node_actor: actor,
         fetched: pull.report.fetched,
         already_held: pull.report.already_held,
+    })
+}
+
+/// A peer's own verified inventory (`DECISIONS.md` §29).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchedInventory {
+    pub peer_url: String,
+    pub inventory: Inventory,
+    pub signed_at: Timestamp,
+    /// The response body, verbatim, to keep and relay.
+    pub raw: String,
+}
+
+/// Fetch and verify the peer's own inventory: the peer is
+/// authenticated by its node document first (storing its node actor's
+/// key state), and the inventory must be that node actor's, for that
+/// base URL, signed by its key active at `signed_at`.
+pub fn fetch_inventory(
+    store: &FilesystemStore,
+    peer_url: &str,
+    options: &PullOptions,
+) -> Result<FetchedInventory, PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    if !document.supports(SUPPORTS_INVENTORY) {
+        return Err(PullError::Unsupported {
+            feature: SUPPORTS_INVENTORY,
+        });
+    }
+    let pull = authenticated(store, peer, &document, &options.limits)?;
+    let Some(peer) = pull.source.peer() else {
+        return Err(PullError::Bundle(
+            "an inventory fetch needs a peer".to_owned(),
+        ));
+    };
+    let path = format!("{API_PREFIX}{INVENTORY_PATH}");
+    let url = format!("{}{path}", peer.base_url());
+    let bytes = peer.get_bytes(&path, options.limits.max_json_bytes)?;
+    let parse = |message: String| PullError::Parse {
+        url: url.clone(),
+        message,
+    };
+    let raw = String::from_utf8(bytes).map_err(|error| parse(error.to_string()))?;
+    let inventory: Inventory =
+        serde_json::from_str(&raw).map_err(|error| parse(error.to_string()))?;
+    inventory
+        .validate()
+        .map_err(|error| parse(error.to_string()))?;
+    if inventory.node_actor != document.node_actor {
+        return Err(PullError::NodeActorMismatch {
+            expected: document.node_actor.clone(),
+            claimed: inventory.node_actor,
+        });
+    }
+    if http::normalize_base_url(&inventory.base_url)
+        .ok()
+        .as_deref()
+        != Some(peer.base_url())
+    {
+        return Err(PullError::BaseUrlMismatch {
+            pulled: peer.base_url().to_owned(),
+            document: inventory.base_url,
+        });
+    }
+    let signed_at = inventory
+        .verify_signature(store)
+        .map_err(PullError::NodeDocument)?;
+    Ok(FetchedInventory {
+        peer_url: peer.base_url().to_owned(),
+        inventory,
+        signed_at,
+        raw,
     })
 }
 

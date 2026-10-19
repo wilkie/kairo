@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Discovery hints (`DECISIONS.md` §29, slice 2).**
+  `kairo federation discover` fetches and verifies the inventory of
+  every listed peer and `[[federation.bootstrap]]` node and keeps the
+  newest per node in `<store>/federation/hints.json`;
+  `kairo federation holders --object <id>` lists who has an object.
+  `[federation.discovery]` sets `hint_ttl_secs` (a week) and
+  `use_hints` (off). Hints grant nothing.
 - **Signed inventories (`DECISIONS.md` §29, discovery slice 1).**
   `GET /federation/v1/inventory` serves the node's published objects,
   signed by its node actor when the published view is built

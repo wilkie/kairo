@@ -967,6 +967,8 @@ kind = "tree"
     // Force a strictly greater created_at by pausing briefly. Timestamp
     // resolution is whole seconds, so wait one full second to guarantee
     // strict supersession.
+    // `signed_at` has one-second resolution, and only a strictly newer
+    // inventory replaces a hint.
     std::thread::sleep(std::time::Duration::from_millis(1100));
     let r2 = run(Cli {
         store: Some(store_dir.path().to_path_buf()),
@@ -7473,5 +7475,80 @@ fn follows_sync_from_every_listed_peer() -> Result<(), Box<dyn std::error::Error
     .err()
     .ok_or("synced while disabled")?;
     assert_eq!(disabled.exit_code(), 7);
+    Ok(())
+}
+
+#[test]
+fn discovery_learns_who_holds_an_object() -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §29: inventories from a listed peer and a bootstrap
+    // node become hints; `holders` answers who has an object.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node = create_node_actor(origin)?;
+    let object = create_cli_object(origin)?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let (origin_url, _origin_stop, _origin_server) = serve_federation(origin, &node)?;
+
+    let seed_dir = tempfile::TempDir::new()?;
+    let seed = seed_dir.path();
+    let seed_node = create_node_actor(seed)?;
+    let (seed_url, _seed_stop, _seed_server) = serve_federation(seed, &seed_node)?;
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    std::fs::write(
+        local.join("config.toml"),
+        format!(
+            "[[federation.peers]]\nurl = \"{origin_url}\"\nnode_actor = \"{node}\"\n\n\
+             [[federation.bootstrap]]\nurl = \"{seed_url}\"\n"
+        ),
+    )?;
+    let discovered = run_in(local, federation(FederationCommand::Discover))?;
+    assert!(discovered.starts_with("sources = 2\n"), "{discovered}");
+    assert!(
+        discovered.contains(&format!(
+            "source={origin_url} outcome=learned node_actor={node} objects=1 newer=true"
+        )),
+        "{discovered}"
+    );
+    assert!(
+        discovered.contains(&format!(
+            "source={seed_url} outcome=learned node_actor={seed_node} objects=0"
+        )),
+        "{discovered}"
+    );
+    let holders = run_in(
+        local,
+        federation(FederationCommand::Holders {
+            object: object.clone(),
+        }),
+    )?;
+    assert!(holders.contains("holders = 1\n"), "{holders}");
+    assert!(
+        holders.contains(&format!("node_actor={node} base_url={origin_url}")),
+        "{holders}"
+    );
+    assert!(holders.contains("listed=true"), "{holders}");
+
+    // Again: nothing newer unless the inventory was re-signed later.
+    let again = run_in(local, federation(FederationCommand::Discover))?;
+    assert!(again.contains("outcome=learned"), "{again}");
+
+    // Unpublished at the origin: the next discovery forgets it there.
+    run_in(
+        origin,
+        federation(FederationCommand::Unpublish {
+            object: object.clone(),
+        }),
+    )?;
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    run_in(local, federation(FederationCommand::Discover))?;
+    let holders = run_in(local, federation(FederationCommand::Holders { object }))?;
+    assert!(holders.contains("holders = 0\n"), "{holders}");
     Ok(())
 }
