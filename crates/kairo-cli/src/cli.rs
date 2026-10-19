@@ -276,10 +276,52 @@ pub(crate) enum FederationCommand {
         #[arg(long)]
         allow_peer: bool,
     },
+    /// Keep an object, or one truster's opinions in one scope, current
+    /// from every listed peer (`specs/DECISIONS.md` §28). The daemon
+    /// syncs follows in the background; `kairo federation sync` runs
+    /// one now.
+    Follow {
+        #[command(flatten)]
+        target: FollowTarget,
+    },
+    /// Stop keeping it current. What was fetched stays.
+    Unfollow {
+        #[command(flatten)]
+        target: FollowTarget,
+    },
+    /// Sync every follow (or one) now, from every listed peer.
+    Sync {
+        #[command(flatten)]
+        target: OptionalFollowTarget,
+    },
     /// Process the inbox: pull every announced object, and ingest every
     /// uploaded bundle, whose sender this node still trusts and whose
     /// object it accepts, then remove the entry.
     Receive,
+}
+
+/// What a follow names: an object, or a (truster, scope) trust chain.
+#[derive(Debug, clap::Args)]
+#[group(required = true, multiple = false)]
+pub(crate) struct FollowTarget {
+    #[arg(long)]
+    pub(crate) object: Option<String>,
+    /// The truster whose chain to follow; needs --scope.
+    #[arg(long, requires = "scope")]
+    pub(crate) trust_by: Option<String>,
+    #[arg(long, requires = "trust_by")]
+    pub(crate) scope: Option<String>,
+}
+
+/// [`FollowTarget`], or nothing for every follow.
+#[derive(Debug, clap::Args)]
+pub(crate) struct OptionalFollowTarget {
+    #[arg(long, conflicts_with = "trust_by")]
+    pub(crate) object: Option<String>,
+    #[arg(long, requires = "scope")]
+    pub(crate) trust_by: Option<String>,
+    #[arg(long, requires = "trust_by")]
+    pub(crate) scope: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]

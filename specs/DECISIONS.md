@@ -2592,7 +2592,8 @@ store state. Polling every listed peer needs no new protocol and gets
 the withholding defense for free. Keeping the engine scheduler-free
 means the CLI and daemon can't drift apart.
 
-Affected specs:
+Affected specs (sub-decisions 1, 2, 4, and 5 and the engine half of
+3 implemented: `CLI.md` §25 and `PROJECT_LAYOUT.md`):
 
 - `PHASE_2_FEDERATION.md` §4 item 5 — the slice plan.
 - `DAEMON.md` §5.3, §10, §15 — `FederationService` in the daemon,

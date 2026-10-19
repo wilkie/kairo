@@ -21,6 +21,7 @@ use kairo_daemon as _;
 use kairo_daemon_client as _;
 use kairo_federation_core as _;
 use kairo_federation_http as _;
+use kairo_federation_service as _;
 use kairo_git as _;
 use kairo_identity as _;
 use kairo_keystore as _;

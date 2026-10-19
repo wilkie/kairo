@@ -1656,6 +1656,7 @@ dependencies = [
  "kairo-daemon-client",
  "kairo-federation-core",
  "kairo-federation-http",
+ "kairo-federation-service",
  "kairo-git",
  "kairo-identity",
  "kairo-keystore",
@@ -1782,6 +1783,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+]
+
+[[package]]
+name = "kairo-federation-service"
+version = "0.1.0"
+dependencies = [
+ "kairo-config",
+ "kairo-core",
+ "kairo-federation-core",
+ "kairo-federation-http",
+ "kairo-store",
+ "tempfile",
 ]
 
 [[package]]

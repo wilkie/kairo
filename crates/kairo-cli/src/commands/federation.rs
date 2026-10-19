@@ -7,22 +7,21 @@
 //! All of it is local store state, so these commands always run
 //! direct; there is no daemon route for them.
 
-use std::time::Duration;
-
 use kairo_config::{Config, ConfigSource};
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_federation_core::Announcement;
 use kairo_federation_http::client::{
     announce, export_actor, fetch_trust, ingest_closure_bundle, learn_from_export, learn_peer,
-    normalize_peer_url, pull_object, push, GitOutcome, Limits, NodeSigner, PullOptions, PullReport,
+    normalize_peer_url, pull_object, push, GitOutcome, NodeSigner, PullOptions, PullReport,
 };
+use kairo_federation_service::limits_from;
 use kairo_identity::ActorKind;
 use kairo_keystore::Keystore;
 use kairo_statement::{TrustDecision, TrustScope};
 use kairo_store::{
-    ActorStore, InboxAnnouncement, InboxItem, InboxStore, InboxUpload, ProvenanceStore,
-    PublishedObject, PublishedObjectStore, PullLogStore, PullRecord, TrustResolver,
-    TrustTransportStore,
+    ActorStore, Follow, FollowStore, InboxAnnouncement, InboxItem, InboxStore, InboxUpload,
+    PeerOutcome, ProvenanceStore, PublishedObject, PublishedObjectStore, PullLogStore, PullRecord,
+    TrustResolver, TrustTransportStore,
 };
 
 use crate::cli::FederationCommand;
@@ -71,6 +70,23 @@ pub(crate) fn run_federation_command(
             paths,
         ),
         FederationCommand::Receive => run_receive(offline, paths),
+        FederationCommand::Follow { target } => run_follow(
+            &follow_of(target.object, target.trust_by, target.scope)?,
+            true,
+            paths,
+        ),
+        FederationCommand::Unfollow { target } => run_follow(
+            &follow_of(target.object, target.trust_by, target.scope)?,
+            false,
+            paths,
+        ),
+        FederationCommand::Sync { target } => {
+            let only = match (&target.object, &target.trust_by) {
+                (None, None) => None,
+                _ => Some(follow_of(target.object, target.trust_by, target.scope)?),
+            };
+            run_sync(only.as_ref(), offline, paths)
+        }
         FederationCommand::Publish { object } => run_publish(&parse_object(object)?, paths),
         FederationCommand::Unpublish { object } => run_unpublish(&parse_object(object)?, paths),
         FederationCommand::Published => run_published(paths),
@@ -479,9 +495,13 @@ pub(crate) fn run_trust_forget(
     let forgotten = store
         .forget_trust(&by, scope)
         .map_err(CliError::ReadActorTrust)?;
+    // Background sync must not bring it back (§28 sub-decision 5).
+    let unfollowed = store
+        .remove_trust_follows(&by, scope)
+        .map_err(|source| CliError::Follows { source })?;
     let scope = scope.map_or_else(|| "all".to_owned(), ToString::to_string);
     Ok(format!(
-        "by_actor = {by}\nscope = {scope}\nforgotten = {forgotten}\n"
+        "by_actor = {by}\nscope = {scope}\nforgotten = {forgotten}\nunfollowed = {unfollowed}\n"
     ))
 }
 
@@ -893,20 +913,112 @@ impl Pin {
     }
 }
 
-/// Config overrides on top of the client's defaults.
-fn limits_from(config: &kairo_config::LimitsConfig) -> Limits {
-    let defaults = Limits::default();
-    let secs = |value: Option<u64>, default: Duration| value.map_or(default, Duration::from_secs);
-    Limits {
-        max_json_bytes: config.max_json_bytes.unwrap_or(defaults.max_json_bytes),
-        max_batch_bytes: config.max_batch_bytes.unwrap_or(defaults.max_batch_bytes),
-        max_blob_bytes: config.max_blob_bytes.unwrap_or(defaults.max_blob_bytes),
-        max_git_bytes: config.max_git_bytes.unwrap_or(defaults.max_git_bytes),
-        max_records: config.max_records.map_or(defaults.max_records, |n| {
-            usize::try_from(n).unwrap_or(usize::MAX)
+/// A follow from its CLI spelling.
+fn follow_of(
+    object: Option<String>,
+    trust_by: Option<String>,
+    scope: Option<String>,
+) -> Result<Follow, CliError> {
+    match (object, trust_by, scope) {
+        (Some(object), None, None) => Ok(Follow::Object(parse_object(object)?)),
+        (None, Some(by), Some(scope)) => Ok(Follow::Trust {
+            by: parse_actor(&by)?,
+            scope: TrustScope::parse(&scope).map_err(CliError::ParseTrustScope)?,
         }),
-        request_timeout: secs(config.request_timeout_secs, defaults.request_timeout),
-        git_timeout: secs(config.git_timeout_secs, defaults.git_timeout),
+        _ => Err(CliError::NodeActorChoice {
+            message: "name --object <id>, or --trust-by <actor> with --scope <scope>".to_owned(),
+        }),
+    }
+}
+
+/// `kairo federation follow` / `unfollow` (`DECISIONS.md` §28
+/// sub-decision 1).
+fn run_follow(follow: &Follow, add: bool, paths: &StorePaths) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+    let follows = |source| CliError::Follows { source };
+    let status = if add {
+        if store
+            .add_follow(follow, Timestamp::now())
+            .map_err(follows)?
+        {
+            "following"
+        } else {
+            "already_following"
+        }
+    } else if store.remove_follow(follow).map_err(follows)? {
+        "unfollowed"
+    } else {
+        "not_following"
+    };
+    Ok(format!("follow = {follow}\nstatus = {status}\n"))
+}
+
+/// `kairo federation sync` (§28 sub-decision 3): the engine, run now.
+fn run_sync(only: Option<&Follow>, offline: bool, paths: &StorePaths) -> Result<String, CliError> {
+    if offline {
+        return Err(CliError::OfflineFetch);
+    }
+    let (config, source) = load_config(paths)?;
+    let store = open_store(paths)?;
+    if let Some(only) = only {
+        let followed = store
+            .list_follows()
+            .map_err(|source| CliError::Follows { source })?
+            .iter()
+            .any(|record| &record.follow == only);
+        if !followed {
+            return Err(CliError::NodeActorChoice {
+                message: format!(
+                    "{only} is not followed; follow it with `kairo federation follow` first"
+                ),
+            });
+        }
+    }
+    let results = kairo_federation_service::sync_follows(
+        &store,
+        &config.federation,
+        source.path().to_path_buf(),
+        only,
+    )
+    .map_err(|error| match error {
+        kairo_federation_service::SyncError::Disabled { config } => {
+            CliError::FederationDisabled { config }
+        }
+        kairo_federation_service::SyncError::Store(source) => CliError::Follows { source },
+    })?;
+    let mut output = format!("synced = {}\n", results.len());
+    for (follow, attempt) in &results {
+        let status = if attempt.succeeded() {
+            "current"
+        } else {
+            "not_current"
+        };
+        output.push_str(&format!("  follow={follow} status={status}\n"));
+        for peer in &attempt.peers {
+            output.push_str(&format!("    {}\n", describe_peer_outcome(peer)));
+        }
+    }
+    Ok(output)
+}
+
+fn describe_peer_outcome(outcome: &PeerOutcome) -> String {
+    match outcome {
+        PeerOutcome::Fetched {
+            peer_url,
+            fetched,
+            already_held,
+            incomplete_chains,
+            flagged,
+        } => format!(
+            "peer={peer_url} outcome=fetched fetched={fetched} already_held={already_held} \
+             incomplete_chains={incomplete_chains} flagged={flagged}"
+        ),
+        PeerOutcome::NotPublished { peer_url } => {
+            format!("peer={peer_url} outcome=not_published")
+        }
+        PeerOutcome::Failed { peer_url, reason } => {
+            format!("peer={peer_url} outcome=failed reason=\"{reason}\"")
+        }
     }
 }
 
@@ -1008,6 +1120,20 @@ fn run_status(paths: &StorePaths) -> Result<String, CliError> {
                 describe_pull(Some(pull))
             ));
         }
+    }
+    let follows = store
+        .list_follows()
+        .map_err(|source| CliError::Follows { source })?;
+    output.push_str(&format!("follows = {}\n", follows.len()));
+    for record in &follows {
+        let last =
+            |at: Option<Timestamp>| at.map_or_else(|| "never".to_owned(), |at| at.to_string());
+        output.push_str(&format!(
+            "  follow={} last_attempt={} last_success={}\n",
+            record.follow,
+            last(record.last_attempt.as_ref().map(|attempt| attempt.at)),
+            last(record.last_success),
+        ));
     }
     Ok(output)
 }

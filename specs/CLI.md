@@ -1358,6 +1358,9 @@ kairo federation learn --file <path> [--node-actor <id>]
 kairo federation announce --object <id>... --to <url> --base-url <url> [--node <actor>] [--allow-peer]
 kairo federation receive
 kairo push --object <id> --to <url> [--node <actor>] [--allow-peer]
+kairo federation follow (--object <id> | --trust-by <actor> --scope <scope>)
+kairo federation unfollow (--object <id> | --trust-by <actor> --scope <scope>)
+kairo federation sync [--object <id> | --trust-by <actor> --scope <scope>]
 ```
 
 Federation commands require daemon/federation support unless a direct federation client is explicitly implemented.
@@ -1403,6 +1406,19 @@ federation must be enabled, and the peer must be listed unless
   each entry either way. An upload's closure bundle is ingested
   through the same verifier as a pull (`ingested ...` lines), with
   provenance naming `push:<node-actor-id>`.
+
+Follows (`DECISIONS.md` §28) are what this node keeps current: an
+object, or one truster's chain in one scope. `follow` and `unfollow`
+edit `<store>/federation/follows.json`; nothing is synced in the
+background unless followed, and unfollowing keeps what was fetched.
+`sync` pulls every follow (or one, which must be followed) from every
+`[[federation.peers]]` entry, with pins, and prints each follow as
+`current` (some peer served it) or `not_current`, with one line per
+peer: `fetched`, `not_published` (the peer answered `404`), or
+`failed` with the reason. It follows `kairo fetch`'s `--offline` and
+`enabled = false` refusals. `status` lists follows with their last
+attempt and last success. `kairo trust forget` also unfollows the
+forgotten chains, so background sync doesn't bring them back.
 
 `kairo push` (`DECISIONS.md` §26 sub-decisions 5–6) is for a node the
 peer can't pull from. It sends the peer the object's closure

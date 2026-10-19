@@ -1,0 +1,24 @@
+[package]
+name = "kairo-federation-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kairo-config = { path = "../kairo-config" }
+kairo-core = { path = "../kairo-core" }
+kairo-federation-core = { path = "../kairo-federation-core" }
+kairo-federation-http = { path = "../kairo-federation-http", default-features = false, features = ["client"] }
+kairo-store = { path = "../kairo-store" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "kairo_federation_service"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -7297,3 +7297,181 @@ fn trust_is_published_fetched_labelled_and_forgotten() -> Result<(), Box<dyn std
     assert!(after.contains("decision = unknown\n"), "{after}");
     Ok(())
 }
+
+#[test]
+fn follows_sync_from_every_listed_peer() -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §28: a follow is pulled from each listed peer; one that
+    // doesn't publish it is `not_published`, one that's down `failed`,
+    // and the follow is current if any peer served it.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node = create_node_actor(origin)?;
+    let alice = parse_field(
+        &run_in(
+            origin,
+            Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            },
+        )?,
+        "actor = ",
+    )?;
+    let object = create_cli_object(origin)?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let trust =
+        |store: &std::path::Path, command: TrustCommand| run_in(store, Command::Trust { command });
+    trust(
+        origin,
+        TrustCommand::Grant {
+            by: alice.clone(),
+            of: node.clone(),
+            scope: "federation:index".to_owned(),
+            reason: None,
+        },
+    )?;
+    trust(
+        origin,
+        TrustCommand::Publish {
+            by: alice.clone(),
+            scope: "federation:index".to_owned(),
+        },
+    )?;
+    let (origin_url, _origin_stop, _origin_server) = serve_federation(origin, &node)?;
+
+    let empty_dir = tempfile::TempDir::new()?;
+    let empty = empty_dir.path();
+    let empty_node = create_node_actor(empty)?;
+    let (empty_url, _empty_stop, _empty_server) = serve_federation(empty, &empty_node)?;
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    std::fs::write(
+        local.join("config.toml"),
+        format!(
+            "[[federation.peers]]\nurl = \"{origin_url}\"\nnode_actor = \"{node}\"\n\n\
+             [[federation.peers]]\nurl = \"{empty_url}\"\n\n\
+             [[federation.peers]]\nurl = \"http://127.0.0.1:1\"\n"
+        ),
+    )?;
+    let follow = |object: Option<String>, trust_by: Option<String>, scope: Option<String>| {
+        run_in(
+            local,
+            federation(FederationCommand::Follow {
+                target: crate::cli::FollowTarget {
+                    object,
+                    trust_by,
+                    scope,
+                },
+            }),
+        )
+    };
+    let followed = follow(Some(object.clone()), None, None)?;
+    assert!(followed.contains("status = following"), "{followed}");
+    assert!(follow(Some(object.clone()), None, None)?.contains("already_following"));
+    follow(
+        None,
+        Some(alice.clone()),
+        Some("federation:index".to_owned()),
+    )?;
+
+    let synced = run_in(
+        local,
+        federation(FederationCommand::Sync {
+            target: crate::cli::OptionalFollowTarget {
+                object: None,
+                trust_by: None,
+                scope: None,
+            },
+        }),
+    )?;
+    assert!(synced.starts_with("synced = 2\n"), "{synced}");
+    assert!(
+        synced.contains(&format!("follow=object:{object} status=current")),
+        "{synced}"
+    );
+    assert!(
+        synced.contains(&format!(
+            "follow=trust:{alice}:federation:index status=current"
+        )),
+        "{synced}"
+    );
+    assert!(
+        synced.contains(&format!("peer={origin_url} outcome=fetched")),
+        "{synced}"
+    );
+    assert!(
+        synced.contains(&format!("peer={empty_url} outcome=not_published")),
+        "{synced}"
+    );
+    assert!(
+        synced.contains("peer=http://127.0.0.1:1 outcome=failed"),
+        "{synced}"
+    );
+    let shown = trust(
+        local,
+        TrustCommand::Show {
+            by: alice.clone(),
+            of: node.clone(),
+            scope: "federation:index".to_owned(),
+            json: false,
+        },
+    )?;
+    assert!(shown.contains("decision = trusted\n"), "{shown}");
+
+    let status = run_in(local, federation(FederationCommand::Status))?;
+    assert!(status.contains("follows = 2\n"), "{status}");
+    assert!(!status.contains("last_success=never"), "{status}");
+
+    // Forgetting the truster drops the follow too.
+    let forgotten = trust(
+        local,
+        TrustCommand::Forget {
+            by: alice.clone(),
+            scope: None,
+        },
+    )?;
+    assert!(forgotten.contains("unfollowed = 1\n"), "{forgotten}");
+    let status = run_in(local, federation(FederationCommand::Status))?;
+    assert!(status.contains("follows = 1\n"), "{status}");
+
+    // Syncing one that isn't followed is refused.
+    let refused = run_in(
+        local,
+        federation(FederationCommand::Sync {
+            target: crate::cli::OptionalFollowTarget {
+                object: None,
+                trust_by: Some(alice),
+                scope: Some("federation:index".to_owned()),
+            },
+        }),
+    )
+    .err()
+    .ok_or("synced an unfollowed chain")?;
+    assert!(refused.to_string().contains("is not followed"), "{refused}");
+
+    // Local-only mode refuses to sync.
+    std::fs::write(local.join("config.toml"), "[federation]\nenabled = false\n")?;
+    let disabled = run_in(
+        local,
+        federation(FederationCommand::Sync {
+            target: crate::cli::OptionalFollowTarget {
+                object: None,
+                trust_by: None,
+                scope: None,
+            },
+        }),
+    )
+    .err()
+    .ok_or("synced while disabled")?;
+    assert_eq!(disabled.exit_code(), 7);
+    Ok(())
+}

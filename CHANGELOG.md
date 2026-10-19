@@ -18,6 +18,17 @@ rather than per-commit.
 
 ### Added
 
+- **Follows and the sync engine (`DECISIONS.md` §28, slice 1).**
+  - `kairo federation follow | unfollow (--object <id> | --trust-by
+    <actor> --scope <scope>)` keeps a list of what this node keeps
+    current, in `<store>/federation/follows.json`.
+  - `kairo federation sync` pulls every follow (or one) from every
+    listed peer, reporting each peer as `fetched`, `not_published`, or
+    `failed`; `kairo federation status` lists follows with their last
+    attempt and success. The engine lives in the new
+    `kairo-federation-service` crate, ready for the daemon.
+  - `kairo trust forget` also unfollows the forgotten chains.
+
 - **Trust transport and `forget` (`DECISIONS.md` §27).**
   - `kairo trust publish | unpublish --by <id> --scope <scope>` chooses
     which (truster, scope) chains a node serves, at

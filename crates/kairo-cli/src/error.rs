@@ -116,6 +116,10 @@ pub(crate) enum CliError {
     ListInbox {
         source: kairo_store::StoreError,
     },
+    /// The follow list couldn't be read or written.
+    Follows {
+        source: kairo_store::StoreError,
+    },
     /// An actor export file couldn't be read, parsed, or written.
     ActorExportFile {
         path: PathBuf,
@@ -611,6 +615,7 @@ impl fmt::Display for CliError {
                  `kairo federation publish --object {object}` first"
             ),
             Self::ListInbox { source } => write!(f, "failed to read the inbox: {source}"),
+            Self::Follows { source } => write!(f, "failed to read or write follows: {source}"),
             Self::ActorExportFile { path, message } => {
                 write!(f, "actor export {}: {message}", path.display())
             }
@@ -1043,7 +1048,8 @@ impl Error for CliError {
             | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. }
             | Self::ListRevisions { source, .. }
-            | Self::ListInbox { source } => Some(source),
+            | Self::ListInbox { source }
+            | Self::Follows { source } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)

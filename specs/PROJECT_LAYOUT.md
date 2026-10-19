@@ -487,6 +487,11 @@ The route should lead to signed advertisements, not trusted answers.
 
 The local federation service used by the daemon.
 
+*Created* with the sync engine of `DECISIONS.md` §28: *sync these
+follows once*, from every listed peer, with no scheduler of its own.
+The daemon and `kairo federation sync` both drive it. The rest of the
+list below arrives with discovery.
+
 Responsibilities:
 
 - Manage peer list

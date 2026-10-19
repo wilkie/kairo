@@ -11,6 +11,7 @@ members = [
     "crates/kairo-config",
     "crates/kairo-federation-core",
     "crates/kairo-federation-http",
+    "crates/kairo-federation-service",
     "crates/kairo-cli",
     "crates/kairo-daemon",
     "crates/kairo-daemon-client",

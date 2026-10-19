@@ -520,7 +520,7 @@ inventory step, and 7 come from comparing this design with Radicle
 5. **Daemon `FederationService`**, *decided in `DECISIONS.md` §28*:
    follows and background sync; on-demand fetch (`DAEMON.md` §9)
    waits for discovery. Slices, in order:
-   1. **Follows and the engine.** `kairo-federation-service` with
+   1. ~~**Follows and the engine.**~~ *(shipped)* `kairo-federation-service` with
       `follows.json`, `kairo federation follow | unfollow`, and *sync
       once* over every listed peer, with per-follow results;
       `kairo federation sync` and `status` use it. `trust forget`
