@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Daemon acquisition (`DECISIONS.md` §30, on-demand fetch slice
+  2).** `POST /api/v1/federation/fetch` queues an acquisition and
+  answers at once (`queued`, `running`, `no_sources`, `disabled`); the
+  attempt shows as a `fetch` run in federation status. One attempt per
+  object at a time, within `max_concurrent`.
+  `[federation.on_demand]` sets `on_read` (off) and `cooldown_secs`
+  (300) for read-triggered acquisitions.
 - **Acquisition (`DECISIONS.md` §30, on-demand fetch slice 1).**
   `kairo fetch --object <id>` without `--from` fetches the object from
   wherever it is held: the listed peers and vouched hinted holders,

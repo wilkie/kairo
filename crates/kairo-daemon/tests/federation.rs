@@ -255,3 +255,73 @@ async fn a_trigger_starts_follows_once_and_refuses_unknown_ones() {
     assert_eq!(body["error"]["code"], "federation_disabled");
     daemon.stop().await;
 }
+
+#[tokio::test]
+async fn an_explicit_fetch_is_queued_and_recorded_as_a_run() {
+    let (dir, _store, _object) = store();
+    let daemon = spawn(dir.path()).await;
+    let wanted = ObjectId::from_sha256_digest([7; 32]);
+    let body = format!("{{\"object\":\"{wanted}\"}}");
+    let (code, response) = call(&daemon.socket, "POST", "/api/v1/federation/fetch", &body).await;
+    assert_eq!(code, 200, "{response}");
+    assert_eq!(response["result"]["acquisition"], "queued");
+
+    let done = until(&daemon.socket, |status| {
+        status["runs"].as_array().is_some_and(|runs| {
+            runs.iter().any(|run| {
+                run["kind"] == "fetch"
+                    && run["follow"] == format!("object:{wanted}")
+                    && run["result"] == "not_acquired"
+            })
+        })
+    })
+    .await;
+    assert!(done["enabled"].as_bool().unwrap_or(false));
+
+    // Explicit requests skip the cooldown.
+    let (code, response) = call(&daemon.socket, "POST", "/api/v1/federation/fetch", &body).await;
+    assert_eq!(code, 200, "{response}");
+    assert_ne!(response["result"]["acquisition"], "cooling_down");
+
+    let (code, _) = call(
+        &daemon.socket,
+        "POST",
+        "/api/v1/federation/fetch",
+        "{\"object\":\"not-an-id\"}",
+    )
+    .await;
+    assert_eq!(code, 400);
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn read_triggered_acquisitions_cool_down_and_need_sources() {
+    use kairo_daemon::federation::{Acquisition, FederationService};
+    use std::sync::Arc;
+    let (dir, store, _object) = store();
+    let service = FederationService::new(Arc::new(store), dir.path().to_path_buf());
+    let wanted = ObjectId::from_sha256_digest([8; 32]);
+    assert_eq!(service.acquire(&wanted, false), Ok(Acquisition::Queued));
+    // Wait for the attempt against the down peer to finish.
+    for _ in 0..100 {
+        if service.runs().iter().all(|run| run.finished_at.is_some()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        service.acquire(&wanted, false),
+        Ok(Acquisition::CoolingDown)
+    );
+    assert_eq!(service.acquire(&wanted, true), Ok(Acquisition::Queued));
+
+    std::fs::write(dir.path().join("config.toml"), "").expect("no peers");
+    let other = ObjectId::from_sha256_digest([9; 32]);
+    assert_eq!(service.acquire(&other, false), Ok(Acquisition::NoSources));
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[federation]\nenabled = false\n",
+    )
+    .expect("disabled");
+    assert_eq!(service.acquire(&other, true), Ok(Acquisition::Disabled));
+}

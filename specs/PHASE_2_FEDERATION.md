@@ -568,7 +568,7 @@ inventory step, and 7 come from comparing this design with Radicle
    §9). Slices:
    1. ~~**Acquire.**~~ *(shipped)* The engine's provenance-ordered acquisition over the
       sync sources, and `kairo fetch --object <id>` without `--from`.
-   2. **The daemon.** `POST /api/v1/federation/fetch`,
+   2. ~~**The daemon.**~~ *(shipped)* `POST /api/v1/federation/fetch`,
       `[federation.on_demand]`, single flight, cooldown, and `fetch`
       runs in status.
    3. **On read.** `on_read`: `verify-object` and object reads queue an

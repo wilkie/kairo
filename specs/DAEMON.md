@@ -221,7 +221,9 @@ processes the inbox every `inbox_secs`, runs discovery (`DECISIONS.md`
 §29) every `interval_secs` when it has peers or bootstrap nodes, and
 syncs each follow whose
 last attempt is `interval_secs` old, at most `max_concurrent` at once
-and never the same follow twice, on the blocking pool. `GET
+and never the same follow twice, on the blocking pool. Acquisitions
+(`DECISIONS.md` §30) queue behind the same cap, keyed with the object's
+follow so a sync and an acquisition of one object never overlap. `GET
 /api/v1/federation/status` and `POST /api/v1/federation/sync` report
 and start it (`API.md` §14.2). On-demand fetch for §9 waits for
 discovery.

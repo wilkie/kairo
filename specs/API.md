@@ -888,6 +888,19 @@ by the scheduler as slots free); results arrive in `status`. A follow
 that isn't followed is `404 not_found`; local-only mode is `409
 federation_disabled`.
 
+```http
+POST /api/v1/federation/fetch
+```
+
+On-demand acquisition (`DECISIONS.md` §30): `{ object }` asks the
+daemon to fetch the object from wherever it is held, including one
+never held. It answers at once with `{ object, acquisition }`, where
+`acquisition` is `queued`, `running` (an acquisition or a sync of it is
+under way), `no_sources`, or `disabled`; the attempt appears in
+`status` as a `fetch` run with result `acquired` or `not_acquired`.
+Explicit requests skip `[federation.on_demand] cooldown_secs`; at most
+one attempt per object runs at a time, within `max_concurrent`.
+
 ### 14.3 Get statement graph
 
 ```http

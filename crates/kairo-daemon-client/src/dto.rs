@@ -511,7 +511,7 @@ pub struct FollowStatusDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct FederationRunDto {
     pub id: u64,
-    /// `sync`, `inbox`, or `discover`.
+    /// `sync`, `inbox`, `discover`, or `fetch`.
     pub kind: String,
     /// The follow, for a sync.
     pub follow: Option<String>,
@@ -550,4 +550,19 @@ pub struct FederationSyncStartedDto {
     pub already_running: Vec<String>,
     /// Over `max_concurrent`; the scheduler starts them as slots free.
     pub deferred: Vec<String>,
+}
+
+/// `POST /api/v1/federation/fetch` body (`DECISIONS.md` §30).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FederationFetchRequestDto {
+    pub object: String,
+}
+
+/// What an acquisition request did. Results arrive in the status as a
+/// `fetch` run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FederationFetchDto {
+    pub object: String,
+    /// `queued`, `running`, `cooling_down`, `no_sources`, or `disabled`.
+    pub acquisition: String,
 }

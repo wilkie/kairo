@@ -64,6 +64,27 @@ pub struct FederationConfig {
     /// 1, §29). Being asked grants nothing else.
     pub bootstrap: Vec<PeerConfig>,
     pub discovery: DiscoveryConfig,
+    pub on_demand: OnDemandConfig,
+}
+
+/// `[federation.on_demand]` (`DECISIONS.md` §30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnDemandConfig {
+    /// Daemon reads that find an object missing or incomplete queue an
+    /// acquisition of it.
+    pub on_read: bool,
+    /// After an attempt, a read-triggered acquisition of the same object
+    /// waits this long.
+    pub cooldown_secs: u64,
+}
+
+impl Default for OnDemandConfig {
+    fn default() -> Self {
+        Self {
+            on_read: false,
+            cooldown_secs: 300,
+        }
+    }
 }
 
 /// `[federation.discovery]` (`DECISIONS.md` §29 sub-decision 5).
@@ -120,6 +141,7 @@ impl Default for FederationConfig {
             sync: SyncConfig::default(),
             bootstrap: Vec::new(),
             discovery: DiscoveryConfig::default(),
+            on_demand: OnDemandConfig::default(),
         }
     }
 }
@@ -223,6 +245,15 @@ struct RawFederation {
     bootstrap: Vec<RawPeer>,
     #[serde(default)]
     discovery: Option<RawDiscovery>,
+    #[serde(default)]
+    on_demand: Option<RawOnDemand>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOnDemand {
+    on_read: Option<bool>,
+    cooldown_secs: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -389,6 +420,19 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
                 .to_owned(),
         ));
     }
+    let raw_on_demand = federation.on_demand.unwrap_or_default();
+    if raw_on_demand.cooldown_secs == Some(0) {
+        return Err(invalid(
+            "federation.on_demand.cooldown_secs must be greater than 0".to_owned(),
+        ));
+    }
+    let on_demand_defaults = OnDemandConfig::default();
+    let on_demand = OnDemandConfig {
+        on_read: raw_on_demand.on_read.unwrap_or(on_demand_defaults.on_read),
+        cooldown_secs: raw_on_demand
+            .cooldown_secs
+            .unwrap_or(on_demand_defaults.cooldown_secs),
+    };
     let discovery_defaults = DiscoveryConfig::default();
     let discovery = DiscoveryConfig {
         hint_ttl_secs: raw_discovery
@@ -471,6 +515,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             sync,
             bootstrap,
             discovery,
+            on_demand,
         },
     })
 }
@@ -647,6 +692,19 @@ mod tests {
             "[[federation.bootstrap]]\nurl = \"https://a.example\"\n\n[[federation.bootstrap]]\nurl = \"https://a.example/\"\n"
         )
         .contains("federation.bootstrap"));
+    }
+
+    #[test]
+    fn parses_on_demand_fetch() {
+        assert_eq!(
+            Config::default().federation.on_demand,
+            OnDemandConfig::default()
+        );
+        assert!(!OnDemandConfig::default().on_read);
+        let config = parse_ok("[federation.on_demand]\non_read = true\ncooldown_secs = 60\n");
+        assert!(config.federation.on_demand.on_read);
+        assert_eq!(config.federation.on_demand.cooldown_secs, 60);
+        assert!(parse_err("[federation.on_demand]\ncooldown_secs = 0\n").contains("cooldown_secs"));
     }
 
     #[test]

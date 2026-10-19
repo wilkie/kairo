@@ -154,6 +154,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/federation/fetch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["fetchObject"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/federation/status": {
         parameters: {
             query?: never;
@@ -615,6 +631,19 @@ export interface components {
             scope: string;
             signer: string;
         };
+        /**
+         * @description What an acquisition request did. Results arrive in the status as a
+         *     `fetch` run.
+         */
+        FederationFetchDto: {
+            /** @description `queued`, `running`, `cooling_down`, `no_sources`, or `disabled`. */
+            acquisition: string;
+            object: string;
+        };
+        /** @description `POST /api/v1/federation/fetch` body (`DECISIONS.md` §30). */
+        FederationFetchRequestDto: {
+            object: string;
+        };
         /** @description One engine run, newest first. Operational state, not validation. */
         FederationRunDto: {
             finished_at?: string | null;
@@ -622,7 +651,7 @@ export interface components {
             follow?: string | null;
             /** Format: int64 */
             id: number;
-            /** @description `sync`, `inbox`, or `discover`. */
+            /** @description `sync`, `inbox`, `discover`, or `fetch`. */
             kind: string;
             /**
              * @description `current` / `not_current` for a sync, counts for the inbox, or
@@ -1394,6 +1423,38 @@ export interface operations {
                 };
             };
             /** @description Malformed grantor id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    fetchObject: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The object to acquire */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationFetchRequestDto"];
+            };
+        };
+        responses: {
+            /** @description What the request did: queued, running, no_sources, or disabled; results arrive in the status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FederationFetchDto"];
+                };
+            };
+            /** @description Malformed request */
             400: {
                 headers: {
                     [name: string]: unknown;

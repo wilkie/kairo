@@ -1376,6 +1376,8 @@ Sub-decisions:
    - `[[federation.bootstrap]]` entries, shaped like peers (`url`,
      optional `node_actor`), are asked for inventories and nothing
      else (§18 sub-decision 1, §29).
+   - `[federation.on_demand]`: `on_read` (`false`) and
+     `cooldown_secs` (300; zero is invalid) (§30).
    - `[federation.discovery]`: `hint_ttl_secs` (604 800; zero is
      invalid), `use_hints` (`false`), and `vouched_by` (the actor whose
      `federation:index` trust vouches for hints; required by
@@ -2781,6 +2783,8 @@ Affected specs:
   the `Kairo-Acquisition` header.
 - `CLI.md` §15 — `kairo fetch` without `--from` (implemented in
   slice 1, with the engine's `acquire`).
+- Slice 2 implemented `POST /api/v1/federation/fetch`,
+  `[federation.on_demand]`, the queue, single flight, and cooldown.
 - §17 — `[federation.on_demand]`.
 - `PHASE_2_FEDERATION.md` §4 — the slice plan.
 

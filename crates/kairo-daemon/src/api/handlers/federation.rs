@@ -19,6 +19,7 @@ use crate::api::envelope::{ApiError, ApiResult};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 use crate::federation::{RunKind, TriggerError};
+use kairo_daemon_client::dto::{FederationFetchDto, FederationFetchRequestDto};
 
 fn peer_dto(outcome: &PeerOutcome) -> PeerOutcomeDto {
     let mut dto = PeerOutcomeDto {
@@ -107,6 +108,7 @@ pub async fn status_handler(
                     RunKind::Sync(follow) => ("sync", Some(follow.to_string())),
                     RunKind::Inbox => ("inbox", None),
                     RunKind::Discover => ("discover", None),
+                    RunKind::Fetch(object) => ("fetch", Some(format!("object:{object}"))),
                 };
                 FederationRunDto {
                     id: run.id,
@@ -180,5 +182,38 @@ pub async fn sync_handler(
         started: names(triggered.started),
         already_running: names(triggered.already_running),
         deferred: names(triggered.deferred),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/federation/fetch",
+    tag = "federation",
+    operation_id = "fetchObject",
+    request_body(content = FederationFetchRequestDto, description = "The object to acquire", content_type = "application/json"),
+    responses(
+        (status = 200, description = "What the request did: queued, running, no_sources, or disabled; results arrive in the status", body = FederationFetchDto),
+        (status = 400, description = "Malformed request"),
+    ),
+)]
+pub async fn fetch_handler(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<ApiResult<FederationFetchDto>, ApiError> {
+    let request: FederationFetchRequestDto = serde_json::from_slice(&body)
+        .map_err(|error| ApiError::bad_request(format!("malformed fetch request: {error}")))?;
+    let object = ObjectId::new(request.object.clone()).map_err(|error| {
+        ApiError::bad_request(format!("invalid object {:?}: {error}", request.object))
+    })?;
+    let federation = state.federation.clone();
+    let lookup = object.clone();
+    // Explicit: no cooldown (DECISIONS.md §30 sub-decision 5).
+    let acquisition = tokio::task::spawn_blocking(move || federation.acquire(&lookup, true))
+        .await
+        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))?
+        .map_err(|error| ApiError::internal(format!("node configuration: {error}")))?;
+    Ok(ApiResult(FederationFetchDto {
+        object: object.to_string(),
+        acquisition: acquisition.as_str().to_owned(),
     }))
 }

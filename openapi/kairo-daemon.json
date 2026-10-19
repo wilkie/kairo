@@ -369,6 +369,40 @@
         }
       }
     },
+    "/api/v1/federation/fetch": {
+      "post": {
+        "tags": [
+          "federation"
+        ],
+        "operationId": "fetchObject",
+        "requestBody": {
+          "description": "The object to acquire",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FederationFetchRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the request did: queued, running, no_sources, or disabled; results arrive in the status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederationFetchDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request"
+          }
+        }
+      }
+    },
     "/api/v1/federation/status": {
       "get": {
         "tags": [
@@ -1423,6 +1457,35 @@
           }
         }
       },
+      "FederationFetchDto": {
+        "type": "object",
+        "description": "What an acquisition request did. Results arrive in the status as a\n`fetch` run.",
+        "required": [
+          "object",
+          "acquisition"
+        ],
+        "properties": {
+          "acquisition": {
+            "type": "string",
+            "description": "`queued`, `running`, `cooling_down`, `no_sources`, or `disabled`."
+          },
+          "object": {
+            "type": "string"
+          }
+        }
+      },
+      "FederationFetchRequestDto": {
+        "type": "object",
+        "description": "`POST /api/v1/federation/fetch` body (`DECISIONS.md` §30).",
+        "required": [
+          "object"
+        ],
+        "properties": {
+          "object": {
+            "type": "string"
+          }
+        }
+      },
       "FederationRunDto": {
         "type": "object",
         "description": "One engine run, newest first. Operational state, not validation.",
@@ -1452,7 +1515,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`sync`, `inbox`, or `discover`."
+            "description": "`sync`, `inbox`, `discover`, or `fetch`."
           },
           "result": {
             "type": [

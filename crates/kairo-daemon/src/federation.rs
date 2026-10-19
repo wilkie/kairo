@@ -19,16 +19,16 @@
 //! same single-flight and cap. Runs are kept in memory (the last
 //! [`MAX_RUNS`]) for `GET /api/v1/federation/status`.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use kairo_config::FederationConfig;
-use kairo_core::Timestamp;
+use kairo_core::{ObjectId, Timestamp};
 use kairo_federation_service::{
-    discover, receive_inbox, sync_one, DiscoverOutcome, ReceiveOutcome,
+    acquire, discover, receive_inbox, sync_one, DiscoverOutcome, ReceiveOutcome,
 };
 use kairo_store::{FilesystemStore, Follow, FollowStore};
 
@@ -40,6 +40,34 @@ pub enum RunKind {
     Sync(Follow),
     Inbox,
     Discover,
+    /// An on-demand acquisition (`DECISIONS.md` §30).
+    Fetch(ObjectId),
+}
+
+/// What an acquisition request did (`DECISIONS.md` §30 sub-decision 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acquisition {
+    /// Waiting for a slot, or just started.
+    Queued,
+    /// An attempt (or a sync of the object) is running.
+    Running,
+    /// Read-triggered, and the last attempt is within `cooldown_secs`.
+    CoolingDown,
+    /// No listed peers, and hints aren't in use.
+    NoSources,
+    Disabled,
+}
+
+impl Acquisition {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::CoolingDown => "cooling_down",
+            Self::NoSources => "no_sources",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 /// One engine run, for status (`DAEMON.md` §14: operational, not
@@ -80,6 +108,10 @@ pub struct FederationService {
     last_inbox: AtomicI64,
     discover_running: AtomicBool,
     last_discover: AtomicI64,
+    /// Acquisitions waiting for a slot, oldest first.
+    pending: Mutex<VecDeque<ObjectId>>,
+    /// When each object's last acquisition started.
+    last_acquire: Mutex<HashMap<ObjectId, i64>>,
     runs: Mutex<VecDeque<Run>>,
     next_run: AtomicU64,
 }
@@ -100,6 +132,8 @@ impl FederationService {
             last_inbox: AtomicI64::new(i64::MIN),
             discover_running: AtomicBool::new(false),
             last_discover: AtomicI64::new(i64::MIN),
+            pending: Mutex::new(VecDeque::new()),
+            last_acquire: Mutex::new(HashMap::new()),
             runs: Mutex::new(VecDeque::new()),
             next_run: AtomicU64::new(1),
         })
@@ -237,6 +271,93 @@ impl FederationService {
         });
     }
 
+    /// Ask for `object` to be acquired (§30). `explicit` requests skip
+    /// the cooldown; every request respects the single flight and the
+    /// shared cap.
+    pub fn acquire(
+        self: &Arc<Self>,
+        object: &ObjectId,
+        explicit: bool,
+    ) -> Result<Acquisition, String> {
+        let (config, config_path) = self.config()?;
+        if !config.enabled {
+            return Ok(Acquisition::Disabled);
+        }
+        if lock(&self.running).contains(&Follow::Object(object.clone())) {
+            return Ok(Acquisition::Running);
+        }
+        if lock(&self.pending).contains(object) {
+            return Ok(Acquisition::Queued);
+        }
+        if !explicit {
+            let cooldown = i64::try_from(config.on_demand.cooldown_secs).unwrap_or(i64::MAX);
+            let last = lock(&self.last_acquire).get(object).copied();
+            if last.is_some_and(|at| at.saturating_add(cooldown) > Timestamp::now().seconds()) {
+                return Ok(Acquisition::CoolingDown);
+            }
+        }
+        let hints = config.discovery.use_hints && config.discovery.vouched_by.is_some();
+        if config.peers.is_empty() && !hints {
+            return Ok(Acquisition::NoSources);
+        }
+        lock(&self.pending).push_back(object.clone());
+        self.drain_pending(&config, &config_path);
+        Ok(Acquisition::Queued)
+    }
+
+    /// Start pending acquisitions while slots are free.
+    fn drain_pending(self: &Arc<Self>, config: &FederationConfig, config_path: &std::path::Path) {
+        loop {
+            let Some(object) = lock(&self.pending).front().cloned() else {
+                return;
+            };
+            match self.start_acquire(&object, config, config_path) {
+                // Started, or a sync of it is already running.
+                Some(_) => {
+                    lock(&self.pending).pop_front();
+                }
+                // At the cap: wait for the next tick.
+                None => return,
+            }
+        }
+    }
+
+    fn start_acquire(
+        self: &Arc<Self>,
+        object: &ObjectId,
+        config: &FederationConfig,
+        config_path: &std::path::Path,
+    ) -> Option<bool> {
+        let key = Follow::Object(object.clone());
+        {
+            let mut running = lock(&self.running);
+            if running.contains(&key) {
+                return Some(false);
+            }
+            let cap = usize::try_from(config.sync.max_concurrent).unwrap_or(usize::MAX);
+            if running.len() >= cap {
+                return None;
+            }
+            running.insert(key.clone());
+        }
+        lock(&self.last_acquire).insert(object.clone(), Timestamp::now().seconds());
+        let id = self.begin(RunKind::Fetch(object.clone()));
+        let service = Arc::clone(self);
+        let object = object.clone();
+        let config = config.clone();
+        let config_path = config_path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let result = match acquire(&service.store, &config, config_path, &object) {
+                Ok(attempt) if attempt.succeeded() => "acquired".to_owned(),
+                Ok(_) => "not_acquired".to_owned(),
+                Err(error) => format!("error: {error}"),
+            };
+            lock(&service.running).remove(&key);
+            service.finish(id, result);
+        });
+        Some(true)
+    }
+
     fn store_inbox_len(&self) -> usize {
         use kairo_store::InboxStore;
         self.store
@@ -274,8 +395,9 @@ impl FederationService {
             .saturating_add(i64::try_from(config.sync.interval_secs).unwrap_or(i64::MAX))
             <= now;
         if has_sources && discover_due {
-            self.start_discover(&config, config_path);
+            self.start_discover(&config, config_path.clone());
         }
+        self.drain_pending(&config, &config_path);
         let follows = match self.store.list_follows() {
             Ok(follows) => follows,
             Err(error) => {

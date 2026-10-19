@@ -107,6 +107,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/federation/sync",
             post(handlers::federation::sync_handler),
         )
+        .route(
+            "/api/v1/federation/fetch",
+            post(handlers::federation::fetch_handler),
+        )
         .route("/api/v1/openapi.json", get(openapi::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
