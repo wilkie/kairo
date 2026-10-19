@@ -277,12 +277,15 @@ plan in `PHASE_2_FEDERATION.md`.
 - [x] Implement pull (`kairo fetch --object <id> --from <url>`, `CLI.md` §15)
       — `PHASE_2_FEDERATION.md` slices 1–6, checked end to end in CI
       by `scripts/federation-smoke.sh` for SHA-1 and SHA-256 histories.
-- [ ] Implement push (command named with its decision; `CLI.md`
-      §16 `kairo sync` is the candidate) — after pull,
-      with node authentication (`PHASE_2_FEDERATION.md` §4).
+- [x] Implement push — `kairo push` and `kairo federation announce`
+      with node authentication (`DECISIONS.md` §25, §26), background
+      sync of follows (§28), and on-demand fetch (§30).
 - [ ] Implement peer discovery and trust propagation policy
       (`specs/POLICY.md`) — explicitly *opt-in*; importing a peer's bundle
-      never auto-trusts that peer.
+      never auto-trusts that peer. *Step one shipped* (`DECISIONS.md`
+      §29: signed inventories, hints, one-hop relay under
+      `federation:index` trust, opt-in `use_hints`); token indexes and
+      the query protocol wait on §7 / §8 statement types.
 - [x] Forgetting peer opinions: `kairo trust forget` (`DECISIONS.md`
       §27 sub-decision 5).
 - [x] Trust transport: publish and fetch one (truster, scope) chain
@@ -596,7 +599,7 @@ Statement-type evolution that Phase 1 explicitly deferred.
 - [x] `ActorTrust` `forget` operation (federation concern — flush peer
       opinions from the local node without re-publishing a withdrawal).
       `DECISIONS.md` §27 sub-decision 5.
-- [ ] Scoped `ActorTrust` (`DECISIONS.md` §18 sub-decision 4): the
+- [x] Scoped `ActorTrust` (`DECISIONS.md` §18 sub-decision 4): the
       chain key becomes `(by_actor, trusted_actor, scope)`, existing
       opinions read as `general`, and federation scopes such as
       `federation:index` are added by the features that use them.
