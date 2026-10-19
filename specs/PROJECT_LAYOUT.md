@@ -481,6 +481,14 @@ The route should lead to signed advertisements, not trusted answers.
 
 ---
 
+### `kairo-git-remote/`
+
+**Language:** Rust
+
+The `git-remote-kairo` binary (`DECISIONS.md` §31): Git's remote-helper
+protocol for `kairo://` URLs, over a verified Kairo pull into the
+user's store and its Git cache. Read-only.
+
 ### `kairo-federation-service/`
 
 **Language:** Rust

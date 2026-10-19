@@ -1,0 +1,34 @@
+[package]
+name = "kairo-git-remote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kairo-config = { path = "../kairo-config" }
+kairo-core = { path = "../kairo-core" }
+kairo-federation-http = { path = "../kairo-federation-http", default-features = false, features = ["client"] }
+kairo-federation-service = { path = "../kairo-federation-service" }
+kairo-git = { path = "../kairo-git" }
+kairo-statement = { path = "../kairo-statement" }
+kairo-store = { path = "../kairo-store" }
+
+[dev-dependencies]
+kairo-federation-http = { path = "../kairo-federation-http", features = ["server"] }
+kairo-identity = { path = "../kairo-identity" }
+kairo-test-support = { path = "../kairo-test-support" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "net", "macros", "sync"] }
+
+[lib]
+name = "kairo_git_remote"
+path = "src/lib.rs"
+
+[[bin]]
+name = "git-remote-kairo"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -1075,6 +1075,29 @@ Fetch does not imply validity.
 
 ---
 
+### 15.1 `git-remote-kairo` and `kairo://` URLs
+
+`git clone kairo://<host>/<object-id>` and `git fetch` work against a
+Kairo node once `git-remote-kairo` (from the `kairo-git-remote` crate)
+is on `PATH` (`DECISIONS.md` §31). On every `git fetch` the helper
+first pulls the object into the Kairo store (`$KAIRO_STORE`, or
+`~/.kairo`) with `kairo fetch`'s checks, then serves Git from that
+store's Git cache, so Git only sees history Kairo verified. A loopback
+host is reached over `http://`, anything else over `https://`.
+
+- Refs: the object creator's branches as `refs/heads/*` (`head` is
+  `HEAD`) and version tags as `refs/tags/*`; other actors' branches
+  as `refs/kairo/actors/<actor-id>/*`. A ref appears only if its
+  signed revision's Git commit is held; what was left out is printed
+  as `kairo: left out ...`. The clone takes the object's Git format.
+- Policy: as for `kairo fetch`, the host must be a listed
+  `[[federation.peers]]` entry (its pin applies) unless
+  `git config kairo.allowPeer true` is set in the repository (`git
+  clone -c kairo.allowPeer=true ...`), and federation must be
+  enabled.
+- `git push` to a `kairo://` remote is refused; publish with
+  `kairo push`.
+
 ## 16. `kairo sync`
 
 **[post-v1].** Depends on Phase 2 §4 federation.

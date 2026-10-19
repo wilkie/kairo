@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **`git-remote-kairo` (`DECISIONS.md` §31).** With the new
+  `git-remote-kairo` binary on `PATH`, `git clone
+  kairo://<host>/<object-id>` pulls the object through the Kairo
+  verifier into the user's store and serves Git from its Git cache:
+  the creator's branches and tags as heads and tags, other actors'
+  under `refs/kairo/actors/`, only refs whose signed revision's commit
+  is held, in the object's Git format. It follows `kairo fetch`'s peer
+  policy (`kairo.allowPeer` to override) and refuses `git push`.
+
 - **Read-triggered acquisition (`DECISIONS.md` §30, on-demand fetch
   slice 3).** With `[federation.on_demand] on_read = true`, a `404`
   from `GET /api/v1/objects/{id}` or `verify-object` queues an

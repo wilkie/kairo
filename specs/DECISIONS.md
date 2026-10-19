@@ -2851,5 +2851,6 @@ Affected specs:
 
 - `PHASE_2_FEDERATION.md` §4 item 7 — the slice plan.
 - `CLI.md` — `git-remote-kairo` and `kairo://` URLs.
-- `PROJECT_LAYOUT.md` — the `kairo-git-remote` crate.
+- `PROJECT_LAYOUT.md` — the `kairo-git-remote` crate (implemented in
+  slice 1, with `CLI.md` §15.1 and the peer policy).
 

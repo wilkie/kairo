@@ -1813,6 +1813,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-git-remote"
+version = "0.1.0"
+dependencies = [
+ "kairo-config",
+ "kairo-core",
+ "kairo-federation-http",
+ "kairo-federation-service",
+ "kairo-git",
+ "kairo-identity",
+ "kairo-statement",
+ "kairo-store",
+ "kairo-test-support",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "kairo-identity"
 version = "0.1.0"
 dependencies = [

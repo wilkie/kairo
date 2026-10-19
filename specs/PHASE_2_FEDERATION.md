@@ -565,7 +565,8 @@ inventory step, and 7 come from comparing this design with Radicle
    commit against the object's signed revisions, the way
    `git-remote-rad` makes Radicle usable with ordinary Git.
    *Decided in `DECISIONS.md` §31.* Slices:
-   1. **The helper.** A `kairo-git-remote` crate with the
+   1. ~~**The helper.**~~ *(shipped, with the peer policy and
+      `kairo.allowPeer` from slice 2)* A `kairo-git-remote` crate with the
       `git-remote-kairo` binary: the remote-helper protocol
       (`capabilities`, `option`, `list`, `fetch`; `push` refused), the
       pull into the user's store, refs per §31 sub-decision 3, and
