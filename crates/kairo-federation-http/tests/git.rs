@@ -29,6 +29,7 @@ use common::{node_actor, Served, MANIFEST};
 use axum as _;
 use http_body as _;
 use http_body_util as _;
+use kairo_config as _;
 use kairo_identity as _;
 use kairo_keystore as _;
 use kairo_object as _;

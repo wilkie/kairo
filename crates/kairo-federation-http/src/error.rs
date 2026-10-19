@@ -6,6 +6,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use kairo_config::ConfigError;
 use kairo_core::ActorId;
 use kairo_federation_core::NodeDocumentError;
 use kairo_identity::ActorResolveError;
@@ -18,6 +19,9 @@ pub enum Error {
         path: PathBuf,
         source: StoreError,
     },
+    /// `<store>/config.toml` doesn't load (its accept list and push
+    /// limits govern announcements).
+    Config(ConfigError),
     /// `--node-actor` isn't in the store.
     NodeActorMissing {
         actor: ActorId,
@@ -61,6 +65,7 @@ impl fmt::Display for Error {
             Self::OpenStore { path, source } => {
                 write!(f, "failed to open store at {}: {source}", path.display())
             }
+            Self::Config(error) => write!(f, "invalid node configuration: {error}"),
             Self::NodeActorMissing { actor } => {
                 write!(f, "node actor {actor} is not in the store")
             }
@@ -104,6 +109,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::OpenStore { source, .. } | Self::ReadNodeActor { source, .. } => Some(source),
+            Self::Config(error) => Some(error),
             Self::NodeKey { source, .. } => Some(source.as_ref()),
             Self::ResolveNodeKey(error) => Some(error),
             Self::NodeDocument(error) => Some(error),

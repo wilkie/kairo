@@ -19,13 +19,18 @@
 //! [[federation.peers]]
 //! url = "https://archive.example.org"
 //! node_actor = "zQm..."
+//!
+//! [[federation.accept]]
+//! object = "zQm..."
+//! from = "zQm..."
+//! publish = false
 //! ```
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use kairo_core::ActorId;
+use kairo_core::{ActorId, ObjectId};
 use serde::Deserialize;
 
 /// File name inside the store root.
@@ -50,6 +55,9 @@ pub struct FederationConfig {
     pub limits: LimitsConfig,
     /// Peers this node may pull from, in file order.
     pub peers: Vec<PeerConfig>,
+    /// Objects this node accepts pushes for (`DECISIONS.md` §26
+    /// sub-decision 2), in file order.
+    pub accept: Vec<AcceptConfig>,
 }
 
 impl Default for FederationConfig {
@@ -58,6 +66,7 @@ impl Default for FederationConfig {
             enabled: true,
             limits: LimitsConfig::default(),
             peers: Vec::new(),
+            accept: Vec::new(),
         }
     }
 }
@@ -73,6 +82,39 @@ pub struct LimitsConfig {
     pub max_records: Option<u64>,
     pub request_timeout_secs: Option<u64>,
     pub git_timeout_secs: Option<u64>,
+    /// Largest uploaded bundle a node accepts (`DECISIONS.md` §26
+    /// sub-decision 3). See [`DEFAULT_MAX_PUSH_BYTES`].
+    pub max_push_bytes: Option<u64>,
+    /// Most unprocessed inbox entries per pushing node. See
+    /// [`DEFAULT_MAX_INBOX_ENTRIES`].
+    pub max_inbox_entries: Option<u64>,
+}
+
+/// Default `max_push_bytes`: 1 GiB.
+pub const DEFAULT_MAX_PUSH_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// Default `max_inbox_entries`.
+pub const DEFAULT_MAX_INBOX_ENTRIES: u64 = 64;
+
+impl LimitsConfig {
+    pub fn max_push_bytes(&self) -> u64 {
+        self.max_push_bytes.unwrap_or(DEFAULT_MAX_PUSH_BYTES)
+    }
+
+    pub fn max_inbox_entries(&self) -> u64 {
+        self.max_inbox_entries.unwrap_or(DEFAULT_MAX_INBOX_ENTRIES)
+    }
+}
+
+/// One `[[federation.accept]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptConfig {
+    pub object: ObjectId,
+    /// The one node actor this entry accepts from; `None` is any node
+    /// trusted with `federation:push`.
+    pub from: Option<ActorId>,
+    /// Serve the object onward after ingest.
+    pub publish: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +132,15 @@ impl FederationConfig {
     pub fn peer(&self, url: &str) -> Option<&PeerConfig> {
         let url = url.strip_suffix('/').unwrap_or(url);
         self.peers.iter().find(|peer| peer.url == url)
+    }
+
+    /// The accept entry covering a push of `object` from `from`: one
+    /// naming `from` if there is one, else one for any node.
+    pub fn accepts(&self, object: &ObjectId, from: &ActorId) -> Option<&AcceptConfig> {
+        let for_object = || self.accept.iter().filter(|entry| &entry.object == object);
+        for_object()
+            .find(|entry| entry.from.as_ref() == Some(from))
+            .or_else(|| for_object().find(|entry| entry.from.is_none()))
     }
 }
 
@@ -111,6 +162,18 @@ struct RawFederation {
     limits: Option<RawLimits>,
     #[serde(default)]
     peers: Vec<RawPeer>,
+    #[serde(default)]
+    accept: Vec<RawAccept>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAccept {
+    object: String,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    publish: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -123,6 +186,8 @@ struct RawLimits {
     max_records: Option<u64>,
     request_timeout_secs: Option<u64>,
     git_timeout_secs: Option<u64>,
+    max_push_bytes: Option<u64>,
+    max_inbox_entries: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,6 +278,8 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         ("max_records", limits.max_records),
         ("request_timeout_secs", limits.request_timeout_secs),
         ("git_timeout_secs", limits.git_timeout_secs),
+        ("max_push_bytes", limits.max_push_bytes),
+        ("max_inbox_entries", limits.max_inbox_entries),
     ] {
         if value == Some(0) {
             return Err(invalid(format!(
@@ -248,6 +315,40 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         peers.push(PeerConfig { url, node_actor });
     }
 
+    let mut accept: Vec<AcceptConfig> = Vec::with_capacity(federation.accept.len());
+    for raw in federation.accept {
+        let object = ObjectId::new(raw.object.clone()).map_err(|error| {
+            invalid(format!(
+                "federation.accept: object {:?} is not a bare object id: {error}",
+                raw.object
+            ))
+        })?;
+        let from = raw
+            .from
+            .map(|from| {
+                ActorId::new(from.clone()).map_err(|error| {
+                    invalid(format!(
+                        "federation.accept: from {from:?} for {object} is not a bare actor id: \
+                         {error}"
+                    ))
+                })
+            })
+            .transpose()?;
+        if accept
+            .iter()
+            .any(|entry| entry.object == object && entry.from == from)
+        {
+            return Err(invalid(format!(
+                "federation.accept: {object} is listed twice for the same from"
+            )));
+        }
+        accept.push(AcceptConfig {
+            object,
+            from,
+            publish: raw.publish,
+        });
+    }
+
     Ok(Config {
         federation: FederationConfig {
             enabled: federation.enabled.unwrap_or(true),
@@ -259,8 +360,11 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
                 max_records: limits.max_records,
                 request_timeout_secs: limits.request_timeout_secs,
                 git_timeout_secs: limits.git_timeout_secs,
+                max_push_bytes: limits.max_push_bytes,
+                max_inbox_entries: limits.max_inbox_entries,
             },
             peers,
+            accept,
         },
     })
 }
@@ -324,6 +428,88 @@ mod tests {
         assert_eq!(archive, Some(Some(ACTOR)));
         assert!(federation.peer("http://127.0.0.1:7880/").is_some());
         assert!(federation.peer("https://elsewhere.example").is_none());
+    }
+
+    const OBJECT: &str = "zQmZbDPpjCCRPGVC13GXNG7S3o6FtefW6EtdHcACKMNquAS";
+    const OTHER_ACTOR: &str = "zQmb7GGJWDbEMnz5VM51ijuLtzguKf1qhxzqPh8xZBkmBW9";
+
+    #[test]
+    fn parses_the_accept_list_and_push_limits() {
+        let config = parse_ok(&format!(
+            r#"
+            [federation.limits]
+            max_push_bytes = 4096
+            max_inbox_entries = 2
+
+            [[federation.accept]]
+            object = "{OBJECT}"
+
+            [[federation.accept]]
+            object = "{OBJECT}"
+            from = "{ACTOR}"
+            publish = true
+            "#
+        ));
+        let federation = config.federation;
+        assert_eq!(federation.limits.max_push_bytes(), 4096);
+        assert_eq!(federation.limits.max_inbox_entries(), 2);
+        assert_eq!(
+            LimitsConfig::default().max_push_bytes(),
+            DEFAULT_MAX_PUSH_BYTES
+        );
+        let object = ObjectId::new(OBJECT).unwrap_or_else(|e| panic!("{e}"));
+        let actor = ActorId::new(ACTOR).unwrap_or_else(|e| panic!("{e}"));
+        let other = ActorId::new(OTHER_ACTOR).unwrap_or_else(|e| panic!("{e}"));
+        // The entry naming the pusher wins over the wildcard.
+        assert_eq!(
+            federation.accepts(&object, &actor).map(|e| e.publish),
+            Some(true)
+        );
+        assert_eq!(
+            federation.accepts(&object, &other).map(|e| e.publish),
+            Some(false)
+        );
+        let elsewhere = ObjectId::from_sha256_digest([9; 32]);
+        assert!(federation.accepts(&elsewhere, &actor).is_none());
+    }
+
+    #[test]
+    fn invalid_accept_entries_are_errors() {
+        assert!(parse_err(
+            "[[federation.accept]]
+object = \"object:x\"
+"
+        )
+        .contains("bare object id"));
+        assert!(parse_err(&format!(
+            "[[federation.accept]]
+object = \"{OBJECT}\"
+from = \"kairo:actor:x\"
+"
+        ))
+        .contains("bare actor id"));
+        assert!(parse_err(&format!(
+            "[[federation.accept]]
+object = \"{OBJECT}\"
+
+[[federation.accept]]
+object = \"{OBJECT}\"
+"
+        ))
+        .contains("listed twice"));
+        assert!(parse_err(&format!(
+            "[[federation.accept]]
+object = \"{OBJECT}\"
+mirror = true
+"
+        ))
+        .contains("mirror"));
+        assert!(parse_err(
+            "[federation.limits]
+max_inbox_entries = 0
+"
+        )
+        .contains("max_inbox_entries"));
     }
 
     #[test]

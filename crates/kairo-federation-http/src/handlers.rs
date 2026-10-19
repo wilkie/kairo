@@ -18,12 +18,16 @@ use axum::routing::{get, post};
 use axum::Router;
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_federation_core::{
-    ActorListing, BatchedStatement, Cursor, FedErrorCode, FedErrorEnvelope, GitAvailability,
-    ObjectListing, PageRequest, PageRequestError, PublishedObjects, StatementBatch,
-    StatementBatchRequest, API_PREFIX, STATEMENT_BATCH_PATH, WELL_KNOWN_PATH,
+    ActorListing, Announcement, AnnouncementAccepted, BatchedStatement, Cursor, FedErrorCode,
+    FedErrorEnvelope, GitAvailability, ObjectListing, PageRequest, PageRequestError,
+    PublishedObjects, StatementBatch, StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX,
+    STATEMENT_BATCH_PATH, WELL_KNOWN_PATH,
 };
 use kairo_identity::json::ActorGenesisJson;
-use kairo_store::{ActorStore, BlobStore, StoreError};
+use kairo_statement::{TrustDecision, TrustScope};
+use kairo_store::{
+    ActorStore, BlobStore, InboxAnnouncement, InboxPut, InboxStore, StoreError, TrustResolver,
+};
 use serde::Serialize;
 
 use crate::node::Node;
@@ -59,6 +63,7 @@ pub(crate) fn router(node: Node) -> Router {
             post(statement_batch),
         )
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
+        .route(&format!("{API_PREFIX}{ANNOUNCE_PATH}"), post(announce))
         .fallback(not_found)
         .layer(middleware::from_fn(read_only))
         .with_state(node)
@@ -176,18 +181,21 @@ fn page_request(query: RawQuery) -> Result<PageRequest, Fail> {
 
 // --- middleware and fallback ----------------------------------------
 
-/// Only `GET` and `HEAD` exist; everything else is `405` with the
-/// federation envelope, on every path including unknown ones.
+/// Only `GET`, `HEAD`, and three `POST`s exist; everything else is
+/// `405` with the federation envelope, on every path including unknown
+/// ones.
 async fn read_only(request: Request, next: Next) -> Response {
     let method = request.method();
-    // The two `POST`s only read: Git's upload-pack RPC (DECISIONS.md
-    // §22) and the statement batch (§24), whose id list doesn't fit a
-    // URL.
+    // Two `POST`s only read: Git's upload-pack RPC (DECISIONS.md §22)
+    // and the statement batch (§24), whose id list doesn't fit a URL.
+    // The third is the authenticated announce (§26), whose only write
+    // is an inbox entry.
     let path = request.uri().path();
-    let reading_post = method == Method::POST
+    let allowed_post = method == Method::POST
         && (path.ends_with(UPLOAD_PACK_SUFFIX)
-            || path == format!("{API_PREFIX}{STATEMENT_BATCH_PATH}"));
-    if method == Method::GET || method == Method::HEAD || reading_post {
+            || path == format!("{API_PREFIX}{STATEMENT_BATCH_PATH}")
+            || path == format!("{API_PREFIX}{ANNOUNCE_PATH}"));
+    if method == Method::GET || method == Method::HEAD || allowed_post {
         return next.run(request).await;
     }
     let mut response = Fail::new(
@@ -710,3 +718,133 @@ async fn blob(State(node): State<Node>, id: PathId) -> Response {
     })
     .await
 }
+
+// --- announce (DECISIONS.md §26) ---------------------------------------
+
+/// Largest announcement body: 256 object ids fit with room to spare.
+const MAX_ANNOUNCE_BYTES: usize = 64 * 1024;
+
+/// `POST /federation/v1/announce`: put an authenticated, trusted,
+/// accepted announcement in the inbox for `kairo federation receive`.
+/// Checks run in order, so an unauthenticated request learns nothing
+/// about trust or the accept list.
+async fn announce(
+    State(node): State<Node>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    body: Body,
+) -> Response {
+    let Ok(raw) = axum::body::to_bytes(body, MAX_ANNOUNCE_BYTES).await else {
+        return Fail::new(
+            FedErrorCode::FedBadAnnouncement,
+            format!("announcement body over {MAX_ANNOUNCE_BYTES} bytes"),
+        )
+        .into_response();
+    };
+    let authorization = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let target = uri
+        .path_and_query()
+        .map_or_else(|| uri.path().to_owned(), |pq| pq.as_str().to_owned());
+    let result = run_blocking(move || {
+        let who = node
+            .authenticate_request("POST", &target, authorization.as_deref(), &raw)
+            .map_err(|error| {
+                if matches!(error, crate::NodeAuthError::Store(_)) {
+                    tracing::error!(%error, "store read failed while authenticating a request");
+                    return Fail::new(FedErrorCode::FedStoreError, "store read failed");
+                }
+                Fail::new(error.code(), error.to_string())
+            })?;
+        let bad = |message: String| Fail::new(FedErrorCode::FedBadAnnouncement, message);
+        let announcement: Announcement = serde_json::from_slice(&raw)
+            .map_err(|error| bad(format!("malformed announcement: {error}")))?;
+        announcement
+            .validate()
+            .map_err(|error| bad(error.to_string()))?;
+
+        let receiver = &node.document.node_actor;
+        let trusted = node
+            .store
+            .latest_trust(receiver, &who.node, &TrustScope::federation_push())
+            .map_err(|e| Fail::store(&e))?
+            .is_some_and(|signed| {
+                signed.unsigned().body().decision() == Some(TrustDecision::Trusted)
+            });
+        if !trusted {
+            return Err(Fail::new(
+                FedErrorCode::FedNotTrusted,
+                format!(
+                    "node actor {receiver} does not trust {} with {}",
+                    who.node,
+                    TrustScope::federation_push()
+                ),
+            ));
+        }
+        let refused: Vec<String> = announcement
+            .objects
+            .iter()
+            .filter(|object| node.federation.accepts(object, &who.node).is_none())
+            .map(ToString::to_string)
+            .collect();
+        if !refused.is_empty() {
+            return Err(Fail::new(
+                FedErrorCode::FedNotAccepted,
+                format!(
+                    "this node does not accept pushes from {} for {}",
+                    who.node,
+                    refused.join(", ")
+                ),
+            ));
+        }
+
+        let entry = InboxAnnouncement {
+            from: who.node.clone(),
+            to: receiver.clone(),
+            base_url: announcement.base_url,
+            objects: announcement.objects,
+            received_at: kairo_core::Timestamp::now(),
+        };
+        let token: String = who.nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+        match node
+            .store
+            .put_inbox_announcement(&entry, &token, node.federation.limits.max_inbox_entries())
+            .map_err(|e| Fail::store(&e))?
+        {
+            InboxPut::Stored { name } => Ok(Ok(name)),
+            InboxPut::Full { held } => Ok(Err(held)),
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(entry)) => {
+            let body = AnnouncementAccepted {
+                schema: Default::default(),
+                entry,
+            };
+            match serde_json::to_vec(&body) {
+                Ok(bytes) => bytes_response(StatusCode::ACCEPTED, JSON, bytes),
+                Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            }
+        }
+        Ok(Err(held)) => {
+            let mut response = Fail::new(
+                FedErrorCode::FedBusy,
+                format!("{held} announcements from this node are waiting to be received"),
+            )
+            .into_response();
+            response.headers_mut().insert(
+                header::RETRY_AFTER,
+                HeaderValue::from(INBOX_RETRY_AFTER_SECS),
+            );
+            response
+        }
+        Err(fail) => fail.into_response(),
+    }
+}
+
+/// `Retry-After` when a node's inbox share is full: receiving runs on
+/// an operator's schedule, so this is a slow retry.
+const INBOX_RETRY_AFTER_SECS: u64 = 60;

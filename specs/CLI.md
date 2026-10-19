@@ -1335,7 +1335,9 @@ kairo federation publish --object <id>
 kairo federation unpublish --object <id>
 kairo federation published
 kairo federation provenance --ref <typed-ref>
-kairo federation status
+kairo federation learn --from <url> [--allow-peer]
+kairo federation announce --object <id>... --to <url> --base-url <url> [--node <actor>] [--allow-peer]
+kairo federation receive
 ```
 
 Federation commands require daemon/federation support unless a direct federation client is explicitly implemented.
@@ -1345,6 +1347,33 @@ against the store; `peers` and `search` wait for the discovery
 phase. Peers are configured in `<store>/config.toml`
 (`DECISIONS.md` §17), and `status` shows them with their pins and
 last pull.
+
+Push by announcement (`DECISIONS.md` §25, §26) adds three commands.
+All three follow `kairo fetch`'s policy: `--offline` refuses,
+federation must be enabled, and the peer must be listed unless
+`--allow-peer` is given.
+
+- `learn --from <url>` authenticates the peer by its signed node
+  document and stores its node actor's genesis and key events, so this
+  node can check the peer's `KairoNode1` requests. A listed
+  `node_actor` pins it. Run it before accepting a peer's
+  announcements, and again after the peer rotates its key: the
+  receiving server checks keys only against what the store holds, and
+  never fetches on a request's behalf.
+- `announce` signs as the local node actor (`--node`, or the one node
+  actor in the keystore) and tells the peer that the objects, which
+  must be published here, have new state at `--base-url`, this node's
+  public URL. The peer refuses with `fed_unauthenticated` (it hasn't
+  learned this node), `fed_not_trusted` (no `federation:push` trust),
+  or `fed_not_accepted` (no `[[federation.accept]]` entry); these exit
+  11.
+- `receive` processes the inbox. For each announced object it
+  re-checks the `federation:push` trust and the accept list, pulls
+  from the announcement's `base_url` with the announcer pinned, logs
+  the pull, and publishes the object if its accept entry says
+  `publish = true`. It prints one line per object (`pulled ...`,
+  `refused ...`, or `failed ...`) and `not_pulled = <n>`, and removes
+  each entry either way.
 
 Search results must be labeled as unverified until core validation occurs.
 

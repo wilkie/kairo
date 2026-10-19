@@ -75,6 +75,30 @@ impl Peer {
         Self::read_body(url, response, limit)
     }
 
+    /// `POST <base><path>` with a JSON `body` and an `Authorization`
+    /// header, for endpoints that act on who is asking (`DECISIONS.md`
+    /// §25). `body` is sent exactly as signed.
+    pub(crate) fn post_signed(
+        &self,
+        path: &str,
+        body: &[u8],
+        authorization: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>, PullError> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .agent
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("authorization", authorization)
+            .send(body)
+            .map_err(|error| PullError::Transport {
+                url: url.clone(),
+                message: error.to_string(),
+            })?;
+        Self::read_body(url, response, limit)
+    }
+
     /// A response's body, at most `limit` bytes for a 2xx; a non-2xx
     /// becomes [`PullError::Status`] with the envelope's code.
     fn read_body(

@@ -159,7 +159,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         ),
         Some(Command::Config { command }) => commands::config::run_config_command(command, &paths),
         Some(Command::Federation { command }) => {
-            commands::federation::run_federation_command(command, &paths)
+            commands::federation::run_federation_command(command, &paths, cli.offline)
         }
         None => Ok(help_text()),
     }

@@ -99,6 +99,23 @@ pub(crate) enum CliError {
     },
     /// `--offline` refuses network operations.
     OfflineFetch,
+    /// `federation learn` or `federation announce` failed talking to
+    /// the peer.
+    PeerRequest {
+        action: &'static str,
+        source: Box<kairo_federation_http::client::PullError>,
+    },
+    /// No node actor to sign as, or more than one to choose from.
+    NodeActorChoice {
+        message: String,
+    },
+    /// `federation announce` names an object this node doesn't serve.
+    NotPublished {
+        object: kairo_core::ObjectId,
+    },
+    ListInbox {
+        source: kairo_store::StoreError,
+    },
     /// The peer isn't under `[[federation.peers]]` and `--allow-peer`
     /// wasn't given.
     PeerNotAllowed {
@@ -494,7 +511,7 @@ impl CliError {
             Self::DaemonUnavailable { .. } => 9,
             // A refusal by this node's own federation policy.
             Self::PeerNotAllowed { .. } | Self::FederationDisabled { .. } | Self::OfflineFetch => 7,
-            Self::Fetch(_) => 11,
+            Self::Fetch(_) | Self::PeerRequest { .. } => 11,
             _ => 1,
         }
     }
@@ -580,7 +597,15 @@ impl fmt::Display for CliError {
                 "federation is disabled ([federation] enabled = false in {})",
                 config.display()
             ),
-            Self::OfflineFetch => f.write_str("--offline refuses to fetch from federation peers"),
+            Self::OfflineFetch => f.write_str("--offline refuses to contact federation peers"),
+            Self::PeerRequest { action, source } => write!(f, "{action} failed: {source}"),
+            Self::NodeActorChoice { message } => f.write_str(message),
+            Self::NotPublished { object } => write!(
+                f,
+                "object {object} is not published here, so a peer couldn't pull it; run \
+                 `kairo federation publish --object {object}` first"
+            ),
+            Self::ListInbox { source } => write!(f, "failed to read the inbox: {source}"),
             Self::PeerNotAllowed { url, config } => write!(
                 f,
                 "peer {url} is not listed in {}; add a [[federation.peers]] entry with \
@@ -1009,7 +1034,8 @@ impl Error for CliError {
             | Self::WriteAttestationKeyRevocation { source, .. }
             | Self::ReadGrant { source, .. }
             | Self::ReadObjectGenesis { source, .. }
-            | Self::ListRevisions { source, .. } => Some(source),
+            | Self::ListRevisions { source, .. }
+            | Self::ListInbox { source } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)
@@ -1026,6 +1052,7 @@ impl Error for CliError {
             Self::ListKeystore(error) => Some(error),
             Self::Bundle(error) => Some(error),
             Self::Fetch(error) => Some(error.as_ref()),
+            Self::PeerRequest { source, .. } => Some(source.as_ref()),
             Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
@@ -1086,6 +1113,8 @@ impl Error for CliError {
             | Self::WebStopTimeout { .. }
             | Self::FederationDisabled { .. }
             | Self::OfflineFetch
+            | Self::NodeActorChoice { .. }
+            | Self::NotPublished { .. }
             | Self::PeerNotAllowed { .. }
             | Self::BundleGitManifest { .. }
             | Self::BundleGitIncomplete { .. }

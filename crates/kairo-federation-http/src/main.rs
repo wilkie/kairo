@@ -19,6 +19,7 @@ use flate2 as _;
 use http_body as _;
 #[cfg(test)]
 use http_body_util as _;
+use kairo_config as _;
 use kairo_federation_core as _;
 use kairo_git as _;
 use kairo_identity as _;

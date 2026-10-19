@@ -343,6 +343,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | `DECISIONS.md` §25 sub-decision 3. A `KairoNode1` signature covers the method, the **receiver's** base URL, the path and query, the body's SHA-256, a timestamp, and a 16-byte nonce. The receiver requires a `node` actor it holds, signing with the key active at the timestamp and unrevoked then or now, within ±300 s of its clock. After the signature verifies, it records `(node, nonce)` until the timestamp leaves the window, and refuses the pair again. A request signed for one node fails at another because the base URL differs. |
 | **Residual risk** | The nonce cache is in memory: a request captured within the last 300 s can be replayed once more across a receiver restart. Clock skew beyond ±300 s refuses honest requests. The receiver checks keys against the key events it holds, so a rotation it hasn't learned refuses the new key, and a revocation it hasn't learned lets the old one through, as for any statement (§5.15). Authentication says who asked, not what they may do: authorization (`federation:push` trust, the accept list) is §26's. |
 
+### 5.20 Push flooding and unwanted mirroring
+
+| | |
+|---|---|
+| **Adversary** | §4.2 (a peer, including a node the operator trusts with `federation:push`) |
+| **Attack** | Make a node store or serve what its operator didn't choose: announce arbitrary objects, fill the inbox so honest pushes are refused, or point an announcement's `base_url` at someone else's node so the receiver ingests their data under the announcer's name. |
+| **Mechanism** | `DECISIONS.md` §26. An announcement passes, in order: a `KairoNode1` signature (§5.19), then a `trusted` `federation:push` opinion by the receiving node actor (no fallback from `general`), then a `[[federation.accept]]` entry for every object (optionally naming the announcer). Only then is it written to the inbox, where each announcer holds at most `max_inbox_entries` entries (`503 fed_busy` past that). Bodies are capped at 64 KiB and 256 objects. `kairo federation receive` re-checks trust and the accept list, then pulls through the ordinary verifier with the announcer's node actor pinned, so a `base_url` serving another node fails the pull. Nothing is published onward unless the accept entry says `publish = true`. |
+| **Residual risk** | A trusted announcer can make the receiver issue requests to any `https://` URL (or loopback `http://`) at receive time. Those are only reads, and the pull refuses anything not from the announcer's node actor. A trusted announcer can also fill its own inbox share, which delays only its own pushes. A malicious one can still withhold data like any peer (§5.15). |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by
@@ -610,8 +619,8 @@ shipped):
   bricking guard at the CLI, §5.10 active-key compromise recovery,
   §5.13 fork preservation, §5.14 genesis-asymmetry impersonation,
   §5.18 node impersonation (federation pulls), §5.19 forged or
-  replayed node requests: all defended. §5.19's verifier has no
-  endpoint calling it until push ships.
+  replayed node requests, §5.20 push flooding and unwanted mirroring
+  (announcements): all defended.
 - §5.11 attestation-key compromise, §5.12 malicious attestation-key
   add: defended **only by detection** in shipped v1, not by
   in-protocol response. `ActorAttestationKeyRevocation` is designed

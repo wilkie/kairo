@@ -209,6 +209,47 @@ pub(crate) enum FederationCommand {
         #[arg(long = "ref")]
         record: String,
     },
+    /// Authenticate a peer by its signed node document and store its
+    /// node actor's genesis and key events, so this node can check the
+    /// peer's signed requests (`specs/DECISIONS.md` §25). Run it before
+    /// accepting the peer's announcements, and again after it rotates
+    /// its key.
+    Learn {
+        /// The peer's base URL.
+        #[arg(long)]
+        from: String,
+        /// Learn a peer that isn't listed in the config, for this run
+        /// only.
+        #[arg(long)]
+        allow_peer: bool,
+    },
+    /// Tell a peer that objects have new state here, so it pulls them
+    /// (`specs/DECISIONS.md` §26). Signed with this node's node actor;
+    /// the peer must trust it with `federation:push` and accept the
+    /// objects.
+    Announce {
+        /// A published object; repeat for several.
+        #[arg(long = "object", required = true)]
+        objects: Vec<String>,
+        /// The receiving peer's base URL.
+        #[arg(long)]
+        to: String,
+        /// This node's public base URL, where the peer pulls from:
+        /// the `--base-url` its `kairo-federation-http` serves.
+        #[arg(long)]
+        base_url: String,
+        /// The node actor to sign as. Defaults to the one node actor
+        /// in the keystore.
+        #[arg(long)]
+        node: Option<String>,
+        /// Announce to a peer that isn't listed in the config, for this
+        /// run only.
+        #[arg(long)]
+        allow_peer: bool,
+    },
+    /// Process the inbox: pull every announced object this node still
+    /// trusts the announcer with and accepts, then remove the entry.
+    Receive,
 }
 
 #[derive(Debug, Subcommand)]

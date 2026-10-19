@@ -6887,3 +6887,172 @@ fn trust_commands_keep_scopes_apart() -> Result<(), Box<dyn std::error::Error>> 
     assert!(matches!(refused, Err(CliError::ParseTrustScope(_))));
     Ok(())
 }
+
+fn create_node_actor(store: &std::path::Path) -> Result<String, Box<dyn std::error::Error>> {
+    let output = run_in(
+        store,
+        Command::Actor {
+            command: ActorCommand::Create {
+                kind: "node".to_owned(),
+                attestation_keys: vec![],
+                generate_attestation_keys: 1,
+                attestation_threshold: 1,
+            },
+        },
+    )?;
+    parse_field(&output, "actor = ")
+}
+
+#[test]
+fn an_announced_object_is_received_and_mirrored() -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §26: the laptop announces an object to its home
+    // node, which learned and trusts it, and `federation receive` pulls
+    // it and (publish = true) serves it onward.
+    let laptop_dir = tempfile::TempDir::new()?;
+    let laptop = laptop_dir.path();
+    let laptop_node = create_node_actor(laptop)?;
+    let object = create_cli_object(laptop)?;
+    run_in(
+        laptop,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let (laptop_url, _laptop_stop, _laptop_server) = serve_federation(laptop, &laptop_node)?;
+
+    let home_dir = tempfile::TempDir::new()?;
+    let home = home_dir.path();
+    let home_node = create_node_actor(home)?;
+    // Read at startup, so written before serving.
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[[federation.peers]]\nurl = \"{laptop_url}\"\nnode_actor = \"{laptop_node}\"\n\n\
+             [[federation.accept]]\nobject = \"{object}\"\nfrom = \"{laptop_node}\"\npublish = true\n"
+        ),
+    )?;
+    let (home_url, _home_stop, _home_server) = serve_federation(home, &home_node)?;
+    std::fs::write(
+        laptop.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{home_url}\"\n"),
+    )?;
+    let announce = || {
+        run_in(
+            laptop,
+            federation(FederationCommand::Announce {
+                objects: vec![object.clone()],
+                to: home_url.clone(),
+                base_url: laptop_url.clone(),
+                node: None,
+                allow_peer: false,
+            }),
+        )
+    };
+
+    // The home node doesn't know the laptop's node actor yet.
+    match announce() {
+        Err(error) => {
+            assert_eq!(error.exit_code(), 11);
+            assert!(error.to_string().contains("fed_unauthenticated"), "{error}");
+        }
+        Ok(output) => return Err(format!("announce succeeded unlearned: {output}").into()),
+    }
+    let learned = run_in(
+        home,
+        federation(FederationCommand::Learn {
+            from: laptop_url.clone(),
+            allow_peer: false,
+        }),
+    )?;
+    assert!(
+        learned.contains(&format!(
+            "node_actor = {laptop_node} (pinned, authenticated)"
+        )),
+        "{learned}"
+    );
+    match announce() {
+        Err(error) => assert!(error.to_string().contains("fed_not_trusted"), "{error}"),
+        Ok(output) => return Err(format!("announce succeeded untrusted: {output}").into()),
+    }
+    run_in(
+        home,
+        Command::Trust {
+            command: TrustCommand::Grant {
+                by: home_node.clone(),
+                of: laptop_node.clone(),
+                scope: "federation:push".to_owned(),
+                reason: None,
+            },
+        },
+    )?;
+    let announced = announce()?;
+    assert!(
+        announced.contains(&format!("node = {laptop_node}")),
+        "{announced}"
+    );
+    assert!(announced.contains("entry = announce-"), "{announced}");
+
+    let received = run_in(home, federation(FederationCommand::Receive))?;
+    assert!(received.starts_with("received = 1\n"), "{received}");
+    assert!(
+        received.contains(&format!("pulled object={object} from={laptop_node}")),
+        "{received}"
+    );
+    assert!(received.contains("published=true"), "{received}");
+    assert!(received.ends_with("not_pulled = 0\n"), "{received}");
+    let published = run_in(home, federation(FederationCommand::Published))?;
+    assert!(
+        published.contains(&format!("object={object}")),
+        "{published}"
+    );
+
+    // The entry is gone, so a second receive does nothing.
+    let again = run_in(home, federation(FederationCommand::Receive))?;
+    assert_eq!(again, "received = 0\nnot_pulled = 0\n");
+    Ok(())
+}
+
+#[test]
+fn announcing_needs_a_published_object_and_one_node_actor() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store_dir = tempfile::TempDir::new()?;
+    let store = store_dir.path();
+    let object = create_cli_object(store)?;
+    let announce = |object: &str| {
+        run_in(
+            store,
+            federation(FederationCommand::Announce {
+                objects: vec![object.to_owned()],
+                to: "https://home.example.org".to_owned(),
+                base_url: "https://laptop.example.org".to_owned(),
+                node: None,
+                allow_peer: true,
+            }),
+        )
+    };
+    let error = announce(&object)
+        .err()
+        .ok_or("announced an unpublished object")?;
+    assert!(error.to_string().contains("not published here"), "{error}");
+
+    run_in(
+        store,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let error = announce(&object)
+        .err()
+        .ok_or("announced with no node actor")?;
+    assert!(error.to_string().contains("no node actor"), "{error}");
+    create_node_actor(store)?;
+    create_node_actor(store)?;
+    let error = announce(&object)
+        .err()
+        .ok_or("announced with two node actors")?;
+    assert!(
+        error.to_string().contains("pick one with --node"),
+        "{error}"
+    );
+    Ok(())
+}

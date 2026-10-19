@@ -21,6 +21,7 @@ use axum as _;
 use flate2 as _;
 use http_body as _;
 use http_body_util as _;
+use kairo_config as _;
 use kairo_git as _;
 use kairo_keystore as _;
 use kairo_object as _;

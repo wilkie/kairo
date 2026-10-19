@@ -33,6 +33,7 @@ use common::{node_key, seed, sign, sign_chained, Seeded, Served};
 // Crates the lib or `common` depends on that this target doesn't name.
 use http_body as _;
 use http_body_util as _;
+use kairo_config as _;
 use kairo_federation_core as _;
 use kairo_git as _;
 use kairo_keystore as _;

@@ -1363,6 +1363,13 @@ Sub-decisions:
      Zero is invalid.
    - `[[federation.peers]]` entries, each with a `url` and an
      optional `node_actor` (a bare actor id).
+   - `[[federation.accept]]` entries (§26 sub-decision 2), each with
+     an `object`, an optional `from`, and `publish` (default `false`).
+     The same `(object, from)` twice is an error. An entry naming the
+     pusher wins over one without `from`.
+   - `[federation.limits]` also takes `max_push_bytes` (default
+     1 GiB) and `max_inbox_entries` (default 64), for the receiving
+     side (§26 sub-decision 3).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -2318,6 +2325,28 @@ Sub-decisions:
    pusher could send only what follows. That waits until whole-closure
    uploads prove too large.
 
+7. **Learning a pusher's keys, and the announcement's shape.** Added
+   when slice 4 was built.
+   - A receiver authenticates only node actors whose genesis and key
+     events it holds (§25 sub-decision 3), and the server never
+     writes them, so it never fetches anything on a request's
+     behalf. The operator runs `kairo federation learn --from <url>`,
+     which authenticates the peer by its signed node document and
+     stores its node actor's key state under the same policy as
+     `kairo fetch` (listed peer or `--allow-peer`, pin honored).
+     Re-learning picks up a rotated key; until then the new key is
+     refused as unknown.
+   - The announcement body is `{ schema: "kairo.fed.announce.v1",
+     base_url, objects }`, with 1 to 256 distinct objects. `base_url`
+     is where the receiver pulls from. It is the announcer's word,
+     but the pull pins the announcer's node actor and refuses a
+     document for another URL, so a wrong URL fails the pull rather
+     than ingesting anyone else's data.
+   - A push for several objects is refused whole if any isn't
+     accepted, naming the ones that aren't.
+   - The server reads the accept list and push limits from
+     `<store>/config.toml` at startup; `receive` re-reads them.
+
 Rationale: the inbox keeps one ingestion path (the pull verifier) for
 everything a node accepts from outside, whether pulled, announced, or
 uploaded. It also keeps the network-facing server out of the store.
@@ -2325,7 +2354,9 @@ Accepting only from `federation:push`-trusted nodes, and only for
 listed objects, means a node mirrors what its operator chose, never
 what a peer volunteers.
 
-Affected specs:
+Affected specs (sub-decisions 1–3, the announcement half of 4, and 7
+implemented: `PHASE_2_FEDERATION.md` §2.1 and §2.3, `CLI.md` §25,
+§17 below, and `THREAT_MODEL.md` §5.20; uploads are slice 5):
 
 - `PHASE_2_FEDERATION.md` — §2.1 (the announce and push endpoints),
   §2.3 (`fed_not_trusted`, `fed_not_accepted`), §4 items 3 and 5.

@@ -219,7 +219,7 @@ impl NodeDocument {
 /// `http://` or `https://`, a non-empty host, no path, query,
 /// fragment, trailing slash, or whitespace. Clients join endpoint
 /// paths onto it directly.
-fn validate_base_url(value: &str) -> Result<(), NodeDocumentError> {
+pub(crate) fn validate_base_url(value: &str) -> Result<(), NodeDocumentError> {
     let rest = value
         .strip_prefix("https://")
         .or_else(|| value.strip_prefix("http://"));

@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use kairo_config::FederationConfig;
 use kairo_core::{ActorId, Timestamp};
 use kairo_federation_core::{
-    NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL,
+    NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL,
     SUPPORTS_STATEMENT_BATCH,
 };
 use kairo_identity::json::ActorGenesisJson;
@@ -34,6 +35,9 @@ pub struct Node {
     /// `KairoNode1` nonces accepted within the window (`DECISIONS.md`
     /// §25 sub-decision 3).
     pub(crate) nonces: Arc<NonceCache>,
+    /// `[federation]` from `<store>/config.toml`, read at startup: the
+    /// accept list and push limits (`DECISIONS.md` §26).
+    pub(crate) federation: Arc<FederationConfig>,
 }
 
 impl Node {
@@ -60,13 +64,15 @@ impl Node {
                 keys: config.keys.clone(),
                 source: Box::new(source),
             })?;
+        let (file, _) = kairo_config::load(&config.store).map_err(Error::Config)?;
         let node = Self::from_store(
             store,
             &config.node_actor,
             &signer,
             &config.base_url,
             config.view_ttl,
-        )?;
+        )?
+        .with_federation_config(file.federation);
         Ok(match config.max_concurrent_packs {
             Some(max) => node.with_max_concurrent_packs(max),
             None => node,
@@ -112,6 +118,7 @@ impl Node {
             supports: vec![
                 SUPPORTS_OBJECT_PULL.to_owned(),
                 SUPPORTS_STATEMENT_BATCH.to_owned(),
+                SUPPORTS_ANNOUNCE.to_owned(),
             ],
         }
         .sign(signer, signed_at);
@@ -125,6 +132,7 @@ impl Node {
             views: Arc::new(ViewCache::new(node_actor.clone(), view_ttl)),
             uploads: Arc::new(UploadService::new(UploadService::default_concurrency())),
             nonces: Arc::new(NonceCache::default()),
+            federation: Arc::new(FederationConfig::default()),
         })
     }
 
@@ -133,6 +141,14 @@ impl Node {
     /// then get `503 fed_busy`.
     pub fn with_max_concurrent_packs(mut self, max: usize) -> Self {
         self.uploads = Arc::new(UploadService::new(max));
+        self
+    }
+
+    /// Use `federation` for the accept list and push limits.
+    /// [`Node::open`] reads it from `<store>/config.toml`; without it
+    /// the accept list is empty, so every push is refused.
+    pub fn with_federation_config(mut self, federation: FederationConfig) -> Self {
+        self.federation = Arc::new(federation);
         self
     }
 

@@ -18,6 +18,24 @@ rather than per-commit.
 
 ### Added
 
+- **Push by announcement (`DECISIONS.md` §26).**
+  - `POST /federation/v1/announce` takes a `KairoNode1`-signed list of
+    objects with the announcer's base URL. The receiving node requires
+    a `trusted` `federation:push` opinion of the announcer and a
+    `[[federation.accept]]` entry for every object, then writes the
+    announcement to `<store>/federation/inbox/`. New codes:
+    `fed_not_trusted`, `fed_not_accepted`, `fed_bad_announcement`.
+    Nodes advertise `announce`.
+  - `config.toml` gains `[[federation.accept]]` (`object`, `from`,
+    `publish`) and the limits `max_push_bytes` and
+    `max_inbox_entries`. `kairo-federation-http` reads them at
+    startup.
+  - `kairo federation learn --from <url>` stores a peer's
+    authenticated node actor, so its signed requests can be checked.
+    `kairo federation announce` sends an announcement, and
+    `kairo federation receive` pulls each accepted object with the
+    announcer pinned, publishing it when the entry says so.
+
 - **`KairoNode1` request signatures (`DECISIONS.md` §25 sub-decision
   3).** `kairo-federation-core` builds, signs, and parses the
   `Authorization: KairoNode1` header over the

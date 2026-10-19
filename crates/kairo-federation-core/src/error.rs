@@ -44,6 +44,15 @@ pub enum FedErrorCode {
     /// node actor, a non-node actor, or a revoked key
     /// (`specs/DECISIONS.md` §25 sub-decision 3).
     FedUnauthenticated,
+    /// The receiving node's actor doesn't trust the authenticated
+    /// node in scope `federation:push` (`specs/DECISIONS.md` §26
+    /// sub-decision 1).
+    FedNotTrusted,
+    /// No `[[federation.accept]]` entry covers an object for this
+    /// node (§26 sub-decision 2).
+    FedNotAccepted,
+    /// An announcement that doesn't parse or validate.
+    FedBadAnnouncement,
     /// A code this client doesn't know, from a newer node.
     #[serde(other)]
     Unknown,
@@ -59,8 +68,10 @@ impl FedErrorCode {
             | Self::FedBadCursor
             | Self::FedBadLimit
             | Self::FedBadBatch
-            | Self::FedBadGitRequest => 400,
+            | Self::FedBadGitRequest
+            | Self::FedBadAnnouncement => 400,
             Self::FedUnauthenticated => 401,
+            Self::FedNotTrusted | Self::FedNotAccepted => 403,
             Self::FedMethodNotAllowed => 405,
             Self::FedStoreError | Self::Unknown => 500,
             Self::FedBusy => 503,
@@ -79,6 +90,9 @@ impl FedErrorCode {
             Self::FedBadGitRequest => "fed_bad_git_request",
             Self::FedBadBatch => "fed_bad_batch",
             Self::FedUnauthenticated => "fed_unauthenticated",
+            Self::FedNotTrusted => "fed_not_trusted",
+            Self::FedNotAccepted => "fed_not_accepted",
+            Self::FedBadAnnouncement => "fed_bad_announcement",
             Self::Unknown => "unknown",
         }
     }

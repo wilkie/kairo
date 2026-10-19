@@ -19,6 +19,7 @@
 //! holds (embedded verbatim in a statement batch), and blobs as raw
 //! bytes.
 
+mod announce;
 mod batch;
 mod error;
 mod listing;
@@ -32,6 +33,10 @@ mod wire_id;
 #[allow(clippy::expect_used)]
 mod tests;
 
+pub use announce::{
+    Announcement, AnnouncementAccepted, AnnouncementAcceptedSchema, AnnouncementError,
+    AnnouncementSchema, ANNOUNCE_PATH, MAX_ANNOUNCED_OBJECTS,
+};
 pub use batch::{
     BatchedStatement, StatementBatch, StatementBatchRequest, StatementBatchRequestError,
     StatementBatchRequestSchema, StatementBatchSchema, MAX_BATCH_IDS, STATEMENT_BATCH_PATH,
@@ -64,6 +69,10 @@ pub const SUPPORTS_OBJECT_PULL: &str = "object-pull";
 /// `supports` value for `POST /federation/v1/statement-batch`
 /// (`specs/DECISIONS.md` §24).
 pub const SUPPORTS_STATEMENT_BATCH: &str = "statement-batch";
+
+/// `supports` value for `POST /federation/v1/announce`
+/// (`specs/DECISIONS.md` §26).
+pub const SUPPORTS_ANNOUNCE: &str = "announce";
 
 /// Path of the node document, relative to the node's base URL.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/kairo-node";

@@ -29,6 +29,12 @@
 //!
 //! Every record the pull stores or finds already held gets a
 //! provenance entry naming this peer.
+//!
+//! The same connection steps (1 and 2) also serve [`learn_peer`],
+//! which stores a peer's authenticated node actor so the peer's
+//! `KairoNode1` requests can be checked, and [`announce`], which sends
+//! a signed announcement (`specs/DECISIONS.md` §26). [`PullError`] is
+//! the error for all three.
 
 mod http;
 mod ingest;
@@ -39,10 +45,13 @@ use std::time::Duration;
 
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_federation_core::{
-    ActorListing, FedErrorCode, NodeDocument, NodeDocumentError, ObjectListing, StatementBatch,
-    StatementBatchRequest, API_PREFIX, MAX_BATCH_IDS, MAX_PAGE_LIMIT, STATEMENT_BATCH_PATH,
-    SUPPORTS_OBJECT_PULL, SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
+    random_node_nonce, ActorListing, Announcement, AnnouncementAccepted, FedErrorCode,
+    NodeAuthorization, NodeDocument, NodeDocumentError, NodeRequest, ObjectListing, StatementBatch,
+    StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, MAX_BATCH_IDS, MAX_PAGE_LIMIT,
+    STATEMENT_BATCH_PATH, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL, SUPPORTS_STATEMENT_BATCH,
+    WELL_KNOWN_PATH,
 };
+use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::{ChainScope, GitRevision, StatementKind};
 use kairo_store::{
@@ -230,8 +239,12 @@ pub enum PullError {
         pulled: String,
         document: String,
     },
-    /// The node doesn't advertise `object-pull`.
-    Unsupported,
+    /// The node doesn't advertise this `supports` feature.
+    Unsupported {
+        feature: &'static str,
+    },
+    /// A request nonce couldn't be generated.
+    Signing(String),
     /// The peer claims a different node actor than the one pinned
     /// for its URL.
     NodeActorMismatch {
@@ -310,7 +323,8 @@ impl fmt::Display for PullError {
                 "pulled from {pulled}, but the peer's node document is for {document:?}; \
                  nothing was fetched"
             ),
-            Self::Unsupported => write!(f, "peer does not support {SUPPORTS_OBJECT_PULL}"),
+            Self::Unsupported { feature } => write!(f, "peer does not support {feature}"),
+            Self::Signing(message) => write!(f, "could not sign the request: {message}"),
             Self::NodeActorMismatch { expected, claimed } => write!(
                 f,
                 "peer claims node actor {claimed}, but this node pins {expected} for it; \
@@ -387,14 +401,32 @@ pub fn pull_object(
     object: &ObjectId,
     options: &PullOptions,
 ) -> Result<PullReport, PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    if !document.supports(SUPPORTS_OBJECT_PULL) {
+        return Err(PullError::Unsupported {
+            feature: SUPPORTS_OBJECT_PULL,
+        });
+    }
+    let mut pull = Pull::new(store, peer, &document, object, &options.limits);
+    let mut budget = 0;
+    pull.authenticate(&document, &mut budget)?;
+    pull.run(object, budget)?;
+    if options.require_complete && !pull.report.incomplete.is_empty() {
+        return Err(PullError::IncompleteChains {
+            chains: pull.report.incomplete,
+        });
+    }
+    Ok(pull.report)
+}
+
+/// Fetch and check a peer's node document: it validates, matches the
+/// pin, and is for this URL. Nothing is stored.
+fn connect(peer_url: &str, options: &PullOptions) -> Result<(Peer, NodeDocument), PullError> {
     let limits = &options.limits;
     let peer = Peer::new(peer_url, limits)?;
 
     let document: NodeDocument = peer.get_json(WELL_KNOWN_PATH, limits.max_json_bytes)?;
     document.validate().map_err(PullError::NodeDocument)?;
-    if !document.supports(SUPPORTS_OBJECT_PULL) {
-        return Err(PullError::Unsupported);
-    }
     // Checked before anything is fetched or stored, so a peer whose
     // claimed identity changed contributes nothing.
     if let Some(expected) = &options.expected_node_actor {
@@ -413,39 +445,161 @@ pub fn pull_object(
             document: document.base_url.clone(),
         });
     }
+    Ok((peer, document))
+}
 
-    let provenance = ProvenanceEntry {
-        peer_url: peer.base_url().to_owned(),
-        peer_actor: document.node_actor.clone(),
-        fetched_at: Timestamp::now(),
-    };
-    let report = PullReport {
-        object: object.clone(),
-        peer_url: peer.base_url().to_owned(),
-        peer_actor: document.node_actor.clone(),
-        fetched: 0,
-        already_held: 0,
-        flagged: Vec::new(),
-        incomplete: Vec::new(),
-        git: GitOutcome::NoGitRevisions,
-    };
-    let mut pull = Pull {
-        store,
-        batch: document.supports(SUPPORTS_STATEMENT_BATCH),
-        peer,
-        limits,
-        provenance,
-        report,
-    };
+/// A peer [`learn_peer`] authenticated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LearnedPeer {
+    pub peer_url: String,
+    pub node_actor: ActorId,
+    /// The node actor's genesis and key events newly stored.
+    pub fetched: usize,
+    pub already_held: usize,
+}
+
+/// Authenticate the peer at `peer_url` and store its node actor's
+/// genesis and key events, with provenance. A receiver needs these to
+/// check the peer's `KairoNode1` requests (`DECISIONS.md` §25), and
+/// re-learning picks up a rotated key. `options.expected_node_actor`
+/// pins as for a pull.
+pub fn learn_peer(
+    store: &FilesystemStore,
+    peer_url: &str,
+    options: &PullOptions,
+) -> Result<LearnedPeer, PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    let pull = authenticated(store, peer, &document, &options.limits)?;
+    Ok(LearnedPeer {
+        peer_url: pull.report.peer_url,
+        node_actor: document.node_actor,
+        fetched: pull.report.fetched,
+        already_held: pull.report.already_held,
+    })
+}
+
+/// A [`Pull`] that has authenticated the peer and pulls nothing more.
+/// Its report counts the node actor's records and names no object.
+fn authenticated<'a>(
+    store: &'a FilesystemStore,
+    peer: Peer,
+    document: &NodeDocument,
+    limits: &'a Limits,
+) -> Result<Pull<'a>, PullError> {
+    let none = ObjectId::from_sha256_digest([0; 32]);
+    let mut pull = Pull::new(store, peer, document, &none, limits);
     let mut budget = 0;
-    pull.authenticate(&document, &mut budget)?;
-    pull.run(object, budget)?;
-    if options.require_complete && !pull.report.incomplete.is_empty() {
-        return Err(PullError::IncompleteChains {
-            chains: pull.report.incomplete,
+    pull.authenticate(document, &mut budget)?;
+    Ok(pull)
+}
+
+/// The local node actor and the key it signs requests with.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeSigner<'a> {
+    pub node: &'a ActorId,
+    pub key: &'a SecretSigningKey,
+}
+
+/// What a receiver said to an announcement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnnounceReceipt {
+    pub peer_url: String,
+    /// The receiver, authenticated by its node document.
+    pub peer_actor: ActorId,
+    /// The receiver's inbox entry.
+    pub entry: String,
+}
+
+/// Send `announcement` to the node at `peer_url`, signed by `signer`
+/// (`DECISIONS.md` §26). The receiver is authenticated first, as for
+/// a pull, so its node actor is stored here too; the signature names
+/// its base URL. A refusal is [`PullError::Status`] with the
+/// receiver's code (`fed_unauthenticated`, `fed_not_trusted`,
+/// `fed_not_accepted`, `fed_busy`).
+pub fn announce(
+    store: &FilesystemStore,
+    peer_url: &str,
+    announcement: &Announcement,
+    signer: NodeSigner<'_>,
+    options: &PullOptions,
+) -> Result<AnnounceReceipt, PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    if !document.supports(SUPPORTS_ANNOUNCE) {
+        return Err(PullError::Unsupported {
+            feature: SUPPORTS_ANNOUNCE,
         });
     }
-    Ok(pull.report)
+    let pull = authenticated(store, peer, &document, &options.limits)?;
+    let peer = &pull.peer;
+    let path = format!("{API_PREFIX}{ANNOUNCE_PATH}");
+    let body = serde_json::to_vec(announcement).map_err(|error| PullError::Parse {
+        url: format!("{}{path}", peer.base_url()),
+        message: error.to_string(),
+    })?;
+    let nonce = random_node_nonce().map_err(|error| PullError::Signing(error.to_string()))?;
+    let request = NodeRequest {
+        method: "POST",
+        receiver_base_url: peer.base_url(),
+        path_and_query: &path,
+        body: &body,
+    };
+    let authorization = NodeAuthorization::sign(
+        &request,
+        signer.node.clone(),
+        signer.key,
+        Timestamp::now().seconds(),
+        nonce,
+    );
+    let response = peer.post_signed(
+        &path,
+        &body,
+        &authorization.format(),
+        options.limits.max_json_bytes,
+    )?;
+    let accepted: AnnouncementAccepted =
+        serde_json::from_slice(&response).map_err(|error| PullError::Parse {
+            url: format!("{}{path}", peer.base_url()),
+            message: error.to_string(),
+        })?;
+    Ok(AnnounceReceipt {
+        peer_url: peer.base_url().to_owned(),
+        peer_actor: document.node_actor,
+        entry: accepted.entry,
+    })
+}
+
+impl<'a> Pull<'a> {
+    fn new(
+        store: &'a FilesystemStore,
+        peer: Peer,
+        document: &NodeDocument,
+        object: &ObjectId,
+        limits: &'a Limits,
+    ) -> Self {
+        let provenance = ProvenanceEntry {
+            peer_url: peer.base_url().to_owned(),
+            peer_actor: document.node_actor.clone(),
+            fetched_at: Timestamp::now(),
+        };
+        let report = PullReport {
+            object: object.clone(),
+            peer_url: peer.base_url().to_owned(),
+            peer_actor: document.node_actor.clone(),
+            fetched: 0,
+            already_held: 0,
+            flagged: Vec::new(),
+            incomplete: Vec::new(),
+            git: GitOutcome::NoGitRevisions,
+        };
+        Pull {
+            store,
+            batch: document.supports(SUPPORTS_STATEMENT_BATCH),
+            peer,
+            limits,
+            provenance,
+            report,
+        }
+    }
 }
 
 impl Pull<'_> {

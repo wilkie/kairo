@@ -17,6 +17,7 @@ kairo-config = { path = "../kairo-config" }
 kairo-core = { path = "../kairo-core" }
 kairo-daemon = { path = "../kairo-daemon" }
 kairo-daemon-client = { path = "../kairo-daemon-client" }
+kairo-federation-core = { path = "../kairo-federation-core" }
 kairo-federation-http = { path = "../kairo-federation-http", default-features = false, features = ["client"] }
 kairo-git = { path = "../kairo-git" }
 kairo-identity = { path = "../kairo-identity" }

@@ -30,6 +30,7 @@ use common::{node_actor, node_key, seed, sign_chained, Seeded, BASE_URL};
 // Crates the lib or `common` depends on that this target doesn't name.
 use flate2 as _;
 use http_body as _;
+use kairo_config as _;
 use kairo_federation_core as _;
 use kairo_git as _;
 use kairo_object as _;
@@ -586,7 +587,7 @@ async fn writes_are_method_not_allowed_everywhere() {
             Method::DELETE,
             format!("/federation/v1/objects/{}", seeded.published),
         ),
-        (Method::POST, "/federation/v1/announce".to_owned()),
+        (Method::POST, "/federation/v1/inbox".to_owned()),
         (Method::OPTIONS, "/.well-known/kairo-node".to_owned()),
     ] {
         let request = Request::builder()

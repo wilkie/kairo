@@ -60,6 +60,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `POST` | `/federation/v1/statement-batch` | up to 256 statements, each exactly as stored, in request order; unserved ids left out (`DECISIONS.md` §24) |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
+| `POST` | `/federation/v1/announce` | `KairoNode1`-signed `{ schema: "kairo.fed.announce.v1", base_url, objects }` (at most 256 objects); `202` `{ schema: "kairo.fed.announce-accepted.v1", entry }` once it is in the inbox (`DECISIONS.md` §26) |
 
 Every other method or path is `405` / `404`. `{id}` is a bare id.
 An id outside every published closure is `404 fed_not_found`,
@@ -127,10 +128,13 @@ sub-decision 2).
 | 400 | `fed_bad_limit` | `limit` isn't an integer from 1 to 1000 (refused, not clamped) |
 | 400 | `fed_bad_batch` | statement batch request that doesn't parse, or names no ids or more than 256 (`DECISIONS.md` §24) |
 | 400 | `fed_bad_git_request` | Git request the node won't serve: not protocol v2, a command other than `ls-refs` / `fetch`, an unpublished `want`, a malformed body (`DECISIONS.md` §22) |
+| 400 | `fed_bad_announcement` | an authenticated announcement that doesn't parse, or names no objects, more than 256, an object twice, or an invalid `base_url` (`DECISIONS.md` §26) |
+| 403 | `fed_not_trusted` | the receiving node actor has no `trusted` `federation:push` opinion of the announcer (§26 sub-decision 1) |
+| 403 | `fed_not_accepted` | no `[[federation.accept]]` entry covers an announced object for this announcer; the message names them (§26 sub-decision 2) |
 | 401 | `fed_unauthenticated` | an endpoint that acts on who is asking got no valid `KairoNode1` signature: missing, malformed, outside ±300 s, a replayed nonce, an unknown or non-`node` signer, a key not active or revoked at the request's `timestamp`, or a signature that doesn't verify over this node's base URL (`DECISIONS.md` §25 sub-decision 3). Read endpoints never send it |
-| 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack` `POST` |
+| 405 | `fed_method_not_allowed` | anything but `GET` / `HEAD`, except the `git-upload-pack`, `statement-batch`, and `announce` `POST`s |
 | 500 | `fed_store_error` | store read failed (message is generic; details logged) |
-| 503 | `fed_busy` | concurrent Git fetches at capacity; `Retry-After` says when to retry (`DECISIONS.md` §21, §22) |
+| 503 | `fed_busy` | concurrent Git fetches at capacity, or an announcer's inbox share (`max_inbox_entries`) is full; `Retry-After` says when to retry (`DECISIONS.md` §21, §22, §26) |
 
 Envelope is `API.md` §7.2.
 
@@ -489,9 +493,10 @@ inventory step, and 7 come from comparing this design with Radicle
       holds, so slice 4 has to say how it learns a sender's (for
       example, from the sender's node document and always-served
       listing, as a pull does).
-   4. **Accept list, inbox, and announce** (§26 sub-decisions 1–3),
-      plus `kairo federation announce` and `kairo federation
-      receive` for announcements.
+   4. ~~**Accept list, inbox, and announce**~~ (§26 sub-decisions 1–3,
+      7; shipped), plus `kairo federation announce`, `receive`, and
+      `learn` for announcements. The server reads the accept list and
+      push limits from `<store>/config.toml` at startup.
    5. **Upload** (`kairo push`, `POST /federation/v1/push`), with
       bundle ingest through the pull verifier, which completes bundle
       import's signature verification (§26 sub-decision 4).

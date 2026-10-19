@@ -1,26 +1,33 @@
 //! `kairo federation ...` and `kairo fetch` runners
-//! (`specs/DECISIONS.md` §16, `specs/PHASE_2_FEDERATION.md`
-//! slices 1 and 3): this node's publish list, provenance lookups, and
-//! pulling an object from a peer.
+//! (`specs/DECISIONS.md` §16, §25, §26, `specs/PHASE_2_FEDERATION.md`
+//! slices 1 and 3): this node's publish list, provenance lookups,
+//! pulling an object from a peer, learning a peer's node actor, and
+//! announcing and receiving pushes.
 //!
 //! All of it is local store state, so these commands always run
 //! direct; there is no daemon route for them.
 
 use std::time::Duration;
 
-use kairo_config::ConfigSource;
-use kairo_core::{KairoRef, ObjectId, Timestamp};
+use kairo_config::{Config, ConfigSource};
+use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
+use kairo_federation_core::Announcement;
 use kairo_federation_http::client::{
-    normalize_peer_url, pull_object, GitOutcome, Limits, PullOptions, PullReport,
+    announce, learn_peer, normalize_peer_url, pull_object, GitOutcome, Limits, NodeSigner,
+    PullOptions, PullReport,
 };
+use kairo_identity::ActorKind;
+use kairo_keystore::Keystore;
+use kairo_statement::{TrustDecision, TrustScope};
 use kairo_store::{
-    ProvenanceStore, PublishedObject, PublishedObjectStore, PullLogStore, PullRecord,
+    ActorStore, InboxAnnouncement, InboxItem, InboxStore, ProvenanceStore, PublishedObject,
+    PublishedObjectStore, PullLogStore, PullRecord, TrustResolver,
 };
 
 use crate::cli::FederationCommand;
 use crate::commands::config::load_config;
 use crate::error::CliError;
-use crate::store_paths::{open_store, StorePaths};
+use crate::store_paths::{open_keystore, open_store, StorePaths};
 
 /// Printed whenever an object stops being served, so nobody reads
 /// `unpublish` as a recall.
@@ -29,8 +36,30 @@ const UNPUBLISH_NOTE: &str = "peers that already fetched this object keep their 
 pub(crate) fn run_federation_command(
     command: FederationCommand,
     paths: &StorePaths,
+    offline: bool,
 ) -> Result<String, CliError> {
     match command {
+        FederationCommand::Learn { from, allow_peer } => {
+            run_learn(&from, allow_peer, offline, paths)
+        }
+        FederationCommand::Announce {
+            objects,
+            to,
+            base_url,
+            node,
+            allow_peer,
+        } => run_announce(
+            &AnnounceArgs {
+                objects,
+                to: &to,
+                base_url,
+                node: node.as_deref(),
+                allow_peer,
+                offline,
+            },
+            paths,
+        ),
+        FederationCommand::Receive => run_receive(offline, paths),
         FederationCommand::Publish { object } => run_publish(&parse_object(object)?, paths),
         FederationCommand::Unpublish { object } => run_unpublish(&parse_object(object)?, paths),
         FederationCommand::Published => run_published(paths),
@@ -117,29 +146,9 @@ pub(crate) struct FetchArgs<'a> {
 /// claim before fetching anything.
 pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
     let object = parse_object(args.object.to_owned())?;
-    if args.offline {
-        return Err(CliError::OfflineFetch);
-    }
-    let (config, source) = load_config(paths)?;
-    if !config.federation.enabled {
-        return Err(CliError::FederationDisabled {
-            config: source.path().to_path_buf(),
-        });
-    }
-    let url = normalize_peer_url(args.from).map_err(|error| CliError::Fetch(Box::new(error)))?;
-    // Compare config entries the way the pull normalizes `--from`.
-    let peer = config
-        .federation
-        .peers
-        .iter()
-        .find(|peer| normalize_peer_url(&peer.url).is_ok_and(|normalized| normalized == url));
-    if peer.is_none() && !args.allow_peer {
-        return Err(CliError::PeerNotAllowed {
-            url,
-            config: source.path().to_path_buf(),
-        });
-    }
-    let pinned = peer.and_then(|peer| peer.node_actor.clone());
+    let (config, url, peer) = peer_policy(args.from, args.allow_peer, args.offline, paths)
+        .map_err(|error| error.into_cli(CliError::Fetch))?;
+    let pinned = peer.and_then(|peer| peer.node_actor);
     let options = PullOptions {
         limits: limits_from(&config.federation.limits),
         expected_node_actor: pinned.clone(),
@@ -161,7 +170,7 @@ pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<Stri
         .map_err(|source| CliError::RecordPull { source })?;
 
     let pin = Pin {
-        listed: peer.is_some(),
+        listed: peer_listed(&config, &url),
         pinned: pinned.is_some(),
     };
     Ok(if args.json {
@@ -169,6 +178,322 @@ pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<Stri
     } else {
         format_fetch(&report, pin)
     })
+}
+
+/// A policy refusal, or a peer URL that doesn't normalize (which each
+/// command wraps in its own error).
+enum PolicyError {
+    Cli(CliError),
+    Url(kairo_federation_http::client::PullError),
+}
+
+impl PolicyError {
+    fn into_cli(
+        self,
+        wrap: impl FnOnce(Box<kairo_federation_http::client::PullError>) -> CliError,
+    ) -> CliError {
+        match self {
+            Self::Cli(error) => error,
+            Self::Url(error) => wrap(Box::new(error)),
+        }
+    }
+}
+
+/// Federation policy before any network I/O (`DECISIONS.md` §17
+/// sub-decision 4): `--offline` refuses, federation must be enabled,
+/// and the peer must be listed unless `allow_peer`. Returns the config,
+/// the normalized URL, and the peer's entry.
+fn peer_policy(
+    raw_url: &str,
+    allow_peer: bool,
+    offline: bool,
+    paths: &StorePaths,
+) -> Result<(Config, String, Option<kairo_config::PeerConfig>), PolicyError> {
+    if offline {
+        return Err(PolicyError::Cli(CliError::OfflineFetch));
+    }
+    let (config, source) = load_config(paths).map_err(PolicyError::Cli)?;
+    if !config.federation.enabled {
+        return Err(PolicyError::Cli(CliError::FederationDisabled {
+            config: source.path().to_path_buf(),
+        }));
+    }
+    let url = normalize_peer_url(raw_url).map_err(PolicyError::Url)?;
+    let peer = peer_entry(&config, &url);
+    if peer.is_none() && !allow_peer {
+        return Err(PolicyError::Cli(CliError::PeerNotAllowed {
+            url,
+            config: source.path().to_path_buf(),
+        }));
+    }
+    Ok((config, url, peer))
+}
+
+/// The config entry for a normalized URL, compared the way the pull
+/// normalizes `--from`.
+fn peer_entry(config: &Config, url: &str) -> Option<kairo_config::PeerConfig> {
+    config
+        .federation
+        .peers
+        .iter()
+        .find(|peer| normalize_peer_url(&peer.url).is_ok_and(|normalized| normalized == url))
+        .cloned()
+}
+
+fn peer_listed(config: &Config, url: &str) -> bool {
+    peer_entry(config, url).is_some()
+}
+
+/// `kairo federation learn --from <url>`: authenticate the peer and
+/// store its node actor's key state (`DECISIONS.md` §25).
+fn run_learn(
+    from: &str,
+    allow_peer: bool,
+    offline: bool,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let wrap = |source| CliError::PeerRequest {
+        action: "learning the peer",
+        source,
+    };
+    let (config, url, peer) =
+        peer_policy(from, allow_peer, offline, paths).map_err(|error| error.into_cli(wrap))?;
+    let pinned = peer.and_then(|peer| peer.node_actor);
+    let options = PullOptions {
+        limits: limits_from(&config.federation.limits),
+        expected_node_actor: pinned.clone(),
+        require_complete: false,
+    };
+    let store = open_store(paths)?;
+    let learned = learn_peer(&store, &url, &options).map_err(|error| wrap(Box::new(error)))?;
+    let pin = match (peer_listed(&config, &url), pinned.is_some()) {
+        (_, true) => "pinned, authenticated".to_owned(),
+        (true, false) => format!(
+            "authenticated, unpinned; add node_actor = \"{}\" to its [[federation.peers]] \
+             entry to pin it",
+            learned.node_actor
+        ),
+        (false, false) => "authenticated; peer not in config (--allow-peer)".to_owned(),
+    };
+    Ok(format!(
+        "peer = {}\nnode_actor = {} ({pin})\nfetched = {}\nalready_held = {}\n",
+        learned.peer_url, learned.node_actor, learned.fetched, learned.already_held
+    ))
+}
+
+struct AnnounceArgs<'a> {
+    objects: Vec<String>,
+    to: &'a str,
+    base_url: String,
+    node: Option<&'a str>,
+    allow_peer: bool,
+    offline: bool,
+}
+
+/// `kairo federation announce`: tell a peer to pull objects this node
+/// publishes (`DECISIONS.md` §26 sub-decision 5).
+fn run_announce(args: &AnnounceArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
+    let wrap = |source| CliError::PeerRequest {
+        action: "announcing",
+        source,
+    };
+    let (config, url, peer) = peer_policy(args.to, args.allow_peer, args.offline, paths)
+        .map_err(|error| error.into_cli(wrap))?;
+    let objects = args
+        .objects
+        .iter()
+        .map(|object| parse_object(object.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let store = open_store(paths)?;
+    let published = store
+        .list_published_objects()
+        .map_err(|source| CliError::ListPublishedObjects { source })?;
+    for object in &objects {
+        if !published.iter().any(|entry| &entry.object_id == object) {
+            return Err(CliError::NotPublished {
+                object: object.clone(),
+            });
+        }
+    }
+    let keystore = open_keystore(paths)?;
+    let node = choose_node_actor(&store, &keystore, args.node)?;
+    let key = keystore
+        .get_signing_key(&node)
+        .map_err(|source| CliError::ReadKey {
+            actor: node.clone(),
+            source,
+        })?;
+
+    let options = PullOptions {
+        limits: limits_from(&config.federation.limits),
+        expected_node_actor: peer.and_then(|peer| peer.node_actor),
+        require_complete: false,
+    };
+    let announcement = Announcement::new(args.base_url.clone(), objects);
+    let receipt = announce(
+        &store,
+        &url,
+        &announcement,
+        NodeSigner {
+            node: &node,
+            key: &key,
+        },
+        &options,
+    )
+    .map_err(|error| wrap(Box::new(error)))?;
+    Ok(format!(
+        "peer = {}\npeer_actor = {}\nnode = {node}\nobjects = {}\nentry = {}\n",
+        receipt.peer_url,
+        receipt.peer_actor,
+        announcement.objects.len(),
+        receipt.entry
+    ))
+}
+
+/// `--node`, or the one keystore actor whose genesis is kind `node`.
+fn choose_node_actor(
+    store: &kairo_store::FilesystemStore,
+    keystore: &kairo_keystore::FilesystemKeystore,
+    explicit: Option<&str>,
+) -> Result<ActorId, CliError> {
+    if let Some(raw) = explicit {
+        return ActorId::new(raw.to_owned()).map_err(|source| CliError::ParseActorId {
+            actor: raw.to_owned(),
+            source,
+        });
+    }
+    let actors = keystore.list_actors().map_err(CliError::ListKeystore)?;
+    let nodes: Vec<ActorId> = actors
+        .into_iter()
+        .filter(|actor| {
+            store
+                .get_actor(actor)
+                .is_ok_and(|genesis| genesis.actor_kind() == &ActorKind::node())
+        })
+        .collect();
+    match nodes.as_slice() {
+        [node] => Ok(node.clone()),
+        [] => Err(CliError::NodeActorChoice {
+            message: "the keystore holds no node actor; create one with `kairo actor create \
+                      --kind node`"
+                .to_owned(),
+        }),
+        _ => Err(CliError::NodeActorChoice {
+            message: format!(
+                "the keystore holds {} node actors; pick one with --node",
+                nodes.len()
+            ),
+        }),
+    }
+}
+
+/// `kairo federation receive`: ingest every inbox entry through the
+/// pull verifier (`DECISIONS.md` §26 sub-decision 4), re-checking
+/// trust and the accept list first, then remove it.
+fn run_receive(offline: bool, paths: &StorePaths) -> Result<String, CliError> {
+    if offline {
+        return Err(CliError::OfflineFetch);
+    }
+    let (config, source) = load_config(paths)?;
+    if !config.federation.enabled {
+        return Err(CliError::FederationDisabled {
+            config: source.path().to_path_buf(),
+        });
+    }
+    let store = open_store(paths)?;
+    let entries = store
+        .list_inbox()
+        .map_err(|source| CliError::ListInbox { source })?;
+    let mut output = format!("received = {}\n", entries.len());
+    let mut failed = 0;
+    for entry in entries {
+        let InboxItem::Announcement(announcement) = &entry.item;
+        for line in receive_announcement(&store, &config, announcement) {
+            if !line.starts_with("pulled") {
+                failed += 1;
+            }
+            output.push_str(&format!("  entry={} {line}\n", entry.name));
+        }
+        store
+            .remove_inbox_entry(&entry.name)
+            .map_err(|source| CliError::ListInbox { source })?;
+    }
+    output.push_str(&format!("not_pulled = {failed}\n"));
+    Ok(output)
+}
+
+/// One outcome line per announced object.
+fn receive_announcement(
+    store: &kairo_store::FilesystemStore,
+    config: &Config,
+    announcement: &InboxAnnouncement,
+) -> Vec<String> {
+    let from = &announcement.from;
+    let trusted = store
+        .latest_trust(&announcement.to, from, &TrustScope::federation_push())
+        .map(|head| {
+            head.is_some_and(|signed| {
+                signed.unsigned().body().decision() == Some(TrustDecision::Trusted)
+            })
+        });
+    let refusal = match trusted {
+        Ok(true) => None,
+        Ok(false) => Some(format!(
+            "refused from={from} reason=\"{} no longer trusts it with {}\"",
+            announcement.to,
+            TrustScope::federation_push()
+        )),
+        Err(error) => Some(format!("failed from={from} reason=\"{error}\"")),
+    };
+    let options = PullOptions {
+        limits: limits_from(&config.federation.limits),
+        expected_node_actor: Some(from.clone()),
+        require_complete: false,
+    };
+    announcement
+        .objects
+        .iter()
+        .map(|object| {
+            if let Some(refusal) = &refusal {
+                return format!("object={object} {refusal}");
+            }
+            let Some(accept) = config.federation.accepts(object, from) else {
+                return format!(
+                    "object={object} refused from={from} reason=\"no [[federation.accept]] \
+                     entry covers it\""
+                );
+            };
+            match pull_object(store, &announcement.base_url, object, &options) {
+                Ok(report) => {
+                    let recorded = store.record_pull(&PullRecord {
+                        peer_url: report.peer_url.clone(),
+                        object: object.clone(),
+                        peer_actor: report.peer_actor.clone(),
+                        at: Timestamp::now(),
+                        fetched: report.fetched as u64,
+                        already_held: report.already_held as u64,
+                    });
+                    let published =
+                        accept.publish && store.publish_object(object, Timestamp::now()).is_ok();
+                    let mut line = format!(
+                        "pulled object={object} from={from} fetched={} already_held={} \
+                         flagged={} incomplete_chains={} published={published}",
+                        report.fetched,
+                        report.already_held,
+                        report.flagged.len(),
+                        report.incomplete.len()
+                    );
+                    if let Err(error) = recorded {
+                        line.push_str(&format!(" pull_log_error=\"{error}\""));
+                    }
+                    line
+                }
+                Err(error) => {
+                    format!("object={object} failed from={from} reason=\"{error}\"")
+                }
+            }
+        })
+        .collect()
 }
 
 /// How the peer stood in the config for this pull.

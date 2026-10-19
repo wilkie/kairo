@@ -7,11 +7,11 @@ use kairo_identity::{
 use serde_json::{json, Value};
 
 use crate::{
-    ActorListing, ActorListingError, Cursor, CursorError, FedErrorCode, FedErrorEnvelope,
-    GitAvailability, NodeAuthHeaderError, NodeAuthorization, NodeDocument, NodeDocumentError,
-    NodeRequest, ObjectListing, PageRequest, PageRequestError, PublishedObjects,
-    UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT, PROTOCOL_VERSION,
-    SUPPORTS_OBJECT_PULL,
+    ActorListing, ActorListingError, Announcement, AnnouncementError, Cursor, CursorError,
+    FedErrorCode, FedErrorEnvelope, GitAvailability, NodeAuthHeaderError, NodeAuthorization,
+    NodeDocument, NodeDocumentError, NodeRequest, ObjectListing, PageRequest, PageRequestError,
+    PublishedObjects, UnsignedNodeDocument, DEFAULT_PAGE_LIMIT, MAX_CURSOR_LEN, MAX_PAGE_LIMIT,
+    PROTOCOL_VERSION, SUPPORTS_OBJECT_PULL,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -468,6 +468,9 @@ fn error_codes_serialize_and_map_to_statuses() -> TestResult {
         (FedErrorCode::FedStoreError, 500),
         (FedErrorCode::FedBusy, 503),
         (FedErrorCode::FedUnauthenticated, 401),
+        (FedErrorCode::FedNotTrusted, 403),
+        (FedErrorCode::FedNotAccepted, 403),
+        (FedErrorCode::FedBadAnnouncement, 400),
     ];
     for (code, status) in cases {
         assert_eq!(serde_json::to_value(code)?, json!(code.as_str()));
@@ -559,5 +562,50 @@ fn malformed_node_authorizations_are_refused() -> TestResult {
             "{bad}"
         );
     }
+    Ok(())
+}
+
+// --- announcements (DECISIONS.md §26) ----------------------------------
+
+#[test]
+fn announcements_round_trip_and_validate() -> TestResult {
+    let announcement = Announcement::new(
+        "https://laptop.example.org".to_owned(),
+        vec![object_id(b"a"), object_id(b"b")],
+    );
+    let (json, back) = round_trip(&announcement)?;
+    assert_eq!(back, announcement);
+    assert_eq!(json["schema"], "kairo.fed.announce.v1");
+    announcement.validate()?;
+
+    let bad_url = Announcement::new("https://x.example/".to_owned(), vec![object_id(b"a")]);
+    assert!(matches!(
+        bad_url.validate(),
+        Err(AnnouncementError::InvalidBaseUrl { .. })
+    ));
+    let none = Announcement::new("https://x.example".to_owned(), Vec::new());
+    assert_eq!(none.validate(), Err(AnnouncementError::NoObjects));
+    let twice = Announcement::new(
+        "https://x.example".to_owned(),
+        vec![object_id(b"a"), object_id(b"a")],
+    );
+    assert!(matches!(
+        twice.validate(),
+        Err(AnnouncementError::Duplicate { .. })
+    ));
+    let many = Announcement::new(
+        "https://x.example".to_owned(),
+        (0..=crate::MAX_ANNOUNCED_OBJECTS)
+            .map(|n| object_id(&n.to_be_bytes()))
+            .collect(),
+    );
+    assert!(matches!(
+        many.validate(),
+        Err(AnnouncementError::TooMany { .. })
+    ));
+    assert!(
+        serde_json::from_value::<Announcement>(with_field(json, "extra", Value::Bool(true)))
+            .is_err()
+    );
     Ok(())
 }

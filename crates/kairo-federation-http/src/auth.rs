@@ -27,6 +27,8 @@ use crate::node::Node;
 pub struct AuthenticatedNode {
     pub node: ActorId,
     pub key_id: KeyId,
+    /// The request's nonce, unique for this node within the window.
+    pub nonce: [u8; NODE_NONCE_LEN],
 }
 
 /// Why a request didn't authenticate. Everything but
@@ -208,6 +210,7 @@ impl Node {
         Ok(AuthenticatedNode {
             node: auth.node,
             key_id: auth.key_id,
+            nonce: auth.nonce,
         })
     }
 }
