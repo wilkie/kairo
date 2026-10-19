@@ -2883,10 +2883,10 @@ Sub-decisions:
    deliberately leave key events out (`PACKAGE.md`, the bundle crate's
    rules), so a statement by a signer who rotated keys can't be checked
    unless this node already holds their key events. That fails like any
-   bad signature, and the error says how to get the signer's keys:
-   `kairo federation learn --file <their actor export>`, or a `kairo
-   fetch` from a node that has them. Object bundles keep their current
-   contents.
+   bad signature, and the error says how to get them: `kairo fetch` the
+   object from a node that has them, then import again (a node actor's
+   can also come from `kairo federation learn --file`, which takes node
+   actors only). Object bundles keep their current contents.
 
 4. **Revoked keys are stored and flagged**, as a pull does (§16
    sub-decision 7), so nodes don't diverge; `verify object` reports
@@ -2896,9 +2896,10 @@ Sub-decisions:
    whose provenance the operator vouches for out of band. Its output
    says the records were not signature-checked.
 
-6. **Provenance.** Imported records are recorded as coming from
-   `bundle:<path>`, like `push:` and `file:` (§26, §26 sub-decision 7);
-   an `--unverified` import records nothing, as today.
+6. **No provenance.** *Amended when built:* provenance names the peer
+   that served a record, by URL and node actor (§16 sub-decision 8),
+   and a bundle has neither, so a verified import records none, as an
+   `--unverified` one never did.
 
 Rationale: every way into the store should give the same guarantee,
 and the pull verifier already encodes it. Refusing missing key state
@@ -2910,5 +2911,6 @@ Affected specs:
 
 - `PHASE_2.md` §11 — the bundle-import verification item.
 - `PACKAGE.md` — the MVP slice's import semantics.
-- `CLI.md` — `kairo bundle import` and `--unverified`.
+- `CLI.md` — `kairo bundle import` and `--unverified` (all
+  implemented).
 

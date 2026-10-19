@@ -160,6 +160,14 @@ rather than per-commit.
 
 ### Changed
 
+- **`kairo bundle import` verifies (`DECISIONS.md` §32).** Object
+  bundles now go through the same verifier as `kairo fetch`:
+  signatures against the key state this node holds, chains, and Git
+  packs through the quarantine, stopping at the first record that
+  fails and flagging revoked-key statements. A signer whose key
+  rotation this node lacks is refused with a hint to `kairo fetch`
+  first. `--unverified` keeps fixity-only import.
+
 - **Nodes sign their node document, and pulls authenticate the peer
   (`DECISIONS.md` §25 sub-decisions 1–2).**
   - The node document gains `signed_at` and `signature`, by the node
@@ -691,6 +699,10 @@ or otherwise alter the on-the-wire shape. Each is a `0.x.0` bump.
   a different StatementId.
 
 ### Fixed
+
+- Federation reads retry when a signal interrupts the HTTP client
+  (`EINTR`), which happened in processes that also run servers or
+  child processes, such as the daemon and the test suites.
 
 - **Mock capability grants used `kinds`.** The MSW registry seeded
   grant bodies with `kinds` instead of the wire field

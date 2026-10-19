@@ -890,6 +890,15 @@ Phase 2 §1). The unified `kairo import` surface lands when the
 daemon-side import endpoint (API §22) does, with task tracking
 and policy.
 
+`kairo bundle import --input <dir>` verifies an object bundle through
+the same verifier as `kairo fetch` (`DECISIONS.md` §32): signatures
+against the key state this node holds, chains, and Git packs through
+the quarantine. It stops at the first record that fails, keeping what
+verified, and stores revoked-key statements flagged. A signer who
+rotated keys can't be checked until this node holds their key events;
+the error says to `kairo fetch` the object from a node that has them.
+`--unverified` checks fixity only, as before, and says so.
+
 Imports object data into the local store.
 
 Usage:

@@ -38,14 +38,12 @@ impl Peer {
     /// `GET <base><path>`, returning at most `limit` body bytes.
     pub(crate) fn get_bytes(&self, path: &str, limit: u64) -> Result<Vec<u8>, PullError> {
         let url = format!("{}{path}", self.base_url);
-        let response = self
-            .agent
-            .get(&url)
-            .call()
-            .map_err(|error| PullError::Transport {
+        let response = retry_interrupted(|| self.agent.get(&url).call()).map_err(|error| {
+            PullError::Transport {
                 url: url.clone(),
                 message: error.to_string(),
-            })?;
+            }
+        })?;
         Self::read_body(url, response, limit)
     }
 
@@ -63,15 +61,17 @@ impl Peer {
             url: url.clone(),
             message: error.to_string(),
         })?;
-        let response = self
-            .agent
-            .post(&url)
-            .header("content-type", "application/json")
-            .send(&bytes[..])
-            .map_err(|error| PullError::Transport {
-                url: url.clone(),
-                message: error.to_string(),
-            })?;
+        // A read (the statement batch), so retrying is safe.
+        let response = retry_interrupted(|| {
+            self.agent
+                .post(&url)
+                .header("content-type", "application/json")
+                .send(&bytes[..])
+        })
+        .map_err(|error| PullError::Transport {
+            url: url.clone(),
+            message: error.to_string(),
+        })?;
         Self::read_body(url, response, limit)
     }
 
@@ -176,6 +176,27 @@ impl Peer {
             url: format!("{}{path}", self.base_url),
             message: error.to_string(),
         })
+    }
+}
+
+/// Retry a read a few times when a signal interrupted a system call
+/// (`EINTR`): `poll` is never restarted on Linux, and a process that
+/// also runs servers or children (the daemon, tests) takes `SIGCHLD`.
+/// Only for idempotent requests; a signed request isn't retried, since
+/// its nonce would be refused as a replay.
+fn retry_interrupted<T>(
+    mut request: impl FnMut() -> Result<T, ureq::Error>,
+) -> Result<T, ureq::Error> {
+    let mut attempts = 0;
+    loop {
+        match request() {
+            Err(ureq::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::Interrupted && attempts < 3 =>
+            {
+                attempts += 1;
+            }
+            other => return other,
+        }
     }
 }
 

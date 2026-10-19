@@ -53,6 +53,11 @@ strict subset of this spec:
   field name is intentionally narrower than `kairo.package.v1` —
   bundle is the MVP slice; the full package spec gets its own schema
   string when it lands).
+- **Import verifies** (`DECISIONS.md` §32): `kairo bundle import` runs
+  every record through the federation pull verifier, signatures
+  included, against the key state the importing node holds; object
+  bundles still carry no key events. `--unverified` keeps fixity-only
+  import.
 - **Fixity is hard.** Importer re-derives every id from canonical
   bytes; mismatches abort the import. Idempotent re-import is a no-op
   at the byte level (same id + same bytes overwrites same content).

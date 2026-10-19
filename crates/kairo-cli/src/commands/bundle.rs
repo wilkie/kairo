@@ -74,7 +74,14 @@ pub(crate) fn run_bundle_command(
             ));
             Ok(out)
         }
-        BundleCommand::Import { input } => {
+        BundleCommand::Import {
+            input,
+            unverified: false,
+        } => run_verified_import(&input, paths),
+        BundleCommand::Import {
+            input,
+            unverified: true,
+        } => {
             let store = open_store(paths)?;
             let summary: ImportSummary = import_bundle(&input, &store).map_err(CliError::Bundle)?;
 
@@ -93,6 +100,9 @@ pub(crate) fn run_bundle_command(
 
             let mut out = String::new();
             out.push_str("import bundle\n");
+            out.push_str(
+                "verification = fixity only (--unverified); signatures were not checked\n",
+            );
             out.push_str(&format!("actors = {}\n", summary.actors));
             out.push_str(&format!("objects = {}\n", summary.objects));
             out.push_str(&format!("statements = {}\n", summary.statements));
@@ -207,4 +217,36 @@ fn ingest_bundle_git_data(
         }
     }
     Ok((pack_object_ids.len(), refs_pinned))
+}
+
+/// `kairo bundle import` without `--unverified` (`DECISIONS.md` §32).
+fn run_verified_import(input: &std::path::Path, paths: &StorePaths) -> Result<String, CliError> {
+    let (config, _) = crate::commands::config::load_config(paths)?;
+    let options = kairo_federation_http::client::PullOptions {
+        limits: kairo_federation_service::limits_from(&config.federation.limits),
+        expected_node_actor: None,
+        require_complete: false,
+    };
+    let store = open_store(paths)?;
+    let report = kairo_federation_http::client::import_object_bundle(&store, input, &options)
+        .map_err(|error| CliError::BundleImport(Box::new(error)))?;
+    let mut out = format!(
+        "import bundle\nverification = verified\nobject = {}\nfetched = {}\nalready_held = {}\nflagged = {}\n",
+        report.object,
+        report.fetched,
+        report.already_held,
+        report.flagged.len()
+    );
+    for flagged in &report.flagged {
+        out.push_str(&format!(
+            "  record={} reason={}\n",
+            flagged.record, flagged.reason
+        ));
+    }
+    out.push_str(&format!(
+        "git = {}\nincomplete_chains = {}\n",
+        crate::commands::federation::describe_git(&report.git),
+        report.incomplete.len()
+    ));
+    Ok(out)
 }

@@ -1183,7 +1183,7 @@ fn format_fetch(report: &PullReport, pin: Pin) -> String {
     output
 }
 
-fn describe_git(git: &GitOutcome) -> String {
+pub(crate) fn describe_git(git: &GitOutcome) -> String {
     match git {
         GitOutcome::NoGitRevisions => "no git revisions".to_owned(),
         GitOutcome::AlreadyHeld { commits } => format!("already held ({commits} commits)"),

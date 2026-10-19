@@ -563,15 +563,15 @@ Deferred from Phase 1 §9 (`specs/PACKAGE.md` "MVP slice").
 - [ ] Trust-bundle type (transport per-truster opinions independently of
       object bundles).
 - [ ] Bundle-level signature (`specs/PACKAGE.md` §24).
-- [ ] Verify statement signatures on bundle import, through the same
+- [x] Verify statement signatures on bundle import, through the same
       checks federation pull uses (schema, fixity, revision ids,
       signature against stored key events). Today bundle import only
       fixity-checks, so the store has two entry points with different
       guarantees. *Partly done:* closure bundles (push uploads,
       `DECISIONS.md` §26 sub-decision 8) ingest through the pull
-      verifier. Object bundles (`kairo bundle import`) still only
-      fixity-check; routing them through the same verifier needs the
-      signers' key events, which object bundles leave out.
+      verifier, and since `DECISIONS.md` §32 so do object bundles
+      (`kairo bundle import`), against the key state the node holds;
+      `--unverified` keeps fixity-only import.
 - [x] Per-truster reverse trust index. Both `list_trust(by_actor)` and
       `list_opinions_about(trusted_actor)` are now indexed lookups in
       `FilesystemStore` rather than directory walks.

@@ -3177,11 +3177,17 @@ fn end_to_end_bundle_export_then_import() -> Result<(), Box<dyn std::error::Erro
         command: Some(Command::Bundle {
             command: BundleCommand::Import {
                 input: bundle_path.clone(),
+                unverified: false,
             },
         }),
     })?;
     assert!(import_output.contains("import bundle"));
-    assert!(import_output.contains("actors = 1"));
+    // Verified like a pull (DECISIONS.md §32).
+    assert!(
+        import_output.contains("verification = verified"),
+        "{import_output}"
+    );
+    assert!(!import_output.contains("fetched = 0\n"), "{import_output}");
 
     // Branch resolves at the new store, pointing at the original
     // revision statement.
@@ -3215,10 +3221,13 @@ fn bundle_import_rejects_unknown_directory() -> Result<(), Box<dyn std::error::E
         direct: false,
         offline: false,
         command: Some(Command::Bundle {
-            command: BundleCommand::Import { input: nowhere },
+            command: BundleCommand::Import {
+                input: nowhere,
+                unverified: false,
+            },
         }),
     });
-    assert!(matches!(result, Err(CliError::Bundle(_))));
+    assert!(matches!(result, Err(CliError::BundleImport(_))));
     Ok(())
 }
 
@@ -5271,6 +5280,7 @@ kind = "tree"
         command: Some(Command::Bundle {
             command: BundleCommand::Import {
                 input: bundle_root.clone(),
+                unverified: false,
             },
         }),
     })?;
@@ -5809,11 +5819,15 @@ fn kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo(
         command: Some(Command::Bundle {
             command: BundleCommand::Import {
                 input: bundle_path.clone(),
+                unverified: false,
             },
         }),
     })?;
-    assert!(import_output.contains("git_packs = 1"));
-    assert!(import_output.contains("git_refs_pinned = 1"));
+    // The pack goes through the quarantine and the commit is pinned.
+    assert!(
+        import_output.contains("git = ingested (1 commits)"),
+        "{import_output}"
+    );
 
     // ---- Verify against B with --no-cwd-repo: cache is the
     //      only Git source. Must reach VALID.
@@ -5911,11 +5925,17 @@ fn kairo_bundle_import_without_git_data_skips_cache_open() -> Result<(), Box<dyn
         direct: false,
         offline: false,
         command: Some(Command::Bundle {
-            command: BundleCommand::Import { input: bundle_path },
+            command: BundleCommand::Import {
+                input: bundle_path,
+                unverified: false,
+            },
         }),
     })?;
-    assert!(import_output.contains("git_packs = 0"));
-    assert!(import_output.contains("git_refs_pinned = 0"));
+    assert!(
+        import_output.contains("git = no git revisions")
+            || import_output.contains("git = unavailable"),
+        "{import_output}"
+    );
     Ok(())
 }
 
@@ -7824,5 +7844,159 @@ fn fetch_without_from_acquires_from_the_sync_sources_provenance_first(
         "{none}"
     );
     assert!(none.contains("note = no sources"), "{none}");
+    Ok(())
+}
+
+fn export_bundle(
+    store: &std::path::Path,
+    object: &str,
+    output: &std::path::Path,
+) -> Result<String, CliError> {
+    run_in(
+        store,
+        Command::Bundle {
+            command: BundleCommand::Export {
+                object: object.to_owned(),
+                output: output.to_path_buf(),
+                include_git: false,
+            },
+        },
+    )
+}
+
+fn import_bundle_into(
+    store: &std::path::Path,
+    input: &std::path::Path,
+    unverified: bool,
+) -> Result<String, CliError> {
+    run_in(
+        store,
+        Command::Bundle {
+            command: BundleCommand::Import {
+                input: input.to_path_buf(),
+                unverified,
+            },
+        },
+    )
+}
+
+#[test]
+fn a_bundled_signature_that_does_not_verify_is_refused_unless_unverified(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §32: a statement's id covers its unsigned bytes only,
+    // so a changed signature passes fixity. Only the verifier catches it.
+    let (src, _manifest_dir, _actor, object, _revision, _manifest) = fixture_with_branch()?;
+    let bundle_dir = tempfile::TempDir::new()?;
+    let bundle = bundle_dir.path().join("bundle");
+    export_bundle(src.path(), &object, &bundle)?;
+    let mut forged = 0;
+    for entry in std::fs::read_dir(bundle.join("statements"))? {
+        let path = entry?.path();
+        let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        let Some(bytes) = value["signature"]["bytes"].as_str() else {
+            continue;
+        };
+        let mut chars: Vec<char> = bytes.chars().collect();
+        chars[0] = if chars[0] == 'A' { 'B' } else { 'A' };
+        value["signature"]["bytes"] =
+            serde_json::Value::from(chars.into_iter().collect::<String>());
+        std::fs::write(&path, serde_json::to_vec(&value)?)?;
+        forged += 1;
+    }
+    assert!(forged > 0);
+
+    let verified_dir = tempfile::TempDir::new()?;
+    let refused = import_bundle_into(verified_dir.path(), &bundle, false)
+        .err()
+        .ok_or("imported a forged signature")?;
+    assert!(
+        refused.to_string().contains("signature does not verify"),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("hint:"), "{refused}");
+
+    let unverified_dir = tempfile::TempDir::new()?;
+    let accepted = import_bundle_into(unverified_dir.path(), &bundle, true)?;
+    assert!(
+        accepted.contains("verification = fixity only (--unverified)"),
+        "{accepted}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_signer_whose_rotation_this_node_lacks_is_refused_until_it_learns_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §32 sub-decision 3: object bundles carry no key
+    // events. A creator who rotated keys can't be checked by a node that
+    // never saw the rotation; a fetch from a node that has it fixes that.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node = create_node_actor(origin)?;
+    let alice = parse_field(
+        &run_in(
+            origin,
+            Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            },
+        )?,
+        "actor = ",
+    )?;
+    run_in(
+        origin,
+        Command::Actor {
+            command: ActorCommand::RotateKey {
+                actor: alice.clone(),
+            },
+        },
+    )?;
+    let object = parse_field(
+        &run_in(
+            origin,
+            Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: alice.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            },
+        )?,
+        "object = ",
+    )?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let bundle_dir = tempfile::TempDir::new()?;
+    let bundle = bundle_dir.path().join("bundle");
+    export_bundle(origin, &object, &bundle)?;
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    let refused = import_bundle_into(local, &bundle, false)
+        .err()
+        .ok_or("imported a genesis signed by a key this node can't place")?;
+    assert!(refused.to_string().contains("kairo fetch"), "{refused}");
+
+    let (url, _stop, _server) = serve_federation(origin, &node)?;
+    run_in(
+        local,
+        Command::Fetch {
+            object: object.clone(),
+            from: Some(url),
+            allow_peer: true,
+            require_complete: false,
+            json: false,
+        },
+    )?;
+    let imported = import_bundle_into(local, &bundle, false)?;
+    assert!(imported.contains("verification = verified"), "{imported}");
     Ok(())
 }

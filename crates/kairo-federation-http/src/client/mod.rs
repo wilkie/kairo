@@ -36,17 +36,21 @@
 //! a signed announcement (`specs/DECISIONS.md` §26). [`PullError`] is
 //! the error for all three.
 
+mod bundle_files;
 mod http;
 mod ingest;
 mod push;
 
+pub use self::bundle_files::ObjectBundle;
 pub use self::push::{closure_inventory, ingest_closure_bundle, push, PushReceipt, PushSent};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::time::Duration;
 
-use kairo_bundle::closure::{ClosureBundle, ClosureBundleError};
+use kairo_bundle::closure::ClosureBundleError;
+
+use self::bundle_files::BundleFiles;
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
 use kairo_federation_core::{
     random_node_nonce, ActorListing, Announcement, AnnouncementAccepted, FedErrorCode,
@@ -408,7 +412,7 @@ fn rank(kind: StatementKind) -> u8 {
 /// Every check after reading a record is the same for both.
 enum Source {
     Peer(Peer),
-    Bundle(ClosureBundle),
+    Bundle(Box<dyn BundleFiles>),
     /// An actor export file (§26 sub-decision 7): one actor's genesis
     /// and key events, nothing else.
     Export(ActorExport),
@@ -429,7 +433,8 @@ struct Pull<'a> {
     /// The peer advertises `statement-batch` (`DECISIONS.md` §24).
     batch: bool,
     limits: &'a Limits,
-    provenance: ProvenanceEntry,
+    /// `None` for a bundle import: a bundle isn't a peer (§32).
+    provenance: Option<ProvenanceEntry>,
     report: PullReport,
 }
 
@@ -818,6 +823,57 @@ pub fn fetch_trust(
     })
 }
 
+/// What a verified bundle import did (`DECISIONS.md` §32).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleImportReport {
+    pub object: ObjectId,
+    pub fetched: usize,
+    pub already_held: usize,
+    pub flagged: Vec<FlaggedRecord>,
+    pub incomplete: Vec<IncompleteChain>,
+    pub git: GitOutcome,
+}
+
+/// Import the object bundle at `dir` through the pull verifier (§32):
+/// the same checks and order as a pull, stopping at the first record
+/// that fails; revoked-key statements stored and flagged. No
+/// provenance is recorded: a bundle isn't a peer.
+pub fn import_object_bundle(
+    store: &FilesystemStore,
+    dir: &std::path::Path,
+    options: &PullOptions,
+) -> Result<BundleImportReport, PullError> {
+    let bundle = ObjectBundle::open(dir).map_err(bundle_error)?;
+    let object = BundleFiles::object(&bundle).clone();
+    // The report's peer fields are unused for an import; nothing reads
+    // them and no provenance is written.
+    let unnamed = ActorId::from_sha256_digest([0; 32]);
+    let mut pull = Pull::from_source(
+        store,
+        Source::Bundle(Box::new(bundle)),
+        (format!("bundle:{}", dir.display()), unnamed),
+        false,
+        &object,
+        &options.limits,
+    );
+    pull.provenance = None;
+    pull.run(&object, 0)?;
+    let report = pull.report;
+    if options.require_complete && !report.incomplete.is_empty() {
+        return Err(PullError::IncompleteChains {
+            chains: report.incomplete,
+        });
+    }
+    Ok(BundleImportReport {
+        object,
+        fetched: report.fetched,
+        already_held: report.already_held,
+        flagged: report.flagged,
+        incomplete: report.incomplete,
+        git: report.git,
+    })
+}
+
 /// The local node actor and the key it signs requests with.
 #[derive(Debug, Clone, Copy)]
 pub struct NodeSigner<'a> {
@@ -946,7 +1002,7 @@ impl<'a> Pull<'a> {
             batch,
             source,
             limits,
-            provenance,
+            provenance: Some(provenance),
             report,
         }
     }
@@ -1214,7 +1270,7 @@ impl Pull<'_> {
             Source::Peer(peer) => peer,
             Source::Export(_) => return Err(not_in_export(KairoRef::Object(object.clone()))),
             Source::Bundle(bundle) => {
-                let inventory = &bundle.manifest().inventory;
+                let inventory = bundle.inventory();
                 let mut listing = ObjectListing {
                     schema: Default::default(),
                     object: bundle.object().clone(),
@@ -1289,8 +1345,11 @@ impl Pull<'_> {
     }
 
     fn note(&self, record: &KairoRef) -> Result<(), PullError> {
+        let Some(provenance) = &self.provenance else {
+            return Ok(());
+        };
         self.store
-            .record_provenance(record, &self.provenance)
+            .record_provenance(record, provenance)
             .map(|_| ())
             .map_err(PullError::Store)
     }
@@ -1423,8 +1482,7 @@ impl Pull<'_> {
             }
         };
         let key_events = bundle
-            .manifest()
-            .inventory
+            .inventory()
             .actors
             .iter()
             .find(|entry| &entry.actor == actor)

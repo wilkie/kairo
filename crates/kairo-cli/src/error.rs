@@ -120,6 +120,8 @@ pub(crate) enum CliError {
     Follows {
         source: kairo_store::StoreError,
     },
+    /// A verified bundle import refused a record (`DECISIONS.md` §32).
+    BundleImport(Box<kairo_federation_http::client::PullError>),
     /// An actor export file couldn't be read, parsed, or written.
     ActorExportFile {
         path: PathBuf,
@@ -616,6 +618,25 @@ impl fmt::Display for CliError {
             ),
             Self::ListInbox { source } => write!(f, "failed to read the inbox: {source}"),
             Self::Follows { source } => write!(f, "failed to read or write follows: {source}"),
+            Self::BundleImport(error) => {
+                write!(f, "bundle import failed: {error}")?;
+                if matches!(
+                    error.as_ref(),
+                    kairo_federation_http::client::PullError::Record {
+                        reason: kairo_federation_http::client::RecordRejection::Signature(_),
+                        ..
+                    }
+                ) {
+                    write!(
+                        f,
+                        "\nhint: if the signer rotated keys, this node lacks their key events: \
+                         `kairo fetch` the object from a node that has them, then import again \
+                         (a node actor's can also come from `kairo federation learn --file`); \
+                         `--unverified` imports without checking signatures"
+                    )?;
+                }
+                Ok(())
+            }
             Self::ActorExportFile { path, message } => {
                 write!(f, "actor export {}: {message}", path.display())
             }
@@ -1065,7 +1086,7 @@ impl Error for CliError {
             | Self::ReadKey { source, .. } => Some(source),
             Self::ListKeystore(error) => Some(error),
             Self::Bundle(error) => Some(error),
-            Self::Fetch(error) => Some(error.as_ref()),
+            Self::Fetch(error) | Self::BundleImport(error) => Some(error.as_ref()),
             Self::PeerRequest { source, .. } => Some(source.as_ref()),
             Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }

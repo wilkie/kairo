@@ -320,7 +320,7 @@ pub fn ingest_closure_bundle(
     let object = bundle.object().clone();
     let mut pull = Pull::from_source(
         store,
-        Source::Bundle(bundle),
+        Source::Bundle(Box::new(bundle)),
         (format!("push:{pusher}"), pusher.clone()),
         false,
         &object,

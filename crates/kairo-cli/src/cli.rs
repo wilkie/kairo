@@ -826,13 +826,18 @@ pub(crate) enum BundleCommand {
         include_git: bool,
     },
     /// Read a directory bundle and ingest its contents into the local
-    /// store. Every record is fixity-checked: ids are re-derived from
-    /// the canonical bytes and rejected on mismatch. Idempotent —
-    /// re-importing the same bundle is a no-op.
+    /// store through the same verifier as `kairo fetch`
+    /// (`specs/DECISIONS.md` §32): fixity, signatures against the key
+    /// state this node holds, chains, and Git through quarantine. Stops
+    /// at the first record that fails. Idempotent.
     Import {
         /// Bundle directory to read.
         #[arg(long)]
         input: PathBuf,
+        /// Check fixity only, not signatures: for an archive whose
+        /// provenance you vouch for out of band.
+        #[arg(long)]
+        unverified: bool,
     },
 }
 
