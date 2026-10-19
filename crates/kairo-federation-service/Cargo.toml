@@ -7,10 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+kairo-bundle = { path = "../kairo-bundle" }
 kairo-config = { path = "../kairo-config" }
 kairo-core = { path = "../kairo-core" }
 kairo-federation-core = { path = "../kairo-federation-core" }
 kairo-federation-http = { path = "../kairo-federation-http", default-features = false, features = ["client"] }
+kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
 
 [dev-dependencies]

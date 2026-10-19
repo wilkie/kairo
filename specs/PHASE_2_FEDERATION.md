@@ -525,7 +525,7 @@ inventory step, and 7 come from comparing this design with Radicle
       once* over every listed peer, with per-follow results;
       `kairo federation sync` and `status` use it. `trust forget`
       drops matching follows.
-   2. **Inbox in the engine.** `kairo federation receive` moves into
+   2. ~~**Inbox in the engine.**~~ *(shipped)* `kairo federation receive` moves into
       `kairo-federation-service` unchanged in behavior.
    3. **The daemon drives it.** `[federation.sync]` config, interval
       and inbox timers with single-flight and a concurrency cap,

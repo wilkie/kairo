@@ -3,9 +3,14 @@
 //! §5.3).
 //!
 //! It has no scheduler. [`sync_follows`] syncs what the operator
-//! follows, once, from every listed peer; the daemon calls it on a
-//! timer and `kairo federation sync` calls it directly. Every record
-//! goes through the same pull verifier as `kairo fetch`.
+//! follows, once, from every listed peer, and [`receive_inbox`]
+//! processes the inbox once; the daemon calls them on timers and
+//! `kairo federation sync` / `receive` call them directly. Every
+//! record goes through the same pull verifier as `kairo fetch`.
+
+mod receive;
+
+pub use receive::{receive_inbox, ReceiveOutcome, Received, Via};
 
 use std::fmt;
 use std::path::PathBuf;
@@ -206,6 +211,49 @@ mod tests {
             sync_follows(&store, &config, PathBuf::from("config.toml"), None),
             Err(SyncError::Disabled { .. })
         ));
+    }
+
+    #[test]
+    fn the_inbox_pass_refuses_in_local_only_mode_and_empties_the_inbox() {
+        use kairo_store::{InboxAnnouncement, InboxStore};
+        let (_dir, store) = store();
+        let disabled = FederationConfig {
+            enabled: false,
+            ..FederationConfig::default()
+        };
+        assert!(matches!(
+            receive_inbox(&store, &disabled, PathBuf::from("config.toml")),
+            Err(SyncError::Disabled { .. })
+        ));
+        // An announcement nobody trusts is refused, and still removed.
+        let from = kairo_core::ActorId::from_sha256_digest([2; 32]);
+        store
+            .put_inbox_announcement(
+                &InboxAnnouncement {
+                    from: from.clone(),
+                    to: kairo_core::ActorId::from_sha256_digest([3; 32]),
+                    base_url: "https://laptop.example.org".to_owned(),
+                    objects: vec![ObjectId::from_sha256_digest([1; 32])],
+                    received_at: Timestamp::from_seconds(1),
+                },
+                "0a",
+                8,
+            )
+            .expect("put");
+        let received = receive_inbox(
+            &store,
+            &FederationConfig::default(),
+            PathBuf::from("config.toml"),
+        )
+        .expect("receive");
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].from, from);
+        assert_eq!(received[0].via, Via::Announcement);
+        assert!(matches!(
+            received[0].outcome,
+            ReceiveOutcome::Refused { .. }
+        ));
+        assert!(store.list_inbox().expect("inbox").is_empty());
     }
 
     #[test]

@@ -28,6 +28,8 @@ rather than per-commit.
     attempt and success. The engine lives in the new
     `kairo-federation-service` crate, ready for the daemon.
   - `kairo trust forget` also unfollows the forgotten chains.
+  - Inbox processing moved into the engine (`receive_inbox`), returning
+    typed outcomes; `kairo federation receive` prints the same lines.
 
 - **Trust transport and `forget` (`DECISIONS.md` §27).**
   - `kairo trust publish | unpublish --by <id> --scope <scope>` chooses

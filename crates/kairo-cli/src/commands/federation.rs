@@ -11,17 +11,16 @@ use kairo_config::{Config, ConfigSource};
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_federation_core::Announcement;
 use kairo_federation_http::client::{
-    announce, export_actor, fetch_trust, ingest_closure_bundle, learn_from_export, learn_peer,
-    normalize_peer_url, pull_object, push, GitOutcome, NodeSigner, PullOptions, PullReport,
+    announce, export_actor, fetch_trust, learn_from_export, learn_peer, normalize_peer_url,
+    pull_object, push, GitOutcome, NodeSigner, PullOptions, PullReport,
 };
-use kairo_federation_service::limits_from;
+use kairo_federation_service::{limits_from, ReceiveOutcome, Received, Via};
 use kairo_identity::ActorKind;
 use kairo_keystore::Keystore;
-use kairo_statement::{TrustDecision, TrustScope};
+use kairo_statement::TrustScope;
 use kairo_store::{
-    ActorStore, Follow, FollowStore, InboxAnnouncement, InboxItem, InboxStore, InboxUpload,
-    PeerOutcome, ProvenanceStore, PublishedObject, PublishedObjectStore, PullLogStore, PullRecord,
-    TrustResolver, TrustTransportStore,
+    ActorStore, Follow, FollowStore, PeerOutcome, ProvenanceStore, PublishedObject,
+    PublishedObjectStore, PullLogStore, PullRecord, TrustTransportStore,
 };
 
 use crate::cli::FederationCommand;
@@ -680,205 +679,75 @@ fn choose_node_actor(
     }
 }
 
-/// `kairo federation receive`: ingest every inbox entry through the
-/// pull verifier (`DECISIONS.md` §26 sub-decision 4), re-checking
-/// trust and the accept list first, then remove it.
+/// `kairo federation receive`: the engine's inbox pass
+/// (`DECISIONS.md` §26 sub-decision 4, §28 sub-decision 3), run now.
 fn run_receive(offline: bool, paths: &StorePaths) -> Result<String, CliError> {
     if offline {
         return Err(CliError::OfflineFetch);
     }
     let (config, source) = load_config(paths)?;
-    if !config.federation.enabled {
-        return Err(CliError::FederationDisabled {
-            config: source.path().to_path_buf(),
-        });
-    }
     let store = open_store(paths)?;
-    let entries = store
-        .list_inbox()
-        .map_err(|source| CliError::ListInbox { source })?;
+    let received = kairo_federation_service::receive_inbox(
+        &store,
+        &config.federation,
+        source.path().to_path_buf(),
+    )
+    .map_err(|error| match error {
+        kairo_federation_service::SyncError::Disabled { config } => {
+            CliError::FederationDisabled { config }
+        }
+        kairo_federation_service::SyncError::Store(source) => CliError::ListInbox { source },
+    })?;
+    let entries: std::collections::BTreeSet<&str> =
+        received.iter().map(|item| item.entry.as_str()).collect();
     let mut output = format!("received = {}\n", entries.len());
     let mut failed = 0;
-    for entry in entries {
-        let lines = match &entry.item {
-            InboxItem::Announcement(announcement) => {
-                receive_announcement(&store, &config, announcement)
-            }
-            InboxItem::Upload(upload, bundle) => {
-                vec![receive_upload(&store, &config, upload, bundle)]
-            }
-        };
-        for line in lines {
-            if !line.starts_with("pulled") && !line.starts_with("ingested") {
-                failed += 1;
-            }
-            output.push_str(&format!("  entry={} {line}\n", entry.name));
+    for item in &received {
+        let line = describe_received(item);
+        if !matches!(item.outcome, ReceiveOutcome::Received { .. }) {
+            failed += 1;
         }
-        store
-            .remove_inbox_entry(&entry.name)
-            .map_err(|source| CliError::ListInbox { source })?;
+        output.push_str(&format!("  entry={} {line}\n", item.entry));
     }
     output.push_str(&format!("not_pulled = {failed}\n"));
     Ok(output)
 }
 
-/// `federation:push` trust by `to` of `from`, as a refusal line if it's
-/// gone.
-fn push_trust_refusal(
-    store: &kairo_store::FilesystemStore,
-    to: &ActorId,
-    from: &ActorId,
-) -> Option<String> {
-    let trusted = store
-        .latest_trust(to, from, &TrustScope::federation_push())
-        .map(|head| {
-            head.is_some_and(|signed| {
-                signed.unsigned().body().decision() == Some(TrustDecision::Trusted)
-            })
-        });
-    match trusted {
-        Ok(true) => None,
-        Ok(false) => Some(format!(
-            "refused from={from} reason=\"{to} no longer trusts it with {}\"",
-            TrustScope::federation_push()
-        )),
-        Err(error) => Some(format!("failed from={from} reason=\"{error}\"")),
-    }
-}
-
-/// Ingest one uploaded closure bundle through the pull verifier.
-fn receive_upload(
-    store: &kairo_store::FilesystemStore,
-    config: &Config,
-    upload: &InboxUpload,
-    bundle: &std::path::Path,
-) -> String {
-    let (object, from) = (&upload.object, &upload.from);
-    if let Some(refusal) = push_trust_refusal(store, &upload.to, from) {
-        return format!("object={object} {refusal}");
-    }
-    let Some(accept) = config.federation.accepts(object, from) else {
-        return format!(
-            "object={object} refused from={from} reason=\"no [[federation.accept]] entry covers \
-             it\""
-        );
-    };
-    let unpack_dir = bundle.with_extension("unpacked");
-    let _ = std::fs::remove_dir_all(&unpack_dir);
-    let unpacked = std::fs::File::open(bundle)
-        .map_err(|error| error.to_string())
-        .and_then(|file| {
-            kairo_bundle::closure::unpack_tar(file, &unpack_dir).map_err(|error| error.to_string())
-        });
-    let line = match unpacked {
-        Err(error) => format!("object={object} failed from={from} reason=\"{error}\""),
-        Ok(closure) if closure.object() != object => format!(
-            "object={object} failed from={from} reason=\"the bundle is for {}\"",
-            closure.object()
-        ),
-        Ok(closure) => {
-            let options = PullOptions {
-                limits: limits_from(&config.federation.limits),
-                expected_node_actor: None,
-                require_complete: false,
+/// One `receive` line: `pulled` (announcement) or `ingested`
+/// (upload), `refused`, or `failed`.
+fn describe_received(item: &Received) -> String {
+    let (object, from) = (&item.object, &item.from);
+    match &item.outcome {
+        ReceiveOutcome::Received {
+            report,
+            published,
+            pull_log_error,
+        } => {
+            let verb = match item.via {
+                Via::Announcement => "pulled",
+                Via::Upload => "ingested",
             };
-            match ingest_closure_bundle(store, closure, from, &options) {
-                Ok(report) => {
-                    let mut line = format!(
-                        "ingested object={object} from={from} {}",
-                        received_summary(store, object, accept.publish, &report)
-                    );
-                    if let Err(error) = store.record_pull(&PullRecord {
-                        peer_url: report.peer_url.clone(),
-                        object: object.clone(),
-                        peer_actor: report.peer_actor.clone(),
-                        at: Timestamp::now(),
-                        fetched: report.fetched as u64,
-                        already_held: report.already_held as u64,
-                    }) {
-                        line.push_str(&format!(" pull_log_error=\"{error}\""));
-                    }
-                    line
-                }
-                Err(error) => format!("object={object} failed from={from} reason=\"{error}\""),
+            let mut line = format!(
+                "{verb} object={object} from={from} fetched={} already_held={} flagged={} \
+                 incomplete_chains={} git=\"{}\" published={published}",
+                report.fetched,
+                report.already_held,
+                report.flagged.len(),
+                report.incomplete.len(),
+                describe_git(&report.git),
+            );
+            if let Some(error) = pull_log_error {
+                line.push_str(&format!(" pull_log_error=\"{error}\""));
             }
+            line
         }
-    };
-    let _ = std::fs::remove_dir_all(&unpack_dir);
-    line
-}
-
-/// Counts from a successful ingest, after publishing when the accept
-/// entry says to.
-fn received_summary(
-    store: &kairo_store::FilesystemStore,
-    object: &ObjectId,
-    publish: bool,
-    report: &PullReport,
-) -> String {
-    let published = publish && store.publish_object(object, Timestamp::now()).is_ok();
-    format!(
-        "fetched={} already_held={} flagged={} incomplete_chains={} git=\"{}\" \
-         published={published}",
-        report.fetched,
-        report.already_held,
-        report.flagged.len(),
-        report.incomplete.len(),
-        describe_git(&report.git),
-    )
-}
-
-/// One outcome line per announced object.
-fn receive_announcement(
-    store: &kairo_store::FilesystemStore,
-    config: &Config,
-    announcement: &InboxAnnouncement,
-) -> Vec<String> {
-    let from = &announcement.from;
-    let refusal = push_trust_refusal(store, &announcement.to, from);
-    let options = PullOptions {
-        limits: limits_from(&config.federation.limits),
-        expected_node_actor: Some(from.clone()),
-        require_complete: false,
-    };
-    announcement
-        .objects
-        .iter()
-        .map(|object| {
-            if let Some(refusal) = &refusal {
-                return format!("object={object} {refusal}");
-            }
-            let Some(accept) = config.federation.accepts(object, from) else {
-                return format!(
-                    "object={object} refused from={from} reason=\"no [[federation.accept]] \
-                     entry covers it\""
-                );
-            };
-            match pull_object(store, &announcement.base_url, object, &options) {
-                Ok(report) => {
-                    let recorded = store.record_pull(&PullRecord {
-                        peer_url: report.peer_url.clone(),
-                        object: object.clone(),
-                        peer_actor: report.peer_actor.clone(),
-                        at: Timestamp::now(),
-                        fetched: report.fetched as u64,
-                        already_held: report.already_held as u64,
-                    });
-                    let mut line = format!(
-                        "pulled object={object} from={from} {}",
-                        received_summary(store, object, accept.publish, &report)
-                    );
-                    if let Err(error) = recorded {
-                        line.push_str(&format!(" pull_log_error=\"{error}\""));
-                    }
-                    line
-                }
-                Err(error) => {
-                    format!("object={object} failed from={from} reason=\"{error}\"")
-                }
-            }
-        })
-        .collect()
+        ReceiveOutcome::Refused { reason } => {
+            format!("object={object} refused from={from} reason=\"{reason}\"")
+        }
+        ReceiveOutcome::Failed { reason } => {
+            format!("object={object} failed from={from} reason=\"{reason}\"")
+        }
+    }
 }
 
 /// How the peer stood in the config for this pull.

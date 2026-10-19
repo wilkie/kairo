@@ -1789,10 +1789,12 @@ dependencies = [
 name = "kairo-federation-service"
 version = "0.1.0"
 dependencies = [
+ "kairo-bundle",
  "kairo-config",
  "kairo-core",
  "kairo-federation-core",
  "kairo-federation-http",
+ "kairo-statement",
  "kairo-store",
  "tempfile",
 ]
