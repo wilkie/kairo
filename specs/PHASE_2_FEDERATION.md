@@ -517,7 +517,7 @@ inventory step, and 7 come from comparing this design with Radicle
    chain through the pull verifier; fetched opinions stay the
    truster's; `kairo trust forget` deletes an imported truster's
    opinions.
-5. **Daemon `FederationService`**, *decided in `DECISIONS.md` §28*:
+5. ~~**Daemon `FederationService`**~~ *(shipped)*, *decided in `DECISIONS.md` §28*:
    follows and background sync; on-demand fetch (`DAEMON.md` §9)
    waits for discovery. Slices, in order:
    1. ~~**Follows and the engine.**~~ *(shipped)* `kairo-federation-service` with
@@ -527,7 +527,7 @@ inventory step, and 7 come from comparing this design with Radicle
       drops matching follows.
    2. ~~**Inbox in the engine.**~~ *(shipped)* `kairo federation receive` moves into
       `kairo-federation-service` unchanged in behavior.
-   3. **The daemon drives it.** `[federation.sync]` config, interval
+   3. ~~**The daemon drives it.**~~ *(shipped)* `[federation.sync]` config, interval
       and inbox timers with single-flight and a concurrency cap,
       `POST /api/v1/federation/sync`, `GET
       /api/v1/federation/status`, and an in-memory run record.

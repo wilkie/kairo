@@ -369,6 +369,66 @@
         }
       }
     },
+    "/api/v1/federation/status": {
+      "get": {
+        "tags": [
+          "federation"
+        ],
+        "operationId": "getFederationStatus",
+        "responses": {
+          "200": {
+            "description": "Follows with their last sync, the schedule, and recent runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederationStatusDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/federation/sync": {
+      "post": {
+        "tags": [
+          "federation"
+        ],
+        "operationId": "startFederationSync",
+        "requestBody": {
+          "description": "One follow, or empty for every follow",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FederationSyncRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Syncs started; results arrive in the status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederationSyncStartedDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request"
+          },
+          "404": {
+            "description": "The named follow isn't followed"
+          },
+          "409": {
+            "description": "Federation is disabled"
+          }
+        }
+      }
+    },
     "/api/v1/keystore/actors": {
       "get": {
         "tags": [
@@ -1363,6 +1423,196 @@
           }
         }
       },
+      "FederationRunDto": {
+        "type": "object",
+        "description": "One engine run, newest first. Operational state, not validation.",
+        "required": [
+          "id",
+          "kind",
+          "started_at"
+        ],
+        "properties": {
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "follow": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The follow, for a sync."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "`sync` or `inbox`."
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`current` / `not_current` for a sync, counts for the inbox, or\nthe error."
+          },
+          "started_at": {
+            "type": "string"
+          }
+        }
+      },
+      "FederationStatusDto": {
+        "type": "object",
+        "description": "`GET /api/v1/federation/status`.",
+        "required": [
+          "enabled",
+          "interval_secs",
+          "inbox_secs",
+          "max_concurrent",
+          "follows",
+          "inbox_entries",
+          "runs"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "follows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FollowStatusDto"
+            }
+          },
+          "inbox_entries": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unprocessed inbox entries.",
+            "minimum": 0
+          },
+          "inbox_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "interval_secs": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_concurrent": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FederationRunDto"
+            }
+          }
+        }
+      },
+      "FederationSyncRequestDto": {
+        "type": "object",
+        "description": "`POST /api/v1/federation/sync` body: one follow, or none for all.",
+        "properties": {
+          "object": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trust_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "FederationSyncStartedDto": {
+        "type": "object",
+        "description": "`POST /api/v1/federation/sync` answer. Results arrive in status.",
+        "required": [
+          "started",
+          "already_running",
+          "deferred"
+        ],
+        "properties": {
+          "already_running": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "deferred": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Over `max_concurrent`; the scheduler starts them as slots free."
+          },
+          "started": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "FollowStatusDto": {
+        "type": "object",
+        "description": "A follow and its last result.",
+        "required": [
+          "follow",
+          "running",
+          "added_at",
+          "peers"
+        ],
+        "properties": {
+          "added_at": {
+            "type": "string"
+          },
+          "follow": {
+            "type": "string",
+            "description": "`object:<id>` or `trust:<actor>:<scope>`."
+          },
+          "last_attempt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_success": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "peers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PeerOutcomeDto"
+            },
+            "description": "Per-peer outcomes of the last attempt."
+          },
+          "running": {
+            "type": "boolean",
+            "description": "A sync of it is running now."
+          }
+        }
+      },
       "KeystoreActorDto": {
         "type": "object",
         "description": "One entry in the response from\n`GET /api/v1/keystore/actors` — the local keystore's listing\nof actors with private keys available for daemon-side signing.\n\n`display_name` is intentionally absent in v1; per\n`PHASE_2_WEB_CLIENT_AUTH.md` §1.2 it lives in a future\n`ActorProfile` statement and is additive when it lands.",
@@ -1695,6 +1945,62 @@
         "properties": {
           "actor_id": {
             "type": "string"
+          }
+        }
+      },
+      "PeerOutcomeDto": {
+        "type": "object",
+        "description": "One peer's part in a follow's last sync.",
+        "required": [
+          "peer_url",
+          "outcome"
+        ],
+        "properties": {
+          "already_held": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "fetched": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "flagged": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "incomplete_chains": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`fetched`, `not_published` (the peer answered 404), or `failed`."
+          },
+          "peer_url": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed."
           }
         }
       },
@@ -2212,6 +2518,10 @@
     {
       "name": "provenance",
       "description": "Which federation peers served a record"
+    },
+    {
+      "name": "federation",
+      "description": "Follows, background sync, and the inbox"
     },
     {
       "name": "blobs",

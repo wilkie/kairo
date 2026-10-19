@@ -213,12 +213,16 @@ Responsibilities:
 
 Federation semantics are defined by `FEDERATION.md`, not by this document.
 
-The object-pull MVP (`DECISIONS.md` §16) does not run inside the
-daemon: serving is the separate, read-only `kairo-federation-http`
-process, and pulling is `kairo fetch --from <url>` writing to the store
-directly. The daemon stays Unix-socket only. `FederationService`
-integration (background sync, on-demand fetch for §9) comes after
-the MVP.
+Serving stays the separate `kairo-federation-http` process
+(`DECISIONS.md` §16), and the daemon stays Unix-socket only.
+`FederationService` runs the sync engine of `kairo-federation-service`
+(`DECISIONS.md` §28): a scheduler loop re-reads the config each tick,
+processes the inbox every `inbox_secs`, and syncs each follow whose
+last attempt is `interval_secs` old, at most `max_concurrent` at once
+and never the same follow twice, on the blocking pool. `GET
+/api/v1/federation/status` and `POST /api/v1/federation/sync` report
+and start it (`API.md` §14.2). On-demand fetch for §9 waits for
+discovery.
 
 ### 5.4 PolicyService
 
@@ -777,7 +781,9 @@ enabled = true
 ```
 
 The file is `<store>/config.toml` (`DECISIONS.md` §17). Only the
-`[federation]` section is implemented so far, and unknown keys are
+`[federation]` section is implemented so far, including
+`[federation.sync]` (`interval_secs` 900, `inbox_secs` 30,
+`max_concurrent` 2; `DECISIONS.md` §28), and unknown keys are
 rejected, so the sketch above is the target, not what parses today.
 `[store] path` is not supported, because the file lives inside the
 store.

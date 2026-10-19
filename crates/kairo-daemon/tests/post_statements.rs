@@ -64,9 +64,11 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
+use kairo_config as _;
 use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{KairoRef, Timestamp};
 use kairo_daemon::{serve_with_shutdown, Config, Error};
+use kairo_federation_service as _;
 use kairo_object::ObjectManifest;
 use kairo_statement::json::{
     ActorCapabilityGrantStatementJson, ActorCapabilityRevocationStatementJson,

@@ -31,6 +31,7 @@ use tempfile as _;
 
 pub mod api;
 mod error;
+pub mod federation;
 mod server;
 pub mod sessions;
 

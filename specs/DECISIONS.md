@@ -1370,6 +1370,9 @@ Sub-decisions:
    - `[federation.limits]` also takes `max_push_bytes` (default
      1 GiB) and `max_inbox_entries` (default 64), for the receiving
      side (§26 sub-decision 3).
+   - `[federation.sync]`: `interval_secs` (900), `inbox_secs` (30),
+     and `max_concurrent` (2), the daemon's background sync schedule
+     (§28 sub-decision 3). Zero is invalid.
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -2592,9 +2595,8 @@ store state. Polling every listed peer needs no new protocol and gets
 the withholding defense for free. Keeping the engine scheduler-free
 means the CLI and daemon can't drift apart.
 
-Affected specs (sub-decisions 1, 2, 4, and 5 and the engine half of
-3, including the inbox pass, implemented: `CLI.md` §25 and
-`PROJECT_LAYOUT.md`):
+Affected specs (all implemented: `CLI.md` §25, `PROJECT_LAYOUT.md`,
+`DAEMON.md` §5.3 and §15, `API.md` §14.2, and §17):
 
 - `PHASE_2_FEDERATION.md` §4 item 5 — the slice plan.
 - `DAEMON.md` §5.3, §10, §15 — `FederationService` in the daemon,

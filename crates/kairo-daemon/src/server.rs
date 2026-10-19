@@ -28,6 +28,7 @@ use tower::Service;
 
 use crate::api::{self, AppState};
 use crate::error::Error;
+use crate::federation::FederationService;
 use crate::sessions::{SessionConfig, SessionStore};
 use crate::Config;
 
@@ -83,16 +84,28 @@ where
 
     let pid = std::process::id();
     let sessions = Arc::new(SessionStore::new(SessionConfig::default()));
+    let store = Arc::new(store);
+    let federation = FederationService::new(Arc::clone(&store), store_path.clone());
     let state = AppState {
-        store: Arc::new(store),
+        store,
         store_path: store_path.clone(),
         keystore: Arc::new(keystore),
         keys_path: keys_path.clone(),
         sessions,
         pid,
+        federation: Arc::clone(&federation),
     };
 
     let app = api::router(state);
+
+    // The scheduler stops with the server (DECISIONS.md §28). Work
+    // already on the blocking pool finishes on its own.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let scheduler = tokio::spawn(federation.run(stop_rx));
+    let shutdown = async move {
+        shutdown.await;
+        let _ = stop_tx.send(true);
+    };
 
     tracing::info!(
         socket = %paths.socket.display(),
@@ -103,6 +116,7 @@ where
     );
 
     let result = run_accept_loop(listener, app, shutdown).await;
+    let _ = scheduler.await;
 
     // `Drop` on the guards unlinks the PID file and socket; we
     // hold references explicitly so they survive the await above

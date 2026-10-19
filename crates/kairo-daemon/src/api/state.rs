@@ -18,6 +18,7 @@ use std::sync::Arc;
 use kairo_keystore::FilesystemKeystore;
 use kairo_store::FilesystemStore;
 
+use crate::federation::FederationService;
 use crate::sessions::SessionStore;
 
 /// Daemon-wide state built at startup.
@@ -29,4 +30,7 @@ pub struct AppState {
     pub keys_path: PathBuf,
     pub sessions: Arc<SessionStore>,
     pub pid: u32,
+    /// Background sync (`DECISIONS.md` §28); its scheduler loop runs
+    /// only under [`crate::serve`].
+    pub federation: Arc<FederationService>,
 }

@@ -58,6 +58,29 @@ pub struct FederationConfig {
     /// Objects this node accepts pushes for (`DECISIONS.md` §26
     /// sub-decision 2), in file order.
     pub accept: Vec<AcceptConfig>,
+    /// How the daemon schedules background sync (`DECISIONS.md` §28).
+    pub sync: SyncConfig,
+}
+
+/// `[federation.sync]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncConfig {
+    /// Sync each follow this often.
+    pub interval_secs: u64,
+    /// Process the inbox this often.
+    pub inbox_secs: u64,
+    /// Most follows syncing at once.
+    pub max_concurrent: u64,
+}
+
+impl Default for SyncConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: 900,
+            inbox_secs: 30,
+            max_concurrent: 2,
+        }
+    }
 }
 
 impl Default for FederationConfig {
@@ -67,6 +90,7 @@ impl Default for FederationConfig {
             limits: LimitsConfig::default(),
             peers: Vec::new(),
             accept: Vec::new(),
+            sync: SyncConfig::default(),
         }
     }
 }
@@ -164,6 +188,16 @@ struct RawFederation {
     peers: Vec<RawPeer>,
     #[serde(default)]
     accept: Vec<RawAccept>,
+    #[serde(default)]
+    sync: Option<RawSync>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSync {
+    interval_secs: Option<u64>,
+    inbox_secs: Option<u64>,
+    max_concurrent: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,6 +349,25 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         peers.push(PeerConfig { url, node_actor });
     }
 
+    let raw_sync = federation.sync.unwrap_or_default();
+    for (name, value) in [
+        ("interval_secs", raw_sync.interval_secs),
+        ("inbox_secs", raw_sync.inbox_secs),
+        ("max_concurrent", raw_sync.max_concurrent),
+    ] {
+        if value == Some(0) {
+            return Err(invalid(format!(
+                "federation.sync.{name} must be greater than 0"
+            )));
+        }
+    }
+    let defaults = SyncConfig::default();
+    let sync = SyncConfig {
+        interval_secs: raw_sync.interval_secs.unwrap_or(defaults.interval_secs),
+        inbox_secs: raw_sync.inbox_secs.unwrap_or(defaults.inbox_secs),
+        max_concurrent: raw_sync.max_concurrent.unwrap_or(defaults.max_concurrent),
+    };
+
     let mut accept: Vec<AcceptConfig> = Vec::with_capacity(federation.accept.len());
     for raw in federation.accept {
         let object = ObjectId::new(raw.object.clone()).map_err(|error| {
@@ -365,6 +418,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             },
             peers,
             accept,
+            sync,
         },
     })
 }
@@ -471,6 +525,16 @@ mod tests {
         );
         let elsewhere = ObjectId::from_sha256_digest([9; 32]);
         assert!(federation.accepts(&elsewhere, &actor).is_none());
+    }
+
+    #[test]
+    fn parses_sync_scheduling_with_defaults() {
+        assert_eq!(Config::default().federation.sync, SyncConfig::default());
+        let config = parse_ok("[federation.sync]\ninterval_secs = 60\n");
+        assert_eq!(config.federation.sync.interval_secs, 60);
+        assert_eq!(config.federation.sync.inbox_secs, 30);
+        assert!(parse_err("[federation.sync]\ninbox_secs = 0\n").contains("inbox_secs"));
+        assert!(parse_err("[federation.sync]\nevery = 5\n").contains("every"));
     }
 
     #[test]

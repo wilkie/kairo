@@ -476,3 +476,78 @@ pub struct SessionObjectGenesisBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_revision: Option<String>,
 }
+
+// --- federation (DECISIONS.md §28) -------------------------------------
+
+/// One peer's part in a follow's last sync.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct PeerOutcomeDto {
+    pub peer_url: String,
+    /// `fetched`, `not_published` (the peer answered 404), or `failed`.
+    pub outcome: String,
+    pub fetched: Option<u64>,
+    pub already_held: Option<u64>,
+    pub incomplete_chains: Option<u64>,
+    pub flagged: Option<u64>,
+    /// Why it failed.
+    pub reason: Option<String>,
+}
+
+/// A follow and its last result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FollowStatusDto {
+    /// `object:<id>` or `trust:<actor>:<scope>`.
+    pub follow: String,
+    /// A sync of it is running now.
+    pub running: bool,
+    pub added_at: String,
+    pub last_attempt: Option<String>,
+    pub last_success: Option<String>,
+    /// Per-peer outcomes of the last attempt.
+    pub peers: Vec<PeerOutcomeDto>,
+}
+
+/// One engine run, newest first. Operational state, not validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FederationRunDto {
+    pub id: u64,
+    /// `sync` or `inbox`.
+    pub kind: String,
+    /// The follow, for a sync.
+    pub follow: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    /// `current` / `not_current` for a sync, counts for the inbox, or
+    /// the error.
+    pub result: Option<String>,
+}
+
+/// `GET /api/v1/federation/status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FederationStatusDto {
+    pub enabled: bool,
+    pub interval_secs: u64,
+    pub inbox_secs: u64,
+    pub max_concurrent: u64,
+    pub follows: Vec<FollowStatusDto>,
+    /// Unprocessed inbox entries.
+    pub inbox_entries: u64,
+    pub runs: Vec<FederationRunDto>,
+}
+
+/// `POST /api/v1/federation/sync` body: one follow, or none for all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FederationSyncRequestDto {
+    pub object: Option<String>,
+    pub trust_by: Option<String>,
+    pub scope: Option<String>,
+}
+
+/// `POST /api/v1/federation/sync` answer. Results arrive in status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FederationSyncStartedDto {
+    pub started: Vec<String>,
+    pub already_running: Vec<String>,
+    /// Over `max_concurrent`; the scheduler starts them as slots free.
+    pub deferred: Vec<String>,
+}

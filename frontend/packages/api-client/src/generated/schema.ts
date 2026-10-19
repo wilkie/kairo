@@ -154,6 +154,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/federation/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getFederationStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/federation/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["startFederationSync"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/keystore/actors": {
         parameters: {
             query?: never;
@@ -583,6 +615,64 @@ export interface components {
             scope: string;
             signer: string;
         };
+        /** @description One engine run, newest first. Operational state, not validation. */
+        FederationRunDto: {
+            finished_at?: string | null;
+            /** @description The follow, for a sync. */
+            follow?: string | null;
+            /** Format: int64 */
+            id: number;
+            /** @description `sync` or `inbox`. */
+            kind: string;
+            /**
+             * @description `current` / `not_current` for a sync, counts for the inbox, or
+             *     the error.
+             */
+            result?: string | null;
+            started_at: string;
+        };
+        /** @description `GET /api/v1/federation/status`. */
+        FederationStatusDto: {
+            enabled: boolean;
+            follows: components["schemas"]["FollowStatusDto"][];
+            /**
+             * Format: int64
+             * @description Unprocessed inbox entries.
+             */
+            inbox_entries: number;
+            /** Format: int64 */
+            inbox_secs: number;
+            /** Format: int64 */
+            interval_secs: number;
+            /** Format: int64 */
+            max_concurrent: number;
+            runs: components["schemas"]["FederationRunDto"][];
+        };
+        /** @description `POST /api/v1/federation/sync` body: one follow, or none for all. */
+        FederationSyncRequestDto: {
+            object?: string | null;
+            scope?: string | null;
+            trust_by?: string | null;
+        };
+        /** @description `POST /api/v1/federation/sync` answer. Results arrive in status. */
+        FederationSyncStartedDto: {
+            already_running: string[];
+            /** @description Over `max_concurrent`; the scheduler starts them as slots free. */
+            deferred: string[];
+            started: string[];
+        };
+        /** @description A follow and its last result. */
+        FollowStatusDto: {
+            added_at: string;
+            /** @description `object:<id>` or `trust:<actor>:<scope>`. */
+            follow: string;
+            last_attempt?: string | null;
+            last_success?: string | null;
+            /** @description Per-peer outcomes of the last attempt. */
+            peers: components["schemas"]["PeerOutcomeDto"][];
+            /** @description A sync of it is running now. */
+            running: boolean;
+        };
         /**
          * @description One entry in the response from
          *     `GET /api/v1/keystore/actors` — the local keystore's listing
@@ -696,6 +786,22 @@ export interface components {
          */
         OpenSessionRequest: {
             actor_id: string;
+        };
+        /** @description One peer's part in a follow's last sync. */
+        PeerOutcomeDto: {
+            /** Format: int64 */
+            already_held?: number | null;
+            /** Format: int64 */
+            fetched?: number | null;
+            /** Format: int64 */
+            flagged?: number | null;
+            /** Format: int64 */
+            incomplete_chains?: number | null;
+            /** @description `fetched`, `not_published` (the peer answered 404), or `failed`. */
+            outcome: string;
+            peer_url: string;
+            /** @description Why it failed. */
+            reason?: string | null;
         };
         /**
          * @description Response body for `GET /api/v1/provenance/{record}`: which
@@ -1289,6 +1395,72 @@ export interface operations {
             };
             /** @description Malformed grantor id */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getFederationStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Follows with their last sync, the schedule, and recent runs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FederationStatusDto"];
+                };
+            };
+        };
+    };
+    startFederationSync: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One follow, or empty for every follow */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FederationSyncRequestDto"];
+            };
+        };
+        responses: {
+            /** @description Syncs started; results arrive in the status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FederationSyncStartedDto"];
+                };
+            };
+            /** @description Malformed request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The named follow isn't followed */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Federation is disabled */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

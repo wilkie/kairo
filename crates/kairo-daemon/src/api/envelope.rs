@@ -305,6 +305,19 @@ impl ApiError {
     }
 }
 
+impl ApiError {
+    /// A federation operation while the node is in local-only mode
+    /// (`DAEMON.md` §10.1). 409: the request is fine, the node's
+    /// configuration refuses it.
+    pub fn federation_disabled(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: ApiErrorCode::FederationDisabled,
+            message: message.into(),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.status;
@@ -361,6 +374,8 @@ pub enum ApiErrorCode {
     NoSession,
     // Session-mode write codes.
     AmbiguousAuth,
+    /// `[federation] enabled = false` (`DAEMON.md` §10.1).
+    FederationDisabled,
 }
 
 impl ApiErrorCode {
@@ -386,6 +401,7 @@ impl ApiErrorCode {
             Self::KeyRevoked => "key_revoked",
             Self::NoSession => "no_session",
             Self::AmbiguousAuth => "ambiguous_auth",
+            Self::FederationDisabled => "federation_disabled",
         }
     }
 }

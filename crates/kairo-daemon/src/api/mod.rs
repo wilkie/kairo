@@ -99,6 +99,14 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/sessions/current",
             get(handlers::sessions::current_handler).delete(handlers::sessions::delete_handler),
         )
+        .route(
+            "/api/v1/federation/status",
+            get(handlers::federation::status_handler),
+        )
+        .route(
+            "/api/v1/federation/sync",
+            post(handlers::federation::sync_handler),
+        )
         .route("/api/v1/openapi.json", get(openapi::handler))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

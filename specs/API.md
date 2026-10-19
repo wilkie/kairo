@@ -860,7 +860,33 @@ GET /api/v1/provenance/{record}
 peer_url, peer_actor, fetched_at }] }`, first-seen first. `entries` is
 empty for a record authored or imported locally. `peer_actor` is the
 peer's node actor, authenticated by its signed node document
-(`DECISIONS.md` §25).
+(`DECISIONS.md` §25). A record received by push names `push:<node>`
+as its `peer_url`.
+
+Background sync (`DECISIONS.md` §28) is reported and started here;
+both are on the daemon's socket only (`kairo-web` doesn't forward the
+`POST`):
+
+```http
+GET  /api/v1/federation/status
+POST /api/v1/federation/sync
+```
+
+`status` is `{ enabled, interval_secs, inbox_secs, max_concurrent,
+follows: [{ follow, running, added_at, last_attempt, last_success,
+peers: [{ peer_url, outcome, fetched, already_held,
+incomplete_chains, flagged, reason }] }], inbox_entries, runs: [{ id,
+kind, follow, started_at, finished_at, result }] }`. `follow` is
+`object:<id>` or `trust:<actor>:<scope>`; a peer's `outcome` is
+`fetched`, `not_published`, or `failed`; `runs` (newest first, the
+last 50, in memory) are operational state, not validation.
+
+`sync` takes an empty body for every follow, or `{ object }`, or `{
+trust_by, scope }` for one. It answers at once with `{ started,
+already_running, deferred }` (deferred: over `max_concurrent`, started
+by the scheduler as slots free); results arrive in `status`. A follow
+that isn't followed is `404 not_found`; local-only mode is `409
+federation_disabled`.
 
 ### 14.3 Get statement graph
 

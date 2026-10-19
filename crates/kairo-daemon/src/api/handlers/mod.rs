@@ -2,6 +2,7 @@ pub mod actors;
 pub mod blobs;
 pub mod branches;
 pub mod capabilities;
+pub mod federation;
 pub mod keystore;
 pub mod objects;
 pub mod provenance;

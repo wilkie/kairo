@@ -95,13 +95,22 @@ pub fn sync_follows(
         if only.is_some_and(|only| only != &record.follow) {
             continue;
         }
-        let attempt = sync_follow(store, config, &record.follow);
-        store
-            .record_sync(&record.follow, &attempt)
-            .map_err(SyncError::Store)?;
+        let attempt = sync_one(store, config, &record.follow).map_err(SyncError::Store)?;
         results.push((record.follow, attempt));
     }
     Ok(results)
+}
+
+/// Sync one follow and record the result: what the daemon runs per
+/// due follow. Doesn't check `enabled`; the caller does.
+pub fn sync_one(
+    store: &FilesystemStore,
+    config: &FederationConfig,
+    follow: &Follow,
+) -> Result<SyncAttempt, StoreError> {
+    let attempt = sync_follow(store, config, follow);
+    store.record_sync(follow, &attempt)?;
+    Ok(attempt)
 }
 
 /// One follow from each listed peer. A peer that doesn't publish it

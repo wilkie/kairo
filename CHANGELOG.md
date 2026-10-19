@@ -30,6 +30,13 @@ rather than per-commit.
   - `kairo trust forget` also unfollows the forgotten chains.
   - Inbox processing moved into the engine (`receive_inbox`), returning
     typed outcomes; `kairo federation receive` prints the same lines.
+  - The daemon runs it (`DAEMON.md` §5.3): a scheduler re-reads the
+    config each tick, processes the inbox every `inbox_secs`, and syncs
+    due follows every `interval_secs`, at most `max_concurrent` at once
+    (`[federation.sync]`, defaults 30 / 900 / 2).
+    `GET /api/v1/federation/status` shows follows, the schedule, and
+    recent runs; `POST /api/v1/federation/sync` starts follows now.
+    New error code `409 federation_disabled`.
 
 - **Trust transport and `forget` (`DECISIONS.md` §27).**
   - `kairo trust publish | unpublish --by <id> --scope <scope>` chooses
