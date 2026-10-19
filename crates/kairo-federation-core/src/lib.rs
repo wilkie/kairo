@@ -28,6 +28,7 @@ mod page;
 mod push;
 mod request_auth;
 mod schema;
+mod trust;
 mod wire_id;
 
 #[cfg(test)]
@@ -65,6 +66,10 @@ pub use request_auth::{
     NodeRequest, RequestBody, NODE_NONCE_LEN, NODE_REQUEST_DOMAIN, NODE_REQUEST_WINDOW_SECONDS,
     NODE_SCHEME_TAG,
 };
+pub use trust::{
+    PublishedTrust, PublishedTrustSchema, TrustChainRef, TrustListing, TrustListingSchema,
+    TRUST_PATH,
+};
 
 /// The protocol version the MVP speaks. A node lists it in
 /// `protocol_versions`; a client refuses a node that doesn't.
@@ -84,6 +89,9 @@ pub const SUPPORTS_ANNOUNCE: &str = "announce";
 /// `supports` value for the plan and upload endpoints
 /// (`specs/DECISIONS.md` §26 sub-decision 6).
 pub const SUPPORTS_PUSH: &str = "push";
+
+/// `supports` value for the trust endpoints (`specs/DECISIONS.md` §27).
+pub const SUPPORTS_TRUST: &str = "trust";
 
 /// Path of the node document, relative to the node's base URL.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/kairo-node";

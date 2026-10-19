@@ -2445,3 +2445,83 @@ Affected specs (all sub-decisions implemented: `PHASE_2_FEDERATION.md`
 - `PHASE_2.md` §11 — bundle-import verification, done here.
 - `CLI.md` — `kairo push`, `kairo federation announce|receive`.
 - `THREAT_MODEL.md` — push flooding and unwanted mirroring.
+
+---
+
+## 27. Trust Transport and Forget
+
+Decision: a node serves `ActorTrust` only for (truster, scope) chains
+its operator publishes, and another node fetches one chain at a time
+through the pull verifier. Fetched opinions stay their truster's:
+resolution is always per truster (§18), so importing alice's opinions
+never changes what this node trusts. `forget` deletes a non-local
+truster's opinions outright. This fills the gap §16 sub-decision 4
+left ("not `ActorTrust`") and is the trust transport discovery needs
+(§18).
+
+Sub-decisions:
+
+1. **Publishing is opt-in, per (truster, scope).** `kairo trust
+   publish --by <actor> --scope <scope>` adds the chain to
+   `<store>/federation/published-trust.json`; `kairo trust unpublish`
+   removes it. Nothing is published by default, not even the node
+   actor's federation opinions: publishing is the access decision, as
+   for objects (§16 sub-decision 3). A published chain is every
+   `ActorTrust` the truster signed in that scope, about every trusted
+   actor, including withdrawals, so a peer never sees a stale "trusted"
+   whose withdrawal was held back.
+
+2. **Serving.**
+   - `GET /federation/v1/trust` lists published chains: `{ schema:
+     "kairo.fed.published-trust.v1", chains: [{ by, scope }] }`.
+   - `GET /federation/v1/trust/{by}?scope=<scope>` is `{ schema:
+     "kairo.fed.trust-listing.v1", by, scope, statements: [ids] }`;
+     an unpublished chain is `404 fed_not_found`, like an unpublished
+     object.
+   - The statements are served by the existing statement endpoints
+     and batch, and the truster's actor listing (genesis and key
+     events) is served, so the opinions verify.
+
+3. **Fetching one chain.** `kairo trust fetch --by <actor> --scope
+   <scope> --from <url>` connects and authenticates the peer as a
+   pull does, fetches the truster's genesis and key events, then the
+   chain's statements in order. Each must be an `ActorTrust` signed by
+   `--by` in `--scope`; anything else is refused as out of section.
+   Records get provenance. Policy is `kairo fetch`'s (§17 sub-decision
+   4): listed peer or `--allow-peer`, pin honored, `--offline` refuses.
+
+4. **Importing is not trusting.** A fetched opinion is stored under
+   its truster like any statement, so `latest_trust(alice, bob,
+   scope)` answers with alice's opinion and nothing else changes.
+   `kairo trust list`, `show`, and `history` label opinions whose
+   truster has no key in the local keystore as `imported`. `verify
+   object` and the web inspector keep showing only the local
+   truster's opinion until discovery defines how foreign opinions are
+   used.
+
+5. **`forget`.** `kairo trust forget --by <actor> [--scope <scope>]`
+   deletes every `ActorTrust` that actor signed (in that scope),
+   with their index entries and provenance, and unpublishes the
+   chains. It refuses an actor with a key in the local keystore: those
+   are this node's opinions, withdrawn with `kairo trust withdraw`.
+   It is deletion only. A later explicit `trust fetch` can bring them
+   back; a background sync (`FederationService`) will need its own
+   "don't follow" list, decided with it. The truster's genesis and key
+   events stay, since other records may need them.
+
+Rationale: trust is speech, and the per-truster resolution §18
+settled already keeps imported speech from becoming local belief, so
+transport needs no new trust semantics, only an access decision
+(publishing) and a verified path (the pull verifier). Fetching a
+single chain matches how both resolution and discovery read trust and
+keeps a fetch from pulling opinions nobody asked about.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` — §2.1 (the trust endpoints), §4 item 4.
+- `CLI.md` — `kairo trust publish | unpublish | fetch | forget`, and
+  the `imported` label.
+- `schemas/canonical/actor-trust-v1.md` — "local in MVP" now says how
+  trust is published and fetched.
+- `PHASE_2.md` §4 and §12 — trust transport and `forget`.
+

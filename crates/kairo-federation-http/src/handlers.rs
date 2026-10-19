@@ -22,7 +22,7 @@ use kairo_federation_core::{
     FedErrorEnvelope, GitAvailability, ObjectListing, PageRequest, PageRequestError,
     PublishedObjects, PushAccepted, PushPlan, PushPlanRequest, RequestBody, StatementBatch,
     StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, MAX_PLAN_BYTES, PUSH_PATH, PUSH_PLAN_PATH,
-    STATEMENT_BATCH_PATH, WELL_KNOWN_PATH,
+    STATEMENT_BATCH_PATH, TRUST_PATH, WELL_KNOWN_PATH,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_statement::{TrustDecision, TrustScope};
@@ -65,6 +65,8 @@ pub(crate) fn router(node: Node) -> Router {
             post(statement_batch),
         )
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
+        .route(&format!("{API_PREFIX}{TRUST_PATH}"), get(published_trust))
+        .route(&format!("{API_PREFIX}{TRUST_PATH}/:by"), get(trust_listing))
         .route(&format!("{API_PREFIX}{ANNOUNCE_PATH}"), post(announce))
         .route(&format!("{API_PREFIX}{PUSH_PLAN_PATH}"), post(push_plan))
         .route(&format!("{API_PREFIX}{PUSH_PATH}"), post(push_upload))
@@ -1126,4 +1128,56 @@ async fn receive_body(
     }
     file.flush().await.map_err(write_failed)?;
     Ok(hasher.finalize().into())
+}
+
+// --- trust (DECISIONS.md §27) -----------------------------------------
+
+/// `GET /federation/v1/trust`: the published (truster, scope) chains.
+async fn published_trust(State(node): State<Node>) -> Response {
+    blocking(move || {
+        let chains = view(&node)?
+            .trust
+            .keys()
+            .map(|(by, scope)| kairo_federation_core::TrustChainRef {
+                by: by.clone(),
+                scope: scope.clone(),
+            })
+            .collect();
+        json_response(&kairo_federation_core::PublishedTrust {
+            schema: Default::default(),
+            chains,
+        })
+    })
+    .await
+}
+
+/// `GET /federation/v1/trust/{by}?scope=<scope>`: one published chain;
+/// an unpublished one is `404` like an unpublished object.
+async fn trust_listing(State(node): State<Node>, id: PathId, query: RawQuery) -> Response {
+    let by = match parse_id(id, ActorId::new) {
+        Ok(by) => by,
+        Err(fail) => return fail.into_response(),
+    };
+    let scope = match query {
+        Ok(Query(query)) => query.get("scope").cloned(),
+        Err(_) => None,
+    };
+    let Some(scope) = scope else {
+        return Fail::new(FedErrorCode::FedBadId, "a trust chain names ?scope=<scope>")
+            .into_response();
+    };
+    blocking(move || {
+        let view = view(&node)?;
+        let statements = view
+            .trust
+            .get(&(by.clone(), scope.clone()))
+            .ok_or_else(Fail::not_found)?;
+        json_response(&kairo_federation_core::TrustListing {
+            schema: Default::default(),
+            by,
+            scope,
+            statements: statements.clone(),
+        })
+    })
+    .await
 }

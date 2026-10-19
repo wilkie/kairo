@@ -4,7 +4,8 @@
 //! [`ObjectClosure`], plus the key events of every actor those
 //! closures name and of the node actor, which is always served so a
 //! peer can check the node document's signature (`DECISIONS.md` §25
-//! sub-decision 2). Every per-record endpoint checks membership here
+//! sub-decision 2), plus each published trust chain (§27) and its
+//! truster's key events. Every per-record endpoint checks membership here
 //! first, so a record outside every published closure is
 //! indistinguishable from one the store doesn't hold.
 //!
@@ -18,7 +19,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
-use kairo_store::{FilesystemStore, ObjectClosure, PublishedObjectStore, StoreError};
+use kairo_store::{
+    FilesystemStore, ObjectClosure, PublishedObjectStore, StoreError, TrustTransportStore,
+};
 
 #[derive(Debug, Default)]
 pub(crate) struct PublishedView {
@@ -28,7 +31,9 @@ pub(crate) struct PublishedView {
     /// Every actor named by some closure, and the node actor, with
     /// their key-event ids.
     pub actors: BTreeMap<ActorId, Vec<StatementId>>,
-    /// Object statements, authority, and key events.
+    /// Published trust chains, by (truster, scope).
+    pub trust: BTreeMap<(ActorId, String), Vec<StatementId>>,
+    /// Object statements, authority, key events, and published trust.
     pub statements: HashSet<StatementId>,
     pub blobs: HashSet<BlobId>,
 }
@@ -57,6 +62,12 @@ impl PublishedView {
             actors.extend(closure.actors.iter().cloned());
             view.objects.push(published.object_id.clone());
             view.closures.insert(published.object_id, closure);
+        }
+        for chain in store.list_published_trust()? {
+            let ids = store.trust_chain_ids(&chain.by, &chain.scope)?;
+            view.statements.extend(ids.iter().cloned());
+            actors.insert(chain.by.clone());
+            view.trust.insert((chain.by, chain.scope.to_string()), ids);
         }
         for actor in actors {
             let key_events = store.actor_key_event_ids(&actor)?;

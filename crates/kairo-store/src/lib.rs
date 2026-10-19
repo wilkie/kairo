@@ -61,6 +61,7 @@ mod shard;
 mod statements_by_actor;
 mod tags;
 mod trust;
+mod trust_transport;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -105,6 +106,7 @@ pub use revisions::RevisionLog;
 pub use statements_by_actor::StatementByActor;
 pub use tags::VersionTagHead;
 pub use trust::TrustHead;
+pub use trust_transport::{PublishedTrust, TrustTransportStore};
 
 /// Crate version string, drawn from `Cargo.toml`. Surfaced in
 /// daemon `/api/v1/version` responses and similar diagnostics.
@@ -7465,6 +7467,78 @@ mod tests {
             signature_bytes.to_vec(),
         );
         Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn a_trust_chain_is_published_listed_and_forgotten() -> TestResult {
+        use crate::trust_transport::TrustTransportStore;
+        let (_dir, store) = open_temp_store()?;
+        let alice = fresh_genesis().actor_id();
+        let bob = trusted_actor_id();
+        let carol = ActorId::from_sha256_digest([0x77; 32]);
+        let general = kairo_statement::TrustScope::general();
+        let push = kairo_statement::TrustScope::federation_push();
+
+        assert!(
+            store.publish_trust(&alice, &general, timestamp()).is_err(),
+            "nothing to publish"
+        );
+        let first = scoped_trust(&alice, &bob, "general", Some(TrustDecision::Trusted), None)?;
+        let first_id = store.put_actor_trust(&first)?;
+        let withdrawn = scoped_trust(&alice, &bob, "general", None, Some(first_id.clone()))?;
+        let withdrawn_id = store.put_actor_trust(&withdrawn)?;
+        let other = scoped_trust(
+            &alice,
+            &carol,
+            "general",
+            Some(TrustDecision::Untrusted),
+            None,
+        )?;
+        let other_id = store.put_actor_trust(&other)?;
+        let pushes = scoped_trust(
+            &alice,
+            &bob,
+            "federation:push",
+            Some(TrustDecision::Trusted),
+            None,
+        )?;
+        let push_id = store.put_actor_trust(&pushes)?;
+
+        let mut chain = store.trust_chain_ids(&alice, &general)?;
+        chain.sort();
+        let mut expected = vec![first_id.clone(), withdrawn_id.clone(), other_id.clone()];
+        expected.sort();
+        assert_eq!(chain, expected, "every opinion in scope, withdrawals too");
+        assert_eq!(store.trust_chain_ids(&alice, &push)?, vec![push_id.clone()]);
+
+        assert!(store.publish_trust(&alice, &general, timestamp())?);
+        assert!(!store.publish_trust(&alice, &general, timestamp())?);
+        assert!(store.publish_trust(&alice, &push, timestamp())?);
+        assert_eq!(store.list_published_trust()?.len(), 2);
+
+        // Forget one scope: its statements, index entries, and publish
+        // entry go; the other scope stays.
+        assert_eq!(store.forget_trust(&alice, Some(&general))?, 3);
+        for id in [&first_id, &withdrawn_id, &other_id] {
+            assert!(store.get_statement_bytes(id).is_err(), "{id}");
+        }
+        assert_eq!(store.latest_trust(&alice, &bob, &general)?, None);
+        assert!(store.list_opinions_about(&carol)?.is_empty());
+        assert_eq!(store.latest_trust(&alice, &bob, &push)?, Some(pushes));
+        let published: Vec<String> = store
+            .list_published_trust()?
+            .into_iter()
+            .map(|chain| chain.scope.to_string())
+            .collect();
+        assert_eq!(published, vec!["federation:push".to_owned()]);
+        let by_alice = store.list_statements_by_actor(&alice)?;
+        assert_eq!(by_alice.len(), 1);
+
+        // Then everything.
+        assert_eq!(store.forget_trust(&alice, None)?, 1);
+        assert!(store.list_published_trust()?.is_empty());
+        assert!(store.list_trust(&alice)?.is_empty());
+        Ok(())
     }
 
     #[test]

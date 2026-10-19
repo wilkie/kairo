@@ -283,8 +283,10 @@ plan in `PHASE_2_FEDERATION.md`.
 - [ ] Implement peer discovery and trust propagation policy
       (`specs/POLICY.md`) — explicitly *opt-in*; importing a peer's bundle
       never auto-trusts that peer.
-- [ ] Forgetting peer opinions: the `forget` operation deferred during
-      Phase 1 §10 trust work.
+- [x] Forgetting peer opinions: `kairo trust forget` (`DECISIONS.md`
+      §27 sub-decision 5).
+- [x] Trust transport: publish and fetch one (truster, scope) chain
+      (`DECISIONS.md` §27); importing never trusts.
 
 **Why it matters:** validates the entire bundle + trust design under real
 multi-node use; surfaces wrinkles before users hit them.
@@ -591,8 +593,9 @@ Statement-type evolution that Phase 1 explicitly deferred.
 - [x] `ObjectVersionTag` cross-actor `supersedes` honored by the resolver.
       Implemented in `kairo-store::FilesystemStore::latest_version_tag` /
       `list_version_tags` per `specs/CAPABILITIES.md` §6.2.
-- [ ] `ActorTrust` `forget` operation (federation concern — flush peer
+- [x] `ActorTrust` `forget` operation (federation concern — flush peer
       opinions from the local node without re-publishing a withdrawal).
+      `DECISIONS.md` §27 sub-decision 5.
 - [ ] Scoped `ActorTrust` (`DECISIONS.md` §18 sub-decision 4): the
       chain key becomes `(by_actor, trusted_actor, scope)`, existing
       opinions read as `general`, and federation scopes such as

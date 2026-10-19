@@ -60,6 +60,8 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `POST` | `/federation/v1/statement-batch` | up to 256 statements, each exactly as stored, in request order; unserved ids left out (`DECISIONS.md` §24) |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
+| `GET` | `/federation/v1/trust` | `{ schema: "kairo.fed.published-trust.v1", chains: [{ by, scope }] }`: published trust chains (`DECISIONS.md` §27) |
+| `GET` | `/federation/v1/trust/{by}?scope={scope}` | `{ schema: "kairo.fed.trust-listing.v1", by, scope, statements }`: one published chain, withdrawals included; the statements and the truster's actor listing are served |
 | `POST` | `/federation/v1/push/plan` | `KairoNode1`-signed `{ schema: "kairo.fed.push-plan-request.v1", object, inventory }`; `200` `{ schema: "kairo.fed.push-plan.v1", genesis, actors, statements, blobs, have_commits }`: what this node lacks (`DECISIONS.md` §26 sub-decision 6) |
 | `POST` | `/federation/v1/push?object={id}` | `KairoNode1`-signed closure bundle tar (§26 sub-decision 8), at most `max_push_bytes`; `202` `{ schema: "kairo.fed.push-accepted.v1", entry }` |
 | `POST` | `/federation/v1/announce` | `KairoNode1`-signed `{ schema: "kairo.fed.announce.v1", base_url, objects }` (at most 256 objects); `202` `{ schema: "kairo.fed.announce-accepted.v1", entry }` once it is in the inbox (`DECISIONS.md` §26) |
@@ -509,7 +511,12 @@ inventory step, and 7 come from comparing this design with Radicle
      check the upload's signature~~ *(shipped)*: a node that is never
      reachable is learned from `kairo actor export`, with `kairo
      federation learn --file` (§26 sub-decision 7).
-4. **Trust transport** (opt-in, never auto-trusted) and `forget`.
+4. ~~**Trust transport** (opt-in, never auto-trusted) and `forget`~~
+   *(shipped; `DECISIONS.md` §27)*. A node serves only (truster,
+   scope) chains its operator publishes; `kairo trust fetch` pulls one
+   chain through the pull verifier; fetched opinions stay the
+   truster's; `kairo trust forget` deletes an imported truster's
+   opinions.
 5. **Daemon `FederationService`**: background sync, on-demand
    fetch of missing closure data (`DAEMON.md` §9). The operator
    surface follows Radicle's seeding and follow policies: which

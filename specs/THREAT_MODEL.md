@@ -353,6 +353,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Uploads** | `POST /federation/v1/push` puts the object in the signed query, so the signature header, the window, the signer's key, `federation:push` trust, the accept entry, and the sender's inbox share are all checked before any of the body is read; a stranger can't make the receiver write a byte. The body streams to a temporary inbox file, capped at `max_push_bytes` (`413`), and is deleted unless the signature over its SHA-256 then verifies. The tar unpacks only regular files at the closure bundle's exact paths, and every record ingests through the pull verifier. A plan reveals which of the pusher's own ids the receiver holds, only to a trusted node. |
 | **Residual risk** | A trusted pusher can make the receiver store up to `max_push_bytes` × `max_inbox_entries` of bundle data until it's received. A trusted announcer can make the receiver issue requests to any `https://` URL (or loopback `http://`) at receive time. Those are only reads, and the pull refuses anything not from the announcer's node actor. A trusted announcer can also fill its own inbox share, which delays only its own pushes. A malicious one can still withhold data like any peer (§5.15). |
 
+### 5.21 Reading a peer's opinions as local trust
+
+| | |
+|---|---|
+| **Adversary** | §4.2, §4.8 (a peer serving trust chains, or a truster with an agenda) |
+| **Attack** | Get a node to treat someone else's `ActorTrust` as its own, or to rely on a chain whose withdrawals were held back. |
+| **Mechanism** | `DECISIONS.md` §27. Resolution is keyed by truster (§18), so a fetched opinion only ever answers "what does *its signer* think". The CLI labels non-local trusters `imported`, and `verify object` and the inspector show only the local truster. A fetch pulls exactly one published chain; each statement must be the requested truster's, in the requested scope, and verify against the truster's key events, which come first. A published chain includes withdrawals. `forget` removes an imported truster's opinions entirely. |
+| **Residual risk** | A peer can withhold a newer opinion it holds (a later withdrawal) like any record (§5.15); fetching the same chain from more peers narrows that. Following imported opinions transitively is discovery's to bound (§18 sub-decision 5). |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by
@@ -621,7 +630,8 @@ shipped):
   §5.13 fork preservation, §5.14 genesis-asymmetry impersonation,
   §5.18 node impersonation (federation pulls), §5.19 forged or
   replayed node requests, §5.20 push flooding and unwanted mirroring
-  (announcements and uploads): all defended.
+  (announcements and uploads), §5.21 reading a peer's opinions as
+  local trust: all defended.
 - §5.11 attestation-key compromise, §5.12 malicious attestation-key
   add: defended **only by detection** in shipped v1, not by
   in-protocol response. `ActorAttestationKeyRevocation` is designed

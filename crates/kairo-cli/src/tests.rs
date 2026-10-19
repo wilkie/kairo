@@ -7177,3 +7177,123 @@ fn a_pushed_object_is_received_without_reaching_the_pusher(
     );
     Ok(())
 }
+
+#[test]
+fn trust_is_published_fetched_labelled_and_forgotten() -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §27.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node = create_node_actor(origin)?;
+    let alice = parse_field(
+        &run_in(
+            origin,
+            Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            },
+        )?,
+        "actor = ",
+    )?;
+    let trust =
+        |store: &std::path::Path, command: TrustCommand| run_in(store, Command::Trust { command });
+    trust(
+        origin,
+        TrustCommand::Grant {
+            by: alice.clone(),
+            of: node.clone(),
+            scope: "federation:index".to_owned(),
+            reason: None,
+        },
+    )?;
+    let published = trust(
+        origin,
+        TrustCommand::Publish {
+            by: alice.clone(),
+            scope: "federation:index".to_owned(),
+        },
+    )?;
+    assert!(
+        published.contains("status = published\nopinions = 1\n"),
+        "{published}"
+    );
+    let mine = trust(origin, TrustCommand::List { by: alice.clone() })?;
+    assert!(mine.contains("truster = local\n"), "{mine}");
+    // A local truster's opinions are withdrawn, not forgotten.
+    let refused = trust(
+        origin,
+        TrustCommand::Forget {
+            by: alice.clone(),
+            scope: None,
+        },
+    )
+    .err()
+    .ok_or("forgot a local truster")?;
+    assert!(
+        refused.to_string().contains("kairo trust withdraw"),
+        "{refused}"
+    );
+
+    let (url, _stop, _server) = serve_federation(origin, &node)?;
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    let fetched = trust(
+        local,
+        TrustCommand::Fetch {
+            by: alice.clone(),
+            scope: "federation:index".to_owned(),
+            from: url.clone(),
+            allow_peer: true,
+        },
+    )?;
+    assert!(fetched.contains("opinions = 1\n"), "{fetched}");
+    assert!(
+        fetched.contains("nothing this node trusts changed"),
+        "{fetched}"
+    );
+    let shown = trust(
+        local,
+        TrustCommand::Show {
+            by: alice.clone(),
+            of: node.clone(),
+            scope: "federation:index".to_owned(),
+            json: false,
+        },
+    )?;
+    assert!(shown.contains("truster = imported\n"), "{shown}");
+    assert!(shown.contains("decision = trusted\n"), "{shown}");
+    let shown_json = trust(
+        local,
+        TrustCommand::Show {
+            by: alice.clone(),
+            of: node.clone(),
+            scope: "federation:index".to_owned(),
+            json: true,
+        },
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&shown_json)?;
+    assert_eq!(value["truster"], "imported");
+
+    let forgotten = trust(
+        local,
+        TrustCommand::Forget {
+            by: alice.clone(),
+            scope: Some("federation:index".to_owned()),
+        },
+    )?;
+    assert!(forgotten.contains("forgotten = 1\n"), "{forgotten}");
+    let after = trust(
+        local,
+        TrustCommand::Show {
+            by: alice,
+            of: node,
+            scope: "federation:index".to_owned(),
+            json: false,
+        },
+    )?;
+    assert!(after.contains("decision = unknown\n"), "{after}");
+    Ok(())
+}

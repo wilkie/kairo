@@ -127,7 +127,9 @@ fn run(cli: Cli) -> Result<String, CliError> {
         Some(Command::Revision { command }) => run_revision_command(command, &paths, dispatch_opts),
         Some(Command::Branch { command }) => run_branch_command(command, &paths, dispatch_opts),
         Some(Command::Tag { command }) => run_tag_command(command, &paths, dispatch_opts),
-        Some(Command::Trust { command }) => run_trust_command(command, &paths, dispatch_opts),
+        Some(Command::Trust { command }) => {
+            run_trust_command(command, &paths, dispatch_opts, cli.offline)
+        }
         Some(Command::Capability { command }) => {
             run_capability_command(command, &paths, dispatch_opts)
         }
@@ -3527,12 +3529,94 @@ fn parse_trust_scope(raw: &str) -> Result<kairo_statement::TrustScope, CliError>
     kairo_statement::TrustScope::parse(raw).map_err(CliError::ParseTrustScope)
 }
 
+/// `local` when `by` has a key in the keystore, `imported` otherwise
+/// (`specs/DECISIONS.md` §27 sub-decision 4).
+fn truster_label(paths: &StorePaths, by: &str) -> Result<&'static str, CliError> {
+    let Ok(by) = ActorId::new(by.to_owned()) else {
+        return Ok("imported");
+    };
+    let keystore = open_keystore(paths)?;
+    Ok(match keystore.has_signing_key(&by) {
+        Ok(true) => "local",
+        _ => "imported",
+    })
+}
+
+/// Add the truster label after the `by_actor` line, or as a JSON field.
+fn with_truster(output: String, truster: &str) -> String {
+    if let Ok(serde_json::Value::Object(mut map)) = serde_json::from_str(&output) {
+        map.insert("truster".to_owned(), serde_json::Value::from(truster));
+        let mut text =
+            serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap_or(output);
+        text.push('\n');
+        return text;
+    }
+    let mut labelled = String::with_capacity(output.len() + 24);
+    let mut done = false;
+    for line in output.split_inclusive('\n') {
+        labelled.push_str(line);
+        if !done && line.starts_with("by_actor = ") {
+            labelled.push_str(&format!("truster = {truster}\n"));
+            done = true;
+        }
+    }
+    labelled
+}
+
 fn run_trust_command(
     command: TrustCommand,
     paths: &StorePaths,
     dispatch_opts: dispatch::DispatchOptions,
+    offline: bool,
+) -> Result<String, CliError> {
+    let labelled = matches!(
+        command,
+        TrustCommand::Show { .. } | TrustCommand::List { .. } | TrustCommand::History { .. }
+    );
+    let by = match &command {
+        TrustCommand::Show { by, .. }
+        | TrustCommand::List { by }
+        | TrustCommand::History { by, .. } => by.clone(),
+        _ => String::new(),
+    };
+    let output = run_trust_subcommand(command, paths, dispatch_opts, offline)?;
+    if labelled {
+        Ok(with_truster(output, truster_label(paths, &by)?))
+    } else {
+        Ok(output)
+    }
+}
+
+fn run_trust_subcommand(
+    command: TrustCommand,
+    paths: &StorePaths,
+    dispatch_opts: dispatch::DispatchOptions,
+    offline: bool,
 ) -> Result<String, CliError> {
     match command {
+        TrustCommand::Publish { by, scope } => {
+            commands::federation::run_trust_publish(&by, &parse_trust_scope(&scope)?, true, paths)
+        }
+        TrustCommand::Unpublish { by, scope } => {
+            commands::federation::run_trust_publish(&by, &parse_trust_scope(&scope)?, false, paths)
+        }
+        TrustCommand::Fetch {
+            by,
+            scope,
+            from,
+            allow_peer,
+        } => commands::federation::run_trust_fetch(
+            &by,
+            &parse_trust_scope(&scope)?,
+            &from,
+            allow_peer,
+            offline,
+            paths,
+        ),
+        TrustCommand::Forget { by, scope } => {
+            let scope = scope.as_deref().map(parse_trust_scope).transpose()?;
+            commands::federation::run_trust_forget(&by, scope.as_ref(), paths)
+        }
         TrustCommand::Grant {
             by,
             of,

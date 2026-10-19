@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **Trust transport and `forget` (`DECISIONS.md` §27).**
+  - `kairo trust publish | unpublish --by <id> --scope <scope>` chooses
+    which (truster, scope) chains a node serves, at
+    `GET /federation/v1/trust` and `/federation/v1/trust/{by}?scope=`;
+    nothing is served by default. Nodes advertise `trust`.
+  - `kairo trust fetch --by <id> --scope <scope> --from <url>` pulls
+    one chain through the pull verifier. Fetched opinions stay their
+    truster's; `trust show | list | history` label them `imported`.
+  - `kairo trust forget --by <id> [--scope <scope>]` deletes an
+    imported truster's opinions, their index entries, and provenance;
+    it refuses a truster with a local key.
+
 - **Learning a node from a file (`DECISIONS.md` §26 sub-decision 7).**
   `kairo actor export --actor <id> --out <path>` writes an actor's
   genesis and every key event, exactly as stored

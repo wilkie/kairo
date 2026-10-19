@@ -57,10 +57,10 @@ This is tighter than `ObjectVersionTag`, where cross-actor `supersedes`
 is recorded for audit and awaits the §10 capability model to become
 load-bearing.
 
-Trust statements are local in MVP — they are signed (so they can be
-exported, federated, or published as web-of-trust signals later) but
-the local resolver consumes only same-node statements and never
-publishes them automatically.
+Trust statements are never published automatically. An operator can
+publish one truster's chain in one scope, and a peer can fetch it
+(`DECISIONS.md` §27). A fetched statement stays its truster's opinion:
+resolution is keyed by truster, so it never answers for anyone else.
 
 ## Resolution Rule
 

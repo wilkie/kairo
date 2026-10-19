@@ -13,7 +13,7 @@ use kairo_config::{Config, ConfigSource};
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_federation_core::Announcement;
 use kairo_federation_http::client::{
-    announce, export_actor, ingest_closure_bundle, learn_from_export, learn_peer,
+    announce, export_actor, fetch_trust, ingest_closure_bundle, learn_from_export, learn_peer,
     normalize_peer_url, pull_object, push, GitOutcome, Limits, NodeSigner, PullOptions, PullReport,
 };
 use kairo_identity::ActorKind;
@@ -22,6 +22,7 @@ use kairo_statement::{TrustDecision, TrustScope};
 use kairo_store::{
     ActorStore, InboxAnnouncement, InboxItem, InboxStore, InboxUpload, ProvenanceStore,
     PublishedObject, PublishedObjectStore, PullLogStore, PullRecord, TrustResolver,
+    TrustTransportStore,
 };
 
 use crate::cli::FederationCommand;
@@ -367,6 +368,120 @@ pub(crate) fn run_actor_export(
         "actor = {actor}\nkey_events = {}\nout = {}\n",
         export.key_events.len(),
         out.display()
+    ))
+}
+
+fn parse_actor(raw: &str) -> Result<ActorId, CliError> {
+    ActorId::new(raw.to_owned()).map_err(|source| CliError::ParseActorId {
+        actor: raw.to_owned(),
+        source,
+    })
+}
+
+/// `kairo trust publish` / `unpublish` (`DECISIONS.md` §27
+/// sub-decision 1).
+pub(crate) fn run_trust_publish(
+    by: &str,
+    scope: &TrustScope,
+    publish: bool,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let by = parse_actor(by)?;
+    let store = open_store(paths)?;
+    let status = if publish {
+        let added = store
+            .publish_trust(&by, scope, Timestamp::now())
+            .map_err(CliError::ReadActorTrust)?;
+        let chain = store
+            .trust_chain_ids(&by, scope)
+            .map_err(CliError::ReadActorTrust)?
+            .len();
+        let status = if added {
+            "published"
+        } else {
+            "already_published"
+        };
+        format!("status = {status}\nopinions = {chain}\n")
+    } else if store
+        .unpublish_trust(&by, scope)
+        .map_err(CliError::ReadActorTrust)?
+    {
+        format!("status = unpublished\nnote = {UNPUBLISH_NOTE}\n")
+    } else {
+        "status = not_published\n".to_owned()
+    };
+    Ok(format!("by_actor = {by}\nscope = {scope}\n{status}"))
+}
+
+/// `kairo trust fetch` (§27 sub-decision 3).
+pub(crate) fn run_trust_fetch(
+    by: &str,
+    scope: &TrustScope,
+    from: &str,
+    allow_peer: bool,
+    offline: bool,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let wrap = |source| CliError::PeerRequest {
+        action: "fetching trust",
+        source,
+    };
+    let by = parse_actor(by)?;
+    let (config, url, peer) =
+        peer_policy(from, allow_peer, offline, paths).map_err(|error| error.into_cli(wrap))?;
+    let options = PullOptions {
+        limits: limits_from(&config.federation.limits),
+        expected_node_actor: peer.and_then(|peer| peer.node_actor),
+        require_complete: false,
+    };
+    let store = open_store(paths)?;
+    let report =
+        fetch_trust(&store, &url, &by, scope, &options).map_err(|error| wrap(Box::new(error)))?;
+    let mut output = format!(
+        "by_actor = {by}\nscope = {scope}\npeer = {}\npeer_actor = {}\nopinions = {}\n\
+         fetched = {}\nalready_held = {}\nflagged = {}\n",
+        report.peer_url,
+        report.peer_actor,
+        report.chain,
+        report.fetched,
+        report.already_held,
+        report.flagged.len()
+    );
+    for flagged in &report.flagged {
+        output.push_str(&format!(
+            "  record={} reason={}\n",
+            flagged.record, flagged.reason
+        ));
+    }
+    output.push_str(
+        "note = imported opinions stay this truster's; nothing this node trusts changed\n",
+    );
+    Ok(output)
+}
+
+/// `kairo trust forget` (§27 sub-decision 5).
+pub(crate) fn run_trust_forget(
+    by: &str,
+    scope: Option<&TrustScope>,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let by = parse_actor(by)?;
+    let keystore = open_keystore(paths)?;
+    if keystore.has_signing_key(&by).unwrap_or(false) {
+        return Err(CliError::NodeActorChoice {
+            message: format!(
+                "{by} has a key in this node's keystore, so its opinions are this node's own; \
+                 withdraw them with `kairo trust withdraw` instead"
+            ),
+        });
+    }
+    let store = open_store(paths)?;
+    let forgotten = store
+        .forget_trust(&by, scope)
+        .map_err(CliError::ReadActorTrust)?;
+    let scope = scope.map_or_else(|| "all".to_owned(), ToString::to_string);
+    Ok(format!(
+        "by_actor = {by}\nscope = {scope}\nforgotten = {forgotten}\n"
     ))
 }
 

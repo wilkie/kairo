@@ -32,8 +32,8 @@ use kairo_statement::json::{
     ActorAttestationThresholdChangeStatementJson, ActorCapabilityGrantStatementJson,
     ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
     ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
-    ActorKeyRotationStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
-    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    ActorKeyRotationStatementJson, ActorTrustStatementJson, ObjectBranchStatementJson,
+    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_multi_statement, verify_envelope_statement, ActorResolution, SignatureStatus,
@@ -59,6 +59,12 @@ pub(crate) enum Section<'a> {
     },
     /// A key event signed by the actor.
     KeyEvent(&'a ActorId),
+    /// An opinion in a fetched trust chain (`DECISIONS.md` §27): signed
+    /// by the truster, in the scope.
+    Trust {
+        by: &'a ActorId,
+        scope: &'a kairo_statement::TrustScope,
+    },
 }
 
 /// What happened to a verified statement.
@@ -292,9 +298,24 @@ pub(crate) fn ingest_statement(
             put_actor_attestation_threshold_change,
             |signed| key_event_section(signed.unsigned().actor())
         ),
-        StatementKind::ActorTrust => Err(wrong_section(
-            "ActorTrust is never accepted from a peer (DECISIONS.md §16 sub-decision 4)",
-        )),
+        // Only as a fetched trust chain (§27); never inside an object's
+        // closure (§16 sub-decision 4).
+        StatementKind::ActorTrust => single!(ActorTrustStatementJson, put_actor_trust, |signed| {
+            match section {
+                Section::Trust { by, scope }
+                    if signed.unsigned().actor() == by
+                        && signed.unsigned().body().scope() == scope =>
+                {
+                    Ok(())
+                }
+                Section::Trust { by, scope } => Err(wrong_section(format!(
+                    "ActorTrust is not {by}'s opinion in {scope}"
+                ))),
+                _ => Err(wrong_section(
+                    "ActorTrust is accepted only as a fetched trust chain (DECISIONS.md §27)",
+                )),
+            }
+        }),
         StatementKind::ObjectGenesis => Err(wrong_section(
             "ObjectGenesis is fetched by object id, not as a statement",
         )),

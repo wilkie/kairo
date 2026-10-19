@@ -303,6 +303,10 @@ kairo trust withdraw --by <id> --of <id> [--scope <scope>] [--reason <text>]
 kairo trust show --by <id> --of <id> [--scope <scope>] [--json]
 kairo trust list --by <id>
 kairo trust history --by <id> --of <id> [--scope <scope>] [--json]
+kairo trust publish --by <id> --scope <scope>
+kairo trust unpublish --by <id> --scope <scope>
+kairo trust fetch --by <id> --scope <scope> --from <url> [--allow-peer]
+kairo trust forget --by <id> [--scope <scope>]
 kairo capability grant --grantor <id> --grantee <id> --object <id> --kind <kind>... [--delegable] [--expires-at <RFC3339>] [--max-delegation-depth <N>] [--key-pinned <keyid>]
 kairo capability revoke --grantor <id> --grant <statement-id> [--retroactive] [--reason <text>]
 kairo capability list (--grantor <id> | --object <id>)
@@ -317,6 +321,19 @@ node push here (`DECISIONS.md` §26) and changes nothing about
 `general` trust, and `show` reads only the scope it's given. `list`
 prints each opinion's `scope=`. A scope is lowercase `name(:name)*`;
 any other spelling is refused.
+
+Trust transport (`DECISIONS.md` §27): `publish` serves one (truster,
+scope) chain to federation peers, every opinion in it including
+withdrawals; nothing is served until published, and `unpublish`
+stops it. `fetch` pulls one published chain from a peer through the
+pull verifier, with `kairo fetch`'s peer policy. Fetched opinions stay
+the truster's, so nothing this node trusts changes. `show`, `list`,
+and `history` print `truster = local` when the truster has a key in
+the local keystore and `truster = imported` otherwise (JSON:
+`"truster"`). `forget` deletes an imported truster's opinions (all
+scopes, or `--scope`), with their index entries and provenance,
+without signing anything; it refuses a local truster, whose opinions
+are withdrawn with `withdraw`.
 
 `manifest hash` parses `kairo.toml` and prints the canonical `ObjectManifest`
 `BlobId`.

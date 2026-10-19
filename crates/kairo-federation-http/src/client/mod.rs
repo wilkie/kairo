@@ -55,7 +55,9 @@ use kairo_federation_core::{
     MAX_PAGE_LIMIT, STATEMENT_BATCH_PATH, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL,
     SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
-use kairo_federation_core::{ActorExport, BatchedStatement, GitAvailability};
+use kairo_federation_core::{
+    ActorExport, BatchedStatement, GitAvailability, TrustListing, SUPPORTS_TRUST, TRUST_PATH,
+};
 use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::{ChainScope, GitRevision, StatementKind};
@@ -614,6 +616,71 @@ pub fn learn_from_export(
         node_actor: actor,
         fetched: pull.report.fetched,
         already_held: pull.report.already_held,
+    })
+}
+
+/// What [`fetch_trust`] brought in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustFetchReport {
+    pub peer_url: String,
+    /// The peer, authenticated by its node document.
+    pub peer_actor: ActorId,
+    /// The truster's genesis and key events, and the chain's opinions,
+    /// newly stored.
+    pub fetched: usize,
+    pub already_held: usize,
+    pub flagged: Vec<FlaggedRecord>,
+    /// The chain's length on the peer.
+    pub chain: usize,
+}
+
+/// Fetch one published trust chain, `by`'s opinions in `scope`, from
+/// the peer at `peer_url` (`DECISIONS.md` §27 sub-decision 3). The
+/// peer is authenticated as for a pull, the truster's key state comes
+/// first, and each opinion must be `by`'s, in `scope`. Storing them
+/// changes no local opinion: resolution is per truster.
+pub fn fetch_trust(
+    store: &FilesystemStore,
+    peer_url: &str,
+    by: &ActorId,
+    scope: &kairo_statement::TrustScope,
+    options: &PullOptions,
+) -> Result<TrustFetchReport, PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    if !document.supports(SUPPORTS_TRUST) {
+        return Err(PullError::Unsupported {
+            feature: SUPPORTS_TRUST,
+        });
+    }
+    let mut pull = authenticated(store, peer, &document, &options.limits)?;
+    let Some(peer) = pull.source.peer() else {
+        return Err(PullError::Bundle("a trust fetch needs a peer".to_owned()));
+    };
+    let path = format!("{API_PREFIX}{TRUST_PATH}/{by}?scope={scope}");
+    let listing: TrustListing = peer.get_json(&path, options.limits.max_json_bytes)?;
+    if &listing.by != by || listing.scope != scope.as_str() {
+        return Err(PullError::Parse {
+            url: format!("{}{path}", peer.base_url()),
+            message: format!(
+                "asked for {by}'s {scope} chain, peer listed {}'s {}",
+                listing.by, listing.scope
+            ),
+        });
+    }
+    let mut budget = 1 + listing.statements.len();
+    pull.check_budget(budget)?;
+    if by != &document.node_actor {
+        pull.actor(by, &mut budget)?;
+    }
+    let ids = dedup_ids(&listing.statements);
+    pull.statements(&ids, Section::Trust { by, scope })?;
+    Ok(TrustFetchReport {
+        peer_url: pull.report.peer_url,
+        peer_actor: pull.report.peer_actor,
+        fetched: pull.report.fetched,
+        already_held: pull.report.already_held,
+        flagged: pull.report.flagged,
+        chain: ids.len(),
     })
 }
 

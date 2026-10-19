@@ -614,6 +614,47 @@ pub(crate) enum TrustCommand {
         #[arg(long)]
         by: String,
     },
+    /// Serve --by's opinions in --scope to federation peers
+    /// (`specs/DECISIONS.md` §27): every opinion in that scope,
+    /// withdrawals included. Nothing is served until published.
+    Publish {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        scope: String,
+    },
+    /// Stop serving a trust chain. Peers that fetched it keep their
+    /// copy.
+    Unpublish {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        scope: String,
+    },
+    /// Fetch --by's published opinions in --scope from a peer. They stay
+    /// --by's opinions: nothing this node trusts changes.
+    Fetch {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        scope: String,
+        /// The peer's base URL.
+        #[arg(long)]
+        from: String,
+        /// Fetch from a peer that isn't listed in the config, for this
+        /// run only.
+        #[arg(long)]
+        allow_peer: bool,
+    },
+    /// Delete an imported truster's opinions (all scopes, or --scope)
+    /// from this node, without signing a withdrawal. Refused for a
+    /// truster with a key in the local keystore; withdraw those.
+    Forget {
+        #[arg(long)]
+        by: String,
+        #[arg(long)]
+        scope: Option<String>,
+    },
     /// Walk the supersedes chain backwards from --by's current opinion
     /// about --of, newest first. Missing chain links are reported as
     /// indeterminate.
