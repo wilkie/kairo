@@ -217,7 +217,9 @@ Serving stays the separate `kairo-federation-http` process
 (`DECISIONS.md` §16), and the daemon stays Unix-socket only.
 `FederationService` runs the sync engine of `kairo-federation-service`
 (`DECISIONS.md` §28): a scheduler loop re-reads the config each tick,
-processes the inbox every `inbox_secs`, and syncs each follow whose
+processes the inbox every `inbox_secs`, runs discovery (`DECISIONS.md`
+§29) every `interval_secs` when it has peers or bootstrap nodes, and
+syncs each follow whose
 last attempt is `interval_secs` old, at most `max_concurrent` at once
 and never the same follow twice, on the blocking pool. `GET
 /api/v1/federation/status` and `POST /api/v1/federation/sync` report

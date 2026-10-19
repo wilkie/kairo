@@ -193,6 +193,12 @@ async fn the_scheduler_syncs_due_follows_and_empties_the_inbox() {
     assert!(runs
         .iter()
         .any(|run| run["kind"] == "sync" && run["result"] == "not_current"));
+    // Discovery ran on the same schedule; its one source is down.
+    assert!(
+        runs.iter()
+            .any(|run| run["kind"] == "discover" && run["result"] == "outcomes=1 learned=0"),
+        "{synced}"
+    );
     daemon.stop().await;
 }
 

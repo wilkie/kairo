@@ -67,13 +67,16 @@ pub struct FederationConfig {
 }
 
 /// `[federation.discovery]` (`DECISIONS.md` §29 sub-decision 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscoveryConfig {
     /// Hints older than this, by the inventory's `signed_at`, are
     /// ignored.
     pub hint_ttl_secs: u64,
     /// Sync followed objects from trusted hinted holders too.
     pub use_hints: bool,
+    /// The actor (normally this node's actor) whose `federation:index`
+    /// trust vouches for a hinted holder. Required by `use_hints`.
+    pub vouched_by: Option<ActorId>,
 }
 
 impl Default for DiscoveryConfig {
@@ -81,6 +84,7 @@ impl Default for DiscoveryConfig {
         Self {
             hint_ttl_secs: 7 * 24 * 60 * 60,
             use_hints: false,
+            vouched_by: None,
         }
     }
 }
@@ -226,6 +230,7 @@ struct RawFederation {
 struct RawDiscovery {
     hint_ttl_secs: Option<u64>,
     use_hints: Option<bool>,
+    vouched_by: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -366,6 +371,24 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             "federation.discovery.hint_ttl_secs must be greater than 0".to_owned(),
         ));
     }
+    let vouched_by = raw_discovery
+        .vouched_by
+        .as_ref()
+        .map(|raw| {
+            ActorId::new(raw.clone()).map_err(|error| {
+                invalid(format!(
+                    "federation.discovery: vouched_by {raw:?} is not a bare actor id: {error}"
+                ))
+            })
+        })
+        .transpose()?;
+    if raw_discovery.use_hints == Some(true) && vouched_by.is_none() {
+        return Err(invalid(
+            "federation.discovery: use_hints needs vouched_by, the actor whose federation:index \
+             trust vouches for hinted holders"
+                .to_owned(),
+        ));
+    }
     let discovery_defaults = DiscoveryConfig::default();
     let discovery = DiscoveryConfig {
         hint_ttl_secs: raw_discovery
@@ -374,6 +397,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         use_hints: raw_discovery
             .use_hints
             .unwrap_or(discovery_defaults.use_hints),
+        vouched_by,
     };
     let raw_sync = federation.sync.unwrap_or_default();
     for (name, value) in [
@@ -605,7 +629,7 @@ mod tests {
     fn parses_bootstrap_nodes_and_discovery() {
         let config = parse_ok(&format!(
             "[[federation.bootstrap]]\nurl = \"https://seed.example.org/\"\nnode_actor = \"{ACTOR}\"\n\n\
-             [federation.discovery]\nuse_hints = true\n"
+             [federation.discovery]\nuse_hints = true\nvouched_by = \"{ACTOR}\"\n"
         ));
         let federation = config.federation;
         assert_eq!(federation.bootstrap.len(), 1);
@@ -618,6 +642,7 @@ mod tests {
         );
         assert!(!DiscoveryConfig::default().use_hints);
         assert!(parse_err("[federation.discovery]\nhint_ttl_secs = 0\n").contains("hint_ttl_secs"));
+        assert!(parse_err("[federation.discovery]\nuse_hints = true\n").contains("vouched_by"));
         assert!(parse_err(
             "[[federation.bootstrap]]\nurl = \"https://a.example\"\n\n[[federation.bootstrap]]\nurl = \"https://a.example/\"\n"
         )

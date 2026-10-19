@@ -106,6 +106,7 @@ pub async fn status_handler(
                 let (kind, follow) = match run.kind {
                     RunKind::Sync(follow) => ("sync", Some(follow.to_string())),
                     RunKind::Inbox => ("inbox", None),
+                    RunKind::Discover => ("discover", None),
                 };
                 FederationRunDto {
                     id: run.id,

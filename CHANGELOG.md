@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **Using hints (`DECISIONS.md` §29, discovery slice 4).** The daemon
+  runs discovery every `interval_secs`. With `[federation.discovery]
+  use_hints = true` and `vouched_by = "<actor>"`, sync also pulls a
+  followed object from hinted holders that actor trusts with
+  `federation:index` (directly or as the relay), after listed peers
+  and with each holder's node actor pinned.
 - **Relayed inventories (`DECISIONS.md` §29, discovery slice 3).**
   `GET /federation/v1/inventories` relays, one hop, the inventories a
   node fetched directly from nodes its actor trusts with

@@ -7629,3 +7629,100 @@ fn a_relay_passes_on_inventories_of_nodes_it_trusts_for_indexing(
     );
     Ok(())
 }
+
+#[test]
+fn use_hints_syncs_from_holders_vouched_for_by_index_trust(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §29 sub-decision 5: the local node lists only a relay,
+    // which relays the origin's inventory. A followed object is synced
+    // from the hinted origin only once the vouching actor trusts the
+    // relay with `federation:index`.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let origin_node = create_node_actor(origin)?;
+    let object = create_cli_object(origin)?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let (origin_url, _origin_stop, _origin_server) = serve_federation(origin, &origin_node)?;
+
+    let relay_dir = tempfile::TempDir::new()?;
+    let relay = relay_dir.path();
+    let relay_node = create_node_actor(relay)?;
+    std::fs::write(
+        relay.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{origin_url}\"\n"),
+    )?;
+    run_in(relay, federation(FederationCommand::Discover))?;
+    let index_trust = |store: &std::path::Path, by: &str, of: &str| {
+        run_in(
+            store,
+            Command::Trust {
+                command: TrustCommand::Grant {
+                    by: by.to_owned(),
+                    of: of.to_owned(),
+                    scope: "federation:index".to_owned(),
+                    reason: None,
+                },
+            },
+        )
+    };
+    index_trust(relay, &relay_node, &origin_node)?;
+    let (relay_url, _relay_stop, _relay_server) = serve_federation(relay, &relay_node)?;
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    let local_node = create_node_actor(local)?;
+    std::fs::write(
+        local.join("config.toml"),
+        format!(
+            "[[federation.peers]]\nurl = \"{relay_url}\"\n\n\
+             [federation.discovery]\nuse_hints = true\nvouched_by = \"{local_node}\"\n"
+        ),
+    )?;
+    run_in(local, federation(FederationCommand::Discover))?;
+    run_in(
+        local,
+        federation(FederationCommand::Follow {
+            target: crate::cli::FollowTarget {
+                object: Some(object.clone()),
+                trust_by: None,
+                scope: None,
+            },
+        }),
+    )?;
+    let sync = || {
+        run_in(
+            local,
+            federation(FederationCommand::Sync {
+                target: crate::cli::OptionalFollowTarget {
+                    object: None,
+                    trust_by: None,
+                    scope: None,
+                },
+            }),
+        )
+    };
+
+    // Nobody vouches yet: only the listed relay is tried.
+    let unvouched = sync()?;
+    assert!(unvouched.contains("status=not_current"), "{unvouched}");
+    assert!(!unvouched.contains(&origin_url), "{unvouched}");
+
+    // Vouch for the relay: its relayed hint now counts.
+    index_trust(local, &local_node, &relay_node)?;
+    let vouched = sync()?;
+    assert!(vouched.contains("status=current"), "{vouched}");
+    assert!(
+        vouched.contains(&format!("peer={origin_url} outcome=fetched")),
+        "{vouched}"
+    );
+    assert!(
+        vouched.contains(&format!("peer={relay_url} outcome=not_published")),
+        "{vouched}"
+    );
+    Ok(())
+}

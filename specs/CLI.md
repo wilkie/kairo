@@ -1434,7 +1434,12 @@ relaying node) or `relay_refused`. `holders --object <id>` lists the
 nodes whose fresh hints (within
 `[federation.discovery] hint_ttl_secs`) name the object, with
 `listed=` saying whether the holder is a configured peer. Hints grant
-nothing: `fetch` and `sync` still pull only from listed peers.
+nothing by default: `fetch` and `sync` pull only from listed peers.
+With `[federation.discovery] use_hints = true` and `vouched_by =
+"<actor>"` (normally this node's actor), `sync` also tries a followed
+object's hinted holders that the `vouched_by` actor trusts with
+`federation:index`, directly or as the relaying node, after the listed
+peers and with each holder's node actor pinned.
 
 `kairo push` (`DECISIONS.md` §26 sub-decisions 5–6) is for a node the
 peer can't pull from. It sends the peer the object's closure

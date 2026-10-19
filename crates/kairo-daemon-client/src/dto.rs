@@ -511,7 +511,7 @@ pub struct FollowStatusDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct FederationRunDto {
     pub id: u64,
-    /// `sync` or `inbox`.
+    /// `sync`, `inbox`, or `discover`.
     pub kind: String,
     /// The follow, for a sync.
     pub follow: Option<String>,

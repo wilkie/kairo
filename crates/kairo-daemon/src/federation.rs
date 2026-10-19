@@ -8,6 +8,8 @@
 //!
 //! - processes the inbox if `inbox_secs` have passed since the last
 //!   pass (one pass at a time);
+//! - runs discovery (`DECISIONS.md` §29) if `interval_secs` have passed
+//!   since the last pass (one at a time);
 //! - starts every follow whose last attempt is `interval_secs` old (or
 //!   that has never been tried), as long as fewer than
 //!   `max_concurrent` are running, and never the same follow twice.
@@ -25,7 +27,9 @@ use std::time::Duration;
 
 use kairo_config::FederationConfig;
 use kairo_core::Timestamp;
-use kairo_federation_service::{receive_inbox, sync_one, ReceiveOutcome};
+use kairo_federation_service::{
+    discover, receive_inbox, sync_one, DiscoverOutcome, ReceiveOutcome,
+};
 use kairo_store::{FilesystemStore, Follow, FollowStore};
 
 /// Runs kept for status.
@@ -35,6 +39,7 @@ pub const MAX_RUNS: usize = 50;
 pub enum RunKind {
     Sync(Follow),
     Inbox,
+    Discover,
 }
 
 /// One engine run, for status (`DAEMON.md` §14: operational, not
@@ -73,6 +78,8 @@ pub struct FederationService {
     running: Mutex<BTreeSet<Follow>>,
     inbox_running: AtomicBool,
     last_inbox: AtomicI64,
+    discover_running: AtomicBool,
+    last_discover: AtomicI64,
     runs: Mutex<VecDeque<Run>>,
     next_run: AtomicU64,
 }
@@ -91,6 +98,8 @@ impl FederationService {
             running: Mutex::new(BTreeSet::new()),
             inbox_running: AtomicBool::new(false),
             last_inbox: AtomicI64::new(i64::MIN),
+            discover_running: AtomicBool::new(false),
+            last_discover: AtomicI64::new(i64::MIN),
             runs: Mutex::new(VecDeque::new()),
             next_run: AtomicU64::new(1),
         })
@@ -198,6 +207,36 @@ impl FederationService {
         });
     }
 
+    fn start_discover(self: &Arc<Self>, config: &FederationConfig, config_path: PathBuf) {
+        if self.discover_running.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.last_discover
+            .store(Timestamp::now().seconds(), Ordering::Release);
+        let service = Arc::clone(self);
+        let config = config.clone();
+        tokio::task::spawn_blocking(move || {
+            let id = service.begin(RunKind::Discover);
+            let result = match discover(&service.store, &config, config_path) {
+                Ok(outcomes) => {
+                    let learned = outcomes
+                        .iter()
+                        .filter(|outcome| {
+                            matches!(
+                                outcome,
+                                DiscoverOutcome::Learned { .. } | DiscoverOutcome::Relayed { .. }
+                            )
+                        })
+                        .count();
+                    format!("outcomes={} learned={learned}", outcomes.len())
+                }
+                Err(error) => format!("error: {error}"),
+            };
+            service.finish(id, result);
+            service.discover_running.store(false, Ordering::Release);
+        });
+    }
+
     fn store_inbox_len(&self) -> usize {
         use kairo_store::InboxStore;
         self.store
@@ -226,7 +265,16 @@ impl FederationService {
             .saturating_add(i64::try_from(config.sync.inbox_secs).unwrap_or(i64::MAX))
             <= now;
         if inbox_due {
-            self.start_inbox(&config, config_path);
+            self.start_inbox(&config, config_path.clone());
+        }
+        let has_sources = !config.peers.is_empty() || !config.bootstrap.is_empty();
+        let discover_due = self
+            .last_discover
+            .load(Ordering::Acquire)
+            .saturating_add(i64::try_from(config.sync.interval_secs).unwrap_or(i64::MAX))
+            <= now;
+        if has_sources && discover_due {
+            self.start_discover(&config, config_path);
         }
         let follows = match self.store.list_follows() {
             Ok(follows) => follows,

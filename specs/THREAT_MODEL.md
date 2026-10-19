@@ -362,6 +362,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | `DECISIONS.md` §27. Resolution is keyed by truster (§18), so a fetched opinion only ever answers "what does *its signer* think". The CLI labels non-local trusters `imported`, and `verify object` and the inspector show only the local truster. A fetch pulls exactly one published chain; each statement must be the requested truster's, in the requested scope, and verify against the truster's key events, which come first. A published chain includes withdrawals. `forget` removes an imported truster's opinions entirely. |
 | **Residual risk** | A peer can withhold a newer opinion it holds (a later withdrawal) like any record (§5.15); fetching the same chain from more peers narrows that. Following imported opinions transitively is discovery's to bound (§18 sub-decision 5). |
 
+### 5.22 Hint poisoning
+
+| | |
+|---|---|
+| **Adversary** | §4.2, §4.6 (a peer, bootstrap node, or relay feeding discovery) |
+| **Attack** | Make a node believe some node holds an object it doesn't, or that a URL it controls is another node's; flood hints; or get sync to pull from an attacker-chosen host. |
+| **Mechanism** | `DECISIONS.md` §29. An inventory is signed by its node actor over its node actor, base URL, objects, and time; a direct one must match the source's authenticated node document, and a relayed one must verify against that node's bundled actor export through the pull verifier. A relay serves only inventories it fetched directly from nodes its actor trusts with `federation:index`, and never relays relayed ones. Hints expire (`hint_ttl_secs`) and only a strictly newer one replaces another. Hints are never permissions: `fetch` and `sync` use only listed peers unless `use_hints` is on, and then only for holders the configured `vouched_by` actor trusts with `federation:index`, directly or as the relay; each such pull pins the holder's node actor, so a hint pointing at another host fails at the node document. |
+| **Residual risk** | A node trusted for `federation:index` (or one it relays) can claim objects it doesn't serve, costing a failed pull per sync until the hint expires. A node can list objects to learn who asks, though pulls are anonymous reads anyway. Inventories reveal what a node publishes, which a pull already does. |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by
@@ -631,7 +640,7 @@ shipped):
   §5.18 node impersonation (federation pulls), §5.19 forged or
   replayed node requests, §5.20 push flooding and unwanted mirroring
   (announcements and uploads), §5.21 reading a peer's opinions as
-  local trust: all defended.
+  local trust, §5.22 hint poisoning: all defended.
 - §5.11 attestation-key compromise, §5.12 malicious attestation-key
   add: defended **only by detection** in shipped v1, not by
   in-protocol response. `ActorAttestationKeyRevocation` is designed

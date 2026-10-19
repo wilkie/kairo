@@ -1452,7 +1452,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`sync` or `inbox`."
+            "description": "`sync`, `inbox`, or `discover`."
           },
           "result": {
             "type": [

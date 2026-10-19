@@ -24,9 +24,10 @@ use kairo_federation_core::FedErrorCode;
 use kairo_federation_http::client::{
     fetch_trust, normalize_peer_url, pull_object, Limits, PullError, PullOptions,
 };
+use kairo_statement::{TrustDecision, TrustScope};
 use kairo_store::{
     FilesystemStore, Follow, FollowStore, PeerOutcome, PullLogStore, PullRecord, StoreError,
-    SyncAttempt,
+    SyncAttempt, TrustResolver,
 };
 
 /// The pull client's limits with `config`'s overrides.
@@ -143,10 +144,60 @@ pub fn sync_follow(
         };
         peers.push(sync_from(store, &url, follow, &options));
     }
+    if let Follow::Object(object) = follow {
+        for (url, holder) in vouched_holders(store, config, object, &peers) {
+            let options = PullOptions {
+                limits: limits.clone(),
+                expected_node_actor: Some(holder),
+                require_complete: false,
+            };
+            peers.push(sync_from(store, &url, follow, &options));
+        }
+    }
     SyncAttempt {
         at: Timestamp::now(),
         peers,
     }
+}
+
+/// With `use_hints` (`DECISIONS.md` §29 sub-decision 5): fresh hinted
+/// holders of `object` not already tried, that `vouched_by` trusts
+/// with `federation:index`, or whose hint was relayed by a node it so
+/// trusts. Each comes with its node actor, which the pull pins.
+fn vouched_holders(
+    store: &FilesystemStore,
+    config: &FederationConfig,
+    object: &kairo_core::ObjectId,
+    tried: &[PeerOutcome],
+) -> Vec<(String, kairo_core::ActorId)> {
+    let (true, Some(voucher)) = (config.discovery.use_hints, &config.discovery.vouched_by) else {
+        return Vec::new();
+    };
+    let Ok(hints) = holders(store, config, object) else {
+        return Vec::new();
+    };
+    let trusts = |node: &kairo_core::ActorId| {
+        store
+            .latest_trust(voucher, node, &TrustScope::federation_index())
+            .ok()
+            .flatten()
+            .is_some_and(|signed| {
+                signed.unsigned().body().decision() == Some(TrustDecision::Trusted)
+            })
+    };
+    let mut chosen: Vec<(String, kairo_core::ActorId)> = Vec::new();
+    for hint in hints {
+        let Ok(url) = normalize_peer_url(&hint.base_url) else {
+            continue;
+        };
+        let already = tried.iter().any(|outcome| outcome.peer_url() == url)
+            || chosen.iter().any(|(chosen, _)| chosen == &url);
+        let vouched = trusts(&hint.node_actor) || hint.learned_via.as_ref().is_some_and(trusts);
+        if !already && vouched {
+            chosen.push((url, hint.node_actor));
+        }
+    }
+    chosen
 }
 
 fn sync_from(

@@ -227,6 +227,13 @@ The application layer may perform rich filtering, ranking, and trust-aware inter
 
 ## Node Discovery
 
+Holder discovery's first form is inventories (`DECISIONS.md` §29): a
+node signs the list of objects it publishes, serves it at
+`/federation/v1/inventory`, and relays, one hop, those of nodes it
+trusts with `federation:index` at `/federation/v1/inventories`.
+Receivers keep the newest per node as hints, which answer "who holds
+this object?" and grant nothing.
+
 A node SHOULD expose a well-known document:
 
 ```text

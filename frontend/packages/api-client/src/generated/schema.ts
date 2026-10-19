@@ -622,7 +622,7 @@ export interface components {
             follow?: string | null;
             /** Format: int64 */
             id: number;
-            /** @description `sync` or `inbox`. */
+            /** @description `sync`, `inbox`, or `discover`. */
             kind: string;
             /**
              * @description `current` / `not_current` for a sync, counts for the inbox, or

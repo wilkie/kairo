@@ -1377,7 +1377,9 @@ Sub-decisions:
      optional `node_actor`), are asked for inventories and nothing
      else (§18 sub-decision 1, §29).
    - `[federation.discovery]`: `hint_ttl_secs` (604 800; zero is
-     invalid) and `use_hints` (`false`) (§29 sub-decision 5).
+     invalid), `use_hints` (`false`), and `vouched_by` (the actor whose
+     `federation:index` trust vouches for hints; required by
+     `use_hints`) (§29 sub-decision 5).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -2676,8 +2678,12 @@ Sub-decisions:
    - `kairo federation holders --object <id>` lists the hinted holders.
    - With `[federation.discovery] use_hints = true` (default
      `false`), syncing a followed object also tries each hinted holder
-     whose inventory this node's actor trusts directly with
-     `federation:index`, or learned from a node it so trusts. The pull
+     that this node's actor trusts directly with `federation:index`,
+     or whose hint was relayed by a node it so trusts. *Amended when
+     slice 4 was built:* the sync engine runs without a node identity
+     (the CLI and the daemon both drive it), so "this node's actor" is
+     named in config, `vouched_by = "<actor-id>"`, which `use_hints`
+     requires. The pull
      goes to the hint's `base_url` with the holder's node actor
      pinned, so a hint pointing somewhere else fails safely. Listed
      peers are still tried first.
@@ -2702,5 +2708,7 @@ Affected specs:
   endpoint, in slice 1).
 - Slice 2 implemented `hints.json`, `[[federation.bootstrap]]`,
   `[federation.discovery]`, `kairo federation discover`, and
-  `holders`; slice 3 the relay (`GET /federation/v1/inventories`).
+  `holders`; slice 3 the relay (`GET /federation/v1/inventories`);
+  slice 4 the daemon's discovery runs, `use_hints` with `vouched_by`,
+  `FEDERATION.md`, and `THREAT_MODEL.md` §5.22.
 

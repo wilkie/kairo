@@ -544,7 +544,7 @@ inventory step, and 7 come from comparing this design with Radicle
       holders`.
    3. ~~**Relay.**~~ *(shipped)* `GET /federation/v1/inventories` with actor exports,
       one hop under `federation:index` trust.
-   4. **Use.** The daemon fetches inventories on the schedule, and
+   4. ~~**Use.**~~ *(shipped)* The daemon fetches inventories on the schedule, and
       `use_hints` lets sync pull followed objects from trusted hinted
       holders.
 
