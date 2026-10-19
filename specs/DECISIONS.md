@@ -2712,3 +2712,74 @@ Affected specs:
   slice 4 the daemon's discovery runs, `use_hints` with `vouched_by`,
   `FEDERATION.md`, and `THREAT_MODEL.md` §5.22.
 
+---
+
+## 30. On-Demand Fetch
+
+Decision: a node can **acquire** an object from wherever it is held:
+the sources sync uses (listed peers, then, with `use_hints`, hinted
+holders vouched for by `federation:index` trust), with those that
+served the object before tried first. Acquisition is always available
+explicitly, and reads that find data missing may queue one when the
+operator opts in. A read never waits for it. This is `DAEMON.md` §9,
+deferred by §28 sub-decision 6 until discovery could say who holds
+what (§29).
+
+Sub-decisions:
+
+1. **Sources and order.** The allowed sources are exactly §28's and
+   §29's: every `[[federation.peers]]` entry, then, with
+   `[federation.discovery] use_hints`, each fresh hinted holder the
+   `vouched_by` actor trusts with `federation:index` (directly or as
+   its relay), pinned. Among them, the ones the object's provenance
+   names (§16 sub-decision 8) come first, most recently seen first,
+   since they held it before. Provenance never adds a source: a peer
+   that served the object once under `--allow-peer` and isn't listed
+   or vouched for isn't tried. Provenance entries that aren't URLs
+   (`push:<node>`, `file:<path>`) are skipped. The acquisition stops at
+   the first source that serves the object.
+
+2. **Explicit acquisition.** `kairo fetch --object <id>` without
+   `--from`, and `POST /api/v1/federation/fetch` with `{ object }`,
+   acquire any object a source publishes, including one this node has
+   never held. A pull is incremental, so for a held object only the
+   missing parts move. An acquired object isn't followed; `follow`
+   does that.
+
+3. **On read, opt-in.** With `[federation.on_demand] on_read = true`
+   (default `false`), a daemon read that finds an object missing (a
+   `404` for its genesis) or incomplete (`verify-object` reporting
+   incomplete chains or missing records) queues an acquisition of it.
+   That includes objects never held: following a link to one fetches
+   it. Off by default, because a read then tells peers what this node
+   is looking at, and can bring objects into the store.
+
+4. **Reads never wait.** A read answers at once from what is held. It
+   says what it did with an `acquisition` field on `verify-object`, or
+   a `Kairo-Acquisition` response header on a `404`: `queued`,
+   `running`, `cooling_down`, `no_sources`, or `disabled`. A later read
+   sees the result. The daemon must not fabricate completeness
+   (`DAEMON.md` §9): what's still missing stays indeterminate.
+
+5. **Bounds.** At most one acquisition per object at a time, sharing
+   `[federation.sync] max_concurrent` with sync. After an attempt, a
+   read-triggered acquisition of the same object waits
+   `[federation.on_demand] cooldown_secs` (default 300); explicit
+   requests skip the cooldown but not the single flight. Results are
+   recorded as `fetch` runs in `GET /api/v1/federation/status`.
+
+Rationale: acquisition reuses the sync sources so there is one rule for
+where data may come from; provenance only reorders them. Keeping read
+triggers opt-in respects that a read becoming network traffic is a
+privacy and storage decision the operator makes. Never waiting keeps
+reads fast and bounded whatever the peers do.
+
+Affected specs:
+
+- `DAEMON.md` §9 — implemented as above.
+- `API.md` — `POST /api/v1/federation/fetch`, the `acquisition` field,
+  the `Kairo-Acquisition` header.
+- `CLI.md` §15 — `kairo fetch` without `--from`.
+- §17 — `[federation.on_demand]`.
+- `PHASE_2_FEDERATION.md` §4 — the slice plan.
+

@@ -564,6 +564,15 @@ inventory step, and 7 come from comparing this design with Radicle
    kairo://<node>/<object>` fetches over §22 and verifies every
    commit against the object's signed revisions, the way
    `git-remote-rad` makes Radicle usable with ordinary Git.
+8. **On-demand fetch**, *decided in `DECISIONS.md` §30* (`DAEMON.md`
+   §9). Slices:
+   1. **Acquire.** The engine's provenance-ordered acquisition over the
+      sync sources, and `kairo fetch --object <id>` without `--from`.
+   2. **The daemon.** `POST /api/v1/federation/fetch`,
+      `[federation.on_demand]`, single flight, cooldown, and `fetch`
+      runs in status.
+   3. **On read.** `on_read`: `verify-object` and object reads queue an
+      acquisition, reported in `acquisition` / `Kairo-Acquisition`.
 
 Also, as a review rather than a feature: wherever statement order
 decides correctness rather than display, prefer explicit predecessor
