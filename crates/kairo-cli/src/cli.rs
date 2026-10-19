@@ -237,8 +237,16 @@ pub(crate) enum FederationCommand {
     /// its key.
     Learn {
         /// The peer's base URL.
+        #[arg(long, required_unless_present = "file", conflicts_with = "file")]
+        from: Option<String>,
+        /// An actor export (`kairo actor export`) instead, for a node
+        /// that can't be reached. Check its actor id out of band before
+        /// trusting it.
         #[arg(long)]
-        from: String,
+        file: Option<PathBuf>,
+        /// Refuse a file for any other node actor.
+        #[arg(long, requires = "file")]
+        node_actor: Option<String>,
         /// Learn a peer that isn't listed in the config, for this run
         /// only.
         #[arg(long)]
@@ -847,6 +855,16 @@ pub(crate) enum ActorCommand {
     Import {
         #[arg(long)]
         genesis: PathBuf,
+    },
+    /// Write the actor's genesis and every key event, exactly as
+    /// stored, to one self-verifying file (`specs/DECISIONS.md` §26
+    /// sub-decision 7). A node that can't be reached hands this to a
+    /// peer, which learns it with `kairo federation learn --file`.
+    Export {
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Rotate the actor's active signing key. Generates a fresh
     /// keypair, signs an `ActorKeyRotation` with the prior active

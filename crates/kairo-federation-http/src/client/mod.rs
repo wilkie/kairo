@@ -48,7 +48,6 @@ use std::time::Duration;
 
 use kairo_bundle::closure::{ClosureBundle, ClosureBundleError};
 use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
-use kairo_federation_core::GitAvailability;
 use kairo_federation_core::{
     random_node_nonce, ActorListing, Announcement, AnnouncementAccepted, FedErrorCode,
     NodeAuthorization, NodeDocument, NodeDocumentError, NodeRequest, ObjectListing, RequestBody,
@@ -56,6 +55,7 @@ use kairo_federation_core::{
     MAX_PAGE_LIMIT, STATEMENT_BATCH_PATH, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL,
     SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
+use kairo_federation_core::{ActorExport, BatchedStatement, GitAvailability};
 use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::{ChainScope, GitRevision, StatementKind};
@@ -406,13 +406,16 @@ fn rank(kind: StatementKind) -> u8 {
 enum Source {
     Peer(Peer),
     Bundle(ClosureBundle),
+    /// An actor export file (§26 sub-decision 7): one actor's genesis
+    /// and key events, nothing else.
+    Export(ActorExport),
 }
 
 impl Source {
     fn peer(&self) -> Option<&Peer> {
         match self {
             Self::Peer(peer) => Some(peer),
-            Self::Bundle(_) => None,
+            Self::Bundle(_) | Self::Export(_) => None,
         }
     }
 }
@@ -525,6 +528,93 @@ fn authenticated<'a>(
     let mut budget = 0;
     pull.authenticate(document, &mut budget)?;
     Ok(pull)
+}
+
+/// `actor`'s genesis and every key event, exactly as `store` holds
+/// them, for `kairo actor export` (§26 sub-decision 7).
+pub fn export_actor(store: &FilesystemStore, actor: &ActorId) -> Result<ActorExport, PullError> {
+    let genesis = store.get_actor(actor).map_err(PullError::Store)?;
+    let key_events = store
+        .actor_key_event_ids(actor)
+        .map_err(PullError::Store)?
+        .into_iter()
+        .map(|id| {
+            let bytes = store.get_statement_bytes(&id).map_err(PullError::Store)?;
+            let text = String::from_utf8(bytes).map_err(|error| PullError::Parse {
+                url: format!("statement:{id}"),
+                message: error.to_string(),
+            })?;
+            let statement = serde_json::value::RawValue::from_string(text).map_err(|error| {
+                PullError::Parse {
+                    url: format!("statement:{id}"),
+                    message: error.to_string(),
+                }
+            })?;
+            Ok(BatchedStatement { id, statement })
+        })
+        .collect::<Result<Vec<_>, PullError>>()?;
+    Ok(ActorExport {
+        schema: Default::default(),
+        actor: actor.clone(),
+        genesis: kairo_identity::json::ActorGenesisJson::from_body(&genesis),
+        key_events,
+    })
+}
+
+/// Learn a node from an actor export file, as [`learn_peer`] learns
+/// one from its URL: the genesis must derive the id and declare kind
+/// `node`, and every key event must verify in chain order. `origin`
+/// labels provenance (`file:<path>`). `options.expected_node_actor`
+/// pins the actor.
+pub fn learn_from_export(
+    store: &FilesystemStore,
+    export: ActorExport,
+    origin: String,
+    options: &PullOptions,
+) -> Result<LearnedPeer, PullError> {
+    let actor = export.actor.clone();
+    if let Some(expected) = &options.expected_node_actor {
+        if expected != &actor {
+            return Err(PullError::NodeActorMismatch {
+                expected: expected.clone(),
+                claimed: actor,
+            });
+        }
+    }
+    let genesis = export
+        .genesis
+        .to_body()
+        .map_err(|error| PullError::BadActor {
+            actor: actor.clone(),
+            message: error.to_string(),
+        })?;
+    if genesis.actor_kind() != &kairo_identity::ActorKind::node() {
+        return Err(PullError::BadActor {
+            actor,
+            message: format!(
+                "has actor_kind {:?}; only node actors are learned",
+                genesis.actor_kind().as_str()
+            ),
+        });
+    }
+    let none = ObjectId::from_sha256_digest([0; 32]);
+    let mut pull = Pull::from_source(
+        store,
+        Source::Export(export),
+        (origin.clone(), actor.clone()),
+        false,
+        &none,
+        &options.limits,
+    );
+    let mut budget = 1;
+    pull.check_budget(budget)?;
+    pull.actor(&actor, &mut budget)?;
+    Ok(LearnedPeer {
+        peer_url: origin,
+        node_actor: actor,
+        fetched: pull.report.fetched,
+        already_held: pull.report.already_held,
+    })
 }
 
 /// The local node actor and the key it signs requests with.
@@ -834,6 +924,11 @@ impl Pull<'_> {
         // every missing commit's full closure arrived (§21).
         let peer = match &self.source {
             Source::Peer(peer) => peer,
+            Source::Export(_) => {
+                return Ok(GitOutcome::Unavailable {
+                    missing: missing.len(),
+                })
+            }
             Source::Bundle(bundle) => {
                 // The bundle's pack, possibly thin against what this
                 // cache holds (§26 sub-decision 6), through the same
@@ -916,6 +1011,7 @@ impl Pull<'_> {
     fn listing(&self, object: &ObjectId) -> Result<ObjectListing, PullError> {
         let peer = match &self.source {
             Source::Peer(peer) => peer,
+            Source::Export(_) => return Err(not_in_export(KairoRef::Object(object.clone()))),
             Source::Bundle(bundle) => {
                 let inventory = &bundle.manifest().inventory;
                 let mut listing = ObjectListing {
@@ -1072,6 +1168,7 @@ impl Pull<'_> {
                 Source::Bundle(bundle) => {
                     bundled(bundle.genesis(), KairoRef::Object(object.clone()))?
                 }
+                Source::Export(_) => return Err(not_in_export(record)),
             };
             ingest_genesis(self.store, object, &bytes).map_err(|reason| PullError::Record {
                 record: record.clone(),
@@ -1091,6 +1188,12 @@ impl Pull<'_> {
             Source::Bundle(bundle) => {
                 bundled(bundle.statement(id), KairoRef::Statement(id.clone()))
             }
+            Source::Export(export) => export
+                .key_events
+                .iter()
+                .find(|entry| &entry.id == id)
+                .map(|entry| entry.statement.get().as_bytes().to_vec())
+                .ok_or_else(|| not_in_export(KairoRef::Statement(id.clone()))),
         }
     }
 
@@ -1106,6 +1209,17 @@ impl Pull<'_> {
                 )
             }
             Source::Bundle(bundle) => bundle,
+            Source::Export(export) => {
+                if &export.actor != actor {
+                    return Err(not_in_export(KairoRef::Actor(actor.clone())));
+                }
+                return Ok(ActorListing {
+                    schema: Default::default(),
+                    actor: actor.clone(),
+                    genesis: export.genesis.clone(),
+                    key_events: export.key_events.iter().map(|e| e.id.clone()).collect(),
+                });
+            }
         };
         let key_events = bundle
             .manifest()
@@ -1253,6 +1367,7 @@ impl Pull<'_> {
                 self.limits.max_blob_bytes,
             )?,
             Source::Bundle(bundle) => bundled(bundle.blob(id), record.clone())?,
+            Source::Export(_) => return Err(not_in_export(record)),
         };
         // Every MVP blob is a revision manifest.
         let actual = BlobId::from_bytes(OBJECT_MANIFEST_DOMAIN, &bytes);
@@ -1278,6 +1393,11 @@ fn bundled(
 ) -> Result<Vec<u8>, PullError> {
     read.map_err(bundle_error)?
         .ok_or(PullError::NotInBundle { record })
+}
+
+/// An actor export carries one actor's records only.
+fn not_in_export(record: KairoRef) -> PullError {
+    PullError::NotInBundle { record }
 }
 
 fn bundle_error(error: ClosureBundleError) -> PullError {

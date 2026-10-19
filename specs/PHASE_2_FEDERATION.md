@@ -505,11 +505,10 @@ inventory step, and 7 come from comparing this design with Radicle
       and `/push`; shipped), sending only the delta, with closure
       bundles ingested by `kairo federation receive` through the pull
       verifier (§26 sub-decisions 4, 6, 8).
-   - **Open:** a receiver must hold a pushing node's actor before it
-     can check the upload's signature, and `kairo federation learn`
-     needs the pusher reachable once. A laptop that is never reachable
-     needs another way in: an exported, self-verifying node-actor
-     record the receiver imports, checked by the same verifier.
+   - ~~A receiver must hold a pushing node's actor before it can
+     check the upload's signature~~ *(shipped)*: a node that is never
+     reachable is learned from `kairo actor export`, with `kairo
+     federation learn --file` (§26 sub-decision 7).
 4. **Trust transport** (opt-in, never auto-trusted) and `forget`.
 5. **Daemon `FederationService`**: background sync, on-demand
    fetch of missing closure data (`DAEMON.md` §9). The operator

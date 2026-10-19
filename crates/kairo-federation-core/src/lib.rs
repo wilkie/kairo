@@ -44,8 +44,8 @@ pub use batch::{
 };
 pub use error::{FedErrorBody, FedErrorCode, FedErrorEnvelope, ERROR_SCHEMA};
 pub use listing::{
-    ActorListing, ActorListingError, ActorListingSchema, GitAvailability, ObjectListing,
-    ObjectListingSchema, PublishedObjects, PublishedObjectsSchema,
+    ActorExport, ActorExportSchema, ActorListing, ActorListingError, ActorListingSchema,
+    GitAvailability, ObjectListing, ObjectListingSchema, PublishedObjects, PublishedObjectsSchema,
 };
 pub use node::{
     NodeDocument, NodeDocumentError, NodeDocumentSchema, NodeSignature, UnsignedNodeDocument,

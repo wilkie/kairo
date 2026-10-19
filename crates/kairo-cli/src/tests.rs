@@ -6960,7 +6960,9 @@ fn an_announced_object_is_received_and_mirrored() -> Result<(), Box<dyn std::err
     let learned = run_in(
         home,
         federation(FederationCommand::Learn {
-            from: laptop_url.clone(),
+            from: Some(laptop_url.clone()),
+            file: None,
+            node_actor: None,
             allow_peer: false,
         }),
     )?;
@@ -7060,9 +7062,8 @@ fn announcing_needs_a_published_object_and_one_node_actor() -> Result<(), Box<dy
 #[test]
 fn a_pushed_object_is_received_without_reaching_the_pusher(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // DECISIONS.md §26: the home node learns the laptop once, while the
-    // laptop is reachable; after that the laptop pushes and the home
-    // node never connects back to it.
+    // DECISIONS.md §26: the laptop pushes and the home node never
+    // connects to it.
     let laptop_dir = tempfile::TempDir::new()?;
     let laptop = laptop_dir.path();
     let laptop_node = create_node_actor(laptop)?;
@@ -7084,18 +7085,41 @@ fn a_pushed_object_is_received_without_reaching_the_pusher(
              publish = true\n"
         ),
     )?;
-    {
-        let (laptop_url, stop, server) = serve_federation(laptop, &laptop_node)?;
-        run_in(
-            home,
-            federation(FederationCommand::Learn {
-                from: laptop_url,
-                allow_peer: true,
-            }),
-        )?;
-        drop(stop);
-        server.join().map_err(|_| "laptop server panicked")?;
-    }
+    // The laptop is never served: the home node learns it from an
+    // export, carried out of band, after a key rotation the export
+    // must carry for the push's signature to check.
+    run_in(
+        laptop,
+        Command::Actor {
+            command: ActorCommand::RotateKey {
+                actor: laptop_node.clone(),
+            },
+        },
+    )?;
+    let export = laptop.join("laptop-node.json");
+    let exported = run_in(
+        laptop,
+        Command::Actor {
+            command: ActorCommand::Export {
+                actor: laptop_node.clone(),
+                out: export.clone(),
+            },
+        },
+    )?;
+    assert!(exported.contains("key_events = 1"), "{exported}");
+    let learned = run_in(
+        home,
+        federation(FederationCommand::Learn {
+            from: None,
+            file: Some(export),
+            node_actor: Some(laptop_node.clone()),
+            allow_peer: false,
+        }),
+    )?;
+    assert!(
+        learned.contains(&format!("node_actor = {laptop_node} (pinned)")),
+        "{learned}"
+    );
     run_in(
         home,
         Command::Trust {

@@ -270,6 +270,7 @@ kairo manifest inspect [path]
 kairo actor id --genesis <actor-genesis.json>
 kairo actor create --kind <kind> (--attestation-key <hex> | --generate-attestation-key)...
 kairo actor import --genesis <actor-genesis.json>
+kairo actor export --actor <id> --out <path>
 kairo actor rotate-key --actor <id>
 kairo actor revoke-key --actor <id> --key <key-id> [--retroactive] [--reason <text>] [--brick-actor]
 kairo actor key-history --actor <id> [--json]
@@ -1336,6 +1337,7 @@ kairo federation unpublish --object <id>
 kairo federation published
 kairo federation provenance --ref <typed-ref>
 kairo federation learn --from <url> [--allow-peer]
+kairo federation learn --file <path> [--node-actor <id>]
 kairo federation announce --object <id>... --to <url> --base-url <url> [--node <actor>] [--allow-peer]
 kairo federation receive
 kairo push --object <id> --to <url> [--node <actor>] [--allow-peer]
@@ -1360,7 +1362,14 @@ federation must be enabled, and the peer must be listed unless
   `node_actor` pins it. Run it before accepting a peer's
   announcements, and again after the peer rotates its key: the
   receiving server checks keys only against what the store holds, and
-  never fetches on a request's behalf.
+  never fetches on a request's behalf. A node that is never reachable
+  (a laptop) runs `kairo actor export --actor <node> --out <path>`
+  instead, and the peer runs `learn --file <path>`: the file holds the
+  genesis and every key event as stored, and is verified like a pull
+  (`DECISIONS.md` §26 sub-decision 7). It's self-verifying, but the
+  actor id is what the trust grant names, so check it out of band;
+  `--node-actor` refuses a file for any other actor. `learn --file`
+  makes no network request, so `--offline` doesn't refuse it.
 - `announce` signs as the local node actor (`--node`, or the one node
   actor in the keystore) and tells the peer that the objects, which
   must be published here, have new state at `--base-url`, this node's

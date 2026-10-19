@@ -13,8 +13,8 @@ use kairo_config::{Config, ConfigSource};
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_federation_core::Announcement;
 use kairo_federation_http::client::{
-    announce, ingest_closure_bundle, learn_peer, normalize_peer_url, pull_object, push, GitOutcome,
-    Limits, NodeSigner, PullOptions, PullReport,
+    announce, export_actor, ingest_closure_bundle, learn_from_export, learn_peer,
+    normalize_peer_url, pull_object, push, GitOutcome, Limits, NodeSigner, PullOptions, PullReport,
 };
 use kairo_identity::ActorKind;
 use kairo_keystore::Keystore;
@@ -39,9 +39,19 @@ pub(crate) fn run_federation_command(
     offline: bool,
 ) -> Result<String, CliError> {
     match command {
-        FederationCommand::Learn { from, allow_peer } => {
-            run_learn(&from, allow_peer, offline, paths)
-        }
+        FederationCommand::Learn {
+            from: Some(from),
+            allow_peer,
+            ..
+        } => run_learn(&from, allow_peer, offline, paths),
+        FederationCommand::Learn {
+            file: Some(file),
+            node_actor,
+            ..
+        } => run_learn_file(&file, node_actor.as_deref(), paths),
+        FederationCommand::Learn { .. } => Err(CliError::NodeActorChoice {
+            message: "federation learn needs --from <url> or --file <path>".to_owned(),
+        }),
         FederationCommand::Announce {
             objects,
             to,
@@ -278,6 +288,85 @@ fn run_learn(
     Ok(format!(
         "peer = {}\nnode_actor = {} ({pin})\nfetched = {}\nalready_held = {}\n",
         learned.peer_url, learned.node_actor, learned.fetched, learned.already_held
+    ))
+}
+
+/// `kairo federation learn --file`: learn a node from its actor export
+/// (§26 sub-decision 7). No network, so `--offline` doesn't refuse it.
+fn run_learn_file(
+    file: &std::path::Path,
+    expected: Option<&str>,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let wrap = |source| CliError::PeerRequest {
+        action: "learning the node",
+        source,
+    };
+    let bad_file = |message: String| CliError::ActorExportFile {
+        path: file.to_path_buf(),
+        message,
+    };
+    let bytes = std::fs::read(file).map_err(|error| bad_file(error.to_string()))?;
+    let export: kairo_federation_core::ActorExport =
+        serde_json::from_slice(&bytes).map_err(|error| bad_file(error.to_string()))?;
+    let expected_node_actor = expected
+        .map(|raw| {
+            ActorId::new(raw.to_owned()).map_err(|source| CliError::ParseActorId {
+                actor: raw.to_owned(),
+                source,
+            })
+        })
+        .transpose()?;
+    let (config, _) = load_config(paths)?;
+    let options = PullOptions {
+        limits: limits_from(&config.federation.limits),
+        expected_node_actor,
+        require_complete: false,
+    };
+    let store = open_store(paths)?;
+    let learned = learn_from_export(&store, export, format!("file:{}", file.display()), &options)
+        .map_err(|error| wrap(Box::new(error)))?;
+    let pin = if expected.is_some() {
+        "pinned"
+    } else {
+        "unpinned; check this id out of band before trusting it"
+    };
+    Ok(format!(
+        "file = {}\nnode_actor = {} ({pin})\nfetched = {}\nalready_held = {}\n",
+        file.display(),
+        learned.node_actor,
+        learned.fetched,
+        learned.already_held
+    ))
+}
+
+/// `kairo actor export`: an actor's genesis and key events in one file.
+pub(crate) fn run_actor_export(
+    actor: &str,
+    out: &std::path::Path,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let actor = ActorId::new(actor.to_owned()).map_err(|source| CliError::ParseActorId {
+        actor: actor.to_owned(),
+        source,
+    })?;
+    let store = open_store(paths)?;
+    let export = export_actor(&store, &actor).map_err(|source| CliError::PeerRequest {
+        action: "exporting the actor",
+        source: Box::new(source),
+    })?;
+    let bad_file = |message: String| CliError::ActorExportFile {
+        path: out.to_path_buf(),
+        message,
+    };
+    let mut bytes =
+        serde_json::to_vec_pretty(&export).map_err(|error| bad_file(error.to_string()))?;
+    bytes.push(b'\n');
+    std::fs::write(out, bytes).map_err(|error| bad_file(error.to_string()))?;
+    Ok(format!(
+        "actor = {actor}\nkey_events = {}\nout = {}\n",
+        export.key_events.len(),
+        out.display()
     ))
 }
 

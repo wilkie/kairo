@@ -156,3 +156,21 @@ impl std::error::Error for ActorListingError {
         }
     }
 }
+
+schema_tag!(
+    /// `"kairo.fed.actor-export.v1"`.
+    ActorExportSchema = "kairo.fed.actor-export.v1"
+);
+
+/// An actor's genesis and key events in one self-verifying file, for
+/// learning a node that can't be reached (`specs/DECISIONS.md` §26
+/// sub-decision 7). Each key event is the stored JSON, exactly.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActorExport {
+    pub schema: ActorExportSchema,
+    #[serde(with = "crate::wire_id::one")]
+    pub actor: ActorId,
+    pub genesis: ActorGenesisJson,
+    pub key_events: Vec<crate::BatchedStatement>,
+}

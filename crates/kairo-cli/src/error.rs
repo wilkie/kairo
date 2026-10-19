@@ -116,6 +116,11 @@ pub(crate) enum CliError {
     ListInbox {
         source: kairo_store::StoreError,
     },
+    /// An actor export file couldn't be read, parsed, or written.
+    ActorExportFile {
+        path: PathBuf,
+        message: String,
+    },
     /// The peer isn't under `[[federation.peers]]` and `--allow-peer`
     /// wasn't given.
     PeerNotAllowed {
@@ -606,6 +611,9 @@ impl fmt::Display for CliError {
                  `kairo federation publish --object {object}` first"
             ),
             Self::ListInbox { source } => write!(f, "failed to read the inbox: {source}"),
+            Self::ActorExportFile { path, message } => {
+                write!(f, "actor export {}: {message}", path.display())
+            }
             Self::PeerNotAllowed { url, config } => write!(
                 f,
                 "peer {url} is not listed in {}; add a [[federation.peers]] entry with \
@@ -1114,6 +1122,7 @@ impl Error for CliError {
             | Self::FederationDisabled { .. }
             | Self::OfflineFetch
             | Self::NodeActorChoice { .. }
+            | Self::ActorExportFile { .. }
             | Self::NotPublished { .. }
             | Self::PeerNotAllowed { .. }
             | Self::BundleGitManifest { .. }

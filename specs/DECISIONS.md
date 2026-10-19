@@ -2369,6 +2369,18 @@ Sub-decisions:
      `kairo fetch` (listed peer or `--allow-peer`, pin honored).
      Re-learning picks up a rotated key; until then the new key is
      refused as unknown.
+   - A pusher that is never reachable (a laptop) is learned from a
+     file instead: `kairo actor export --actor <id> --out <path>`
+     writes `{ schema: "kairo.fed.actor-export.v1", actor, genesis,
+     key_events: [{ id, statement }] }`, the genesis and every key
+     event exactly as stored, and `kairo federation learn --file
+     <path>` ingests it through the pull verifier's actor step: the
+     genesis must derive `actor` and declare kind `node`, and each key
+     event must verify, in chain order, against the keys before it.
+     The file is self-verifying, so it can travel any way; what the
+     operator must check out of band is the actor id, which is what
+     the `federation:push` trust grant names. `--node-actor <id>`
+     refuses a file for any other actor.
    - The announcement body is `{ schema: "kairo.fed.announce.v1",
      base_url, objects }`, with 1 to 256 distinct objects. `base_url`
      is where the receiver pulls from. It is the announcer's word,

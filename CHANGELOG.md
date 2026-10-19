@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Learning a node from a file (`DECISIONS.md` §26 sub-decision 7).**
+  `kairo actor export --actor <id> --out <path>` writes an actor's
+  genesis and every key event, exactly as stored
+  (`kairo.fed.actor-export.v1`). `kairo federation learn --file
+  <path> [--node-actor <id>]` verifies it like a pull and stores it,
+  so a node that is never reachable, such as a laptop, can push.
+
 - **Upload by push, sending only the delta (`DECISIONS.md` §26
   sub-decisions 6 and 8).**
   - `kairo push --object <id> --to <url>` sends the peer the object's

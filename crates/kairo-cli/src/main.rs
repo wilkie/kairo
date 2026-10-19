@@ -212,6 +212,9 @@ fn run_actor_command(command: ActorCommand, paths: &StorePaths) -> Result<String
             generate_attestation_keys,
             attestation_threshold,
         ),
+        ActorCommand::Export { actor, out } => {
+            commands::federation::run_actor_export(&actor, &out, paths)
+        }
         ActorCommand::RotateKey { actor } => run_actor_rotate_key(paths, actor),
         ActorCommand::RevokeKey {
             actor,

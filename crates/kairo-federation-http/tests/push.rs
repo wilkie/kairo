@@ -339,3 +339,130 @@ fn a_delta_bundle_ingests_only_where_the_rest_is_held() {
         other => panic!("expected a fixity failure, got {other:?}"),
     }
 }
+
+// --- learning a node from a file (§26 sub-decision 7) -----------------
+
+/// The seeded node actor with its key rotated to `[78; 32]`.
+fn rotated_node(seeded: &Seeded) -> StatementId {
+    let node = kairo_test_support::store::CreatedActor {
+        actor_id: seeded.node_actor.clone(),
+        signing: node_key(),
+        attestation_keys: Vec::new(),
+        genesis: seeded.store.get_actor(&seeded.node_actor).expect("genesis"),
+    };
+    seeded
+        .store
+        .put_actor_key_rotation(&sign_chained(
+            &seeded.store,
+            &node,
+            &format!("actor:{}", seeded.node_actor),
+            1_700_000_500,
+            kairo_statement::ActorKeyRotationBody::new(
+                kairo_identity::SecretSigningKey::ed25519([78; 32]).public_key(),
+                None,
+            ),
+        ))
+        .expect("rotate")
+}
+
+fn export_json(seeded: &Seeded) -> serde_json::Value {
+    let export = kairo_federation_http::client::export_actor(&seeded.store, &seeded.node_actor)
+        .expect("export");
+    serde_json::to_value(&export).expect("json")
+}
+
+fn learn(
+    store: &FilesystemStore,
+    json: &serde_json::Value,
+    pin: Option<&kairo_core::ActorId>,
+) -> Result<kairo_federation_http::client::LearnedPeer, PullError> {
+    let export = serde_json::from_value(json.clone()).expect("export parses");
+    kairo_federation_http::client::learn_from_export(
+        store,
+        export,
+        "file:node.json".to_owned(),
+        &PullOptions {
+            expected_node_actor: pin.cloned(),
+            ..PullOptions::default()
+        },
+    )
+}
+
+#[test]
+fn a_node_is_learned_from_its_export_with_its_key_history() {
+    let seeded = seed();
+    let rotation = rotated_node(&seeded);
+    let json = export_json(&seeded);
+    assert_eq!(json["schema"], "kairo.fed.actor-export.v1");
+
+    let dir = TempDir::new().expect("tempdir");
+    let store = FilesystemStore::open(dir.path()).expect("store");
+    let learned = learn(&store, &json, Some(&seeded.node_actor)).expect("learn");
+    assert_eq!(learned.node_actor, seeded.node_actor);
+    assert_eq!(learned.fetched, 2, "genesis and the rotation");
+    assert_eq!(
+        store.actor_key_event_ids(&seeded.node_actor).expect("keys"),
+        vec![rotation.clone()]
+    );
+    let provenance = store
+        .get_provenance(&KairoRef::Statement(rotation))
+        .expect("provenance");
+    assert_eq!(provenance[0].peer_url, "file:node.json");
+    // Learning again changes nothing.
+    let again = learn(&store, &json, None).expect("relearn");
+    assert_eq!((again.fetched, again.already_held), (0, 2));
+}
+
+#[test]
+fn a_bad_export_is_refused() {
+    let seeded = seed();
+    rotated_node(&seeded);
+    let json = export_json(&seeded);
+    let fresh = || {
+        let dir = TempDir::new().expect("tempdir");
+        let store = FilesystemStore::open(dir.path()).expect("store");
+        (dir, store)
+    };
+
+    let (_dir, store) = fresh();
+    let other = seeded.alice.clone();
+    assert!(matches!(
+        learn(&store, &json, Some(&other)),
+        Err(PullError::NodeActorMismatch { .. })
+    ));
+    assert!(
+        store.get_actor(&seeded.node_actor).is_err(),
+        "a pin is checked first"
+    );
+
+    // Claims an actor its genesis doesn't derive.
+    let mut wrong = json.clone();
+    wrong["actor"] = serde_json::Value::from(seeded.alice.to_string());
+    let (_dir, store) = fresh();
+    assert!(matches!(
+        learn(&store, &wrong, None),
+        Err(PullError::BadActor { .. })
+    ));
+
+    // A person, not a node.
+    let alice = kairo_federation_http::client::export_actor(&seeded.store, &seeded.alice)
+        .expect("export alice");
+    let (_dir, store) = fresh();
+    assert!(matches!(
+        learn(&store, &serde_json::to_value(&alice).unwrap(), None),
+        Err(PullError::BadActor { .. })
+    ));
+
+    // A key event changed after export fails fixity.
+    let mut tampered = json.clone();
+    let statement = &mut tampered["key_events"][0]["statement"];
+    statement["created_at"] = serde_json::Value::from("2023-11-14T22:20:00Z");
+    let (_dir, store) = fresh();
+    assert!(matches!(
+        learn(&store, &tampered, None),
+        Err(PullError::Record {
+            reason: RecordRejection::Fixity { .. },
+            ..
+        })
+    ));
+}
