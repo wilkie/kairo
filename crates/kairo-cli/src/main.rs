@@ -151,7 +151,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
         }) => commands::federation::run_fetch(
             &commands::federation::FetchArgs {
                 object: &object,
-                from: &from,
+                from: from.as_deref(),
                 allow_peer,
                 require_complete,
                 json,

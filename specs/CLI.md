@@ -1037,6 +1037,15 @@ statement outside their chain under `flagged`. Gaps don't fail the
 pull unless `--require-complete` is given, which exits 11 after
 storing what verified.
 
+Without `--from`, `kairo fetch --object <id>` acquires the object from
+wherever it is held (`DECISIONS.md` §30): the listed peers, then, with
+`[federation.discovery] use_hints`, vouched hinted holders, pinned as
+`sync` pins them, with the ones the object's provenance names tried
+first, most recent first. Provenance only reorders; it never adds a
+source. It stops at the first source that serves the object, which may
+be one this node never held, and prints `acquired`, `peers_tried`, and
+one line per peer tried. `--require-complete` needs `--from`.
+
 Fetches object data from federation or a remote source.
 
 Usage:

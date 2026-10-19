@@ -2779,7 +2779,8 @@ Affected specs:
 - `DAEMON.md` §9 — implemented as above.
 - `API.md` — `POST /api/v1/federation/fetch`, the `acquisition` field,
   the `Kairo-Acquisition` header.
-- `CLI.md` §15 — `kairo fetch` without `--from`.
+- `CLI.md` §15 — `kairo fetch` without `--from` (implemented in
+  slice 1, with the engine's `acquire`).
 - §17 — `[federation.on_demand]`.
 - `PHASE_2_FEDERATION.md` §4 — the slice plan.
 

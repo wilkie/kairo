@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **Acquisition (`DECISIONS.md` §30, on-demand fetch slice 1).**
+  `kairo fetch --object <id>` without `--from` fetches the object from
+  wherever it is held: the listed peers and vouched hinted holders,
+  those that served it before first, stopping at the first that serves
+  it.
+
 - **Using hints (`DECISIONS.md` §29, discovery slice 4).** The daemon
   runs discovery every `interval_secs`. With `[federation.discovery]
   use_hints = true` and `vouched_by = "<actor>"`, sync also pulls a

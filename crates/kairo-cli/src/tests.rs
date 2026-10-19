@@ -6270,7 +6270,7 @@ fn parses_fetch_and_provenance_commands() {
         Ok(Cli {
             command: Some(Command::Fetch { object, from, allow_peer: false, require_complete: false, json: false }),
             ..
-        }) if object == OBJECT_ID && from == "https://archive.example.org"
+        }) if object == OBJECT_ID && from.as_deref() == Some("https://archive.example.org")
     ));
     let record = format!("statement:{OBJECT_ID}");
     assert!(matches!(
@@ -6322,7 +6322,7 @@ fn fetch_refuses_plain_http_to_a_remote_host() -> Result<(), Box<dyn std::error:
         store_dir.path(),
         Command::Fetch {
             object: OBJECT_ID.to_owned(),
-            from: "http://archive.example.org".to_owned(),
+            from: Some("http://archive.example.org".to_owned()),
             allow_peer: true,
             require_complete: false,
             json: false,
@@ -6495,7 +6495,7 @@ fn fetched_object_verifies_from_the_cache_alone() -> Result<(), Box<dyn std::err
         local,
         Command::Fetch {
             object: object.clone(),
-            from: base_url.clone(),
+            from: Some(base_url.clone()),
             allow_peer: false,
             require_complete: false,
             json: false,
@@ -6561,7 +6561,7 @@ fn fetch_command(from: &str, allow_peer: bool) -> Command {
     Command::Fetch {
         object: OBJECT_ID.to_owned(),
         // Port 9 (discard) on loopback: nothing should ever connect.
-        from: from.to_owned(),
+        from: Some(from.to_owned()),
         allow_peer,
         require_complete: false,
         json: false,
@@ -7724,5 +7724,105 @@ fn use_hints_syncs_from_holders_vouched_for_by_index_trust(
         vouched.contains(&format!("peer={relay_url} outcome=not_published")),
         "{vouched}"
     );
+    Ok(())
+}
+
+#[test]
+fn fetch_without_from_acquires_from_the_sync_sources_provenance_first(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §30 sub-decisions 1 and 2.
+    let fetch = |store: &std::path::Path, object: &str, from: Option<String>| {
+        run_in(
+            store,
+            Command::Fetch {
+                object: object.to_owned(),
+                from,
+                allow_peer: true,
+                require_complete: false,
+                json: false,
+            },
+        )
+    };
+    let publish = |store: &std::path::Path, object: &str| {
+        run_in(
+            store,
+            federation(FederationCommand::Publish {
+                object: object.to_owned(),
+            }),
+        )
+    };
+
+    // A holds X. B holds X (pulled from A) and Y. C holds Z.
+    let a_dir = tempfile::TempDir::new()?;
+    let a = a_dir.path();
+    let a_node = create_node_actor(a)?;
+    let x = create_cli_object(a)?;
+    publish(a, &x)?;
+    let (a_url, _a_stop, _a_server) = serve_federation(a, &a_node)?;
+
+    let b_dir = tempfile::TempDir::new()?;
+    let b = b_dir.path();
+    let b_node = create_node_actor(b)?;
+    fetch(b, &x, Some(a_url.clone()))?;
+    publish(b, &x)?;
+    let y = create_cli_object(b)?;
+    publish(b, &y)?;
+    let (b_url, _b_stop, _b_server) = serve_federation(b, &b_node)?;
+
+    let c_dir = tempfile::TempDir::new()?;
+    let c = c_dir.path();
+    let c_node = create_node_actor(c)?;
+    let z = create_cli_object(c)?;
+    publish(c, &z)?;
+    let (c_url, _c_stop, _c_server) = serve_federation(c, &c_node)?;
+
+    // Listed: B first, then A. C is not listed.
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    std::fs::write(
+        local.join("config.toml"),
+        format!(
+            "[[federation.peers]]\nurl = \"{b_url}\"\n\n[[federation.peers]]\nurl = \"{a_url}\"\n"
+        ),
+    )?;
+
+    // Fetched from A once: A is tried first, though B is listed first.
+    fetch(local, &x, Some(a_url.clone()))?;
+    let again = fetch(local, &x, None)?;
+    assert!(
+        again.contains("acquired = true\npeers_tried = 1\n"),
+        "{again}"
+    );
+    assert!(
+        again.contains(&format!("peer={a_url} outcome=fetched")),
+        "{again}"
+    );
+
+    // Never held: config order, stopping at the first that serves it.
+    let new = fetch(local, &y, None)?;
+    assert!(new.contains("acquired = true\npeers_tried = 1\n"), "{new}");
+    assert!(
+        new.contains(&format!("peer={b_url} outcome=fetched")),
+        "{new}"
+    );
+
+    // Fetched once from unlisted C under --allow-peer: provenance never
+    // adds a source, so only the listed peers are tried.
+    fetch(local, &z, Some(c_url.clone()))?;
+    let unlisted = fetch(local, &z, None)?;
+    assert!(
+        unlisted.contains("acquired = false\npeers_tried = 2\n"),
+        "{unlisted}"
+    );
+    assert!(!unlisted.contains(&c_url), "{unlisted}");
+
+    // No sources at all.
+    let empty_dir = tempfile::TempDir::new()?;
+    let none = fetch(empty_dir.path(), &x, None)?;
+    assert!(
+        none.contains("acquired = false\npeers_tried = 0\n"),
+        "{none}"
+    );
+    assert!(none.contains("note = no sources"), "{none}");
     Ok(())
 }

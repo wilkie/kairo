@@ -142,8 +142,11 @@ pub(crate) enum Command {
         #[arg(long)]
         object: String,
         /// The peer's base URL, e.g. `https://archive.example.org`.
+        /// Without it, acquire the object from wherever it is held: the
+        /// listed peers (and vouched hinted holders), the ones that served
+        /// it before first (`specs/DECISIONS.md` §30).
         #[arg(long)]
-        from: String,
+        from: Option<String>,
         /// Pull from a peer that isn't listed in the config, for this
         /// run only. The config is not edited.
         #[arg(long)]
@@ -152,7 +155,7 @@ pub(crate) enum Command {
         /// still incomplete after the pull: a peer withheld statements
         /// a signer's later statements name (`specs/DECISIONS.md`
         /// §23). Without it, gaps are reported and the pull succeeds.
-        #[arg(long)]
+        #[arg(long, requires = "from")]
         require_complete: bool,
         #[arg(long)]
         json: bool,

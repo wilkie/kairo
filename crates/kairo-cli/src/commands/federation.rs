@@ -154,7 +154,8 @@ fn format_published(objects: &[PublishedObject]) -> String {
 
 pub(crate) struct FetchArgs<'a> {
     pub(crate) object: &'a str,
-    pub(crate) from: &'a str,
+    /// `None` acquires from wherever it is held (§30).
+    pub(crate) from: Option<&'a str>,
     pub(crate) allow_peer: bool,
     pub(crate) require_complete: bool,
     pub(crate) json: bool,
@@ -174,7 +175,10 @@ pub(crate) struct FetchArgs<'a> {
 /// claim before fetching anything.
 pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
     let object = parse_object(args.object.to_owned())?;
-    let (config, url, peer) = peer_policy(args.from, args.allow_peer, args.offline, paths)
+    let Some(from) = args.from else {
+        return run_acquire(&object, args.json, args.offline, paths);
+    };
+    let (config, url, peer) = peer_policy(from, args.allow_peer, args.offline, paths)
         .map_err(|error| error.into_cli(CliError::Fetch))?;
     let pinned = peer.and_then(|peer| peer.node_actor);
     let options = PullOptions {
@@ -750,6 +754,63 @@ fn describe_received(item: &Received) -> String {
             format!("object={object} failed from={from} reason=\"{reason}\"")
         }
     }
+}
+
+/// `kairo fetch --object <id>` without `--from`: the engine's
+/// acquisition (`DECISIONS.md` §30 sub-decisions 1 and 2).
+fn run_acquire(
+    object: &ObjectId,
+    json: bool,
+    offline: bool,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    if offline {
+        return Err(CliError::OfflineFetch);
+    }
+    let (config, source) = load_config(paths)?;
+    let store = open_store(paths)?;
+    let attempt = kairo_federation_service::acquire(
+        &store,
+        &config.federation,
+        source.path().to_path_buf(),
+        object,
+    )
+    .map_err(|error| match error {
+        kairo_federation_service::SyncError::Disabled { config } => {
+            CliError::FederationDisabled { config }
+        }
+        kairo_federation_service::SyncError::Store(source) => CliError::Follows { source },
+    })?;
+    if json {
+        let peers: Vec<serde_json::Value> = attempt
+            .peers
+            .iter()
+            .map(|peer| serde_json::to_value(peer).unwrap_or(serde_json::Value::Null))
+            .collect();
+        let value = serde_json::json!({
+            "object": object.to_string(),
+            "acquired": attempt.succeeded(),
+            "peers": peers,
+        });
+        let mut text = serde_json::to_string_pretty(&value).unwrap_or_default();
+        text.push('\n');
+        return Ok(text);
+    }
+    let mut output = format!(
+        "object = {object}\nacquired = {}\npeers_tried = {}\n",
+        attempt.succeeded(),
+        attempt.peers.len()
+    );
+    for peer in &attempt.peers {
+        output.push_str(&format!("  {}\n", describe_peer_outcome(peer)));
+    }
+    if attempt.peers.is_empty() {
+        output.push_str(
+            "note = no sources: list peers under [[federation.peers]], or enable \
+             [federation.discovery] use_hints\n",
+        );
+    }
+    Ok(output)
 }
 
 /// How the peer stood in the config for this pull.

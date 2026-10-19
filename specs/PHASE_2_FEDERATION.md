@@ -566,7 +566,7 @@ inventory step, and 7 come from comparing this design with Radicle
    `git-remote-rad` makes Radicle usable with ordinary Git.
 8. **On-demand fetch**, *decided in `DECISIONS.md` §30* (`DAEMON.md`
    §9). Slices:
-   1. **Acquire.** The engine's provenance-ordered acquisition over the
+   1. ~~**Acquire.**~~ *(shipped)* The engine's provenance-ordered acquisition over the
       sync sources, and `kairo fetch --object <id>` without `--from`.
    2. **The daemon.** `POST /api/v1/federation/fetch`,
       `[federation.on_demand]`, single flight, cooldown, and `fetch`

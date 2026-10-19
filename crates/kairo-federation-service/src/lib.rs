@@ -26,8 +26,8 @@ use kairo_federation_http::client::{
 };
 use kairo_statement::{TrustDecision, TrustScope};
 use kairo_store::{
-    FilesystemStore, Follow, FollowStore, PeerOutcome, PullLogStore, PullRecord, StoreError,
-    SyncAttempt, TrustResolver,
+    FilesystemStore, Follow, FollowStore, PeerOutcome, ProvenanceStore, PullLogStore, PullRecord,
+    StoreError, SyncAttempt, TrustResolver,
 };
 
 /// The pull client's limits with `config`'s overrides.
@@ -158,6 +158,87 @@ pub fn sync_follow(
         at: Timestamp::now(),
         peers,
     }
+}
+
+/// Acquire `object` from wherever it is held (`DECISIONS.md` §30
+/// sub-decisions 1 and 2): the sync sources, those its provenance names
+/// first (most recent first), stopping at the first that serves it.
+/// Nothing is recorded as a follow.
+pub fn acquire(
+    store: &FilesystemStore,
+    config: &FederationConfig,
+    config_path: PathBuf,
+    object: &kairo_core::ObjectId,
+) -> Result<SyncAttempt, SyncError> {
+    if !config.enabled {
+        return Err(SyncError::Disabled {
+            config: config_path,
+        });
+    }
+    let limits = limits_from(&config.limits);
+    let follow = Follow::Object(object.clone());
+    let mut peers = Vec::new();
+    for (url, pin) in acquisition_sources(store, config, object) {
+        let options = PullOptions {
+            limits: limits.clone(),
+            expected_node_actor: pin,
+            require_complete: false,
+        };
+        let outcome = sync_from(store, &url, &follow, &options);
+        let served = outcome.succeeded();
+        peers.push(outcome);
+        if served {
+            break;
+        }
+    }
+    Ok(SyncAttempt {
+        at: Timestamp::now(),
+        peers,
+    })
+}
+
+/// The sync sources for `object` with pins, reordered so the peers its
+/// provenance names come first, most recently seen first. Provenance
+/// only reorders: it never adds a source (§30 sub-decision 1).
+fn acquisition_sources(
+    store: &FilesystemStore,
+    config: &FederationConfig,
+    object: &kairo_core::ObjectId,
+) -> Vec<(String, Option<kairo_core::ActorId>)> {
+    let mut sources: Vec<(String, Option<kairo_core::ActorId>)> = config
+        .peers
+        .iter()
+        .filter_map(|peer| {
+            normalize_peer_url(&peer.url)
+                .ok()
+                .map(|url| (url, peer.node_actor.clone()))
+        })
+        .collect();
+    for (url, holder) in vouched_holders(store, config, object, &[]) {
+        if !sources.iter().any(|(listed, _)| listed == &url) {
+            sources.push((url, Some(holder)));
+        }
+    }
+    let mut seen: Vec<(String, Timestamp)> = store
+        .get_provenance(&kairo_core::KairoRef::Object(object.clone()))
+        .unwrap_or_default()
+        .into_iter()
+        // `push:` and `file:` entries aren't URLs.
+        .filter_map(|entry| {
+            normalize_peer_url(&entry.peer_url)
+                .ok()
+                .map(|url| (url, entry.fetched_at))
+        })
+        .collect();
+    seen.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    let rank = |url: &str| {
+        seen.iter()
+            .position(|(seen, _)| seen == url)
+            .unwrap_or(usize::MAX)
+    };
+    // Stable: unseen sources keep config order after the seen ones.
+    sources.sort_by_key(|(url, _)| rank(url));
+    sources
 }
 
 /// With `use_hints` (`DECISIONS.md` §29 sub-decision 5): fresh hinted
