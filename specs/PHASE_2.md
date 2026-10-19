@@ -436,9 +436,14 @@ concurrently against the same store.
 `specs/ENVIRONMENTS.md` describe the long-term build and run model. Phase 2
 is the spec-first pass plus a minimum executable.
 
-- [ ] Reconcile the four specs with each other and with what's been
+Decided in `DECISIONS.md` §33: build targets in manifest schema 1,
+local resolution into a hashed resolved manifest, `kairo build
+--plan-only`, a config- and trust-gated native executor, a signed
+`BuildResult`, and `kairo reproduce`.
+
+- [x] Reconcile the four specs with each other and with what's been
       implemented since they were written.
-- [ ] Decide MVP scope: just declarative build description in `kairo.toml`?
+- [x] Decide MVP scope: just declarative build description in `kairo.toml`?
       Or actual build invocation (`kairo build --object <id>`)?
 - [ ] Implement deterministic build planning (planner consults the snapshot
       frontier and resolved dependencies).
@@ -458,7 +463,7 @@ core value proposition for science / build-reproducibility users.
 (objects that declare they can provide a tool/runtime/library/environment).
 Required by §7 if builds need toolchains.
 
-- [ ] Decide MVP scope of provider declaration in `kairo.toml`.
+- [x] Decide MVP scope of provider declaration in `kairo.toml`.
 - [ ] Implement provider resolution against the local store.
 - [ ] Add CLI: `kairo provider list / show / resolve`.
 

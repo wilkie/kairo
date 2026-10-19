@@ -214,6 +214,9 @@ Build and run statements refer to this manifest hash.
 
 ## 7. Build Planning
 
+> Per `DECISIONS.md` §33, the planner produces the plan and executes
+> nothing: steps 4–10 below are the executor's and the caller's.
+
 To plan a build, the planner:
 
 ```text

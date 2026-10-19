@@ -691,6 +691,10 @@ schemas/canonical/object-revision-v1.md
 
 ### 4.3 Build Statement
 
+> **Superseded in part by `DECISIONS.md` §33.** New statement types use the
+> PascalCase, `version: 1` convention; the build statement is `BuildResult`.
+> The dotted sketches below are kept for the fields they suggest.
+
 Records a successful build:
 
 {

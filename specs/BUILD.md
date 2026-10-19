@@ -140,6 +140,8 @@ artifact snapshot + subpath
 
 ## 8. Build Statements
 
+> Superseded by `DECISIONS.md` §33 sub-decision 8 (`BuildResult`).
+
 Successful builds produce signed statements.
 
 Example:

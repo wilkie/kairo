@@ -1347,7 +1347,7 @@ Sub-decisions:
 
 2. **Strict and incremental.** Unknown sections and keys are errors,
    so a misspelled `node_actor` can't quietly turn pinning off.
-   `[api]`, `[policy]`, `[runtime]`, and the rest of `DAEMON.md` §15
+   `[api]`, `[policy]`, and the rest of `DAEMON.md` §15
    are added as their features land; until then they are rejected,
    not ignored. `kairo config validate` reports errors and `kairo
    config path` shows the location (`CLI.md` §27). The CLI never
@@ -1382,6 +1382,11 @@ Sub-decisions:
      invalid), `use_hints` (`false`), and `vouched_by` (the actor whose
      `federation:index` trust vouches for hints; required by
      `use_hints`) (§29 sub-decision 5).
+
+   `[runtime]` (§33 sub-decision 4): `allow_local_process` (`false`),
+   `timeout_secs` (3600; zero is invalid), and
+   `[[runtime.host.provides]]` entries (`provides`, optional
+   `version`).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -2914,3 +2919,192 @@ Affected specs:
 - `CLI.md` — `kairo bundle import` and `--unverified` (all
   implemented).
 
+
+---
+
+## 33. Build MVP: Build Targets, Local Resolution, Native Executor, `BuildResult`
+
+Decision: Phase 2 §7–§8 ship a minimum that actually builds. An object
+declares build targets in `kairo.toml` (manifest schema 1, extended
+in place). A resolver
+pins the target's requirements against this node's store and host into
+a hashed resolved manifest. `kairo build --plan-only` stops there.
+Without it, a best-effort native executor runs the target, gated by
+config and by trust in the revision's signer, stores the declared
+outputs as an artifact tree, and keeps an unsigned execution record.
+The acting actor then signs a `BuildResult` statement. `kairo
+reproduce` re-runs a cited result and compares artifacts. Run targets,
+containers, provider chains and signed provides claims come later.
+
+This resolves the conflicts the specs had among themselves and with
+the code:
+
+- **Who executes.** PLANNER §7 has the planner run commands and sign.
+  Per §6 (CORE_LIBRARY is canonical), planning produces a plan and
+  executes nothing; the executor runs it; the caller decides what to
+  store and sign (EXECUTOR §14.3).
+- **Build results are keyed on snapshots**, not revisions (§2, §19).
+  FEDERATION's `resolution-success:…:revision:…` examples are stale.
+- **Statement names.** New types use the PascalCase, `version: 1`
+  convention of the implemented kinds. The dotted
+  `kairo.statement.{build,provides,observation,inference}.v1` sketches
+  in STATEMENTS §4.3–§4.6 and BUILD §8 are superseded; this entry
+  defines `BuildResult`, and the others are defined when built.
+- **Build results stay off the frontier.** OBJECT §2.3's "future
+  `Build` statements join the frontier" is withdrawn: a build is
+  evidence about a snapshot, so it must not change the snapshot.
+- **"Capability" has three senses.** Actor delegation (GLOSSARY,
+  CAPABILITIES) and runtime permission (SANDBOX) keep the word. What
+  an object declares under `[[provides]]` and requires through
+  `kind = "provides"` is a **provides label**. Labels are
+  `kind:specifier(:detail)*`; environment labels are spelled
+  `environment:<os>/<arch>` with `x86-64`, not `x86_64`
+  (`environment:linux/x86-64`).
+- **CLI shape.** `kairo build <snapshot-ref>` (CLI.md §17) and `kairo
+  provider list|show|resolve` (PHASE_2 §8). PHASE_2's `--object` and
+  FEDERATION's `kairo providers` are dropped.
+
+Sub-decisions:
+
+1. **Manifest schema 1, extended in place.** No objects exist outside
+   development yet, so the manifest stays `schema = 1` rather than
+   bumping, and the canonical form grows two things. The first is
+   `[[build.targets]]`: `name` (`[a-z][a-z0-9-]*`, unique), `command`
+   (a non-empty argument array, run without a shell), `workdir`
+   (relative, default `"."`), nested `[[build.targets.dependencies]]`
+   (the same two kinds as top-level `[[dependencies]]`), and
+   `[[build.targets.outputs]]` (`name`, `path`, `artifact_path`,
+   `kind = "file" | "directory"`). A target's requirements are the
+   top-level dependencies plus its own. The second is a provides
+   dependency's `version` requirement, which the parser accepts today
+   and then drops. Versions use Cargo's requirement syntax (`">=4,
+   <5"`). Both are part of the canonical manifest, so `manifest_hash`
+   pins the recipe. Both are omitted from the canonical form when
+   absent, so a manifest without them hashes as it does today.
+   `[run]` stays rejected until run targets land.
+
+2. **Local resolution only** (`kairo-resolver`). A provides
+   requirement is satisfied by either:
+
+   - a **host label**, configured under `[[runtime.host.provides]]`
+     (`provides`, optional `version`);
+   - the `[[provides]]` of an object this node holds, at its current
+     snapshot.
+
+   An object requirement is satisfied by the pinned snapshot, or by
+   the newest held version tag that meets its `version`. Labels match
+   exactly. Ties are broken deterministically, host labels before
+   objects and then by object id; the losers are listed in the plan's
+   output. Anything unsatisfied fails resolution and names the
+   requirement. No signed provides claims, provider chains or hosting
+   rules yet.
+
+3. **The resolved manifest** is the canonical JSON document
+   `kairo.resolved-manifest.v1`. It holds:
+
+   - the object, snapshot and target;
+   - each requirement as requested;
+   - what resolved it: `host` with its label and version, or `object`
+     with object and snapshot.
+
+   It is stored as a blob, and its `BlobId` is the plan hash.
+   `kairo build --plan-only` prints it and writes nothing else.
+   Object dependencies are materialized as their source trees,
+   read-only. Using a dependency's *artifact* needs a build result to
+   point at and comes later.
+
+4. **Policy.** `[runtime]` joins the config (§17):
+
+   - `allow_local_process` (default `false`);
+   - `timeout_secs` (3600; zero is invalid);
+   - `[[runtime.host.provides]]`.
+
+   A build is refused, exit 7 (policy denied), unless
+   `allow_local_process` is on. It is also refused unless the
+   revision's signer is an actor in this node's keystore or is trusted
+   at `general` scope by one. `--plan-only` needs neither. EXECUTOR
+   §21's "clearly display host access risk" is met by the build output
+   naming the executor `native (unsandboxed)`.
+
+5. **Best-effort native executor** (`kairo-build`). It runs the
+   command with no shell in a fresh temporary directory that holds a
+   copy of the snapshot's tree; dependencies are materialized beside
+   it under `deps/<object>`. The environment is scrubbed to `PATH`,
+   `HOME` (the temp dir), `LANG=C`, `SOURCE_DATE_EPOCH` (the
+   revision's timestamp), and `KAIRO_*` variables naming the
+   workspace and each dependency path. The wall-clock limit kills the
+   process group. Only declared outputs are collected; a missing one
+   fails the build (EXECUTOR §14.1). Paths are confined to the
+   workspace (EXECUTOR §10.3). There is no network or filesystem
+   isolation, and the record says so.
+
+6. **Artifacts are blob trees**, not Git trees and not objects (BUILD
+   §12). Each output file is stored as a blob. The canonical JSON
+   document `kairo.artifact-tree.v1` lists `artifact_path`, blob id and
+   executable bit, sorted by path. It is stored as a blob too, and its
+   `BlobId` is the artifact id (BUILD §6/§9's "artifact snapshot").
+
+7. **Execution records** are unsigned local JSON under
+   `<store>/executions/`. Each records the plan hash, snapshot,
+   target, executor id and version, the host (OS, architecture,
+   kernel, tool versions for the resolved host labels), start and end
+   times, exit status, the artifact id, and log blobs. They are
+   operational evidence (EXECUTOR §15). The bundle section for them
+   (PACKAGE §4.4) comes with `kairo reproduce`.
+
+8. **`BuildResult` statement**, version 1, signed by the acting actor
+   after every completed build, success or failure. Its body holds:
+
+   - `object`, `snapshot`, `target`;
+   - `resolved_manifest` (`BlobId`);
+   - `result` (`success` or `failure`);
+   - `artifact` (`BlobId`, present on success only);
+   - `executor` (e.g. `native/1`);
+   - `environment` (`BlobId` of the host section of the record).
+
+   It is indexed by object but never enters the frontier. Timeouts and
+   policy refusals sign nothing: they are operational errors, not
+   build outcomes. The federation `ResolutionSucceeded` token is a
+   view over successful `BuildResult`s and their resolved manifests,
+   defined with discovery step two, not a second statement now.
+
+9. **`kairo reproduce <statement-ref>`** loads the cited
+   `BuildResult`'s resolved manifest, materializes exactly what it
+   pins, re-runs the target under the same policy, and signs its own
+   `BuildResult` citing the same manifest. It reports `matches` or
+   `differs`, with the two artifact ids. A difference is a finding,
+   not an error (exit 0). Strict reproduction mode (EXECUTOR §16.1)
+   is deferred.
+
+10. **The CLI drives this in-process.** `kairo build` and `kairo
+    reproduce` call the resolver and executor directly, as other
+    write commands do through Phase A (§13). A daemon RuntimeService
+    with task progress (DAEMON §8) comes later and must reuse the same
+    crates.
+
+Rationale: §7's value is doing work, and every piece here is the
+smallest that is honest about its guarantees: the recipe is pinned by
+the manifest hash, the inputs by the resolved manifest, the output by
+a content hash, and the claim by a signature, while the executor
+plainly says it is not a sandbox. Gating on config plus signer trust
+meets EXECUTOR §21 without the policy engine. One result type with an
+outcome keeps the statement set small until federation needs more.
+
+Affected specs:
+
+- `BUILD.md` — targets, dependencies, outputs, statement (§2–§8).
+- `PLANNER.md` — §1/§7 (who executes), §6 (resolved manifest shape),
+  label spelling.
+- `EXECUTOR.md` — §21 (the MVP local executor).
+- `STATEMENTS.md` — §4.3–§4.6 superseded; `BuildResult` added.
+- `OBJECT.md` — §2.3 (build results off the frontier), §4 (build
+  targets).
+- `schemas/canonical/object-manifest-v1.md` (build targets, provides
+  dependency `version`); `build-result-v1.md`, `resolved-manifest-v1.md`,
+  `artifact-tree-v1.md` (new).
+- `CLI.md` — §17 `kairo build`, `kairo reproduce`, `kairo provider`.
+- `GLOSSARY.md` — provides label.
+- `FEDERATION.md` — snapshot-keyed resolution tokens.
+- `PROJECT_LAYOUT.md` — `kairo-resolver`, `kairo-build` first;
+  `kairo-planner`/`kairo-provider` when chains land.
+- `PHASE_2.md` §7–§8.

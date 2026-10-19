@@ -64,9 +64,9 @@ contributions, taken together, define the Object's effective state. A
 frontier is *selected*, not derived: it is named directly as a finite set of
 statement IDs rather than computed from graph topology. The MVP selection
 rule is "follow the actor's `ObjectBranch` for `(object, name)` to its
-`ObjectRevision`," producing a single-element frontier; future statement
-types (`Provides`, `Build`, `Observation`, ...) join the frontier per facet,
-at most one currently-active statement per facet.
+`ObjectRevision`," producing a single-element frontier. Build results,
+observations and other evidence about a snapshot never join its frontier
+(`DECISIONS.md` §33): they describe a state, so they must not change it.
 
 The frontier is the basis for snapshot identity. Two nodes with the same
 frontier compute the same `SnapshotId`, regardless of which actor's branch
