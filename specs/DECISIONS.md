@@ -2525,3 +2525,82 @@ Affected specs:
   trust is published and fetched.
 - `PHASE_2.md` §4 and §12 — trust transport and `forget`.
 
+---
+
+## 28. FederationService: Follows and Background Sync
+
+Decision: a node keeps current only what its operator **follows**: an
+object, or a (truster, scope) trust chain. A sync engine in
+`kairo-federation-service` pulls every follow from every listed peer,
+and processes the inbox, through the same verifier as `kairo fetch`.
+The daemon runs it on timers; the CLI runs the same engine on demand.
+On-demand fetch when a read finds data missing (`DAEMON.md` §9) waits
+for discovery. This is `PHASE_2_FEDERATION.md` §4 item 5.
+
+Sub-decisions:
+
+1. **Follows are store state.** `kairo federation follow --object
+   <id>` or `--trust-by <actor> --scope <scope>`, and `unfollow`, edit
+   `<store>/federation/follows.json`, like the publish list (§16
+   sub-decision 3); the CLI never edits `config.toml` (§17
+   sub-decision 2). `kairo federation status` lists follows with their
+   last result. Nothing is fetched in the background unless followed.
+
+2. **Sources: every listed peer.** A sync of one follow tries each
+   `[[federation.peers]]` entry, with its pin, and treats `404
+   fed_not_found` as "this peer doesn't publish it", not a failure. A
+   follow is current if some peer served it. Pulling from all of them
+   is the multi-peer defense against withholding (§16 sub-decision 4);
+   peers learned through discovery join later, under §18's rules.
+
+3. **One engine, two drivers.**
+   - The crate `kairo-federation-service` holds the engine, with no
+     scheduler of its own: *sync these follows once* and *process the
+     inbox once*. `kairo federation receive` moves into it.
+   - The daemon (`DAEMON.md` §5.3) runs follows on an interval
+     (`[federation.sync] interval_secs`, default 900) and the inbox
+     every `inbox_secs` (default 30), so announcements and uploads are
+     received without a manual `receive`. At most one run per follow
+     at a time, and at most `max_concurrent` (default 2) pulls; pulls
+     run on the blocking pool.
+   - `kairo federation sync [--object <id> | --trust-by <actor>
+     --scope <scope>]` runs now, directly, and `POST
+     /api/v1/federation/sync` asks the daemon to.
+   - With `[federation] enabled = false` neither runs (`DAEMON.md`
+     §10.1).
+
+4. **Results are recorded per follow.** The last attempt and the last
+   success, each with the peers tried and per-peer outcome (fetched,
+   already held, not published, failed with reason, incomplete
+   chains), go in `follows.json`. `GET /api/v1/federation/status`
+   serves follows and results; the task model (`DAEMON.md` §14) is an
+   in-memory record of runs.
+
+5. **Forgotten trust stays forgotten.** `kairo trust forget` also
+   removes matching trust follows, so background sync never brings a
+   forgotten chain back; only a new `follow` does. No separate deny
+   list.
+
+6. **On-demand fetch is deferred.** `DAEMON.md` §9 needs to know who
+   holds missing data, which is discovery (§4 item 6). Until then an
+   incomplete object reports its gaps, and following it fills them on
+   the next sync. Reads stay network-free.
+
+Rationale: following is the operator's choice of what to hold, as
+publishing is the choice of what to serve, so the two are parallel
+store state. Polling every listed peer needs no new protocol and gets
+the withholding defense for free. Keeping the engine scheduler-free
+means the CLI and daemon can't drift apart.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` §4 item 5 — the slice plan.
+- `DAEMON.md` §5.3, §10, §15 — `FederationService` in the daemon,
+  `[federation.sync]`.
+- `DECISIONS.md` §17 — the `[federation.sync]` keys.
+- `CLI.md` §25 — `follow`, `unfollow`, `sync`; `receive` unchanged in
+  behavior.
+- `API.md` — `GET /api/v1/federation/status`, `POST
+  /api/v1/federation/sync`.
+- `PROJECT_LAYOUT.md` — `kairo-federation-service` is created.
+

@@ -517,12 +517,20 @@ inventory step, and 7 come from comparing this design with Radicle
    chain through the pull verifier; fetched opinions stay the
    truster's; `kairo trust forget` deletes an imported truster's
    opinions.
-5. **Daemon `FederationService`**: background sync, on-demand
-   fetch of missing closure data (`DAEMON.md` §9). The operator
-   surface follows Radicle's seeding and follow policies: which
-   objects to keep in sync, and from all peers or only followed
-   ones. Scoped `ActorTrust` (`DECISIONS.md` §18) is underneath, but
-   the controls should be that simple.
+5. **Daemon `FederationService`**, *decided in `DECISIONS.md` §28*:
+   follows and background sync; on-demand fetch (`DAEMON.md` §9)
+   waits for discovery. Slices, in order:
+   1. **Follows and the engine.** `kairo-federation-service` with
+      `follows.json`, `kairo federation follow | unfollow`, and *sync
+      once* over every listed peer, with per-follow results;
+      `kairo federation sync` and `status` use it. `trust forget`
+      drops matching follows.
+   2. **Inbox in the engine.** `kairo federation receive` moves into
+      `kairo-federation-service` unchanged in behavior.
+   3. **The daemon drives it.** `[federation.sync]` config, interval
+      and inbox timers with single-flight and a concurrency cap,
+      `POST /api/v1/federation/sync`, `GET
+      /api/v1/federation/status`, and an in-memory run record.
 6. **Discovery**, in two steps:
    - **Inventory announcements first.** A node signs and gossips
      which published objects it holds, timestamped, and peers
