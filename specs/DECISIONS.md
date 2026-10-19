@@ -2854,3 +2854,61 @@ Affected specs:
 - `PROJECT_LAYOUT.md` — the `kairo-git-remote` crate (implemented in
   slice 1, with `CLI.md` §15.1 and the peer policy).
 
+---
+
+## 32. Verified Bundle Import
+
+Decision: `kairo bundle import` verifies an object bundle through the
+same verifier as a pull: the bundle is one more source for it, next
+to a peer, a closure bundle, and an actor export (§26 sub-decisions 7
+and 8). Fixity-only import stays available only behind an explicit
+`--unverified`. This closes `PHASE_2.md` §11's gap: until now the
+store had two entry points with different guarantees.
+
+Sub-decisions:
+
+1. **Same checks, same order.** Actor geneses, the object genesis,
+   then revisions before branches and tags, each checked for fixity,
+   section (it names the bundled object), revision ids, and signature
+   against the key state this node holds; then blobs against their
+   hashes; then the bundle's Git pack, if any, through the quarantine
+   (§21), admitted only with every bundled revision's commit closure.
+   Actor chains are reported as for a pull (§23 sub-decision 8).
+
+2. **Stop at the first failure, like a pull.** What verified before it
+   stays; the error names the record and why; re-running after fixing
+   the cause resumes (records already held are skipped).
+
+3. **Missing key state is refused with guidance.** Object bundles
+   deliberately leave key events out (`PACKAGE.md`, the bundle crate's
+   rules), so a statement by a signer who rotated keys can't be checked
+   unless this node already holds their key events. That fails like any
+   bad signature, and the error says how to get the signer's keys:
+   `kairo federation learn --file <their actor export>`, or a `kairo
+   fetch` from a node that has them. Object bundles keep their current
+   contents.
+
+4. **Revoked keys are stored and flagged**, as a pull does (§16
+   sub-decision 7), so nodes don't diverge; `verify object` reports
+   them invalid.
+
+5. **`--unverified`** keeps today's fixity-only import, for archives
+   whose provenance the operator vouches for out of band. Its output
+   says the records were not signature-checked.
+
+6. **Provenance.** Imported records are recorded as coming from
+   `bundle:<path>`, like `push:` and `file:` (§26, §26 sub-decision 7);
+   an `--unverified` import records nothing, as today.
+
+Rationale: every way into the store should give the same guarantee,
+and the pull verifier already encodes it. Refusing missing key state
+(rather than shipping key events in object bundles) keeps the bundle
+format's rule that key knowledge belongs to the actor, and the error
+points at the tools that move it.
+
+Affected specs:
+
+- `PHASE_2.md` §11 — the bundle-import verification item.
+- `PACKAGE.md` — the MVP slice's import semantics.
+- `CLI.md` — `kairo bundle import` and `--unverified`.
+
