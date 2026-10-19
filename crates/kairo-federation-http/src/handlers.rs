@@ -22,13 +22,13 @@ use kairo_federation_core::{
     FedErrorEnvelope, GitAvailability, ObjectListing, PageRequest, PageRequestError,
     PublishedObjects, PushAccepted, PushPlan, PushPlanRequest, RequestBody, StatementBatch,
     StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, INVENTORY_PATH, MAX_PLAN_BYTES, PUSH_PATH,
-    PUSH_PLAN_PATH, STATEMENT_BATCH_PATH, TRUST_PATH, WELL_KNOWN_PATH,
+    PUSH_PLAN_PATH, RELAYED_INVENTORIES_PATH, STATEMENT_BATCH_PATH, TRUST_PATH, WELL_KNOWN_PATH,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_statement::{TrustDecision, TrustScope};
 use kairo_store::{
-    ActorStore, BlobStore, InboxAnnouncement, InboxPut, InboxStore, InboxUpload, StoreError,
-    TrustResolver,
+    ActorStore, BlobStore, HintStore, InboxAnnouncement, InboxPut, InboxStore, InboxUpload,
+    StoreError, TrustResolver,
 };
 use serde::Serialize;
 
@@ -67,6 +67,10 @@ pub(crate) fn router(node: Node) -> Router {
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
         .route(&format!("{API_PREFIX}{TRUST_PATH}"), get(published_trust))
         .route(&format!("{API_PREFIX}{INVENTORY_PATH}"), get(inventory))
+        .route(
+            &format!("{API_PREFIX}{RELAYED_INVENTORIES_PATH}"),
+            get(relayed_inventories),
+        )
         .route(&format!("{API_PREFIX}{TRUST_PATH}/:by"), get(trust_listing))
         .route(&format!("{API_PREFIX}{ANNOUNCE_PATH}"), post(announce))
         .route(&format!("{API_PREFIX}{PUSH_PLAN_PATH}"), post(push_plan))
@@ -1195,6 +1199,60 @@ async fn inventory(State(node): State<Node>) -> Response {
             .as_ref()
             .ok_or_else(|| Fail::new(FedErrorCode::FedStoreError, "store read failed"))?;
         json_response(inventory)
+    })
+    .await
+}
+
+/// `GET /federation/v1/inventories`: the inventories this node relays
+/// (`DECISIONS.md` §29 sub-decision 4). Only hints it fetched from the
+/// node itself (never relayed ones, so reach stays one hop), still
+/// fresh, about a node this node's actor trusts with `federation:index`;
+/// each verbatim, with that node's actor export.
+async fn relayed_inventories(State(node): State<Node>) -> Response {
+    blocking(move || {
+        let ttl = i64::try_from(node.federation.discovery.hint_ttl_secs).unwrap_or(i64::MAX);
+        let fresh_after =
+            kairo_core::Timestamp::from_seconds(kairo_core::Timestamp::now().seconds().saturating_sub(ttl));
+        let hints = node
+            .store
+            .list_hints(fresh_after)
+            .map_err(|e| Fail::store(&e))?;
+        let receiver = &node.document.node_actor;
+        let mut inventories = Vec::new();
+        for hint in hints {
+            if hint.learned_via.is_some() || &hint.node_actor == receiver {
+                continue;
+            }
+            let trusted = node
+                .store
+                .latest_trust(receiver, &hint.node_actor, &TrustScope::federation_index())
+                .map_err(|e| Fail::store(&e))?
+                .is_some_and(|signed| {
+                    signed.unsigned().body().decision() == Some(TrustDecision::Trusted)
+                });
+            if !trusted {
+                continue;
+            }
+            let Ok(raw) = serde_json::value::RawValue::from_string(hint.inventory.clone()) else {
+                tracing::warn!(node = %hint.node_actor, "a stored hint's inventory isn't JSON");
+                continue;
+            };
+            let export = match crate::actor_export::build_actor_export(&node.store, &hint.node_actor) {
+                Ok(export) => export,
+                Err(error) => {
+                    tracing::warn!(node = %hint.node_actor, ?error, "could not export a relayed node");
+                    continue;
+                }
+            };
+            inventories.push(kairo_federation_core::RelayedInventory {
+                inventory: raw,
+                node: export,
+            });
+        }
+        json_response(&kairo_federation_core::RelayedInventories {
+            schema: Default::default(),
+            inventories,
+        })
     })
     .await
 }

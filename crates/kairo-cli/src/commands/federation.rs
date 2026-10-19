@@ -908,7 +908,9 @@ fn run_discover(offline: bool, paths: &StorePaths) -> Result<String, CliError> {
                 }
                 kairo_federation_service::SyncError::Store(source) => CliError::Follows { source },
             })?;
-    let mut output = format!("sources = {}\n", outcomes.len());
+    let sources: std::collections::BTreeSet<&str> =
+        outcomes.iter().map(DiscoverOutcome::source_url).collect();
+    let mut output = format!("sources = {}\n", sources.len());
     for outcome in &outcomes {
         output.push_str(&match outcome {
             DiscoverOutcome::Learned {
@@ -919,6 +921,26 @@ fn run_discover(offline: bool, paths: &StorePaths) -> Result<String, CliError> {
             } => format!(
                 "  source={source_url} outcome=learned node_actor={node_actor} \
                  objects={objects} newer={newer}\n"
+            ),
+            DiscoverOutcome::Relayed {
+                source_url,
+                via,
+                node_actor,
+                objects,
+                newer,
+            } => format!(
+                "  source={source_url} outcome=relayed via={via} node_actor={node_actor} \
+                 objects={objects} newer={newer}\n"
+            ),
+            DiscoverOutcome::RelayRefused {
+                source_url,
+                node_actor,
+                reason,
+            } => format!(
+                "  source={source_url} outcome=relay_refused node_actor={} reason=\"{reason}\"\n",
+                node_actor
+                    .as_ref()
+                    .map_or_else(|| "unknown".to_owned(), ToString::to_string)
             ),
             DiscoverOutcome::Unsupported { source_url } => {
                 format!("  source={source_url} outcome=unsupported\n")

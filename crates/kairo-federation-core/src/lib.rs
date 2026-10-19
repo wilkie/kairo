@@ -46,8 +46,9 @@ pub use batch::{
 };
 pub use error::{FedErrorBody, FedErrorCode, FedErrorEnvelope, ERROR_SCHEMA};
 pub use inventory::{
-    Inventory, InventorySchema, InventoryShapeError, INVENTORY_DOMAIN, INVENTORY_PATH,
-    MAX_INVENTORY_OBJECTS,
+    Inventory, InventorySchema, InventoryShapeError, RelayedInventories, RelayedInventoriesSchema,
+    RelayedInventory, INVENTORY_DOMAIN, INVENTORY_PATH, MAX_INVENTORY_OBJECTS,
+    RELAYED_INVENTORIES_PATH,
 };
 pub use listing::{
     ActorExport, ActorExportSchema, ActorListing, ActorListingError, ActorListingSchema,

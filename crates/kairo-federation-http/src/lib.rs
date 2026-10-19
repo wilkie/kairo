@@ -32,6 +32,7 @@ use tempfile as _;
 #[cfg(test)]
 use tower as _;
 
+mod actor_export;
 #[cfg(feature = "server")]
 mod auth;
 #[cfg(feature = "client")]

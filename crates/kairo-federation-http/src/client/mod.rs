@@ -56,8 +56,8 @@ use kairo_federation_core::{
     SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
 use kairo_federation_core::{
-    ActorExport, BatchedStatement, GitAvailability, Inventory, TrustListing, INVENTORY_PATH,
-    SUPPORTS_INVENTORY, SUPPORTS_TRUST, TRUST_PATH,
+    ActorExport, GitAvailability, Inventory, RelayedInventories, TrustListing, INVENTORY_PATH,
+    RELAYED_INVENTORIES_PATH, SUPPORTS_INVENTORY, SUPPORTS_TRUST, TRUST_PATH,
 };
 use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
@@ -536,31 +536,12 @@ fn authenticated<'a>(
 /// `actor`'s genesis and every key event, exactly as `store` holds
 /// them, for `kairo actor export` (§26 sub-decision 7).
 pub fn export_actor(store: &FilesystemStore, actor: &ActorId) -> Result<ActorExport, PullError> {
-    let genesis = store.get_actor(actor).map_err(PullError::Store)?;
-    let key_events = store
-        .actor_key_event_ids(actor)
-        .map_err(PullError::Store)?
-        .into_iter()
-        .map(|id| {
-            let bytes = store.get_statement_bytes(&id).map_err(PullError::Store)?;
-            let text = String::from_utf8(bytes).map_err(|error| PullError::Parse {
-                url: format!("statement:{id}"),
-                message: error.to_string(),
-            })?;
-            let statement = serde_json::value::RawValue::from_string(text).map_err(|error| {
-                PullError::Parse {
-                    url: format!("statement:{id}"),
-                    message: error.to_string(),
-                }
-            })?;
-            Ok(BatchedStatement { id, statement })
-        })
-        .collect::<Result<Vec<_>, PullError>>()?;
-    Ok(ActorExport {
-        schema: Default::default(),
-        actor: actor.clone(),
-        genesis: kairo_identity::json::ActorGenesisJson::from_body(&genesis),
-        key_events,
+    crate::actor_export::build_actor_export(store, actor).map_err(|error| match error {
+        crate::actor_export::ExportError::Store(error) => PullError::Store(error),
+        crate::actor_export::ExportError::Statement { id, message } => PullError::Parse {
+            url: format!("statement:{id}"),
+            message,
+        },
     })
 }
 
@@ -689,6 +670,87 @@ pub fn fetch_inventory(
         signed_at,
         raw,
     })
+}
+
+/// One verified relayed inventory, or why one wasn't.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayedOutcome {
+    Verified(FetchedInventory),
+    Refused {
+        node: Option<ActorId>,
+        reason: String,
+    },
+}
+
+/// Fetch the inventories the peer relays (`DECISIONS.md` §29
+/// sub-decision 4). The relay is authenticated as for a pull; each
+/// relayed node is learned from its bundled actor export, through the
+/// pull verifier's actor step, and its inventory must verify against
+/// that key state. Entries fail one by one. Returns the relay's node
+/// actor and the outcomes.
+pub fn fetch_relayed(
+    store: &FilesystemStore,
+    peer_url: &str,
+    options: &PullOptions,
+) -> Result<(ActorId, Vec<RelayedOutcome>), PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    if !document.supports(SUPPORTS_INVENTORY) {
+        return Err(PullError::Unsupported {
+            feature: SUPPORTS_INVENTORY,
+        });
+    }
+    let pull = authenticated(store, peer, &document, &options.limits)?;
+    let Some(peer) = pull.source.peer() else {
+        return Err(PullError::Bundle("a relay fetch needs a peer".to_owned()));
+    };
+    let path = format!("{API_PREFIX}{RELAYED_INVENTORIES_PATH}");
+    let url = format!("{}{path}", peer.base_url());
+    let relayed: RelayedInventories = peer.get_json(&path, options.limits.max_batch_bytes)?;
+    let mut outcomes = Vec::new();
+    for entry in relayed.inventories {
+        let claimed = entry.node.actor.clone();
+        let refused = |reason: String| RelayedOutcome::Refused {
+            node: Some(claimed.clone()),
+            reason,
+        };
+        let raw = entry.inventory.get().to_owned();
+        let inventory: Inventory = match serde_json::from_str(&raw) {
+            Ok(inventory) => inventory,
+            Err(error) => {
+                outcomes.push(refused(format!("{url}: {error}")));
+                continue;
+            }
+        };
+        if inventory.node_actor != claimed {
+            outcomes.push(refused(format!(
+                "the inventory is {}'s, the export {claimed}'s",
+                inventory.node_actor
+            )));
+            continue;
+        }
+        if let Err(error) = inventory.validate() {
+            outcomes.push(refused(error.to_string()));
+            continue;
+        }
+        let learn = PullOptions {
+            expected_node_actor: Some(claimed.clone()),
+            ..options.clone()
+        };
+        if let Err(error) = learn_from_export(store, entry.node, format!("relay:{url}"), &learn) {
+            outcomes.push(refused(error.to_string()));
+            continue;
+        }
+        match inventory.verify_signature(store) {
+            Ok(signed_at) => outcomes.push(RelayedOutcome::Verified(FetchedInventory {
+                peer_url: inventory.base_url.clone(),
+                inventory,
+                signed_at,
+                raw,
+            })),
+            Err(error) => outcomes.push(refused(error.to_string())),
+        }
+    }
+    Ok((document.node_actor, outcomes))
 }
 
 /// What [`fetch_trust`] brought in.

@@ -760,3 +760,71 @@ async fn the_inventory_lists_published_objects_signed_by_the_node() {
     let document: NodeDocument = get_json(&router, "/.well-known/kairo-node").await;
     assert!(document.supports("inventory"));
 }
+
+#[tokio::test]
+async fn only_direct_hints_about_index_trusted_nodes_are_relayed() {
+    use kairo_store::{Hint, HintStore};
+    let seeded = seed();
+    let node_signer = CreatedActor {
+        actor_id: seeded.node_actor.clone(),
+        signing: node_key(),
+        attestation_keys: Vec::new(),
+        genesis: seeded.store.get_actor(&seeded.node_actor).expect("genesis"),
+    };
+    // Three other nodes the store knows: trusted, untrusted, and
+    // trusted but only learned by relay.
+    let other = |seed: u8| common::node_actor_with(&seeded.store, seed);
+    let (trusted, untrusted, relayed) = (other(210), other(212), other(214));
+    for node in [&trusted, &relayed] {
+        seeded
+            .store
+            .put_actor_trust(&sign_chained(
+                &seeded.store,
+                &node_signer,
+                &format!("actor:{}", node.actor_id),
+                1_700_000_600,
+                kairo_statement::ActorTrustBody::new(
+                    node.actor_id.clone(),
+                    kairo_statement::TrustScope::federation_index(),
+                    Some(kairo_statement::TrustDecision::Trusted),
+                    None,
+                    None,
+                )
+                .expect("body"),
+            ))
+            .expect("trust");
+    }
+    let now = Timestamp::now();
+    let hint = |node: &CreatedActor, via: Option<kairo_core::ActorId>| Hint {
+        node_actor: node.actor_id.clone(),
+        base_url: "https://other.example.org".to_owned(),
+        objects: Vec::new(),
+        signed_at: now,
+        learned_from: "https://other.example.org".to_owned(),
+        learned_via: via,
+        learned_at: now,
+        inventory: format!("{{\"node\":\"{}\"}}", node.actor_id),
+    };
+    let long_ago = Timestamp::from_seconds(0);
+    for put in [
+        hint(&trusted, None),
+        hint(&untrusted, None),
+        hint(&relayed, Some(seeded.alice.clone())),
+    ] {
+        seeded.store.put_hint(&put, long_ago).expect("hint");
+    }
+
+    let relays: kairo_federation_core::RelayedInventories =
+        get_json(&router(&seeded), "/federation/v1/inventories").await;
+    let nodes: Vec<_> = relays
+        .inventories
+        .iter()
+        .map(|r| r.node.actor.clone())
+        .collect();
+    assert_eq!(nodes, vec![trusted.actor_id.clone()]);
+    assert_eq!(
+        relays.inventories[0].inventory.get(),
+        format!("{{\"node\":\"{}\"}}", trusted.actor_id),
+        "relayed verbatim"
+    );
+}

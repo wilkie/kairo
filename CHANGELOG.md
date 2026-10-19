@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **Relayed inventories (`DECISIONS.md` §29, discovery slice 3).**
+  `GET /federation/v1/inventories` relays, one hop, the inventories a
+  node fetched directly from nodes its actor trusts with
+  `federation:index`, each verbatim with the node's actor export;
+  `kairo federation discover` verifies and keeps them, recording the
+  relaying node.
 - **Discovery hints (`DECISIONS.md` §29, slice 2).**
   `kairo federation discover` fetches and verifies the inventory of
   every listed peer and `[[federation.bootstrap]]` node and keeps the

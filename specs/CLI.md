@@ -1427,7 +1427,11 @@ inventory of every `[[federation.peers]]` and `[[federation.bootstrap]]`
 entry, after authenticating each by its node document, and keeps the
 newest per node as a hint in `<store>/federation/hints.json`. It
 prints one line per source (`learned`, `unsupported`, or `failed`).
-`holders --object <id>` lists the nodes whose fresh hints (within
+`discover` also takes each source's relayed inventories (one hop,
+from nodes the source trusts with `federation:index`), verifying each
+node from its bundled actor export: lines `relayed` (with `via=` the
+relaying node) or `relay_refused`. `holders --object <id>` lists the
+nodes whose fresh hints (within
 `[federation.discovery] hint_ttl_secs`) name the object, with
 `listed=` saying whether the holder is a configured peer. Hints grant
 nothing: `fetch` and `sync` still pull only from listed peers.

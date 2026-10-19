@@ -2702,5 +2702,5 @@ Affected specs:
   endpoint, in slice 1).
 - Slice 2 implemented `hints.json`, `[[federation.bootstrap]]`,
   `[federation.discovery]`, `kairo federation discover`, and
-  `holders`.
+  `holders`; slice 3 the relay (`GET /federation/v1/inventories`).
 

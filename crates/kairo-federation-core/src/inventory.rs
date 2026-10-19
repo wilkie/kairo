@@ -169,3 +169,30 @@ impl Inventory {
         Ok(signed_at)
     }
 }
+
+/// Path of the relayed inventories, under [`crate::API_PREFIX`].
+pub const RELAYED_INVENTORIES_PATH: &str = "/inventories";
+
+schema_tag!(
+    /// `"kairo.fed.relayed-inventories.v1"`.
+    RelayedInventoriesSchema = "kairo.fed.relayed-inventories.v1"
+);
+
+/// One relayed inventory: the node's signed inventory, exactly as that
+/// node served it, and its actor export so a receiver can verify a node
+/// it has never contacted.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayedInventory {
+    pub inventory: Box<serde_json::value::RawValue>,
+    pub node: crate::ActorExport,
+}
+
+/// `GET /federation/v1/inventories` (`DECISIONS.md` §29 sub-decisions 2
+/// and 4).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayedInventories {
+    pub schema: RelayedInventoriesSchema,
+    pub inventories: Vec<RelayedInventory>,
+}

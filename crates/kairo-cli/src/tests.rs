@@ -7552,3 +7552,80 @@ fn discovery_learns_who_holds_an_object() -> Result<(), Box<dyn std::error::Erro
     assert!(holders.contains("holders = 0\n"), "{holders}");
     Ok(())
 }
+
+#[test]
+fn a_relay_passes_on_inventories_of_nodes_it_trusts_for_indexing(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // DECISIONS.md §29 sub-decision 4: the relay knows the origin and a
+    // stranger directly and trusts only the origin with
+    // `federation:index`; a node that lists only the relay learns the
+    // origin's inventory, one hop, and nothing about the stranger.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let origin_node = create_node_actor(origin)?;
+    let object = create_cli_object(origin)?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: object.clone(),
+        }),
+    )?;
+    let (origin_url, _origin_stop, _origin_server) = serve_federation(origin, &origin_node)?;
+
+    let stranger_dir = tempfile::TempDir::new()?;
+    let stranger = stranger_dir.path();
+    let stranger_node = create_node_actor(stranger)?;
+    let (stranger_url, _stranger_stop, _stranger_server) =
+        serve_federation(stranger, &stranger_node)?;
+
+    let relay_dir = tempfile::TempDir::new()?;
+    let relay = relay_dir.path();
+    let relay_node = create_node_actor(relay)?;
+    std::fs::write(
+        relay.join("config.toml"),
+        format!(
+            "[[federation.peers]]\nurl = \"{origin_url}\"\n\n\
+             [[federation.peers]]\nurl = \"{stranger_url}\"\n"
+        ),
+    )?;
+    run_in(relay, federation(FederationCommand::Discover))?;
+    run_in(
+        relay,
+        Command::Trust {
+            command: TrustCommand::Grant {
+                by: relay_node.clone(),
+                of: origin_node.clone(),
+                scope: "federation:index".to_owned(),
+                reason: None,
+            },
+        },
+    )?;
+    let (relay_url, _relay_stop, _relay_server) = serve_federation(relay, &relay_node)?;
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    std::fs::write(
+        local.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{relay_url}\"\n"),
+    )?;
+    let discovered = run_in(local, federation(FederationCommand::Discover))?;
+    assert!(discovered.starts_with("sources = 1\n"), "{discovered}");
+    assert!(
+        discovered.contains(&format!(
+            "source={relay_url} outcome=relayed via={relay_node} node_actor={origin_node} \
+             objects=1 newer=true"
+        )),
+        "{discovered}"
+    );
+    assert!(!discovered.contains(&stranger_node), "{discovered}");
+    let holders = run_in(local, federation(FederationCommand::Holders { object }))?;
+    assert!(
+        holders.contains(&format!("node_actor={origin_node} base_url={origin_url} ")),
+        "{holders}"
+    );
+    assert!(
+        holders.contains(&format!("learned_from={relay_url} listed=false")),
+        "{holders}"
+    );
+    Ok(())
+}
