@@ -22,6 +22,8 @@
 //! (see `specs/PHASE_2_WEB_CLIENT.md` slice 2 deliberate gaps).
 
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use kairo_core::{ActorId, ObjectId};
 use kairo_daemon_client::dto::{
     ChainCompletenessDto, ValidationIssue, ValidationIssueSeverity, ValidationResult,
@@ -40,6 +42,7 @@ use kairo_store::{
 };
 
 use crate::api::envelope::{ApiError, ApiResult};
+use crate::api::handlers::{acquire_on_read, with_acquisition};
 use crate::api::state::AppState;
 use crate::api::store_errors::map_store_error;
 
@@ -63,20 +66,40 @@ const DEFAULT_BRANCH_NAME: &str = "head";
         (status = 404, description = "Object genesis not found"),
     ),
 )]
-pub async fn handler(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<ApiResult<ValidationResult>, ApiError> {
-    let object_id: ObjectId = id
-        .parse()
-        .map_err(|error| ApiError::bad_request(format!("invalid object id {id:?}: {error}")))?;
+pub async fn handler(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let object_id: ObjectId = match id.parse() {
+        Ok(object_id) => object_id,
+        Err(error) => {
+            return ApiError::bad_request(format!("invalid object id {id:?}: {error}"))
+                .into_response()
+        }
+    };
 
     let store = state.store.clone();
-    let result = tokio::task::spawn_blocking(move || verify_object(&store, &object_id))
+    let lookup = object_id.clone();
+    let verified = tokio::task::spawn_blocking(move || verify_object(&store, &lookup))
         .await
-        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))??;
-
-    Ok(ApiResult(result))
+        .map_err(|error| ApiError::internal(format!("spawn_blocking join failed: {error}")))
+        .and_then(|verified| verified);
+    match verified {
+        // Incomplete: a read may queue an acquisition to fill the gaps
+        // (DECISIONS.md §30); the answer is still what's held now.
+        Ok(mut result) => {
+            let incomplete = result.status == ValidationStatus::Indeterminate
+                || result.chains.iter().any(|chain| !chain.complete);
+            if incomplete {
+                result.acquisition = acquire_on_read(&state, &object_id)
+                    .await
+                    .map(|acquisition| acquisition.as_str().to_owned());
+            }
+            ApiResult(result).into_response()
+        }
+        Err(error) if error.status == StatusCode::NOT_FOUND => {
+            let acquisition = acquire_on_read(&state, &object_id).await;
+            with_acquisition(error.into_response(), acquisition)
+        }
+        Err(error) => error.into_response(),
+    }
 }
 
 /// Run the verify pipeline against a store snapshot. Pure sync;
@@ -154,6 +177,7 @@ fn verify_object(
         chains,
         revision_statement_id,
         branch_name,
+        acquisition: None,
     })
 }
 

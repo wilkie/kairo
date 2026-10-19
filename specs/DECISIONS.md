@@ -2784,7 +2784,9 @@ Affected specs:
 - `CLI.md` §15 — `kairo fetch` without `--from` (implemented in
   slice 1, with the engine's `acquire`).
 - Slice 2 implemented `POST /api/v1/federation/fetch`,
-  `[federation.on_demand]`, the queue, single flight, and cooldown.
+  `[federation.on_demand]`, the queue, single flight, and cooldown;
+  slice 3 the read triggers, the `acquisition` field, and the
+  `Kairo-Acquisition` header (`API.md`, `DAEMON.md` §9).
 - §17 — `[federation.on_demand]`.
 - `PHASE_2_FEDERATION.md` §4 — the slice plan.
 

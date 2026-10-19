@@ -901,6 +901,15 @@ under way), `no_sources`, or `disabled`; the attempt appears in
 Explicit requests skip `[federation.on_demand] cooldown_secs`; at most
 one attempt per object runs at a time, within `max_concurrent`.
 
+With `[federation.on_demand] on_read = true`, reads queue acquisitions
+themselves and never wait for them. `GET /api/v1/objects/{id}` and
+`GET /api/v1/verify-object/{id}` answering `404` for an object not held
+carry a `Kairo-Acquisition` header; a `verify-object` result that is
+`indeterminate` or names an incomplete chain carries an `acquisition`
+field. Both hold `queued`, `running`, `cooling_down` (read-triggered,
+within the cooldown), `no_sources`, or `disabled`, and are absent when
+`on_read` is off.
+
 ### 14.3 Get statement graph
 
 ```http

@@ -367,6 +367,12 @@ pub struct ValidationResult {
     pub revision_statement_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_name: Option<String>,
+    /// What a read-triggered acquisition did when the object is
+    /// incomplete and `[federation.on_demand] on_read` is on
+    /// (`specs/DECISIONS.md` §30): `queued`, `running`, `cooling_down`,
+    /// `no_sources`, or `disabled`. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<String>,
 }
 
 /// One actor chain a verification consulted.

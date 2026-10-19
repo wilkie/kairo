@@ -532,6 +532,12 @@ in this order:
 
 The daemon must not fabricate closure completeness.
 
+Implemented by `DECISIONS.md` §30 for objects: explicit acquisition
+(`POST /api/v1/federation/fetch`, `kairo fetch` without `--from`), and,
+with `[federation.on_demand] on_read`, reads that find an object
+missing or incomplete queue one without waiting (steps 3–5 happen in
+the background; a later read sees the result).
+
 A closure claim from federation must be passed to core for validation; the daemon
 must not treat it as proof of validity by itself.
 

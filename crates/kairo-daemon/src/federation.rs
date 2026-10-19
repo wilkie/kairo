@@ -305,6 +305,17 @@ impl FederationService {
         Ok(Acquisition::Queued)
     }
 
+    /// A daemon read found `object` missing or incomplete (§30
+    /// sub-decision 3). `None` unless `[federation.on_demand] on_read` is
+    /// on; otherwise what a read-triggered request did.
+    pub fn on_read(self: &Arc<Self>, object: &ObjectId) -> Option<Acquisition> {
+        let (config, _) = self.config().ok()?;
+        if !config.on_demand.on_read {
+            return None;
+        }
+        self.acquire(object, false).ok()
+    }
+
     /// Start pending acquisitions while slots are free.
     fn drain_pending(self: &Arc<Self>, config: &FederationConfig, config_path: &std::path::Path) {
         loop {

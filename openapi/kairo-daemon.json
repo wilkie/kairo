@@ -2441,6 +2441,13 @@
           "chains"
         ],
         "properties": {
+          "acquisition": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What a read-triggered acquisition did when the object is\nincomplete and `[federation.on_demand] on_read` is on\n(`specs/DECISIONS.md` §30): `queued`, `running`, `cooling_down`,\n`no_sources`, or `disabled`. Absent otherwise."
+          },
           "branch_name": {
             "type": [
               "string",

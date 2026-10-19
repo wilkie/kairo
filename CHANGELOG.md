@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **Read-triggered acquisition (`DECISIONS.md` §30, on-demand fetch
+  slice 3).** With `[federation.on_demand] on_read = true`, a `404`
+  from `GET /api/v1/objects/{id}` or `verify-object` queues an
+  acquisition and says so in a `Kairo-Acquisition` header, and an
+  incomplete `verify-object` result reports it in an `acquisition`
+  field. Reads never wait.
 - **Daemon acquisition (`DECISIONS.md` §30, on-demand fetch slice
   2).** `POST /api/v1/federation/fetch` queues an acquisition and
   answers at once (`queued`, `running`, `no_sources`, `disabled`); the

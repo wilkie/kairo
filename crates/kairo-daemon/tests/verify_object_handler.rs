@@ -354,3 +354,57 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     }
     None
 }
+
+#[tokio::test]
+async fn an_incomplete_object_reports_its_read_triggered_acquisition() {
+    // DECISIONS.md §30 sub-decision 4: the same gap as above. Off by
+    // default, the result carries no `acquisition`; with `on_read` on,
+    // it says what the read queued, and is still the held state.
+    let (dir, fixture) = StoreFixture::temp();
+    let actor = fixture.make_actor();
+    let object = fixture.make_object(&actor, "kairo/object");
+    let revision = fixture.make_revision(
+        &actor,
+        &object,
+        kairo_statement::RevisionId::new("git:sha256:r1"),
+        SAMPLE_MANIFEST,
+        Vec::new(),
+    );
+    let first = fixture.set_branch(&actor, &object, &revision, "other");
+    fixture.set_branch(&actor, &object, &revision, "other");
+    let file = find_file(
+        &dir.path().join("statements"),
+        &format!("{}.json", first.statement_id),
+    )
+    .expect("first branch file");
+    std::fs::remove_file(file).expect("remove");
+    fixture.store.rebuild_indexes().expect("rebuild");
+    let object_id = object.object_id.clone();
+    let store_path = dir.path().to_path_buf();
+    drop(fixture);
+
+    let handle = spawn_daemon(store_path.clone()).await;
+    let client = Client::new(handle.socket_path());
+    let quiet = client
+        .verify_object(object_id.as_str())
+        .await
+        .expect("verify");
+    assert_eq!(quiet.status, ValidationStatus::Indeterminate);
+    assert_eq!(quiet.acquisition, None);
+
+    std::fs::write(
+        store_path.join("config.toml"),
+        "[federation.on_demand]\non_read = true\n\n\
+         [[federation.peers]]\nurl = \"http://127.0.0.1:1\"\n",
+    )
+    .expect("config");
+    let asked = client
+        .verify_object(object_id.as_str())
+        .await
+        .expect("verify");
+    assert_eq!(asked.status, ValidationStatus::Indeterminate);
+    assert_eq!(asked.acquisition.as_deref(), Some("queued"));
+
+    handle.shutdown().await;
+    drop(dir);
+}

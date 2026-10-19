@@ -1073,6 +1073,13 @@ export interface components {
          *     unprovable). `invalid` lights up when a check fails outright.
          */
         ValidationResult: {
+            /**
+             * @description What a read-triggered acquisition did when the object is
+             *     incomplete and `[federation.on_demand] on_read` is on
+             *     (`specs/DECISIONS.md` §30): `queued`, `running`, `cooling_down`,
+             *     `no_sources`, or `disabled`. Absent otherwise.
+             */
+            acquisition?: string | null;
             branch_name?: string | null;
             /**
              * @description The actor chains the result depends on (`specs/DECISIONS.md`

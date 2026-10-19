@@ -325,3 +325,74 @@ async fn read_triggered_acquisitions_cool_down_and_need_sources() {
     .expect("disabled");
     assert_eq!(service.acquire(&other, true), Ok(Acquisition::Disabled));
 }
+
+/// GET `path`, returning the status and the `kairo-acquisition` header.
+async fn acquisition_header(socket: &Path, path: &str) -> (u16, Option<String>) {
+    let stream = UnixStream::connect(socket).await.expect("connect");
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .expect("handshake");
+    let conn = tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("host", "daemon")
+        .body(Full::new(Bytes::new()))
+        .expect("request");
+    let response = sender.send_request(request).await.expect("send");
+    let status = response.status().as_u16();
+    let header = response
+        .headers()
+        .get("kairo-acquisition")
+        .map(|value| value.to_str().expect("ascii").to_owned());
+    drop(response);
+    drop(sender);
+    let _ = conn.await;
+    (status, header)
+}
+
+#[tokio::test]
+async fn reads_of_missing_objects_queue_an_acquisition_only_when_opted_in() {
+    let (dir, _store, _object) = store();
+    let daemon = spawn(dir.path()).await;
+    let missing = ObjectId::from_sha256_digest([5; 32]);
+    let object_path = format!("/api/v1/objects/{missing}");
+    let verify_path = format!("/api/v1/verify-object/{missing}");
+
+    // Off by default: a plain 404.
+    assert_eq!(
+        acquisition_header(&daemon.socket, &object_path).await,
+        (404, None)
+    );
+
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[federation.sync]\ninterval_secs = 3600\ninbox_secs = 1\n\n\
+         [federation.on_demand]\non_read = true\ncooldown_secs = 3600\n\n\
+         [[federation.peers]]\nurl = \"http://127.0.0.1:1\"\n",
+    )
+    .expect("config");
+    assert_eq!(
+        acquisition_header(&daemon.socket, &object_path).await,
+        (404, Some("queued".to_owned()))
+    );
+    until(&daemon.socket, |status| {
+        status["runs"].as_array().is_some_and(|runs| {
+            runs.iter().any(|run| {
+                run["kind"] == "fetch"
+                    && run["follow"] == format!("object:{missing}")
+                    && run["result"].is_string()
+            })
+        })
+    })
+    .await;
+    // The attempt failed (the peer is down); reads now wait out the
+    // cooldown instead of retrying.
+    assert_eq!(
+        acquisition_header(&daemon.socket, &verify_path).await,
+        (404, Some("cooling_down".to_owned()))
+    );
+    daemon.stop().await;
+}
