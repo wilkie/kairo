@@ -2608,3 +2608,90 @@ Affected specs (all implemented: `CLI.md` §25, `PROJECT_LAYOUT.md`,
   /api/v1/federation/sync`.
 - `PROJECT_LAYOUT.md` — `kairo-federation-service` is created.
 
+---
+
+## 29. Discovery, Step One: Inventories and Hints
+
+Decision: each node signs an **inventory**, the published objects it
+serves at its base URL, and peers fetch inventories on the sync
+schedule and keep the newest per node as **hints**. A node also relays,
+one hop, the inventories it learned from nodes it trusts with
+`federation:index`. Hints answer "who has object X?" and are never
+permissions (§18 sub-decision 2): sync pulls from a hinted holder only
+when the operator turns that on, and only for holders vouched for by
+`federation:index` trust. This is `PHASE_2_FEDERATION.md` §4 item 6's
+first step; token indexes and the query protocol come later.
+
+Sub-decisions:
+
+1. **The inventory is a signed document, not a statement.** `{ schema:
+   "kairo.fed.inventory.v1", node_actor, base_url, objects, signed_at,
+   signature }`, signed like the node document (§25 sub-decision 1)
+   with the node actor's active key over canonical bytes under the
+   domain `kairo.fed.inventory.v1`. `objects` is the publish list, so
+   it reveals nothing a pull wouldn't. The newest `signed_at` per node
+   replaces older ones; history isn't kept, because a hint is only a
+   hint. The node signs it when its published view is rebuilt.
+
+2. **Serving.**
+   - `GET /federation/v1/inventory`: this node's own inventory.
+   - `GET /federation/v1/inventories`: the inventories this node
+     relays (sub-decision 4), each with the signing node's actor
+     export (`kairo.fed.actor-export.v1`, §26 sub-decision 7), so a
+     receiver can verify a node it has never contacted.
+   - Both are anonymous reads (§25 sub-decision 4). Nodes advertise
+     `inventory`.
+
+3. **Spreading by pull.** `FederationService` fetches inventories from
+   every `[[federation.peers]]` entry and every `[[federation.bootstrap]]`
+   entry (§18 sub-decision 1: a bootstrap node is asked where others
+   are, and that grants it nothing else) on the follow interval.
+   `kairo federation discover` runs it now. Each inventory must
+   verify against its node's key state: a direct one after the
+   source's node document authenticates the source (§25), a relayed
+   one against its bundled actor export, through the pull verifier's
+   actor step. A relayed inventory whose `base_url` doesn't serve that
+   node fails only when it's used (sub-decision 5).
+
+4. **Relaying is one hop, by trust.** A node relays an inventory only
+   if its own node actor trusts the inventory's node, or the node it
+   learned it from, with `federation:index`. Relayed inventories keep
+   their own signatures and are never re-signed. A receiver that
+   learned an inventory by relay records the relaying node; it does
+   not relay relayed inventories again, so reach is bounded at one
+   hop past each node's own peers. Bootstrap nodes are simply nodes
+   that relay many.
+
+5. **Hints are state; using them is opt-in.**
+   - `<store>/federation/hints.json` keeps, per node actor, the
+     newest verified inventory, who it was learned from (the
+     immediate peer, §16 sub-decision 8), and when. Hints older than
+     `[federation.discovery] hint_ttl_secs` (default 604 800, a week)
+     by `signed_at` are ignored and dropped on the next write.
+   - `kairo federation holders --object <id>` lists the hinted holders.
+   - With `[federation.discovery] use_hints = true` (default
+     `false`), syncing a followed object also tries each hinted holder
+     whose inventory this node's actor trusts directly with
+     `federation:index`, or learned from a node it so trusts. The pull
+     goes to the hint's `base_url` with the holder's node actor
+     pinned, so a hint pointing somewhere else fails safely. Listed
+     peers are still tried first.
+
+Rationale: hints are cheap, signed claims that age out, which fits a
+signed document better than an append-only statement. Pull on the
+existing schedule needs no new authenticated endpoint. One-hop relay
+under `federation:index` trust is the bounded, opt-in propagation §18
+sub-decision 5 asks for, and keeping use of hints opt-in and
+trust-gated means discovery never turns into "pull from whoever a
+stranger names".
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` §4 item 6 — the slice plan.
+- `FEDERATION.md` — holder discovery's first form.
+- `DECISIONS.md` §17 — `[[federation.bootstrap]]`,
+  `[federation.discovery]`.
+- `CLI.md` §25 — `kairo federation discover`, `holders`.
+- `THREAT_MODEL.md` — hint poisoning.
+- `schemas/canonical/` — `inventory-v1.md`.
+

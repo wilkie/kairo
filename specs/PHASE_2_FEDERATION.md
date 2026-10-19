@@ -531,7 +531,22 @@ inventory step, and 7 come from comparing this design with Radicle
       and inbox timers with single-flight and a concurrency cap,
       `POST /api/v1/federation/sync`, `GET
       /api/v1/federation/status`, and an in-memory run record.
-6. **Discovery**, in two steps:
+6. **Discovery**, in two steps; the first is *decided in
+   `DECISIONS.md` §29*, with slices:
+   1. **Signed inventory.** `kairo.fed.inventory.v1` and its signing
+      bytes; served at `GET /federation/v1/inventory`, signed when the
+      published view is rebuilt.
+   2. **Hints.** `hints.json`, `[[federation.bootstrap]]` and
+      `[federation.discovery]`, fetching and verifying direct
+      inventories (`kairo federation discover`), `kairo federation
+      holders`.
+   3. **Relay.** `GET /federation/v1/inventories` with actor exports,
+      one hop under `federation:index` trust.
+   4. **Use.** The daemon fetches inventories on the schedule, and
+      `use_hints` lets sync pull followed objects from trusted hinted
+      holders.
+
+   The two steps:
    - **Inventory announcements first.** A node signs and gossips
      which published objects it holds, timestamped, and peers
      record them as learned-peer hints (`DECISIONS.md` §18). That
