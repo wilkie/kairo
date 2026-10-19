@@ -60,6 +60,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `POST` | `/federation/v1/statement-batch` | up to 256 statements, each exactly as stored, in request order; unserved ids left out (`DECISIONS.md` §24) |
 | `GET` | `/federation/v1/blobs/{id}` | blob bytes, `application/octet-stream` |
+| `GET` | `/federation/v1/inventory` | `{ schema: "kairo.fed.inventory.v1", node_actor, base_url, objects, signed_at, signature }`: the published objects, strictly ascending, signed by the node actor when the view is built (`DECISIONS.md` §29; signed bytes in `schemas/canonical/inventory-v1.md`) |
 | `GET` | `/federation/v1/trust` | `{ schema: "kairo.fed.published-trust.v1", chains: [{ by, scope }] }`: published trust chains (`DECISIONS.md` §27) |
 | `GET` | `/federation/v1/trust/{by}?scope={scope}` | `{ schema: "kairo.fed.trust-listing.v1", by, scope, statements }`: one published chain, withdrawals included; the statements and the truster's actor listing are served |
 | `POST` | `/federation/v1/push/plan` | `KairoNode1`-signed `{ schema: "kairo.fed.push-plan-request.v1", object, inventory }`; `200` `{ schema: "kairo.fed.push-plan.v1", genesis, actors, statements, blobs, have_commits }`: what this node lacks (`DECISIONS.md` §26 sub-decision 6) |
@@ -533,7 +534,7 @@ inventory step, and 7 come from comparing this design with Radicle
       /api/v1/federation/status`, and an in-memory run record.
 6. **Discovery**, in two steps; the first is *decided in
    `DECISIONS.md` §29*, with slices:
-   1. **Signed inventory.** `kairo.fed.inventory.v1` and its signing
+   1. ~~**Signed inventory.**~~ *(shipped)* `kairo.fed.inventory.v1` and its signing
       bytes; served at `GET /federation/v1/inventory`, signed when the
       published view is rebuilt.
    2. **Hints.** `hints.json`, `[[federation.bootstrap]]` and

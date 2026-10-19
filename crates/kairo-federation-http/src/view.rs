@@ -18,7 +18,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
+use kairo_core::{ActorId, BlobId, ObjectId, StatementId, Timestamp};
+use kairo_federation_core::Inventory;
+use kairo_identity::SecretSigningKey;
 use kairo_store::{
     FilesystemStore, ObjectClosure, PublishedObjectStore, StoreError, TrustTransportStore,
 };
@@ -36,6 +38,9 @@ pub(crate) struct PublishedView {
     /// Object statements, authority, key events, and published trust.
     pub statements: HashSet<StatementId>,
     pub blobs: HashSet<BlobId>,
+    /// This node's inventory of `objects`, signed when the view was
+    /// built (`DECISIONS.md` §29).
+    pub inventory: Option<Inventory>,
 }
 
 impl PublishedView {
@@ -83,14 +88,23 @@ impl PublishedView {
 #[derive(Debug)]
 pub(crate) struct ViewCache {
     node_actor: ActorId,
+    base_url: String,
+    signer: Arc<SecretSigningKey>,
     ttl: Duration,
     current: Mutex<Option<(Instant, Arc<PublishedView>)>>,
 }
 
 impl ViewCache {
-    pub(crate) fn new(node_actor: ActorId, ttl: Duration) -> Self {
+    pub(crate) fn new(
+        node_actor: ActorId,
+        base_url: String,
+        signer: Arc<SecretSigningKey>,
+        ttl: Duration,
+    ) -> Self {
         Self {
             node_actor,
+            base_url,
+            signer,
             ttl,
             current: Mutex::new(None),
         }
@@ -102,7 +116,15 @@ impl ViewCache {
                 return Ok(Arc::clone(view));
             }
         }
-        let view = Arc::new(PublishedView::build(store, &self.node_actor)?);
+        let mut view = PublishedView::build(store, &self.node_actor)?;
+        view.inventory = Some(Inventory::signed(
+            self.node_actor.clone(),
+            self.base_url.clone(),
+            view.objects.iter().cloned(),
+            &self.signer,
+            Timestamp::now(),
+        ));
+        let view = Arc::new(view);
         *self.lock() = Some((Instant::now(), Arc::clone(&view)));
         Ok(view)
     }

@@ -7,8 +7,8 @@ use axum::Router;
 use kairo_config::FederationConfig;
 use kairo_core::{ActorId, Timestamp};
 use kairo_federation_core::{
-    NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_ANNOUNCE, SUPPORTS_OBJECT_PULL,
-    SUPPORTS_PUSH, SUPPORTS_STATEMENT_BATCH, SUPPORTS_TRUST,
+    NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_ANNOUNCE, SUPPORTS_INVENTORY,
+    SUPPORTS_OBJECT_PULL, SUPPORTS_PUSH, SUPPORTS_STATEMENT_BATCH, SUPPORTS_TRUST,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorKind, ActorResolver, SecretSigningKey};
@@ -121,6 +121,7 @@ impl Node {
                 SUPPORTS_ANNOUNCE.to_owned(),
                 SUPPORTS_PUSH.to_owned(),
                 SUPPORTS_TRUST.to_owned(),
+                SUPPORTS_INVENTORY.to_owned(),
             ],
         }
         .sign(signer, signed_at);
@@ -131,7 +132,12 @@ impl Node {
         Ok(Self {
             store,
             document: Arc::new(document),
-            views: Arc::new(ViewCache::new(node_actor.clone(), view_ttl)),
+            views: Arc::new(ViewCache::new(
+                node_actor.clone(),
+                base_url.to_owned(),
+                Arc::new(signer.clone()),
+                view_ttl,
+            )),
             uploads: Arc::new(UploadService::new(UploadService::default_concurrency())),
             nonces: Arc::new(NonceCache::default()),
             federation: Arc::new(FederationConfig::default()),

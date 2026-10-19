@@ -2693,5 +2693,6 @@ Affected specs:
   `[federation.discovery]`.
 - `CLI.md` §25 — `kairo federation discover`, `holders`.
 - `THREAT_MODEL.md` — hint poisoning.
-- `schemas/canonical/` — `inventory-v1.md`.
+- `schemas/canonical/` — `inventory-v1.md` (implemented, with the
+  endpoint, in slice 1).
 

@@ -53,3 +53,4 @@ is explicitly a standalone reference.
 - `actor-key-revocation-v1.md`
 - `snapshot-v1.md`
 - `node-document-v1.md` (signing bytes only; no derived id)
+- `inventory-v1.md` (signing bytes only; no derived id)

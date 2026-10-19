@@ -609,3 +609,50 @@ fn announcements_round_trip_and_validate() -> TestResult {
     );
     Ok(())
 }
+
+// --- inventories (DECISIONS.md §29) -----------------------------------
+
+#[test]
+fn an_inventory_is_sorted_signed_and_verified() -> TestResult {
+    let key = SecretSigningKey::ed25519([7; 32]);
+    let node = genesis(ActorKind::node(), 7)?.actor_id();
+    let (a, b) = (object_id(b"a"), object_id(b"b"));
+    let inventory = crate::Inventory::signed(
+        node,
+        "https://archive.example.org".to_owned(),
+        [b.clone(), a.clone(), b.clone()],
+        &key,
+        Timestamp::from_seconds(SIGNED_AT),
+    );
+    let mut expected = vec![a, b];
+    expected.sort();
+    assert_eq!(inventory.objects, expected, "sorted and deduplicated");
+    inventory.validate()?;
+    let (json, back) = round_trip(&inventory)?;
+    assert_eq!(json["schema"], "kairo.fed.inventory.v1");
+    assert_eq!(back, inventory);
+    assert_eq!(
+        inventory.verify_signature(&node_resolver()?)?,
+        Timestamp::from_seconds(SIGNED_AT)
+    );
+
+    // Every signed field is covered.
+    let mut moved = inventory.clone();
+    moved.base_url = "https://elsewhere.example.org".to_owned();
+    let mut fewer = inventory.clone();
+    fewer.objects.pop();
+    for tampered in [moved, fewer] {
+        assert!(matches!(
+            tampered.verify_signature(&node_resolver()?),
+            Err(NodeDocumentError::BadSignature)
+        ));
+    }
+    // One encoding: the list must be strictly ascending.
+    let mut unsorted = inventory;
+    unsorted.objects.reverse();
+    assert!(matches!(
+        unsorted.validate(),
+        Err(crate::InventoryShapeError::NotAscending { .. })
+    ));
+    Ok(())
+}

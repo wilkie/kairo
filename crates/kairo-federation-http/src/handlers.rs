@@ -21,8 +21,8 @@ use kairo_federation_core::{
     ActorListing, Announcement, AnnouncementAccepted, BatchedStatement, Cursor, FedErrorCode,
     FedErrorEnvelope, GitAvailability, ObjectListing, PageRequest, PageRequestError,
     PublishedObjects, PushAccepted, PushPlan, PushPlanRequest, RequestBody, StatementBatch,
-    StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, MAX_PLAN_BYTES, PUSH_PATH, PUSH_PLAN_PATH,
-    STATEMENT_BATCH_PATH, TRUST_PATH, WELL_KNOWN_PATH,
+    StatementBatchRequest, ANNOUNCE_PATH, API_PREFIX, INVENTORY_PATH, MAX_PLAN_BYTES, PUSH_PATH,
+    PUSH_PLAN_PATH, STATEMENT_BATCH_PATH, TRUST_PATH, WELL_KNOWN_PATH,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_statement::{TrustDecision, TrustScope};
@@ -66,6 +66,7 @@ pub(crate) fn router(node: Node) -> Router {
         )
         .route(&format!("{API_PREFIX}/blobs/:id"), get(blob))
         .route(&format!("{API_PREFIX}{TRUST_PATH}"), get(published_trust))
+        .route(&format!("{API_PREFIX}{INVENTORY_PATH}"), get(inventory))
         .route(&format!("{API_PREFIX}{TRUST_PATH}/:by"), get(trust_listing))
         .route(&format!("{API_PREFIX}{ANNOUNCE_PATH}"), post(announce))
         .route(&format!("{API_PREFIX}{PUSH_PLAN_PATH}"), post(push_plan))
@@ -1178,6 +1179,22 @@ async fn trust_listing(State(node): State<Node>, id: PathId, query: RawQuery) ->
             scope,
             statements: statements.clone(),
         })
+    })
+    .await
+}
+
+// --- inventory (DECISIONS.md §29) -------------------------------------
+
+/// `GET /federation/v1/inventory`: the published objects this node
+/// serves, signed by its node actor when the view was built.
+async fn inventory(State(node): State<Node>) -> Response {
+    blocking(move || {
+        let view = view(&node)?;
+        let inventory = view
+            .inventory
+            .as_ref()
+            .ok_or_else(|| Fail::new(FedErrorCode::FedStoreError, "store read failed"))?;
+        json_response(inventory)
     })
     .await
 }

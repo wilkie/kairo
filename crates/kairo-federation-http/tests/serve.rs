@@ -730,3 +730,33 @@ async fn malformed_batches_are_refused() {
         assert_eq!(envelope.error.code, FedErrorCode::FedBadBatch, "{body}");
     }
 }
+
+// --- inventory (DECISIONS.md §29) -------------------------------------
+
+#[tokio::test]
+async fn the_inventory_lists_published_objects_signed_by_the_node() {
+    let seeded = seed();
+    let router = router(&seeded);
+    let inventory: kairo_federation_core::Inventory =
+        get_json(&router, "/federation/v1/inventory").await;
+    assert_eq!(inventory.node_actor, seeded.node_actor);
+    assert_eq!(inventory.base_url, BASE_URL);
+    assert_eq!(inventory.objects, vec![seeded.published.clone()]);
+    inventory.validate().expect("shape");
+    inventory
+        .verify_signature(&seeded.store)
+        .expect("signed by the node actor's active key");
+
+    // Unpublishing takes it out of the next view's inventory.
+    seeded
+        .store
+        .unpublish_object(&seeded.published)
+        .expect("unpublish");
+    let after: kairo_federation_core::Inventory =
+        get_json(&router, "/federation/v1/inventory").await;
+    assert!(after.objects.is_empty());
+    after.verify_signature(&seeded.store).expect("still signed");
+
+    let document: NodeDocument = get_json(&router, "/.well-known/kairo-node").await;
+    assert!(document.supports("inventory"));
+}

@@ -22,6 +22,7 @@
 mod announce;
 mod batch;
 mod error;
+mod inventory;
 mod listing;
 mod node;
 mod page;
@@ -44,6 +45,10 @@ pub use batch::{
     StatementBatchRequestSchema, StatementBatchSchema, MAX_BATCH_IDS, STATEMENT_BATCH_PATH,
 };
 pub use error::{FedErrorBody, FedErrorCode, FedErrorEnvelope, ERROR_SCHEMA};
+pub use inventory::{
+    Inventory, InventorySchema, InventoryShapeError, INVENTORY_DOMAIN, INVENTORY_PATH,
+    MAX_INVENTORY_OBJECTS,
+};
 pub use listing::{
     ActorExport, ActorExportSchema, ActorListing, ActorListingError, ActorListingSchema,
     GitAvailability, ObjectListing, ObjectListingSchema, PublishedObjects, PublishedObjectsSchema,
@@ -92,6 +97,10 @@ pub const SUPPORTS_PUSH: &str = "push";
 
 /// `supports` value for the trust endpoints (`specs/DECISIONS.md` §27).
 pub const SUPPORTS_TRUST: &str = "trust";
+
+/// `supports` value for `GET /federation/v1/inventory`
+/// (`specs/DECISIONS.md` §29).
+pub const SUPPORTS_INVENTORY: &str = "inventory";
 
 /// Path of the node document, relative to the node's base URL.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/kairo-node";

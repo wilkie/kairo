@@ -18,6 +18,11 @@ rather than per-commit.
 
 ### Added
 
+- **Signed inventories (`DECISIONS.md` §29, discovery slice 1).**
+  `GET /federation/v1/inventory` serves the node's published objects,
+  signed by its node actor when the published view is built
+  (`schemas/canonical/inventory-v1.md`). Nodes advertise `inventory`.
+
 - **Follows and the sync engine (`DECISIONS.md` §28, slice 1).**
   - `kairo federation follow | unfollow (--object <id> | --trust-by
     <actor> --scope <scope>)` keeps a list of what this node keeps

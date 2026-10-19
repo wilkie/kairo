@@ -100,13 +100,7 @@ impl NodeDocument {
     /// `signed_at`, replacing `signed_at` and `signature`.
     pub fn sign(&mut self, key: &SecretSigningKey, signed_at: Timestamp) {
         self.signed_at = signed_at.to_string();
-        let bytes = key.sign(&self.signing_bytes(signed_at));
-        let public = key.public_key();
-        self.signature = NodeSignature {
-            key_id: public.key_id().to_string(),
-            algorithm: public.algorithm().as_str().to_owned(),
-            bytes: STANDARD.encode(bytes.bytes()),
-        };
+        self.signature = sign_node_bytes(key, &self.signing_bytes(signed_at));
     }
 
     /// The bytes the signature covers (`node-document-v1.md`): every
@@ -137,46 +131,14 @@ impl NodeDocument {
         &self,
         resolver: &R,
     ) -> Result<Timestamp, NodeDocumentError> {
-        let signed_at: Timestamp =
-            self.signed_at
-                .parse()
-                .map_err(|_| NodeDocumentError::InvalidSignedAt {
-                    value: self.signed_at.clone(),
-                })?;
-        let actor = &self.node_actor;
-        let active = resolver
-            .active_key_at(actor, signed_at)
-            .map_err(NodeDocumentError::Resolve)?
-            .ok_or(NodeDocumentError::NoActiveKey)?;
-        let active_key_id = active.key_id();
-        if self.signature.key_id != active_key_id.as_str() {
-            return Err(NodeDocumentError::KeyMismatch {
-                signed_with: self.signature.key_id.clone(),
-                active: active_key_id.to_string(),
-            });
-        }
-        if resolver
-            .is_key_revoked_at(actor, &active_key_id, signed_at)
-            .map_err(NodeDocumentError::Resolve)?
-        {
-            return Err(NodeDocumentError::RevokedKey {
-                key_id: self.signature.key_id.clone(),
-            });
-        }
-        if self.signature.algorithm != active.algorithm().as_str() {
-            return Err(NodeDocumentError::BadSignature);
-        }
-        let bytes = STANDARD
-            .decode(&self.signature.bytes)
-            .ok()
-            .and_then(|bytes| <[u8; 64]>::try_from(bytes.as_slice()).ok())
-            .ok_or(NodeDocumentError::BadSignature)?;
-        verify_signature(
-            &active,
+        let signed_at = parse_signed_at(&self.signed_at)?;
+        verify_node_bytes(
+            resolver,
+            &self.node_actor,
+            signed_at,
+            &self.signature,
             &self.signing_bytes(signed_at),
-            &SignatureBytes::ed25519(bytes),
-        )
-        .map_err(|_| NodeDocumentError::BadSignature)?;
+        )?;
         Ok(signed_at)
     }
 
@@ -214,6 +176,66 @@ impl NodeDocument {
     pub fn supports(&self, feature: &str) -> bool {
         self.supports.iter().any(|value| value == feature)
     }
+}
+
+pub(crate) fn parse_signed_at(value: &str) -> Result<Timestamp, NodeDocumentError> {
+    value
+        .parse()
+        .map_err(|_| NodeDocumentError::InvalidSignedAt {
+            value: value.to_owned(),
+        })
+}
+
+/// A node actor's signature over `bytes` (node documents and
+/// inventories, `DECISIONS.md` §25 and §29).
+pub(crate) fn sign_node_bytes(key: &SecretSigningKey, bytes: &[u8]) -> NodeSignature {
+    let public = key.public_key();
+    NodeSignature {
+        key_id: public.key_id().to_string(),
+        algorithm: public.algorithm().as_str().to_owned(),
+        bytes: STANDARD.encode(key.sign(bytes).bytes()),
+    }
+}
+
+/// `signature` over `bytes` is by `actor`'s key active at `signed_at`,
+/// not revoked then.
+pub(crate) fn verify_node_bytes<R: ActorResolver>(
+    resolver: &R,
+    actor: &ActorId,
+    signed_at: Timestamp,
+    signature: &NodeSignature,
+    bytes: &[u8],
+) -> Result<(), NodeDocumentError> {
+    let active = resolver
+        .active_key_at(actor, signed_at)
+        .map_err(NodeDocumentError::Resolve)?
+        .ok_or(NodeDocumentError::NoActiveKey)?;
+    let active_key_id = active.key_id();
+    if signature.key_id != active_key_id.as_str() {
+        return Err(NodeDocumentError::KeyMismatch {
+            signed_with: signature.key_id.clone(),
+            active: active_key_id.to_string(),
+        });
+    }
+    if resolver
+        .is_key_revoked_at(actor, &active_key_id, signed_at)
+        .map_err(NodeDocumentError::Resolve)?
+    {
+        return Err(NodeDocumentError::RevokedKey {
+            key_id: signature.key_id.clone(),
+        });
+    }
+    if signature.algorithm != active.algorithm().as_str() {
+        return Err(NodeDocumentError::BadSignature);
+    }
+    let raw = STANDARD
+        .decode(&signature.bytes)
+        .ok()
+        .and_then(|raw| <[u8; 64]>::try_from(raw.as_slice()).ok())
+        .ok_or(NodeDocumentError::BadSignature)?;
+    verify_signature(&active, bytes, &SignatureBytes::ed25519(raw))
+        .map_err(|_| NodeDocumentError::BadSignature)?;
+    Ok(())
 }
 
 /// `http://` or `https://`, a non-empty host, no path, query,
