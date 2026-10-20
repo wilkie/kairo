@@ -76,6 +76,7 @@ fn object_listing(git: Option<GitAvailability>) -> ObjectListing {
         actors: vec![actor_id(b"alice")],
         blobs: vec![blob_id(b"manifest")],
         git,
+        sources: Vec::new(),
         next_cursor: Some(Cursor::new("p2").expect("cursor")),
     }
 }

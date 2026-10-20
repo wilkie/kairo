@@ -3694,7 +3694,16 @@ Sub-decisions:
      wrapper can build. Such a source's served history is only the
      pinned commits (often ancestors no observation names directly);
      the receiver requires exactly the pins its own copy of the
-     manifest names. *(Next slice.)*
+     manifest names. *Built:* the server reads each published native
+     object's revisions' `kairo.toml` from its Git cache and serves
+     each pinned source it holds with all of its observations but only
+     the pinned commits' history, merged with any direct publication;
+     the native object's listing names those sources (`sources`, first
+     page). After pulling the native object, the client reads the
+     manifests from the history it just fetched and pulls each listed
+     source it pins with exactly those commits required, so it fetches
+     what its own copy of the signed manifests names, not what the
+     peer says. `kairo fetch` reports them (`sources = N`).
    - Push does not carry sources yet.
 
 Rationale: an archive of software has to keep what it was given

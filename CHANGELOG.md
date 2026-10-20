@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Pulling a native object brings the sources it pins (`DECISIONS.md`
+  §37 sub-decision 9).** Publishing a native object also serves each
+  source its revisions pin, with that source's observations and only
+  the pinned commits' history; the listing names them in a new
+  optional `sources` field. `kairo fetch` then pulls each one,
+  requiring exactly the commits its own copy of the manifests pins, so
+  a pulled wrapper can plan and build. Output gains `sources = N`.
 - **Sources federate (`DECISIONS.md` §37 sub-decision 9).** A source
   can be published like any object; its closure is its observations
   and every object they name. `kairo source pull <url> --from <peer>`

@@ -115,7 +115,11 @@ fetched from `/objects/{id}/genesis`. `authority` holds
 object-scoped capability grants and revocations of them
 (§16 sub-decision 4). Paging walks the four id lists in that order,
 so a cursor is a position in their concatenation; `git` appears on
-the first page only.
+the first page only. So does `sources` (omitted when empty): the source
+objects the object's revisions pin and the node serves at those commits
+(`DECISIONS.md` §37 sub-decision 9). A source's own listing has
+`statements` holding its `SourceObservation`s, and its genesis route
+serves the unsigned `SourceGenesis`.
 
 `ActorListing` is `{ schema: "kairo.fed.actor-listing.v1", actor,
 genesis, key_events: [statement ids] }`, unpaged (key-event

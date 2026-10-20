@@ -75,6 +75,15 @@ pub struct ObjectListing {
     /// Present on the first page only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitAvailability>,
+    /// The source objects this object's revisions pin and the node
+    /// serves at those commits (`DECISIONS.md` §37 sub-decision 9), to
+    /// pull after it. First page only; empty for a source.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "crate::wire_id::many"
+    )]
+    pub sources: Vec<ObjectId>,
     pub next_cursor: Option<Cursor>,
 }
 

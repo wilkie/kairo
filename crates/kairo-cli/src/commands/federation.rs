@@ -1167,6 +1167,18 @@ fn format_fetch(report: &PullReport, pin: Pin) -> String {
         ));
     }
     output.push_str(&format!("git = {}\n", describe_git(&report.git)));
+    if !report.sources.is_empty() {
+        output.push_str(&format!("sources = {}\n", report.sources.len()));
+        for pulled in &report.sources {
+            output.push_str(&format!(
+                "  source={} fetched={} already_held={} git={}\n",
+                pulled.source,
+                pulled.fetched,
+                pulled.already_held,
+                describe_git(&pulled.git)
+            ));
+        }
+    }
     output.push_str(&format!(
         "incomplete_chains = {}\n",
         report.incomplete.len()
@@ -1224,6 +1236,12 @@ fn format_fetch_json(report: &PullReport, pin: Pin) -> String {
             .map(|s| serde_json::json!({ "record": s.record.to_string(), "reason": s.reason }))
             .collect::<Vec<_>>(),
         "git": git_json(&report.git),
+        "sources": report.sources.iter().map(|pulled| serde_json::json!({
+            "source": pulled.source.to_string(),
+            "fetched": pulled.fetched,
+            "already_held": pulled.already_held,
+            "git": git_json(&pulled.git),
+        })).collect::<Vec<_>>(),
         "incomplete_chains": report
             .incomplete
             .iter()

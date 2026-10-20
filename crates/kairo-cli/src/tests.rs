@@ -10002,3 +10002,141 @@ fn a_published_source_is_pulled_under_the_same_id() -> Result<(), Box<dyn std::e
     assert!(again.contains("git = already held"), "{again}");
     Ok(())
 }
+
+#[test]
+fn pulling_a_native_object_brings_the_sources_it_pins() -> Result<(), Box<dyn std::error::Error>> {
+    use kairo_test_support::git::{git, GitDaemon};
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    // The wrapper pins an older lib commit: an ancestor of lib's tip,
+    // named by no observation directly.
+    let lib = daemon.base.path().join("lib");
+    std::fs::create_dir(&lib)?;
+    git(&lib, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(lib.join("lib.h"), "/* old */\n")?;
+    git(&lib, &["add", "lib.h"]);
+    git(&lib, &["commit", "-q", "-m", "old"]);
+    let pinned = git(&lib, &["rev-parse", "HEAD"]);
+    std::fs::write(lib.join("lib.h"), "/* new */\n")?;
+    git(&lib, &["commit", "-q", "-am", "new"]);
+    let tip = git(&lib, &["rev-parse", "HEAD"]);
+    let lib_url = daemon.url("lib");
+
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node_actor = create_node_actor(origin)?;
+    let author = create_local_actor(origin)?;
+    let fetched = run_in_store(
+        origin,
+        Command::Source {
+            command: SourceCommand::Fetch {
+                url: lib_url.clone(),
+                actor: author.clone(),
+                object_format: None,
+                no_recurse_submodules: false,
+                max_depth: 8,
+                require_complete: true,
+            },
+        },
+    )?;
+    let lib_source = parse_field(&fetched, "source = ")?;
+    let wrapper = create_held_tree(
+        origin,
+        &author,
+        &[(
+            "kairo.toml",
+            &format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "wrapper"
+                [[build.targets]]
+                name = "release"
+                command = ["true"]
+                [[build.targets.dependencies]]
+                kind = "source"
+                source = "{lib_url}"
+                revision = "git:sha1:{pinned}"
+                path = "lib"
+                [[build.targets.outputs]]
+                name = "out"
+                path = "out"
+                artifact_path = "out"
+                kind = "file"
+                "#
+            ),
+        )],
+    )?;
+    // Only the wrapper is published.
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: wrapper.clone(),
+        }),
+    )?;
+    let (base_url, _stop, _server) = serve_federation(origin, &node_actor)?;
+    drop(daemon);
+
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    create_local_actor(local)?;
+    std::fs::write(
+        local.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{base_url}\"\nnode_actor = \"{node_actor}\"\n"),
+    )?;
+    let pulled = run_in(
+        local,
+        Command::Fetch {
+            object: wrapper.clone(),
+            from: Some(base_url),
+            allow_peer: false,
+            require_complete: false,
+            json: false,
+        },
+    )?;
+    assert!(pulled.contains("sources = 1\n"), "{pulled}");
+    assert!(
+        pulled.contains(&format!("  source={lib_source} fetched=")),
+        "{pulled}"
+    );
+    assert!(pulled.contains("git=ingested (1 commits)"), "{pulled}");
+
+    // The pinned ancestor is held under its source; the tip, which the
+    // wrapper doesn't pin, was never served.
+    let cache = kairo_git::GitCache::open(local.join("git"))?;
+    let commit = |oid: &str| kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, oid);
+    assert!(cache.has_commit(&lib_source, &commit(&pinned)?)?);
+    assert!(!cache.has_commit(&lib_source, &commit(&tip)?)?);
+    let shown = run_in(
+        local,
+        Command::Source {
+            command: SourceCommand::Show {
+                source: lib_url.clone(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(shown.contains(&format!(" by {author} at ")), "{shown}");
+
+    // So the pulled wrapper plans here, from what it brought.
+    let plan = run_in_store(
+        local,
+        Command::Build {
+            snapshot_ref: format!("object:{wrapper}"),
+            target: "release".to_owned(),
+            actor: None,
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    assert!(
+        plan.contains(&format!("{lib_url} at git:sha1:{pinned} in lib -> ")),
+        "{plan}"
+    );
+    Ok(())
+}

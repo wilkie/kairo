@@ -30,6 +30,9 @@ pub(crate) struct PublishedView {
     /// Published objects whose genesis is present, ascending.
     pub objects: Vec<ObjectId>,
     pub closures: BTreeMap<ObjectId, ObjectClosure>,
+    /// For each published native object, the sources its revisions pin
+    /// that this node serves (`DECISIONS.md` §37 sub-decision 9).
+    pub sources: BTreeMap<ObjectId, Vec<ObjectId>>,
     /// Every actor named by some closure, and the node actor, with
     /// their key-event ids.
     pub actors: BTreeMap<ActorId, Vec<StatementId>>,
@@ -47,6 +50,8 @@ impl PublishedView {
     pub(crate) fn build(store: &FilesystemStore, node_actor: &ActorId) -> Result<Self, StoreError> {
         let mut view = Self::default();
         let mut actors: BTreeSet<ActorId> = BTreeSet::from([node_actor.clone()]);
+        let mut pinned: std::collections::BTreeMap<ObjectId, Vec<ObjectClosure>> =
+            Default::default();
         for published in store.list_published_objects()? {
             let closure = match store.object_closure(&published.object_id) {
                 Ok(closure) => closure,
@@ -65,8 +70,49 @@ impl PublishedView {
             view.statements.extend(closure.authority.iter().cloned());
             view.blobs.extend(closure.blobs.iter().cloned());
             actors.extend(closure.actors.iter().cloned());
+            // The sources its revisions pin are served at those commits
+            // (`DECISIONS.md` §37 sub-decision 9).
+            let pins =
+                crate::manifest_source_pins(store, &published.object_id, &closure.statements);
+            let mut served = Vec::new();
+            for (source, commits) in pins {
+                match store.source_closure(&source) {
+                    Ok(full) => {
+                        let restricted = ObjectClosure {
+                            statements: full.statements,
+                            authority: Default::default(),
+                            actors: full.actors,
+                            blobs: Default::default(),
+                            commits,
+                        };
+                        pinned.entry(source.clone()).or_default().push(restricted);
+                        served.push(source);
+                    }
+                    // Not held here: nothing to serve, and the listing
+                    // doesn't name it.
+                    Err(StoreError::Missing) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            if !served.is_empty() {
+                view.sources.insert(published.object_id.clone(), served);
+            }
             view.objects.push(published.object_id.clone());
             view.closures.insert(published.object_id, closure);
+        }
+        // Pinned sources join the view, their commits merged with any
+        // a direct publication already serves.
+        for (source, closures) in pinned {
+            for closure in closures {
+                view.statements.extend(closure.statements.iter().cloned());
+                actors.extend(closure.actors.iter().cloned());
+                match view.closures.get_mut(&source) {
+                    Some(existing) => existing.commits.extend(closure.commits),
+                    None => {
+                        view.closures.insert(source.clone(), closure);
+                    }
+                }
+            }
         }
         for chain in store.list_published_trust()? {
             let ids = store.trust_chain_ids(&chain.by, &chain.scope)?;

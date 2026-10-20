@@ -69,3 +69,56 @@ pub use server::{
 pub fn git_root(store: &kairo_store::FilesystemStore) -> std::path::PathBuf {
     store.root().join("git")
 }
+
+/// The source objects `object`'s revisions pin, with the commits each
+/// is pinned at (`DECISIONS.md` §37 sub-decisions 6, 9): read from each
+/// listed `ObjectRevision`'s `kairo.toml` in the object's Git cache
+/// repo, top-level and target dependencies alike. A revision whose
+/// tree isn't held, or whose manifest doesn't parse, pins nothing here;
+/// `verify object` reports it.
+pub fn manifest_source_pins<'a>(
+    store: &kairo_store::FilesystemStore,
+    object: &kairo_core::ObjectId,
+    statements: impl IntoIterator<Item = &'a kairo_core::StatementId>,
+) -> std::collections::BTreeMap<
+    kairo_core::ObjectId,
+    std::collections::BTreeSet<kairo_statement::GitRevision>,
+> {
+    use kairo_object::DependencyDeclaration;
+    use kairo_store::StatementStore;
+    let mut pins: std::collections::BTreeMap<_, std::collections::BTreeSet<_>> = Default::default();
+    let Ok(path) = kairo_git::object_repo_path(&git_root(store), object.as_str()) else {
+        return pins;
+    };
+    let Ok(repo) = kairo_git::open(&path) else {
+        return pins;
+    };
+    for id in statements {
+        let Ok(revision) = store.get_object_revision(id) else {
+            continue;
+        };
+        let Ok(Some(commit)) = revision.unsigned().body().revision().git() else {
+            continue;
+        };
+        let Ok(Some(bytes)) = repo.read_blob_at_path(&commit, "kairo.toml") else {
+            continue;
+        };
+        let Ok(manifest) =
+            kairo_object::ObjectManifest::parse_toml(&String::from_utf8_lossy(&bytes))
+        else {
+            continue;
+        };
+        let targets = manifest
+            .build_targets()
+            .iter()
+            .flat_map(|target| target.dependencies());
+        for dependency in manifest.dependencies().iter().chain(targets) {
+            if let DependencyDeclaration::Source(source) = dependency {
+                pins.entry(source.source())
+                    .or_default()
+                    .insert(source.revision().clone());
+            }
+        }
+    }
+    pins
+}

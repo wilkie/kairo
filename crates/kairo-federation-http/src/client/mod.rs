@@ -169,6 +169,18 @@ pub struct PullReport {
     /// then scope.
     pub incomplete: Vec<IncompleteChain>,
     pub git: GitOutcome,
+    /// The sources the object's revisions pin, pulled after it at those
+    /// commits (`DECISIONS.md` §37 sub-decision 9).
+    pub sources: Vec<SourcePull>,
+}
+
+/// One pinned source pulled with a native object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePull {
+    pub source: ObjectId,
+    pub fetched: usize,
+    pub already_held: usize,
+    pub git: GitOutcome,
 }
 
 /// What the pull did about the object's Git history.
@@ -436,6 +448,10 @@ struct Pull<'a> {
     /// `None` for a bundle import: a bundle isn't a peer (§32).
     provenance: Option<ProvenanceEntry>,
     report: PullReport,
+    /// For a pinned source: exactly the commits to fetch, from this
+    /// node's own copy of the pinning manifests, instead of what its
+    /// observations name (§37 sub-decision 9).
+    required: Option<BTreeSet<GitRevision>>,
 }
 
 /// Pull `object`'s published closure from the peer at `peer_url` into
@@ -455,7 +471,8 @@ pub fn pull_object(
     let mut pull = Pull::new(store, peer, &document, object, &options.limits);
     let mut budget = 0;
     pull.authenticate(&document, &mut budget)?;
-    pull.run(object, budget)?;
+    let sources = pull.run(object, budget)?;
+    pull.pinned_sources(object, &sources)?;
     if options.require_complete && !pull.report.incomplete.is_empty() {
         return Err(PullError::IncompleteChains {
             chains: pull.report.incomplete,
@@ -996,6 +1013,7 @@ impl<'a> Pull<'a> {
             flagged: Vec::new(),
             incomplete: Vec::new(),
             git: GitOutcome::NoGitRevisions,
+            sources: Vec::new(),
         };
         Pull {
             store,
@@ -1004,6 +1022,7 @@ impl<'a> Pull<'a> {
             limits,
             provenance: Some(provenance),
             report,
+            required: None,
         }
     }
 }
@@ -1028,7 +1047,56 @@ impl Pull<'_> {
         Ok(())
     }
 
-    fn run(&mut self, object: &ObjectId, mut budget: usize) -> Result<(), PullError> {
+    /// Pull the sources `object`'s listing names that its revisions,
+    /// as this node now holds them, pin: each at exactly those commits.
+    /// The pins come from the local copy of the signed manifests, not
+    /// the peer's word.
+    fn pinned_sources(&mut self, object: &ObjectId, listed: &[ObjectId]) -> Result<(), PullError> {
+        if listed.is_empty() {
+            return Ok(());
+        }
+        let revisions = self
+            .store
+            .object_closure(object)
+            .map_err(PullError::Store)?
+            .statements;
+        let pins = crate::manifest_source_pins(self.store, object, &revisions);
+        for source in listed {
+            let Some(commits) = pins.get(source) else {
+                continue;
+            };
+            let fresh = PullReport {
+                object: source.clone(),
+                peer_url: self.report.peer_url.clone(),
+                peer_actor: self.report.peer_actor.clone(),
+                fetched: 0,
+                already_held: 0,
+                flagged: Vec::new(),
+                incomplete: Vec::new(),
+                git: GitOutcome::NoGitRevisions,
+                sources: Vec::new(),
+            };
+            let saved = std::mem::replace(&mut self.report, fresh);
+            self.required = Some(commits.clone());
+            let outcome = self.run(source, 0);
+            self.required = None;
+            let pulled = std::mem::replace(&mut self.report, saved);
+            outcome?;
+            self.report.flagged.extend(pulled.flagged);
+            self.report.incomplete.extend(pulled.incomplete);
+            self.report.sources.push(SourcePull {
+                source: source.clone(),
+                fetched: pulled.fetched,
+                already_held: pulled.already_held,
+                git: pulled.git,
+            });
+        }
+        Ok(())
+    }
+
+    /// Pull `object`'s listing; the sources it names, for
+    /// [`Self::pinned_sources`].
+    fn run(&mut self, object: &ObjectId, mut budget: usize) -> Result<Vec<ObjectId>, PullError> {
         let listing = self.listing(object)?;
         budget += listing.len();
         self.check_budget(budget)?;
@@ -1056,7 +1124,8 @@ impl Pull<'_> {
 
         let git_available = listing.git.is_some_and(|git| git.available);
         self.report.git = self.git(object, &listing.statements, git_available)?;
-        self.chains(object, &listing.actors)
+        self.chains(object, &listing.actors)?;
+        Ok(listing.sources)
     }
 
     /// Check the chains this object depends on: each closure actor's
@@ -1107,8 +1176,9 @@ impl Pull<'_> {
         available: bool,
     ) -> Result<GitOutcome, PullError> {
         let git_root = crate::git_root(self.store);
-        let mut commits: BTreeSet<GitRevision> = BTreeSet::new();
-        for id in statements {
+        let mut commits: BTreeSet<GitRevision> = self.required.clone().unwrap_or_default();
+        let derive = self.required.is_none();
+        for id in statements.iter().filter(|_| derive) {
             let bytes = match self.store.get_statement_bytes(id) {
                 Ok(bytes) => bytes,
                 // Refused earlier in this pull.
@@ -1302,6 +1372,7 @@ impl Pull<'_> {
                     git: Some(GitAvailability {
                         available: bundle.pack().is_some(),
                     }),
+                    sources: Vec::new(),
                     next_cursor: None,
                 };
                 if &listing.object != object {

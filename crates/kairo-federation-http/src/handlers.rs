@@ -356,6 +356,11 @@ async fn object_listing(State(node): State<Node>, id: PathId, query: RawQuery) -
             git: page.cursor().is_none().then(|| GitAvailability {
                 available: crate::upload::has_git(&crate::git_root(&node.store), object.as_str()),
             }),
+            sources: if page.cursor().is_none() {
+                view.sources.get(&object).cloned().unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             next_cursor: None,
         };
         // The ids came from typed sets, so re-parsing can't fail; if
