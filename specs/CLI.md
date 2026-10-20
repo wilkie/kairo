@@ -1154,6 +1154,9 @@ Without `--plan-only`, the plan runs under an isolation engine when
 its target requires `environment:linux/<arch>` and an allowlisted
 engine (`[[runtime.engines]]`, `DECISIONS.md` §35) passes its probe;
 that needs no further policy, and the result is not host-dependent.
+A `seed:*` requirement resolves only to an object listed under
+`[[runtime.seeds]]` (`DECISIONS.md` §36); other objects claiming the
+label are listed under `skipped:`.
 A plan whose environment is `none` (the target names no environment,
 or no engine is available) runs in the native development-mode
 executor: a host process with a scrubbed environment and no isolation

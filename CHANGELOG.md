@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **The stage0-posix bootstrap (`DECISIONS.md` §36).**
+  `bootstrap/stage0-posix/import.sh` imports stage0-posix Release_1.9.1
+  as a seed object (`seed:stage0-posix/amd64`) and a sources object
+  whose `amd64` target builds M2-Planet, mescc-tools and
+  mescc-tools-extra from 847 bytes of seed under the bubblewrap engine,
+  with upstream's `amd64.answers` checked in the build. New
+  `[[runtime.seeds]]` config: only listed seed objects satisfy `seed:*`
+  labels, and only through their own content. The full chain is the
+  ignored test `bootstrap_stage0` (needs `KAIRO_STAGE0_DIR`).
 - **The bubblewrap engine (`DECISIONS.md` §35).** A target that
   requires `environment:linux/<arch>` builds under bubblewrap when it
   is allowlisted in `[[runtime.engines]]` and passes a probe: an empty

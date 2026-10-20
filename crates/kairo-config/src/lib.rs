@@ -65,6 +65,9 @@ pub struct RuntimeConfig {
     /// Allowlisted isolation engines (`DECISIONS.md` §35 sub-decision
     /// 2), in file order. Each is probed before it is offered.
     pub engines: Vec<EngineConfig>,
+    /// Seed objects accepted as roots of trust (`DECISIONS.md` §36
+    /// sub-decision 3): the only ones that may satisfy `seed:*`.
+    pub seeds: Vec<ObjectId>,
 }
 
 /// One `[[runtime.engines]]` entry.
@@ -95,6 +98,7 @@ impl Default for RuntimeConfig {
             timeout_secs: 3600,
             host_tools: Vec::new(),
             engines: Vec::new(),
+            seeds: Vec::new(),
         }
     }
 }
@@ -302,6 +306,14 @@ struct RawRuntime {
     host: Option<RawRuntimeHost>,
     #[serde(default)]
     engines: Vec<RawEngine>,
+    #[serde(default)]
+    seeds: Vec<RawSeed>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSeed {
+    object: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -689,6 +701,19 @@ fn parse_runtime(
             path: engine.path,
         });
     }
+    let mut seeds: Vec<ObjectId> = Vec::new();
+    for seed in raw.seeds {
+        let object = ObjectId::new(seed.object.clone()).map_err(|error| {
+            invalid(format!(
+                "runtime.seeds: object {:?} is not a bare object id: {error}",
+                seed.object
+            ))
+        })?;
+        if seeds.contains(&object) {
+            return Err(invalid(format!("runtime.seeds: {object} is listed twice")));
+        }
+        seeds.push(object);
+    }
     Ok(RuntimeConfig {
         allow_local_process: raw
             .allow_local_process
@@ -696,6 +721,7 @@ fn parse_runtime(
         timeout_secs: raw.timeout_secs.unwrap_or(defaults.timeout_secs),
         host_tools,
         engines,
+        seeds,
     })
 }
 
@@ -986,6 +1012,22 @@ path = \"/usr/bin/cc\"
             parse_err("[[runtime.engines]]\nkind = \"bubblewrap\"\npath = \"bwrap\"\n")
                 .contains("absolute")
         );
+
+        let seeds = parse_ok(&format!("[[runtime.seeds]]\nobject = \"{OBJECT}\"\n"));
+        assert_eq!(
+            seeds
+                .runtime
+                .seeds
+                .iter()
+                .map(ObjectId::as_str)
+                .collect::<Vec<_>>(),
+            [OBJECT]
+        );
+        assert!(parse_err("[[runtime.seeds]]\nobject = \"object:x\"\n").contains("bare object id"));
+        assert!(parse_err(&format!(
+            "[[runtime.seeds]]\nobject = \"{OBJECT}\"\n[[runtime.seeds]]\nobject = \"{OBJECT}\"\n"
+        ))
+        .contains("twice"));
     }
 
     #[test]

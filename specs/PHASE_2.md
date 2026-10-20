@@ -446,8 +446,11 @@ closures over artifact providers, and the toolchain bootstraps from a
 per-(system, architecture) seed.
 
 The first engine, bubblewrap with the `environment:linux/<arch>`
-contract, is implemented (`DECISIONS.md` §35); next on this path are
-the bootstrap import and the microVM engine.
+contract, is implemented (`DECISIONS.md` §35), and so is the first
+bootstrap: stage0-posix 1.9.1 for AMD64, from 847 bytes of seed to
+M2-Planet and mescc-tools under the engine, matching upstream's answers
+(`DECISIONS.md` §36, `bootstrap/stage0-posix/`). Next on this path are
+the live-bootstrap stages (Mes, tcc, gcc) and the microVM engine.
 
 - [x] Reconcile the four specs with each other and with what's been
       implemented since they were written.

@@ -57,6 +57,9 @@ pub const RESOLVED_MANIFEST_DOMAIN: &[u8] = b"kairo.resolved-manifest.v1";
 pub const RESOLVED_MANIFEST_SCHEMA: &str = "kairo.resolved-manifest.v1";
 
 const ENVIRONMENT_PREFIX: &str = "environment:";
+/// Labels only an accepted seed may satisfy (`DECISIONS.md` §36
+/// sub-decision 3).
+const SEED_PREFIX: &str = "seed:";
 
 /// Where the resolver reads a snapshot's `kairo.toml` from. The
 /// manifest's canonical hash must equal the revision's
@@ -621,6 +624,7 @@ pub struct Resolver<'a> {
     artifacts: &'a dyn ArtifactSource,
     host: &'a Host,
     host_tools: &'a [HostTool],
+    seeds: &'a [ObjectId],
 }
 
 impl fmt::Debug for Resolver<'_> {
@@ -646,7 +650,15 @@ impl<'a> Resolver<'a> {
             artifacts,
             host,
             host_tools,
+            seeds: &[],
         }
+    }
+
+    /// Accept these objects as seeds: the only ones that satisfy a
+    /// `seed:*` label, and only through their own content.
+    pub fn with_seeds(mut self, seeds: &'a [ObjectId]) -> Self {
+        self.seeds = seeds;
+        self
     }
 
     /// Index this store's objects for this resolver's manifest source.
@@ -904,7 +916,21 @@ impl<'a> Resolver<'a> {
     ) -> Result<Resolved, ResolveError> {
         let mut considered = Vec::new();
         let mut matching = Vec::new();
+        let seed = label.starts_with(SEED_PREFIX);
         for offer in index.offers(label) {
+            if seed && (offer.artifact.is_some() || !self.seeds.contains(&offer.object)) {
+                let reason = if offer.artifact.is_some() {
+                    format!("offers {label} as a build output; a seed must be its own content")
+                } else {
+                    format!("offers {label} but is not an accepted seed ([[runtime.seeds]])")
+                };
+                considered.push(format!("{}: {reason}", offer.describe()));
+                diagnostics.skipped.push(Skipped {
+                    object: offer.object.clone(),
+                    reason,
+                });
+                continue;
+            }
             if version_matches(version, offer.version.as_deref()) {
                 matching.push(offer);
             } else {
@@ -919,7 +945,7 @@ impl<'a> Resolver<'a> {
         let host_tools: Vec<&HostTool> = self
             .host_tools
             .iter()
-            .filter(|tool| tool.provides == label)
+            .filter(|tool| tool.provides == label && !seed)
             .filter(|tool| {
                 if isolated {
                     considered.push(format!(

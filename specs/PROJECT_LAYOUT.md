@@ -44,6 +44,9 @@ kairo/
   pnpm-workspace.yaml
   package.json
 
+  bootstrap/          # archived bootstrap chains as Kairo objects (DECISIONS.md §36)
+    stage0-posix/
+
   crates/
     kairo-core/
     kairo-identity/

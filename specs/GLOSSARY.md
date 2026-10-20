@@ -254,7 +254,9 @@ See `DECISIONS.md` §34.
 A seed is the root of a bootstrap chain for one (system, architecture)
 pair: an Object whose provided binary is its own content, auditable by
 hand, with no `BuildResult`. Seeds are roots of trust alongside signing
-keys; policy lists which a node accepts.
+keys: only objects listed under `[[runtime.seeds]]` can satisfy a
+`seed:*` label, and only through their own content; trusting the
+signer does not accept the seed (`DECISIONS.md` §36).
 
 See `DECISIONS.md` §34.
 

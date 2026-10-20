@@ -3494,7 +3494,15 @@ Sub-decisions:
    engine. The test that runs the full chain is `#[ignore]` and needs
    that checkout (`KAIRO_STAGE0_DIR`), since tests don't use the
    network; it checks the resulting artifact against
-   `amd64.answers` too.
+   `amd64.answers` too. *Amended when built:* the import commits
+   every file of the checkout, ignore rules notwithstanding
+   (`git add --force`), since upstream's `.gitignore` files cover the
+   placeholder files that keep `AMD64/artifact/` and `AMD64/bin/`, the
+   directories the chain writes into. The artifact therefore also
+   holds `bin/placeholder`. Commits use a fixed author and date, so
+   re-importing the release gives the same revisions, and the SHA-256
+   object format (`git:sha256:` revisions, §19), the default for new
+   objects' history.
 
 Rationale: stage0-posix already runs, unmodified, inside §35's empty
 root, so the import exercises the strict model end to end at the cost

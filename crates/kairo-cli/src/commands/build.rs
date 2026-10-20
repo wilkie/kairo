@@ -315,6 +315,7 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     };
     let resolve = || {
         Resolver::new(&store, &manifests, &artifacts, &host, &tools)
+            .with_seeds(&config.runtime.seeds)
             .resolve(&object, &selector, args.target)
             .map_err(|error| CliError::Resolve(Box::new(error)))
     };
