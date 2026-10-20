@@ -3523,3 +3523,126 @@ Affected specs:
 - `PHASE_2.md` §7 — the bootstrap import.
 - `GLOSSARY.md` — Seed (the policy).
 - `CLI.md` §17 — seeds in resolution.
+
+---
+
+## 37. Source Objects: Archiving External Git Repositories
+
+Decision: the archive holds two kinds of object.
+
+- A **source object** archives one external Git repository faithfully.
+  It is identified by its source: its genesis is derived from the
+  canonical repository URL alone, so every node that mirrors the same
+  repository computes the same object id. Its history is upstream's
+  own commits, in upstream's object format, unmodified and with no
+  `kairo.toml`. What actors sign about it are **observations** —
+  "fetching this URL at this time, I saw these refs at these commits,
+  and hold their full closures" — which independent observers can
+  make and compare.
+- A **native object** is born in the archive, with SHA-256 history
+  (§19 sub-decision 7) and a `kairo.toml`. It references source
+  objects as dependencies, pinned by upstream commit id, and carries
+  the richer metadata: build targets, provides, and how the sources
+  fit together.
+
+Sub-decisions:
+
+1. **Deterministic source genesis.** A source genesis holds only the
+   canonical URL. Its object id is derived from it under its own
+   domain; it has no creator, timestamp, or nonce, and is not signed,
+   since there is nothing in it to vouch for. Canonical form: scheme
+   and host lowercased, a default port dropped, one trailing `/` and a
+   trailing `.git` dropped, the path otherwise kept as written.
+   Only network URLs identify a source: `https` and `git`. An `ssh`
+   URL (`ssh://git@host/path` or `git@host:path`) canonicalizes to
+   `https://host/path`, so the same repository has one id however it
+   was reached. `file` URLs have no source identity: a local path
+   means nothing on another node. (Tests serve repositories over
+   `git://` on localhost.)
+
+2. **Observations, not authorship.** A source object's statements are
+   observations by an actor: the URL fetched, the time, every ref
+   seen (`refs/heads/*`, `refs/tags/*`) with its commit as a typed
+   revision, and the claim that the observer holds each commit's
+   closure. Commit ids are content hashes, so two observers agreeing
+   on a ref's commit have independently retrieved the same content.
+   Trust policy decides whose observations a node relies on; they
+   never override each other. The OBJECT §4 rule that a revision's
+   tree carries `kairo.toml` applies to native objects only. One
+   statement per fetch lists **every** ref the remote advertised, so
+   it is a faithful picture of one moment: a ref absent from a later
+   observation was deleted, and two observers compare in one step.
+
+3. **Nothing seen is ever dropped.** Fetching a tracked source again
+   is additive: every commit any observation has named stays pinned
+   in the Git cache (`refs/kairo/observed/<oid>`) and is exempt from
+   cache garbage collection. A ref that upstream moves, rewrites, or
+   deletes gets a new observation, and the old commit stays
+   reachable through the old one. Ref history is the sequence of
+   observations, so a force-pushed branch or a moved tag is visible,
+   not lost.
+
+4. **Tags are mirrored as observations** and managed on the archive's
+   side: what upstream's tag `v1.2` pointed at, when, and by whose
+   observation, with every value it has had. Version tags
+   (`ObjectVersionTag`) stay a native-object feature for now; deriving
+   them from observed tags can come later without changing what is
+   recorded.
+
+5. **Submodules are their own source objects.** A commit's
+   `.gitmodules` and gitlinks name `(url, commit)` pairs; each URL
+   (relative ones resolved against the parent's) is a source object
+   by sub-decision 1, so the link from parent to submodule is
+   computable on every node. Archiving a source commit archives each
+   submodule commit it pins, recursively, by default, each into its
+   own source object and recorded in that source's own observation;
+   recursion stops at a source already holding the pinned commit,
+   guards against cycles, and has a depth limit. An archive that holds
+   a commit but not what it pins is incomplete.
+
+6. **Native objects pin sources by upstream revision.** An object
+   dependency on a source names the source (its URL, or its object
+   id) and `revision = "git:<format>:<oid>"`. That pin is the same on
+   every node, unlike a snapshot id, which names signed statements
+   and differs between observers. There are no version ranges for
+   sources: using a newer upstream commit is a conscious edit of the
+   pin, and so a new revision of the native object.
+
+7. **Placement.** A dependency may name a `path` inside the source
+   tree (`path = "M2libc"`); the executor materializes it there,
+   read-only, instead of at `/kairo/content/<snapshot>` only, so
+   upstream layouts that expect sibling repositories build unchanged.
+
+8. **The bootstrap becomes sources plus a native wrapper.**
+   stage0-posix, its eleven submodules, and bootstrap-seeds become
+   source objects at the commits Release_1.9.1 pins. The objects of
+   §36 are replaced by one native object (SHA-256) holding
+   `kairo.toml` and `kairo.kaem`, depending on each source at its
+   pinned commit and path, so the archive proves exactly which
+   upstream commits it built. *Amends §36 sub-decision 3:* seeds are
+   named as `(source, revision)` pairs under `[[runtime.seeds]]`; a
+   native object marks a dependency `seed = true`, and it resolves
+   only if that exact pair is listed, so accepting a seed is
+   accepting specific bytes at a specific upstream commit. `seed:*`
+   labels are retired with §36's seed object.
+
+Rationale: an archive of software has to keep what it was given
+exactly as given, and say where it came from in a way others can
+check. Deriving a source's identity from its URL lets independent
+archives converge on one object and compare what they saw; pinning by
+upstream commit makes every downstream build name exactly which
+upstream content it used; and never dropping a seen commit is what
+makes an archive outlast the repositories it mirrors.
+
+Affected specs:
+
+- `OBJECT.md` — the two kinds; §4's `kairo.toml` rule for native
+  objects only.
+- `STATEMENTS.md` — the source genesis and observation statements.
+- `schemas/canonical/` — `source-genesis-v1.md`, the observation.
+- `OBJECT_STORE.md`, `STORE.md` — observed-commit retention.
+- `BUILD.md`, `object-manifest-v1.md` — `revision` and `path` on
+  dependencies.
+- `FEDERATION.md` — sources as shared objects across nodes.
+- `DECISIONS.md` §20 (unreferenced commits stay local, except
+  observed ones), §36 (the bootstrap's layout).
