@@ -5,6 +5,7 @@ members = [
     "crates/kairo-object",
     "crates/kairo-statement",
     "crates/kairo-store",
+    "crates/kairo-resolver",
     "crates/kairo-keystore",
     "crates/kairo-git",
     "crates/kairo-git-remote",

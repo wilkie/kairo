@@ -1661,6 +1661,7 @@ dependencies = [
  "kairo-identity",
  "kairo-keystore",
  "kairo-object",
+ "kairo-resolver",
  "kairo-statement",
  "kairo-store",
  "kairo-test-support",
@@ -1867,6 +1868,21 @@ dependencies = [
  "semver",
  "serde",
  "toml",
+]
+
+[[package]]
+name = "kairo-resolver"
+version = "0.1.0"
+dependencies = [
+ "kairo-core",
+ "kairo-object",
+ "kairo-statement",
+ "kairo-store",
+ "kairo-test-support",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

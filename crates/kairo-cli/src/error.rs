@@ -122,6 +122,24 @@ pub(crate) enum CliError {
     },
     /// A verified bundle import refused a record (`DECISIONS.md` §32).
     BundleImport(Box<kairo_federation_http::client::PullError>),
+    /// Build planning failed (`DECISIONS.md` §33).
+    Resolve(Box<kairo_resolver::ResolveError>),
+    ParseSnapshotRef {
+        input: String,
+        source: kairo_core::IdError,
+    },
+    /// A well-formed reference that isn't to an object or a snapshot.
+    NotASnapshotRef {
+        input: String,
+    },
+    /// `kairo build` without `--plan-only`: the executor is the next
+    /// slice.
+    BuildNotYetSupported,
+    /// `kairo provider show` for an object the resolver can't consider.
+    ProviderUnavailable {
+        object: ObjectId,
+        reason: String,
+    },
     /// An actor export file couldn't be read, parsed, or written.
     ActorExportFile {
         path: PathBuf,
@@ -585,6 +603,21 @@ impl fmt::Display for CliError {
             }
             Self::Fetch(error) => write!(f, "fetch failed: {error}"),
             Self::LoadConfig(error) => write!(f, "invalid config: {error}"),
+            Self::Resolve(error) => write!(f, "cannot plan the build: {error}"),
+            Self::ParseSnapshotRef { input, source } => write!(
+                f,
+                "{input:?} is not a snapshot reference (object:<id> or object:<id>:snapshot:<id>): {source}"
+            ),
+            Self::NotASnapshotRef { input } => write!(
+                f,
+                "{input:?} is not a snapshot reference (expected object:<id> or object:<id>:snapshot:<id>)"
+            ),
+            Self::BuildNotYetSupported => f.write_str(
+                "running a build is not implemented yet; use --plan-only to resolve and store the plan",
+            ),
+            Self::ProviderUnavailable { object, reason } => {
+                write!(f, "object:{object} can't be considered as a provider: {reason}")
+            }
             Self::BundleGitManifest { message } => write!(f, "bundle Git data: {message}"),
             Self::BundleGitIncomplete { missing } => write!(
                 f,
@@ -1087,10 +1120,12 @@ impl Error for CliError {
             Self::ListKeystore(error) => Some(error),
             Self::Bundle(error) => Some(error),
             Self::Fetch(error) | Self::BundleImport(error) => Some(error.as_ref()),
+            Self::Resolve(error) => Some(error.as_ref()),
             Self::PeerRequest { source, .. } => Some(source.as_ref()),
             Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }
             | Self::ParseObjectId { source, .. }
+            | Self::ParseSnapshotRef { source, .. }
             | Self::ParseStatementId { source, .. }
             | Self::ParseRecordRef { source, .. }
             | Self::BuildSubjectRef { source, .. }
@@ -1119,6 +1154,9 @@ impl Error for CliError {
             | Self::RevokeWrongGrantor { .. }
             | Self::AmbiguousLocalActor { .. }
             | Self::GitRepoNotDiscovered { .. }
+            | Self::NotASnapshotRef { .. }
+            | Self::BuildNotYetSupported
+            | Self::ProviderUnavailable { .. }
             | Self::ManifestNotUtf8
             | Self::MissingPublicKey
             | Self::ConflictingPublicKeyInputs

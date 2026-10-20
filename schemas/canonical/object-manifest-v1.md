@@ -106,7 +106,9 @@ present, so a manifest that doesn't use them keeps its hash.
 
 `ContentSection`: `string(kind)`.
 
-`ProvideDeclaration`: `string(provides) || option(version, string)`.
+`ProvideDeclaration`: `string(provides) || option(version, string)`, then
+`string("artifact") || string(target) || string(output)` when the entry
+names a build output (an artifact provider).
 
 `DependencyDeclaration` variants:
 

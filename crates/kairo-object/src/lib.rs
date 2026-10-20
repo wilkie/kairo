@@ -532,10 +532,32 @@ impl CanonicalEncode for ContentSection {
     }
 }
 
+/// One `[[provides]]` entry: a provides label this object offers,
+/// either through a build target's output (an artifact provider) or
+/// as its own tree (a content provider) — `specs/DECISIONS.md` §33
+/// sub-decision 2, §34 sub-decision 5.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvideDeclaration {
     provides: String,
     version: Option<String>,
+    artifact: Option<ArtifactOutput>,
+}
+
+/// Which build output provides a label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactOutput {
+    target: String,
+    output: String,
+}
+
+impl ArtifactOutput {
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub fn output(&self) -> &str {
+        &self.output
+    }
 }
 
 impl ProvideDeclaration {
@@ -546,6 +568,12 @@ impl ProvideDeclaration {
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
     }
+
+    /// The build output that provides the label; `None` means the
+    /// object's own tree does.
+    pub fn artifact(&self) -> Option<&ArtifactOutput> {
+        self.artifact.as_ref()
+    }
 }
 
 impl CanonicalEncode for ProvideDeclaration {
@@ -554,6 +582,13 @@ impl CanonicalEncode for ProvideDeclaration {
         encode_option(out, self.version.as_ref(), |out, version| {
             encode_str(out, version);
         });
+        // Tagged rather than an option, so a content provider hashes
+        // as it did before artifact providers existed.
+        if let Some(artifact) = &self.artifact {
+            encode_str(out, "artifact");
+            encode_str(out, &artifact.target);
+            encode_str(out, &artifact.output);
+        }
     }
 }
 
@@ -797,6 +832,16 @@ pub enum ManifestError {
         path: String,
     },
     UnknownOutputKind(String),
+    /// A `[[provides]]` entry named a target or output without the
+    /// other.
+    PartialArtifactProvider(String),
+    /// A `[[provides]]` entry named a target or output the manifest
+    /// doesn't declare.
+    UnknownArtifactProvider {
+        provides: String,
+        target: String,
+        output: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -845,6 +890,18 @@ impl fmt::Display for ManifestError {
             Self::UnknownOutputKind(kind) => {
                 write!(f, "unknown output kind {kind} (expected file or directory)")
             }
+            Self::PartialArtifactProvider(provides) => write!(
+                f,
+                "provides {provides} must name both target and output, or neither"
+            ),
+            Self::UnknownArtifactProvider {
+                provides,
+                target,
+                output,
+            } => write!(
+                f,
+                "provides {provides} names output {output} of build target {target}, which the manifest doesn't declare"
+            ),
         }
     }
 }
@@ -869,7 +926,9 @@ impl Error for ManifestError {
             | Self::NoOutputs(_)
             | Self::DuplicateOutput { .. }
             | Self::DuplicateArtifactPath { .. }
-            | Self::UnknownOutputKind(_) => None,
+            | Self::UnknownOutputKind(_)
+            | Self::PartialArtifactProvider(_)
+            | Self::UnknownArtifactProvider { .. } => None,
         }
     }
 }
@@ -918,24 +977,46 @@ struct RawObjectManifest {
 
 impl RawObjectManifest {
     fn validate(self) -> Result<ObjectManifest, ManifestError> {
+        let build_targets = self
+            .build
+            .map(RawBuildSection::validate)
+            .transpose()?
+            .unwrap_or_default();
+        let provides = self
+            .provides
+            .into_iter()
+            .map(RawProvideDeclaration::validate)
+            .collect::<Result<Vec<_>, _>>()?;
+        for declaration in &provides {
+            if let Some(artifact) = &declaration.artifact {
+                let declared = build_targets
+                    .iter()
+                    .find(|target| target.name == artifact.target)
+                    .is_some_and(|target| {
+                        target
+                            .outputs
+                            .iter()
+                            .any(|output| output.name == artifact.output)
+                    });
+                if !declared {
+                    return Err(ManifestError::UnknownArtifactProvider {
+                        provides: declaration.provides.clone(),
+                        target: artifact.target.clone(),
+                        output: artifact.output.clone(),
+                    });
+                }
+            }
+        }
         Ok(ObjectManifest {
             kairo: self.kairo.validate()?,
             content: self.content.map(RawContentSection::validate).transpose()?,
-            provides: self
-                .provides
-                .into_iter()
-                .map(RawProvideDeclaration::validate)
-                .collect::<Result<Vec<_>, _>>()?,
+            provides,
             dependencies: self
                 .dependencies
                 .into_iter()
                 .map(RawDependencyDeclaration::validate)
                 .collect::<Result<Vec<_>, _>>()?,
-            build_targets: self
-                .build
-                .map(RawBuildSection::validate)
-                .transpose()?
-                .unwrap_or_default(),
+            build_targets,
         })
     }
 }
@@ -1137,15 +1218,23 @@ impl RawContentSection {
 struct RawProvideDeclaration {
     provides: String,
     version: Option<String>,
+    target: Option<String>,
+    output: Option<String>,
 }
 
 impl RawProvideDeclaration {
     fn validate(self) -> Result<ProvideDeclaration, ManifestError> {
         ensure_non_empty("provides.provides", &self.provides)?;
+        let artifact = match (self.target, self.output) {
+            (None, None) => None,
+            (Some(target), Some(output)) => Some(ArtifactOutput { target, output }),
+            _ => return Err(ManifestError::PartialArtifactProvider(self.provides)),
+        };
 
         Ok(ProvideDeclaration {
             provides: self.provides,
             version: self.version,
+            artifact,
         })
     }
 }
@@ -1886,6 +1975,50 @@ mod tests {
             ObjectManifest::parse_toml(no_outputs),
             Err(ManifestError::NoOutputs(name)) if name == "check"
         ));
+    }
+
+    #[test]
+    fn parses_an_artifact_provider() -> Result<(), Box<dyn std::error::Error>> {
+        let provider = format!(
+            r#"{BUILD_MANIFEST}
+            [[provides]]
+            provides = "tool:app"
+            version = "1.2"
+            target = "release"
+            output = "cli"
+            "#
+        );
+        let manifest = ObjectManifest::parse_toml(&provider)?;
+        assert!(matches!(
+            manifest.provides(),
+            [declaration] if declaration.artifact().map(|a| (a.target(), a.output())) == Some(("release", "cli"))
+        ));
+        assert_ne!(
+            manifest.manifest_hash(),
+            ObjectManifest::parse_toml(&provider.replace("output = \"cli\"", "output = \"cli\"\n[[build.targets.outputs]]\nname = \"x\"\npath = \"x\"\nartifact_path = \"x\"\nkind = \"file\""))
+                .map(|m| m.manifest_hash())?
+        );
+
+        for (from, to, partial) in [
+            ("output = \"cli\"", "", true),
+            ("target = \"release\"", "", true),
+            ("output = \"cli\"", "output = \"other\"", false),
+            ("target = \"release\"", "target = \"debug\"", false),
+        ] {
+            let manifest = ObjectManifest::parse_toml(&provider.replace(from, to));
+            let expected = |error: &ManifestError| {
+                if partial {
+                    matches!(error, ManifestError::PartialArtifactProvider(_))
+                } else {
+                    matches!(error, ManifestError::UnknownArtifactProvider { .. })
+                }
+            };
+            assert!(
+                matches!(&manifest, Err(error) if expected(error)),
+                "{from} -> {to:?}: {manifest:?}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

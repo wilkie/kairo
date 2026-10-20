@@ -21,7 +21,7 @@ use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::ObjectManifest;
 use kairo_statement::{
     ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-    RevisionId, Signature, SignedStatement, UnsignedStatement,
+    ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement, UnsignedStatement,
 };
 use kairo_store::{ActorStore, BlobStore, FilesystemStore, ObjectStore, StatementStore};
 use tempfile::TempDir;
@@ -227,6 +227,48 @@ impl StoreFixture {
             statement_id,
             statement,
         }
+    }
+
+    /// Sign and persist an `ObjectVersionTag` binding `version` to
+    /// `revision`'s statement id, as the first tag of that version by
+    /// `actor`. Returns the tag statement's id.
+    pub fn bind_version_tag(
+        &self,
+        actor: &CreatedActor,
+        object: &CreatedObject,
+        revision: &CreatedRevision,
+        version: &str,
+    ) -> StatementId {
+        let body = ObjectVersionTagBody::new(
+            object.object_id.clone(),
+            SemverVersion::parse(version).expect("semver version"),
+            Some(revision.statement_id.clone()),
+            None,
+        )
+        .expect("tag body");
+        let subject: KairoRef = format!("object:{}", object.object_id)
+            .parse()
+            .expect("subject parse");
+        let unsigned = self
+            .store
+            .link_to_chain(UnsignedStatement::new(
+                actor.actor_id.clone(),
+                subject,
+                Timestamp::from_seconds(FIXTURE_TIMESTAMP),
+                body,
+            ))
+            .expect("chain tips");
+        let signature_bytes = actor.signing.sign(&unsigned.canonical_bytes());
+        let signature = Signature::new(
+            actor.actor_id.clone(),
+            actor.signing.public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.bytes().to_vec(),
+        );
+        let statement = SignedStatement::new(unsigned, signature);
+        self.store
+            .put_object_version_tag(&statement)
+            .expect("put_object_version_tag")
     }
 
     fn next_seed(&self) -> u8 {

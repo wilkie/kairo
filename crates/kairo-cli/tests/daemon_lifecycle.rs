@@ -26,6 +26,7 @@ use kairo_git as _;
 use kairo_identity as _;
 use kairo_keystore as _;
 use kairo_object as _;
+use kairo_resolver as _;
 use kairo_statement as _;
 use kairo_store as _;
 use kairo_test_support as _;

@@ -194,6 +194,57 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: FederationCommand,
     },
+    /// Plan a build of a snapshot (`specs/DECISIONS.md` §33). With
+    /// `--plan-only`, resolve the target's requirements against this
+    /// store and host into a resolved manifest, store it, and print
+    /// it; nothing runs. Running the plan is not implemented yet.
+    Build {
+        /// `object:<id>` for the creator's head, or
+        /// `object:<id>:snapshot:<id>` for a held tagged snapshot.
+        snapshot_ref: String,
+        #[arg(long)]
+        target: String,
+        #[arg(long)]
+        plan_only: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// What held objects provide (`specs/DECISIONS.md` §33
+    /// sub-decision 2): their `[[provides]]` labels at their current
+    /// snapshots, read from the Git cache.
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProviderCommand {
+    /// Every provides label a held object offers, with its offers in
+    /// the resolver's rank order.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// One object's provides entries and build targets at its current
+    /// snapshot.
+    Show {
+        #[arg(long)]
+        object: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// What a provides requirement would resolve to.
+    Resolve {
+        /// The label, e.g. `tool:make`.
+        #[arg(long)]
+        provides: String,
+        /// A version requirement in Cargo syntax, e.g. `>=4, <5`.
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

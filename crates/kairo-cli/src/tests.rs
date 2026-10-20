@@ -8041,3 +8041,302 @@ fn a_signer_whose_rotation_this_node_lacks_is_refused_until_it_learns_it(
     assert!(imported.contains("verification = verified"), "{imported}");
     Ok(())
 }
+
+/// An object with a committed `kairo.toml` in the managed Git cache,
+/// one signed revision at that commit, and `head` pointing at it: what
+/// the resolver needs to consider the object.
+fn create_held_object(
+    store_dir: &std::path::Path,
+    actor: &str,
+    manifest_text: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let object_id = create_local_object(store_dir, actor)?;
+    let (git_dir, commit_oid) = init_git_repo_with_manifest(manifest_text)?;
+    populate_cache(store_dir, git_dir.path(), &object_id, &commit_oid)?;
+    let revision = run(Cli {
+        store: Some(store_dir.to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Revision {
+            command: RevisionCommand::Create {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                revision: format!("git:sha1:{commit_oid}"),
+                manifest: git_dir.path().join("kairo.toml"),
+                parents: vec![],
+                no_attests_reachable_history: false,
+            },
+        }),
+    })?;
+    let statement = parse_field(&revision, "statement = ")?;
+    run(Cli {
+        store: Some(store_dir.to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(Command::Branch {
+            command: BranchCommand::Set {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                revision: statement,
+                name: "head".to_owned(),
+            },
+        }),
+    })?;
+    Ok(object_id)
+}
+
+fn run_in_store(store_dir: &std::path::Path, command: Command) -> Result<String, CliError> {
+    run(Cli {
+        store: Some(store_dir.to_path_buf()),
+        keys: None,
+        daemon: false,
+        direct: false,
+        offline: false,
+        command: Some(command),
+    })
+}
+
+#[test]
+fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn std::error::Error>>
+{
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let make = create_held_object(
+        store_dir.path(),
+        &actor,
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "make"
+
+        [[provides]]
+        provides = "tool:make"
+        version = "4.4.1"
+        target = "release"
+        output = "bin"
+
+        [[build.targets]]
+        name = "release"
+        command = ["sh", "build.sh"]
+        [[build.targets.outputs]]
+        name = "bin"
+        path = "out"
+        artifact_path = "bin"
+        kind = "directory"
+        "#,
+    )?;
+    let zlib = create_held_object(
+        store_dir.path(),
+        &actor,
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "zlib"
+
+        [[provides]]
+        provides = "lib:zlib:source"
+        version = "1.3.1"
+        "#,
+    )?;
+    // Held, but with no head branch: the resolver skips it.
+    let orphan = create_local_object(store_dir.path(), &actor)?;
+    let app = create_held_object(
+        store_dir.path(),
+        &actor,
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "app"
+
+        [[dependencies]]
+        kind = "provides"
+        provides = "lib:zlib:source"
+        version = "^1.3"
+
+        [[build.targets]]
+        name = "release"
+        command = ["make", "release"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:make"
+        version = ">=4"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "environment:linux/x86-64"
+        [[build.targets.outputs]]
+        name = "cli"
+        path = "dist/app"
+        artifact_path = "bin/app"
+        kind = "file"
+        "#,
+    )?;
+
+    let list = run_in_store(
+        store_dir.path(),
+        Command::Provider {
+            command: ProviderCommand::List { json: false },
+        },
+    )?;
+    assert!(list.contains("providers = 2\n"), "{list}");
+    assert!(
+        list.contains(&format!(
+            "  tool:make\n    object:{make} target release output bin version 4.4.1\n"
+        )),
+        "{list}"
+    );
+    assert!(
+        list.contains(&format!("  object:{orphan}: no head branch")),
+        "{list}"
+    );
+
+    let show = run_in_store(
+        store_dir.path(),
+        Command::Provider {
+            command: ProviderCommand::Show {
+                object: make.clone(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(
+        show.contains("  tool:make version 4.4.1 from target release output bin\n"),
+        "{show}"
+    );
+    assert!(show.contains("build_targets = 1\n  release\n"), "{show}");
+
+    let resolve = run_in_store(
+        store_dir.path(),
+        Command::Provider {
+            command: ProviderCommand::Resolve {
+                provides: "tool:make".to_owned(),
+                version: Some(">=5".to_owned()),
+                json: false,
+            },
+        },
+    )?;
+    assert!(resolve.contains("chosen = nothing held\n"), "{resolve}");
+    assert!(resolve.contains("rejected = 1\n"), "{resolve}");
+
+    let plan = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    let plan_hash = parse_field(&plan, "plan = ")?;
+    assert!(plan.contains(&format!("object = {app}\n")), "{plan}");
+    assert!(plan.contains("target = release\n"), "{plan}");
+    assert!(plan.contains("requirements = 3\n"), "{plan}");
+    assert!(
+        plan.contains(&format!(
+            "  lib:zlib:source ^1.3 -> object:{zlib} (content)\n"
+        )),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!(
+            "  tool:make >=4 -> object:{make} target release output bin (build first)\n"
+        )),
+        "{plan}"
+    );
+    let on_this_host = std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64";
+    if on_this_host {
+        assert!(
+            plan.contains("environment = none\nhost_dependent = yes\n"),
+            "{plan}"
+        );
+        assert!(
+            plan.contains("environment:linux/x86-64 on this host (development mode)"),
+            "{plan}"
+        );
+    }
+    assert!(plan.contains("builds_first = 1\n"), "{plan}");
+    assert!(
+        plan.contains(&format!("  object:{make} target release (plan ")),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("  object:{orphan}: no head branch")),
+        "{plan}"
+    );
+
+    // The plan and its prerequisite are stored by hash, and the stored
+    // bytes read back as the same document.
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let bytes =
+        kairo_store::BlobStore::get_blob(&store, &kairo_core::BlobId::new(plan_hash.clone())?)?;
+    let document = kairo_resolver::PlanDocument::from_bytes(bytes)?;
+    assert_eq!(document.hash.to_string(), plan_hash);
+    assert_eq!(document.manifest.builds_first.len(), 1);
+    let prerequisite = kairo_core::BlobId::new(document.manifest.builds_first[0].plan.clone())?;
+    let sub = kairo_resolver::PlanDocument::from_bytes(kairo_store::BlobStore::get_blob(
+        &store,
+        &prerequisite,
+    )?)?;
+    assert_eq!(sub.manifest.object, make);
+    assert_eq!(sub.manifest.target, "release");
+
+    let json = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            plan_only: true,
+            json: true,
+        },
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&json)?;
+    assert_eq!(value["plan"], plan_hash);
+    assert_eq!(value["manifest"]["target"], "release");
+    assert_eq!(value["prerequisites"].as_array().map(Vec::len), Some(1));
+
+    let not_yet = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            plan_only: false,
+            json: false,
+        },
+    );
+    assert!(matches!(not_yet, Err(CliError::BuildNotYetSupported)));
+
+    let no_target = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "debug".to_owned(),
+            plan_only: true,
+            json: false,
+        },
+    );
+    assert!(
+        matches!(&no_target, Err(CliError::Resolve(error)) if error.to_string().contains("no build target debug")),
+        "{no_target:?}"
+    );
+
+    let bad_ref = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("actor:{actor}"),
+            target: "release".to_owned(),
+            plan_only: true,
+            json: false,
+        },
+    );
+    assert!(matches!(bad_ref, Err(CliError::NotASnapshotRef { .. })));
+    Ok(())
+}

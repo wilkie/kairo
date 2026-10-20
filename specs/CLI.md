@@ -764,7 +764,8 @@ kairo export         [post-v1] subsumed by `bundle export` in v1
 kairo inspect        [post-v1] depends on snapshot resolution
 kairo fetch          [post-v1] depends on Phase 2 §4
 kairo sync           [post-v1] depends on Phase 2 §4
-kairo build          [post-v1] depends on Phase 2 §7
+kairo build          [post-v1] --plan-only implemented (DECISIONS.md §33)
+kairo provider       [v1] DECISIONS.md §33
 kairo run            [post-v1] depends on Phase 2 §7
 kairo reproduce      [post-v1] depends on Phase 2 §7
 kairo pin            [post-v1] depends on GC design
@@ -1141,7 +1142,14 @@ Sync must not execute object content.
 
 ## 17. `kairo build`
 
-**[post-v1].** Depends on Phase 2 §7 build/run + RuntimeService.
+**[post-v1; `--plan-only` implemented].** `DECISIONS.md` §33–§34.
+Planning resolves the target's requirements against this store and
+host into a resolved manifest (`schemas/canonical/resolved-manifest-v1.md`),
+stores it and the plans of the builds it needs first by hash, and
+prints it. Candidates' manifests are read from the managed Git cache
+at their revisions' commits; an object whose tree isn't held is
+reported as skipped. Without `--plan-only` the command refuses: the
+executor is the next slice.
 
 Builds a snapshot.
 
@@ -1178,6 +1186,43 @@ Process:
 The CLI must not invoke arbitrary build commands outside daemon/core planning.
 
 If validation is not `valid`, build must not execute.
+
+Plan output (`--plan-only`):
+
+```text
+plan = <plan hash>
+object = <id>
+snapshot = <id>
+target = release
+environment = none | environment:<system>/<arch>
+host_dependent = yes | no
+requirements = N
+  <requested> -> <resolved>
+builds_first = N
+  object:<id> target <name> (plan <hash>)
+alternatives:        (candidates not chosen, if any)
+skipped:             (held objects the resolver couldn't consider)
+```
+
+`--json` gives the same with the stored document under `manifest`.
+
+### 17.1 `kairo provider`
+
+**[implemented].** What held objects provide, at their current
+snapshots (the creator's `head`), read from the Git cache.
+
+```text
+kairo provider list [--json]
+kairo provider show --object <id> [--json]
+kairo provider resolve --provides <label> [--version <req>] [--json]
+```
+
+`list` prints every label with its offers in the resolver's rank order
+(artifact providers, then content providers, by object id). `show`
+prints one object's `[[provides]]` entries and build targets. `resolve`
+prints what a requirement would pin to, the candidates a version
+requirement rejected, and the development-mode host tools from
+`[[runtime.host.tools]]` that would stand in.
 
 ---
 

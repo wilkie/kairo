@@ -3,6 +3,7 @@
 //! `crate::cli`; runners take a parsed subcommand and a `StorePaths`
 //! and return either the formatted output or a `CliError`.
 
+pub(crate) mod build;
 pub(crate) mod bundle;
 pub(crate) mod config;
 pub(crate) mod daemon;

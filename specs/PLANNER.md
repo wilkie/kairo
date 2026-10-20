@@ -620,6 +620,11 @@ If the host lacks `environment:web`, the planner may resolve a browser provider 
 
 ## 16. Host Capabilities
 
+> Per `DECISIONS.md` §34, the host provides facts (system,
+> architecture, the engines present), never tools; in development mode
+> it may stand in for its own `environment:` contract, marking the
+> plan host-dependent.
+
 A host may locally provide capabilities.
 
 Examples:

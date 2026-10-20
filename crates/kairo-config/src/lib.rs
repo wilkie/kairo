@@ -6,8 +6,9 @@
 //! Parsing is strict: an unknown section or key is an error rather
 //! than silently ignored, so a typo in a peer pin can't quietly turn
 //! pinning off. Only the keys implemented so far are accepted; the
-//! other sections `DAEMON.md` §15 sketches (`[api]`, `[policy]`,
-//! `[runtime]`) are added as their features land.
+//! other sections `DAEMON.md` §15 sketches (`[api]`, `[policy]`) are
+//! added as their features land. `[runtime]` holds the build
+//! development-mode switches (`DECISIONS.md` §33 sub-decision 4).
 //!
 //! ```toml
 //! [federation]
@@ -45,6 +46,43 @@ pub fn config_path(store_root: &Path) -> PathBuf {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Config {
     pub federation: FederationConfig,
+    pub runtime: RuntimeConfig,
+}
+
+/// `[runtime]` (`DECISIONS.md` §33 sub-decision 4, §34 sub-decision
+/// 10): the build development mode. Host facts (system, architecture,
+/// engines) are detected, never configured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfig {
+    /// Let `kairo build` run a target natively, with no isolation.
+    /// Results are marked host-dependent.
+    pub allow_local_process: bool,
+    /// Wall-clock limit for one build.
+    pub timeout_secs: u64,
+    /// Host programs a development-mode build may resolve a provides
+    /// requirement to, in file order.
+    pub host_tools: Vec<HostToolConfig>,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            allow_local_process: false,
+            timeout_secs: 3600,
+            host_tools: Vec::new(),
+        }
+    }
+}
+
+/// One `[[runtime.host.tools]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostToolConfig {
+    /// The provides label it satisfies, e.g. `tool:make`.
+    pub provides: String,
+    /// Its version, as the operator states it.
+    pub version: Option<String>,
+    /// The executable.
+    pub path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,6 +264,33 @@ impl FederationConfig {
 struct RawConfig {
     #[serde(default)]
     federation: Option<RawFederation>,
+    #[serde(default)]
+    runtime: Option<RawRuntime>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRuntime {
+    allow_local_process: Option<bool>,
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    host: Option<RawRuntimeHost>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRuntimeHost {
+    #[serde(default)]
+    tools: Vec<RawHostTool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHostTool {
+    provides: String,
+    #[serde(default)]
+    version: Option<String>,
+    path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -372,8 +437,12 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         message,
     };
 
+    let runtime = parse_runtime(raw.runtime.unwrap_or_default(), &invalid)?;
     let Some(federation) = raw.federation else {
-        return Ok(Config::default());
+        return Ok(Config {
+            federation: FederationConfig::default(),
+            runtime,
+        });
     };
     let limits = federation.limits.unwrap_or_default();
     for (name, value) in [
@@ -517,6 +586,54 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             discovery,
             on_demand,
         },
+        runtime,
+    })
+}
+
+fn parse_runtime(
+    raw: RawRuntime,
+    invalid: &dyn Fn(String) -> ConfigError,
+) -> Result<RuntimeConfig, ConfigError> {
+    if raw.timeout_secs == Some(0) {
+        return Err(invalid(
+            "runtime.timeout_secs must be greater than 0".to_owned(),
+        ));
+    }
+    let defaults = RuntimeConfig::default();
+    let mut host_tools: Vec<HostToolConfig> = Vec::new();
+    for tool in raw.host.unwrap_or_default().tools {
+        if tool.provides.is_empty() {
+            return Err(invalid(
+                "runtime.host.tools: provides must not be empty".to_owned(),
+            ));
+        }
+        if !tool.path.is_absolute() {
+            return Err(invalid(format!(
+                "runtime.host.tools: path {:?} for {} must be absolute",
+                tool.path, tool.provides
+            )));
+        }
+        if host_tools
+            .iter()
+            .any(|other| other.provides == tool.provides)
+        {
+            return Err(invalid(format!(
+                "runtime.host.tools: {} is listed twice",
+                tool.provides
+            )));
+        }
+        host_tools.push(HostToolConfig {
+            provides: tool.provides,
+            version: tool.version,
+            path: tool.path,
+        });
+    }
+    Ok(RuntimeConfig {
+        allow_local_process: raw
+            .allow_local_process
+            .unwrap_or(defaults.allow_local_process),
+        timeout_secs: raw.timeout_secs.unwrap_or(defaults.timeout_secs),
+        host_tools,
     })
 }
 
@@ -744,6 +861,51 @@ max_inbox_entries = 0
 "
         )
         .contains("max_inbox_entries"));
+    }
+
+    #[test]
+    fn runtime_section_parses_with_defaults_and_rejects_bad_tools() {
+        let config = parse_ok("");
+        assert_eq!(config.runtime, RuntimeConfig::default());
+        assert!(!config.runtime.allow_local_process);
+        assert_eq!(config.runtime.timeout_secs, 3600);
+
+        let config = parse_ok(
+            "[runtime]
+allow_local_process = true
+timeout_secs = 60
+
+[[runtime.host.tools]]
+provides = \"tool:make\"
+version = \"4.4.1\"
+path = \"/usr/bin/make\"
+
+[[runtime.host.tools]]
+provides = \"tool:cc\"
+path = \"/usr/bin/cc\"
+",
+        );
+        assert!(config.runtime.allow_local_process);
+        assert_eq!(config.runtime.timeout_secs, 60);
+        assert_eq!(config.runtime.host_tools.len(), 2);
+        assert_eq!(config.runtime.host_tools[0].provides, "tool:make");
+        assert_eq!(
+            config.runtime.host_tools[0].version.as_deref(),
+            Some("4.4.1")
+        );
+        assert_eq!(config.runtime.host_tools[1].version, None);
+
+        assert!(parse_err("[runtime]\ntimeout_secs = 0\n").contains("timeout_secs"));
+        assert!(parse_err("[runtime]\nsandbox = true\n").contains("sandbox"));
+        assert!(
+            parse_err("[[runtime.host.tools]]\nprovides = \"tool:make\"\npath = \"make\"\n")
+                .contains("absolute")
+        );
+        assert!(parse_err(
+            "[[runtime.host.tools]]\nprovides = \"tool:make\"\npath = \"/a\"\n[[runtime.host.tools]]\nprovides = \"tool:make\"\npath = \"/b\"\n"
+        )
+        .contains("twice"));
+        assert!(parse_err("[runtime.host]\nsystem = \"linux\"\n").contains("system"));
     }
 
     #[test]

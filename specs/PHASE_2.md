@@ -449,7 +449,7 @@ per-(system, architecture) seed.
       implemented since they were written.
 - [x] Decide MVP scope: just declarative build description in `kairo.toml`?
       Or actual build invocation (`kairo build --object <id>`)?
-- [ ] Implement deterministic build planning (planner consults the snapshot
+- [x] Implement deterministic build planning (planner consults the snapshot
       frontier and resolved dependencies).
 - [ ] Implement an MVP executor (probably native subprocess; container /
       VM executors are larger work).
@@ -468,8 +468,8 @@ core value proposition for science / build-reproducibility users.
 Required by §7 if builds need toolchains.
 
 - [x] Decide MVP scope of provider declaration in `kairo.toml`.
-- [ ] Implement provider resolution against the local store.
-- [ ] Add CLI: `kairo provider list / show / resolve`.
+- [x] Implement provider resolution against the local store.
+- [x] Add CLI: `kairo provider list / show / resolve`.
 
 **Why it matters:** the dependency-resolution backbone for builds.
 

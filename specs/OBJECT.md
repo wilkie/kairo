@@ -236,13 +236,25 @@ authority for Object identity.
 kind = "tree"
 ```
 
-### 4.3 Capabilities
+### 4.3 Provides
 
 ```toml
 [[provides]]
 provides = "data:exe:mz"
 version = "1.0.0"
+
+[[provides]]
+provides = "tool:make"
+version = "4.4.1"
+target = "release"
+output = "bin"
 ```
+
+An entry with `target` and `output` is an **artifact provider**: the
+label is provided by that output of that build target (both must be
+declared under `[[build.targets]]`). An entry without them is a
+**content provider**: the object's own tree provides the label
+(`DECISIONS.md` §33 sub-decision 2).
 
 ### 4.4 Dependencies
 

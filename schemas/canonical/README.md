@@ -54,3 +54,4 @@ is explicitly a standalone reference.
 - `snapshot-v1.md`
 - `node-document-v1.md` (signing bytes only; no derived id)
 - `inventory-v1.md` (signing bytes only; no derived id)
+- `resolved-manifest-v1.md` (canonical JSON; derived id is the plan hash)

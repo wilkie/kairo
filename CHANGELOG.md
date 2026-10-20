@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **Build planning (`DECISIONS.md` §33–§34).** `kairo build
+  <snapshot-ref> --target <name> --plan-only` resolves a target's
+  requirements against the local store and host into a
+  `kairo.resolved-manifest.v1` document (new `kairo-resolver` crate),
+  stores it by plan hash along with the plans of the builds it needs
+  first, and prints it. `[[provides]]` entries may name a `target` and
+  `output` (artifact providers). `kairo provider list|show|resolve`
+  show what held objects provide. `[runtime]` config:
+  `allow_local_process`, `timeout_secs`, `[[runtime.host.tools]]`.
+  Running the plan is the next slice.
 - **Build targets in `kairo.toml` (`DECISIONS.md` §33).** Manifest
   schema 1 accepts `[[build.targets]]` (name, command, workdir,
   per-target dependencies, declared outputs) and keeps a provides

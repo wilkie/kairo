@@ -1,0 +1,27 @@
+[package]
+name = "kairo-resolver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kairo-core = { path = "../kairo-core" }
+kairo-object = { path = "../kairo-object" }
+kairo-statement = { path = "../kairo-statement" }
+kairo-store = { path = "../kairo-store" }
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+kairo-test-support = { path = "../kairo-test-support" }
+tempfile = "3"
+
+[lib]
+name = "kairo_resolver"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

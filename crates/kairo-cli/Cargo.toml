@@ -24,6 +24,7 @@ kairo-git = { path = "../kairo-git" }
 kairo-identity = { path = "../kairo-identity" }
 kairo-keystore = { path = "../kairo-keystore" }
 kairo-object = { path = "../kairo-object" }
+kairo-resolver = { path = "../kairo-resolver" }
 kairo-statement = { path = "../kairo-statement" }
 kairo-store = { path = "../kairo-store" }
 kairo-web = { path = "../kairo-web" }

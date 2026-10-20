@@ -162,6 +162,9 @@ pub trait ObjectStore {
     ) -> Result<ObjectId, StoreError>;
 
     fn get_object_genesis(&self, id: &ObjectId) -> Result<ObjectGenesisStatement, StoreError>;
+
+    /// Every object this store holds a genesis for, ascending by id.
+    fn list_objects(&self) -> Result<Vec<ObjectId>, StoreError>;
 }
 
 /// Persistence interface for envelope-wrapped signed statements.
@@ -988,6 +991,24 @@ impl ObjectStore for FilesystemStore {
         self.index_object_genesis(statement, &id)?;
 
         Ok(id)
+    }
+
+    fn list_objects(&self) -> Result<Vec<ObjectId>, StoreError> {
+        let mut objects = Vec::new();
+        let mut report = RebuildReport::default();
+        self.rebuild_walk_dir(OBJECTS_DIR, &mut report, |_, path, _| {
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            objects.push(ObjectId::new(stem).map_err(|error| StoreError::Corrupt {
+                id: stem.to_owned(),
+                reason: CorruptReason::Parse(error.to_string()),
+            })?);
+            Ok(())
+        })?;
+        objects.sort();
+        Ok(objects)
     }
 
     fn get_object_genesis(&self, id: &ObjectId) -> Result<ObjectGenesisStatement, StoreError> {

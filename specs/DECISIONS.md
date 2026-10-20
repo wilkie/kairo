@@ -1385,8 +1385,9 @@ Sub-decisions:
 
    `[runtime]` (§33 sub-decision 4, §34): `allow_local_process`
    (`false`; development mode), `timeout_secs` (3600; zero is
-   invalid), and `[[runtime.host.tools]]` entries (`provides`,
-   optional `version`), the development-mode host tools. Host facts
+   invalid), and `[[runtime.host.tools]]` entries (`provides`, an
+   absolute `path`, optional `version`), the development-mode host
+   tools. Host facts
    (`[runtime.host]`: system, architecture, engines) are detected,
    never configured.
 
@@ -3004,14 +3005,17 @@ Sub-decisions:
      contract the host has an allowlisted engine for, or in
      development mode to `none`;
    - a **development-mode host tool**, configured under
-     `[[runtime.host.tools]]` (`provides`, optional `version`), which
-     marks the result host-dependent.
+     `[[runtime.host.tools]]` (`provides`, an absolute `path`,
+     optional `version`), which marks the result host-dependent.
 
    An object requirement is satisfied by the pinned snapshot, or by
-   the newest held version tag that meets its `version`. Labels match
-   exactly. Ties are broken deterministically — artifact providers
-   before content providers before host tools, then by object id —
-   and the losers are listed in the plan's output. Resolution recurses
+   the newest of the creator's version tags that meets its `version`.
+   Labels match exactly; a declared version is read leniently
+   (`3.81` is `3.81.0`). Candidates are held objects at their
+   creator's `head`, whose trees this node holds. Ties are broken
+   deterministically — artifact providers before content providers
+   before host tools, then by object id — and the losers are listed
+   in the plan's output. Resolution recurses
    into each provider's own target, producing a DAG; a cycle or an
    unsatisfied requirement fails resolution and names it. No signed
    provides claims, provider chains or hosting rules yet.
