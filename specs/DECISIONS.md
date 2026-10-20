@@ -3838,6 +3838,20 @@ Sub-decisions:
    Content offers are never filtered. Rejected offers are listed among
    what the resolver considered.
 
+9. **File sources federate like Git sources** (§37 sub-decision 9).
+   *Added when built:* a held file source can be published; its
+   closure is every observation of it, every observer, and its bytes as
+   the blob its hash names, and its genesis route serves the unsigned
+   `FileSourceGenesis`. Pulling one (`kairo fetch --object <id>`, or
+   `kairo source pull <sha256> --from <peer>`) checks the genesis by
+   re-deriving the id from the hash, verifies each observation under
+   its signer, and checks the bytes against the hash, within the Git
+   size limit rather than the manifest one, since distfiles are large.
+   Publishing a native object also serves the file sources its
+   revisions pin, whole, and pulling it brings them, so a pulled
+   wrapper such as live-bootstrap's can plan and build. Push carries
+   neither kind of source yet.
+
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence
 available, agreement with upstream's published hashes. Identifying

@@ -132,12 +132,17 @@ fn corrupt(error: &dyn std::fmt::Display) -> StoreError {
 
 impl PublishedObjectStore for FilesystemStore {
     fn publish_object(&self, object: &ObjectId, at: Timestamp) -> Result<bool, StoreError> {
-        // A native object's genesis, or a source's (`DECISIONS.md` §37).
+        // A native object's genesis, or a Git or file source's
+        // (`DECISIONS.md` §37–§38).
         match self.get_object_genesis(object) {
             Ok(_) => {}
-            Err(StoreError::Missing) => {
-                crate::SourceStore::get_source(self, object)?;
-            }
+            Err(StoreError::Missing) => match crate::SourceStore::get_source(self, object) {
+                Ok(_) => {}
+                Err(StoreError::Missing) => {
+                    crate::SourceStore::get_file_source(self, object)?;
+                }
+                Err(error) => return Err(error),
+            },
             Err(error) => return Err(error),
         }
         with_index_lock(&self.published_path(), || {

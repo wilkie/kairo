@@ -303,12 +303,14 @@ pub(crate) enum SourceCommand {
         actor: String,
     },
     /// Pull a source from a federation peer, as `kairo fetch` pulls an
-    /// object (`specs/DECISIONS.md` §37): its genesis, every
+    /// object (`specs/DECISIONS.md` §37–§38): its genesis, every
     /// observation (verified under its signer, never re-signed), and the
-    /// history they name. The source id comes from the URL, so it is the
-    /// same id the peer holds it under.
+    /// history they name, or a file source's bytes. The source id comes
+    /// from the URL or the hash, so it is the same id the peer holds it
+    /// under.
     Pull {
-        /// The source's repository URL, any spelling.
+        /// The source's repository URL, any spelling, or a file
+        /// source's SHA-256 as 64 lowercase hex digits.
         url: String,
         /// The peer's base URL. Without it, acquire the source from
         /// wherever it is held (`specs/DECISIONS.md` §30).

@@ -38,7 +38,9 @@ where they differ:
   an object's closure like branches and tags. Source objects
   (`DECISIONS.md` §37) federate too: a published source's closure is
   its observations and the history they name, and its genesis is the
-  unsigned `SourceGenesis`.
+  unsigned `SourceGenesis`. File sources (§38) federate the same way:
+  the closure is the observations and the file's bytes as the blob its
+  hash names, and the genesis is the unsigned `FileSourceGenesis`.
 - Statements travel in the `kairo-statement` JSON wire shape
   (`type`, `version`, `actor`, `subject`, `created_at`, `body`,
   `signature`), not a separate federation envelope.

@@ -401,10 +401,16 @@ async fn object_genesis(State(node): State<Node>, id: PathId) -> Response {
         if !view(&node)?.closures.contains_key(&object) {
             return Err(Fail::not_found());
         }
-        // A native object's `ObjectGenesis`, or a source's unsigned
-        // `SourceGenesis` (`DECISIONS.md` §37).
+        // A native object's `ObjectGenesis`, a source's unsigned
+        // `SourceGenesis` (`DECISIONS.md` §37), or a file source's
+        // unsigned `FileSourceGenesis` (§38).
         let bytes = match node.store.get_object_genesis_bytes(&object) {
-            Err(kairo_store::StoreError::Missing) => node.store.get_source_bytes(&object),
+            Err(kairo_store::StoreError::Missing) => match node.store.get_source_bytes(&object) {
+                Err(kairo_store::StoreError::Missing) => {
+                    node.store.get_file_source_genesis_bytes(&object)
+                }
+                other => other,
+            },
             other => other,
         }
         .map_err(|e| Fail::from_read(&e))?;

@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **File sources federate (`DECISIONS.md` §38 sub-decision 9).** A held
+  file source can be published; its closure is its observations and its
+  bytes, and its genesis route serves the `FileSourceGenesis`. Pulls
+  re-derive the id from the hash, verify observations under their
+  signers, and check the bytes against the hash within the Git size
+  limit. `kairo source pull <sha256>` pulls one; publishing a native
+  object also serves the file sources it pins, and pulling it brings
+  them, so the live-bootstrap wrapper can be pulled and built.
+
 - **live-bootstrap through tcc-0.9.27 for x86 (`DECISIONS.md` §38).**
   `bootstrap/live-bootstrap/` is a native wrapper that runs
   live-bootstrap `b1ceced7`'s own scripts, unmodified, under

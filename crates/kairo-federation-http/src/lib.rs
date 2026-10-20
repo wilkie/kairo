@@ -71,9 +71,10 @@ pub fn git_root(store: &kairo_store::FilesystemStore) -> std::path::PathBuf {
 }
 
 /// The source objects `object`'s revisions pin, with the commits each
-/// is pinned at (`DECISIONS.md` §37 sub-decisions 6, 9): read from each
-/// listed `ObjectRevision`'s `kairo.toml` in the object's Git cache
-/// repo, top-level and target dependencies alike. A revision whose
+/// is pinned at (`DECISIONS.md` §37 sub-decisions 6, 9), and the file
+/// sources they pin, with no commits (§38): read from each listed
+/// `ObjectRevision`'s `kairo.toml` in the object's Git cache repo,
+/// top-level and target dependencies alike. A revision whose
 /// tree isn't held, or whose manifest doesn't parse, pins nothing here;
 /// `verify object` reports it.
 pub fn manifest_source_pins<'a>(
@@ -113,10 +114,16 @@ pub fn manifest_source_pins<'a>(
             .iter()
             .flat_map(|target| target.dependencies());
         for dependency in manifest.dependencies().iter().chain(targets) {
-            if let DependencyDeclaration::Source(source) = dependency {
-                pins.entry(source.source())
-                    .or_default()
-                    .insert(source.revision().clone());
+            match dependency {
+                DependencyDeclaration::Source(source) => {
+                    pins.entry(source.source())
+                        .or_default()
+                        .insert(source.revision().clone());
+                }
+                DependencyDeclaration::File(file) => {
+                    pins.entry(file.source()).or_default();
+                }
+                _ => {}
             }
         }
     }

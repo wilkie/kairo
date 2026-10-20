@@ -76,7 +76,20 @@ impl PublishedView {
                 crate::manifest_source_pins(store, &published.object_id, &closure.statements);
             let mut served = Vec::new();
             for (source, commits) in pins {
-                match store.source_closure(&source) {
+                // A file source is served whole: its observations and
+                // its bytes (`DECISIONS.md` §38).
+                let closure = match store.source_closure(&source) {
+                    Err(StoreError::Missing) => match store.file_source_closure(&source) {
+                        Ok(file) => {
+                            pinned.entry(source.clone()).or_default().push(file);
+                            served.push(source);
+                            continue;
+                        }
+                        Err(error) => Err(error),
+                    },
+                    other => other,
+                };
+                match closure {
                     Ok(full) => {
                         let restricted = ObjectClosure {
                             statements: full.statements,
@@ -105,6 +118,7 @@ impl PublishedView {
         for (source, closures) in pinned {
             for closure in closures {
                 view.statements.extend(closure.statements.iter().cloned());
+                view.blobs.extend(closure.blobs.iter().cloned());
                 actors.extend(closure.actors.iter().cloned());
                 match view.closures.get_mut(&source) {
                     Some(existing) => existing.commits.extend(closure.commits),

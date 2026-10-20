@@ -1620,7 +1620,7 @@ kairo source fetch <url> --actor <id> [--object-format <sha1|sha256>]
                    [--no-recurse-submodules] [--max-depth <n>] [--require-complete]
 kairo source fetch-file <url> --actor <id> [--sha256 <hex>]
 kairo source show <url|sha256|object:id> [--json]
-kairo source pull <url> [--from <peer>] [--allow-peer] [--json]
+kairo source pull <url|sha256> [--from <peer>] [--allow-peer] [--json]
 ```
 
 `id` prints the URL's canonical form and the source object id every
@@ -1696,7 +1696,9 @@ does, with the same peer policy and output, deriving the source id
 from the URL (`DECISIONS.md` §37 sub-decision 9). Pulled observations
 stay their signers'; the history they name is pinned as observed. A
 source is served once published: `kairo federation publish --object
-<source id>`.
+<source id>`. Given a file's SHA-256, it pulls that file source: its
+observations and its bytes, checked against the hash (§38 sub-decision
+9).
 
 ## 26. `kairo policy`
 

@@ -139,7 +139,7 @@ const VERSION_TAGS_DIR: &str = "version_tags";
 const BUILD_RESULTS_DIR: &str = "build_results";
 pub(crate) const SOURCES_DIR: &str = "sources";
 const SOURCE_OBSERVATIONS_DIR: &str = "source_observations";
-const FILE_SOURCES_DIR: &str = "file_sources";
+pub(crate) const FILE_SOURCES_DIR: &str = "file_sources";
 const FILE_OBSERVATIONS_DIR: &str = "file_observations";
 const TRUST_DIR: &str = "trust";
 const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
@@ -444,6 +444,10 @@ pub trait SourceStore {
         genesis: &FileSourceGenesis,
         bytes: &[u8],
     ) -> Result<ObjectId, StoreError>;
+    /// Store a file source's genesis alone, for a pull that fetches
+    /// the bytes after it; [`SourceStore::holds_file_source`] is false
+    /// until they arrive.
+    fn put_file_source_genesis(&self, genesis: &FileSourceGenesis) -> Result<ObjectId, StoreError>;
     fn get_file_source(&self, id: &ObjectId) -> Result<FileSourceGenesis, StoreError>;
     /// A file source's bytes, checked against its hash.
     fn get_file_source_bytes(&self, id: &ObjectId) -> Result<Vec<u8>, StoreError>;
@@ -3491,6 +3495,11 @@ impl SourceStore for FilesystemStore {
             });
         }
         self.put_blob(&blob, bytes)?;
+        self.put_file_source_genesis(genesis)
+    }
+
+    fn put_file_source_genesis(&self, genesis: &FileSourceGenesis) -> Result<ObjectId, StoreError> {
+        let id = genesis.object_id();
         let json = FileSourceGenesisJson::from_genesis(genesis);
         let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
         let path = self.shard_path(FILE_SOURCES_DIR, id.as_str(), JSON_SUFFIX)?;

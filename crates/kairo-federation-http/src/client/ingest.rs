@@ -33,8 +33,8 @@ use kairo_statement::json::{
     ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
     ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
     ActorKeyRotationStatementJson, ActorTrustStatementJson, BuildResultStatementJson,
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson, SourceObservationStatementJson,
+    FileObservationStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
+    ObjectRevisionStatementJson, ObjectVersionTagStatementJson, SourceObservationStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_multi_statement, verify_envelope_statement, ActorResolution, SignatureStatus,
@@ -240,11 +240,11 @@ pub(crate) fn ingest_statement(
             put_source_observation,
             |signed| object_section(signed.unsigned().body().source())
         ),
-        // File sources don't federate yet (`DECISIONS.md` §38): no
-        // peer lists one, so an observation in a pull is out of place.
-        StatementKind::FileObservation => Err(wrong_section(
-            "FileObservation statements are not federated yet",
-        )),
+        StatementKind::FileObservation => single!(
+            FileObservationStatementJson,
+            put_file_observation,
+            |signed| object_section(signed.unsigned().body().source())
+        ),
         StatementKind::BuildResult => {
             single!(BuildResultStatementJson, put_build_result, |signed| {
                 object_section(signed.unsigned().body().object())
@@ -361,14 +361,38 @@ pub(crate) fn ingest_source_genesis(
     Ok(())
 }
 
-/// Whether genesis bytes are a source's rather than an object's.
-pub(crate) fn is_source_genesis(bytes: &[u8]) -> bool {
+/// A file source's unsigned genesis (`DECISIONS.md` §38): nothing to
+/// verify but that its hash derives the requested id. Its bytes follow
+/// as the closure's blob.
+pub(crate) fn ingest_file_source_genesis(
+    store_: &FilesystemStore,
+    source: &ObjectId,
+    bytes: &[u8],
+) -> Result<(), RecordRejection> {
+    let dto: kairo_statement::json::FileSourceGenesisJson =
+        serde_json::from_slice(bytes).map_err(schema)?;
+    let genesis = dto.to_genesis().map_err(schema)?;
+    let derived = genesis.object_id();
+    if &derived != source {
+        return Err(RecordRejection::Fixity {
+            actual: derived.to_string(),
+        });
+    }
+    kairo_store::SourceStore::put_file_source_genesis(store_, &genesis).map_err(store)?;
+    Ok(())
+}
+
+/// The `type` of genesis bytes: `ObjectGenesis`, `SourceGenesis`, or
+/// `FileSourceGenesis`.
+pub(crate) fn genesis_type(bytes: &[u8]) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct Kind {
         #[serde(rename = "type")]
         kind: String,
     }
-    serde_json::from_slice::<Kind>(bytes).is_ok_and(|kind| kind.kind == "SourceGenesis")
+    serde_json::from_slice::<Kind>(bytes)
+        .ok()
+        .map(|kind| kind.kind)
 }
 
 pub(crate) fn ingest_genesis(

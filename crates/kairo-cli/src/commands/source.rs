@@ -62,8 +62,15 @@ pub(crate) fn run_source_command(
             allow_peer,
             json,
         } => {
-            let url = SourceUrl::parse(&url).map_err(CliError::ParseSourceUrl)?;
-            let source = SourceGenesis::new(url).object_id().to_string();
+            // A file's hash names a file source (§38); anything else is
+            // a repository URL.
+            let source = match Sha256Digest::parse(&url) {
+                Ok(sha256) => FileSourceGenesis::new(sha256).object_id().to_string(),
+                Err(_) => {
+                    let url = SourceUrl::parse(&url).map_err(CliError::ParseSourceUrl)?;
+                    SourceGenesis::new(url).object_id().to_string()
+                }
+            };
             crate::commands::federation::run_fetch(
                 &crate::commands::federation::FetchArgs {
                     object: &source,

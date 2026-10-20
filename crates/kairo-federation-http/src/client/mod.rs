@@ -1118,8 +1118,12 @@ impl Pull<'_> {
         self.statements(&listing.authority, authority)?;
         self.statements(&listing.statements, Section::Object(object))?;
 
+        // A file source's bytes are its one blob (`DECISIONS.md` §38).
+        let file = kairo_store::SourceStore::get_file_source(self.store, object)
+            .ok()
+            .map(|genesis| genesis.sha256().blob_id());
         for blob in &listing.blobs {
-            self.blob(blob)?;
+            self.blob(blob, file.as_ref() == Some(blob))?;
         }
 
         let git_available = listing.git.is_some_and(|git| git.available);
@@ -1511,6 +1515,9 @@ impl Pull<'_> {
         let record = KairoRef::Object(object.clone());
         if Self::held(self.store.get_object_genesis(object))?
             || Self::held(kairo_store::SourceStore::get_source(self.store, object))?
+            || Self::held(kairo_store::SourceStore::get_file_source(
+                self.store, object,
+            ))?
         {
             self.report.already_held += 1;
         } else {
@@ -1524,10 +1531,12 @@ impl Pull<'_> {
                 }
                 Source::Export(_) => return Err(not_in_export(record)),
             };
-            let ingested = if ingest::is_source_genesis(&bytes) {
-                ingest::ingest_source_genesis(self.store, object, &bytes)
-            } else {
-                ingest_genesis(self.store, object, &bytes)
+            let ingested = match ingest::genesis_type(&bytes).as_deref() {
+                Some("SourceGenesis") => ingest::ingest_source_genesis(self.store, object, &bytes),
+                Some("FileSourceGenesis") => {
+                    ingest::ingest_file_source_genesis(self.store, object, &bytes)
+                }
+                _ => ingest_genesis(self.store, object, &bytes),
             };
             ingested.map_err(|reason| PullError::Record {
                 record: record.clone(),
@@ -1713,7 +1722,10 @@ impl Pull<'_> {
         }
     }
 
-    fn blob(&mut self, id: &BlobId) -> Result<(), PullError> {
+    /// Fetch one blob: a revision manifest, or with `file` a file
+    /// source's bytes, named by their plain SHA-256 and as large as the
+    /// Git limit allows.
+    fn blob(&mut self, id: &BlobId, file: bool) -> Result<(), PullError> {
         let record = KairoRef::Blob(id.clone());
         if Self::held(self.store.open_blob(id))? {
             self.report.already_held += 1;
@@ -1722,13 +1734,21 @@ impl Pull<'_> {
         let bytes = match &self.source {
             Source::Peer(peer) => peer.get_bytes(
                 &format!("{API_PREFIX}/blobs/{id}"),
-                self.limits.max_blob_bytes,
+                if file {
+                    self.limits.max_git_bytes
+                } else {
+                    self.limits.max_blob_bytes
+                },
             )?,
             Source::Bundle(bundle) => bundled(bundle.blob(id), record.clone())?,
             Source::Export(_) => return Err(not_in_export(record)),
         };
-        // Every MVP blob is a revision manifest.
-        let actual = BlobId::from_bytes(OBJECT_MANIFEST_DOMAIN, &bytes);
+        let actual = if file {
+            BlobId::from_bytes(b"", &bytes)
+        } else {
+            // Every other MVP blob is a revision manifest.
+            BlobId::from_bytes(OBJECT_MANIFEST_DOMAIN, &bytes)
+        };
         if &actual != id {
             return Err(PullError::Record {
                 record,

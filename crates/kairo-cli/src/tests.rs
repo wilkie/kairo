@@ -10284,3 +10284,144 @@ fn source_fetch_file_archives_a_file_by_its_hash_from_each_mirror(
     assert!(id.contains(&format!("sha256 = {abc}\n")), "{id}");
     Ok(())
 }
+
+#[test]
+fn file_sources_federate_directly_and_with_what_pins_them() -> Result<(), Box<dyn std::error::Error>>
+{
+    // SHA-256("abc").
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let upstream = serve_files(vec![("/abc.txt", "200 OK".to_owned(), b"abc".to_vec())])?;
+
+    // The origin archives the file and publishes it, and a wrapper that
+    // pins it.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node_actor = create_node_actor(origin)?;
+    let observer = create_local_actor(origin)?;
+    let fetched = run_in_store(
+        origin,
+        Command::Source {
+            command: SourceCommand::FetchFile {
+                url: format!("{upstream}/abc.txt"),
+                sha256: Some(abc.to_owned()),
+                actor: observer.clone(),
+            },
+        },
+    )?;
+    let source = parse_field(&fetched, "source = ")?;
+    let observation = parse_field(&fetched, "observation = ")?;
+    let wrapper = create_held_tree(
+        origin,
+        &observer,
+        &[(
+            "kairo.toml",
+            &format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "wrapper"
+                [[build.targets]]
+                name = "release"
+                command = ["true"]
+                [[build.targets.dependencies]]
+                kind = "file"
+                sha256 = "{abc}"
+                path = "distfiles/abc.txt"
+                [[build.targets.outputs]]
+                name = "out"
+                path = "out"
+                artifact_path = "out"
+                kind = "file"
+                "#
+            ),
+        )],
+    )?;
+    for object in [&source, &wrapper] {
+        run_in(
+            origin,
+            federation(FederationCommand::Publish {
+                object: object.clone(),
+            }),
+        )?;
+    }
+    let (base_url, _stop, _server) = serve_federation(origin, &node_actor)?;
+    let peers =
+        format!("[[federation.peers]]\nurl = \"{base_url}\"\nnode_actor = \"{node_actor}\"\n");
+
+    // One node pulls the file by its hash.
+    let direct_dir = tempfile::TempDir::new()?;
+    let direct = direct_dir.path();
+    std::fs::write(direct.join("config.toml"), &peers)?;
+    let pulled = run_in(
+        direct,
+        Command::Source {
+            command: SourceCommand::Pull {
+                url: abc.to_owned(),
+                from: Some(base_url.clone()),
+                allow_peer: false,
+                json: false,
+            },
+        },
+    )?;
+    assert!(pulled.contains(&format!("object = {source}\n")), "{pulled}");
+    let shown = run_in(
+        direct,
+        Command::Source {
+            command: SourceCommand::Show {
+                source: abc.to_owned(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(
+        shown.contains(&format!("  {observation} by {observer} at "))
+            && shown.contains(&format!(": {upstream}/abc.txt\n")),
+        "{shown}"
+    );
+    {
+        use kairo_store::SourceStore as _;
+        let store = kairo_store::FilesystemStore::open(direct)?;
+        assert_eq!(
+            store.get_file_source_bytes(&kairo_core::ObjectId::new(source.clone())?)?,
+            b"abc"
+        );
+    }
+
+    // Another pulls only the wrapper, and the file comes with it, so the
+    // wrapper plans there.
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    create_local_actor(local)?;
+    std::fs::write(local.join("config.toml"), &peers)?;
+    let pulled = run_in(
+        local,
+        Command::Fetch {
+            object: wrapper.clone(),
+            from: Some(base_url),
+            allow_peer: false,
+            require_complete: false,
+            json: false,
+        },
+    )?;
+    assert!(pulled.contains("sources = 1\n"), "{pulled}");
+    assert!(
+        pulled.contains(&format!("  source={source} fetched=")),
+        "{pulled}"
+    );
+    let plan = run_in_store(
+        local,
+        Command::Build {
+            snapshot_ref: format!("object:{wrapper}"),
+            target: "release".to_owned(),
+            actor: None,
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    assert!(
+        plan.contains(&format!("file sha256:{abc} at distfiles/abc.txt -> ")),
+        "{plan}"
+    );
+    Ok(())
+}

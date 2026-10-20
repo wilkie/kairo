@@ -99,13 +99,43 @@ impl FilesystemStore {
         Ok(closure)
     }
 
-    /// Compute `object`'s closure (module docs), or a source's when
-    /// `object` is one. `StoreError::Missing` if the store holds
-    /// neither genesis.
+    /// A file source's genesis exactly as stored (`DECISIONS.md` §38),
+    /// for serving byte-for-byte; the receiver re-derives the id from
+    /// the hash.
+    pub fn get_file_source_genesis_bytes(&self, source: &ObjectId) -> Result<Vec<u8>, StoreError> {
+        let path = self.shard_path(crate::FILE_SOURCES_DIR, source.as_str(), JSON_SUFFIX)?;
+        read_or_missing(&path)
+    }
+
+    /// A file source's closure (`DECISIONS.md` §38): every observation
+    /// of it, every observer, and the file's bytes as the blob its hash
+    /// names. Only a held file source has one: its bytes must be here.
+    pub fn file_source_closure(&self, source: &ObjectId) -> Result<ObjectClosure, StoreError> {
+        let genesis = crate::SourceStore::get_file_source(self, source)?;
+        if !crate::SourceStore::holds_file_source(self, source)? {
+            return Err(StoreError::Missing);
+        }
+        let mut closure = ObjectClosure::default();
+        closure.blobs.insert(genesis.sha256().blob_id());
+        for head in crate::SourceStore::list_file_observations(self, source)? {
+            closure.actors.insert(head.actor);
+            closure.statements.insert(head.statement_id);
+        }
+        Ok(closure)
+    }
+
+    /// Compute `object`'s closure (module docs), or a Git or file
+    /// source's when `object` is one. `StoreError::Missing` if the store
+    /// holds no such genesis.
     pub fn object_closure(&self, object: &ObjectId) -> Result<ObjectClosure, StoreError> {
         let genesis = match self.get_object_genesis(object) {
             Ok(genesis) => genesis,
-            Err(StoreError::Missing) => return self.source_closure(object),
+            Err(StoreError::Missing) => {
+                return match self.source_closure(object) {
+                    Err(StoreError::Missing) => self.file_source_closure(object),
+                    other => other,
+                }
+            }
             Err(error) => return Err(error),
         };
         let mut closure = ObjectClosure::default();
