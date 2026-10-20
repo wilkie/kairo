@@ -1150,9 +1150,14 @@ with `--plan-only` prints it and stops. Candidates' manifests are read
 from the managed Git cache at their revisions' commits; an object
 whose tree isn't held is reported as skipped.
 
-Without `--plan-only`, the native development-mode executor runs the
-plan: a host process with a scrubbed environment and no isolation
-(§34 sub-decision 10). It requires `[runtime] allow_local_process =
+Without `--plan-only`, the plan runs under an isolation engine when
+its target requires `environment:linux/<arch>` and an allowlisted
+engine (`[[runtime.engines]]`, `DECISIONS.md` §35) passes its probe;
+that needs no further policy, and the result is not host-dependent.
+A plan whose environment is `none` (the target names no environment,
+or no engine is available) runs in the native development-mode
+executor: a host process with a scrubbed environment and no isolation
+(§34 sub-decision 10). That requires `[runtime] allow_local_process =
 true` (else exit 7) and a revision signer this node holds a key for or
 trusts at `general` scope (else exit 7). A plan with builds needed
 first builds them one at a time, re-resolving after each so its

@@ -150,6 +150,12 @@ pub(crate) enum CliError {
     Build(Box<kairo_build::BuildError>),
     /// `kairo build` without `--plan-only` needs `--actor`.
     BuildActorRequired,
+    /// The plan needs an isolation engine and none is allowlisted and
+    /// working.
+    NoEngine {
+        environment: String,
+        failures: Vec<String>,
+    },
     /// `kairo reproduce` takes `statement:<id>` of a `BuildResult`.
     NotAResultRef {
         input: String,
@@ -585,7 +591,8 @@ impl CliError {
             | Self::FederationDisabled { .. }
             | Self::OfflineFetch
             | Self::BuildNotAllowed { .. }
-            | Self::BuildSignerUntrusted { .. } => 7,
+            | Self::BuildSignerUntrusted { .. }
+            | Self::NoEngine { .. } => 7,
             Self::Fetch(_) | Self::PeerRequest { .. } => 11,
             _ => 1,
         }
@@ -674,6 +681,20 @@ impl fmt::Display for CliError {
                 builds.join(", ")
             ),
             Self::Build(error) => write!(f, "cannot build: {error}"),
+            Self::NoEngine {
+                environment,
+                failures,
+            } => {
+                write!(
+                    f,
+                    "the plan needs {environment}, which no working isolation engine provides; \
+                     allowlist one under [[runtime.engines]] (kind = \"bubblewrap\", path = \"/usr/bin/bwrap\")"
+                )?;
+                for failure in failures {
+                    write!(f, "\n  engine: {failure}")?;
+                }
+                Ok(())
+            }
             Self::BuildActorRequired => {
                 f.write_str("kairo build needs --actor <id> to sign the BuildResult (or --plan-only)")
             }
@@ -1244,6 +1265,7 @@ impl Error for CliError {
             | Self::BuildPrerequisites { .. }
             | Self::BuildFailed { .. }
             | Self::BuildActorRequired
+            | Self::NoEngine { .. }
             | Self::BundleExecutions { .. }
             | Self::NotAResultRef { .. }
             | Self::ReproduceUnavailable { .. }

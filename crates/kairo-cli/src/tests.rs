@@ -9080,3 +9080,238 @@ fn reproduce_reruns_a_cited_plan_here_and_on_another_node() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+/// An object whose tree is `dir` (committed in place), signed by the
+/// keystore actor `actor` of `store_dir`, with `head` at it.
+fn create_held_dir(
+    store_dir: &std::path::Path,
+    actor: &str,
+    dir: &std::path::Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let object_id = create_local_object(store_dir, actor)?;
+    let commit_oid = kairo_test_support::git::commit_dir(dir)?;
+    populate_cache(store_dir, dir, &object_id, &commit_oid)?;
+    let revision = run_in_store(
+        store_dir,
+        Command::Revision {
+            command: RevisionCommand::Create {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                revision: format!("git:sha1:{commit_oid}"),
+                manifest: dir.join("kairo.toml"),
+                parents: vec![],
+                no_attests_reachable_history: false,
+            },
+        },
+    )?;
+    let statement = parse_field(&revision, "statement = ")?;
+    run_in_store(
+        store_dir,
+        Command::Branch {
+            command: BranchCommand::Set {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                revision: statement,
+                name: "head".to_owned(),
+            },
+        },
+    )?;
+    Ok(object_id)
+}
+
+#[test]
+fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let usable = !kairo_test_support::git::skip_if_no_git()
+        && std::path::Path::new("/usr/bin/busybox").is_file()
+        && kairo_build::Bubblewrap::probe(std::path::Path::new("/usr/bin/bwrap")).is_ok()
+        && std::process::Command::new("/usr/bin/busybox")
+            .arg("true")
+            .env_clear()
+            .status()
+            .is_ok_and(|status| status.success());
+    assert!(
+        usable || std::env::var_os("KAIRO_REQUIRE_ENGINE").is_none(),
+        "KAIRO_REQUIRE_ENGINE is set but git, bubblewrap or busybox is unavailable"
+    );
+    if !usable {
+        return Ok(());
+    }
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    // An engine, and no development mode.
+    std::fs::write(
+        store_dir.path().join("config.toml"),
+        "[[runtime.engines]]\nkind = \"bubblewrap\"\npath = \"/usr/bin/bwrap\"\n",
+    )?;
+    let contract = kairo_resolver::Host::detect().contract();
+
+    let busybox_dir = tempfile::TempDir::new()?;
+    std::fs::create_dir(busybox_dir.path().join("bin"))?;
+    std::fs::copy("/usr/bin/busybox", busybox_dir.path().join("bin/busybox"))?;
+    std::os::unix::fs::symlink("busybox", busybox_dir.path().join("bin/sh"))?;
+    std::fs::write(
+        busybox_dir.path().join("kairo.toml"),
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "busybox"
+        [[provides]]
+        provides = "tool:sh"
+        "#,
+    )?;
+    create_held_dir(store_dir.path(), &actor, busybox_dir.path())?;
+
+    // The app is signed by an actor this node doesn't trust.
+    let (_stranger_dir, stranger_fixture) = kairo_test_support::store::StoreFixture::temp();
+    let stranger = stranger_fixture.make_actor();
+    let local_fixture = kairo_test_support::store::StoreFixture::at(store_dir.path());
+    kairo_store::ActorStore::put_actor(&local_fixture.store, &stranger.genesis)?;
+    let app_dir = tempfile::TempDir::new()?;
+    let manifest = format!(
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "app"
+        [[dependencies]]
+        kind = "provides"
+        provides = "{contract}"
+        [[build.targets]]
+        name = "release"
+        command = ["sh", "-c", "busybox mkdir -p dist && {{ test -e /usr && echo usr || echo no-usr; busybox id -u; }} > dist/app"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:sh"
+        [[build.targets.outputs]]
+        name = "cli"
+        path = "dist/app"
+        artifact_path = "bin/app"
+        kind = "file"
+        "#
+    );
+    std::fs::write(app_dir.path().join("kairo.toml"), &manifest)?;
+    let commit_oid = kairo_test_support::git::commit_dir(app_dir.path())?;
+    let object = local_fixture.make_object(&stranger, "software");
+    let revision = local_fixture.make_revision(
+        &stranger,
+        &object,
+        kairo_statement::RevisionId::new(format!("git:sha1:{commit_oid}")),
+        &manifest,
+        Vec::new(),
+    );
+    local_fixture.set_branch(&stranger, &object, &revision, "head");
+    populate_cache(
+        store_dir.path(),
+        app_dir.path(),
+        object.object_id.as_str(),
+        &commit_oid,
+    )?;
+    let app = object.object_id.to_string();
+
+    let plan = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            actor: None,
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    assert!(
+        plan.contains(&format!("environment = {contract}\nhost_dependent = no\n")),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("{contract} -> {contract} via engine")),
+        "{plan}"
+    );
+
+    let built = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            actor: Some(actor.clone()),
+            plan_only: false,
+            json: false,
+        },
+    )?;
+    assert!(built.contains("status = success\n"), "{built}");
+    assert!(
+        built.contains("executor = bubblewrap/1 (linux namespaces"),
+        "{built}"
+    );
+    assert!(built.contains("host_dependent = no\n"), "{built}");
+    let result = parse_field(&built, "result = ")?;
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let signed = kairo_store::StatementStore::get_build_result(
+        &store,
+        &kairo_core::StatementId::new(result.clone())?,
+    )?;
+    assert_eq!(signed.unsigned().body().executor(), "bubblewrap/1");
+    assert_eq!(signed.unsigned().body().environment(), contract);
+    assert!(!signed.unsigned().body().host_dependent());
+    let tree = kairo_build::load_artifact(
+        &store,
+        signed.unsigned().body().artifact().ok_or("artifact")?,
+    )?;
+    let output = kairo_store::BlobStore::get_blob(
+        &store,
+        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+    )?;
+    assert_eq!(output, b"no-usr\n1000\n");
+
+    let again = run_in_store(
+        store_dir.path(),
+        Command::Reproduce {
+            result_ref: format!("statement:{result}"),
+            actor: actor.clone(),
+            json: false,
+        },
+    )?;
+    assert!(again.contains("reproduction = matches\n"), "{again}");
+
+    // A target that asks for no environment still needs development mode.
+    let loose = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[(
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "loose"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "true"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.outputs]]
+            name = "cli"
+            path = "dist/app"
+            artifact_path = "bin/app"
+            kind = "file"
+            "#,
+        )],
+    )?;
+    let refused = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{loose}"),
+            target: "release".to_owned(),
+            actor: Some(actor.clone()),
+            plan_only: false,
+            json: false,
+        },
+    );
+    assert!(
+        matches!(refused, Err(CliError::BuildNotAllowed { .. })),
+        "{refused:?}"
+    );
+    Ok(())
+}

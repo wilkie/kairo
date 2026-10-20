@@ -62,6 +62,33 @@ const WORKSPACES_DIR: &str = "build";
 /// The executor's identity in records and results.
 pub const EXECUTOR_ID: &str = "native";
 pub const EXECUTOR_VERSION: u32 = 1;
+pub const BUBBLEWRAP_EXECUTOR_ID: &str = "bubblewrap";
+pub const BUBBLEWRAP_EXECUTOR_VERSION: u32 = 1;
+
+fn executor_info(engine: &Engine) -> ExecutorInfo {
+    match engine {
+        Engine::Native => ExecutorInfo {
+            id: EXECUTOR_ID.to_owned(),
+            version: EXECUTOR_VERSION,
+            isolation: "none: a host process with a scrubbed environment (development mode)"
+                .to_owned(),
+            engine: None,
+            known_nondeterminism: vec!["host filesystem, network, and clock".to_owned()],
+        },
+        Engine::Bubblewrap(bwrap) => ExecutorInfo {
+            id: BUBBLEWRAP_EXECUTOR_ID.to_owned(),
+            version: BUBBLEWRAP_EXECUTOR_VERSION,
+            isolation: "linux namespaces (bubblewrap): only /kairo, /proc, /dev and /tmp visible; \
+                        no network; hostname kairo; uid and gid 1000"
+                .to_owned(),
+            engine: Some(EngineInfo {
+                path: bwrap.path.display().to_string(),
+                version: bwrap.version.clone(),
+            }),
+            known_nondeterminism: vec!["wall clock not frozen".to_owned()],
+        },
+    }
+}
 
 /// Where the executor gets a snapshot's tree.
 pub trait TreeSource {
@@ -217,8 +244,18 @@ pub struct ExecutionRecord {
 pub struct ExecutorInfo {
     pub id: String,
     pub version: u32,
-    /// What the executor doesn't do.
+    /// What isolation the executor provides, or that it provides none.
     pub isolation: String,
+    /// The engine binary, when there is one.
+    pub engine: Option<EngineInfo>,
+    /// What can make two runs of one plan differ.
+    pub known_nondeterminism: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineInfo {
+    pub path: String,
+    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +264,9 @@ pub struct HostInfo {
     pub arch: String,
     /// The development-mode host tools the plan used, by path.
     pub tools: Vec<String>,
+    /// The kernel release, which the `linux` contract records rather
+    /// than promises.
+    pub kernel: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -300,15 +340,82 @@ pub struct Execution {
 
 // --- running -----------------------------------------------------------
 
-/// Run `plan`'s target once. The plan's `builds_first` must be empty
-/// and every artifact provider's artifact held; `source_epoch` is the
-/// revision's timestamp, for `SOURCE_DATE_EPOCH`.
+/// How a plan runs: natively in development mode, or inside an
+/// isolation engine implementing the plan's contract (§35).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Engine {
+    Native,
+    Bubblewrap(Bubblewrap),
+}
+
+/// A probed bubblewrap: its path and `bwrap --version`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bubblewrap {
+    pub path: PathBuf,
+    pub version: String,
+}
+
+impl Bubblewrap {
+    /// Check that `path` runs a trivial sandbox here: user namespaces
+    /// available, the binary real. The reason when not.
+    pub fn probe(path: &Path) -> Result<Self, String> {
+        let version = Command::new(path)
+            .arg("--version")
+            .env_clear()
+            .output()
+            .map_err(|error| format!("cannot run {}: {error}", path.display()))?;
+        if !version.status.success() {
+            return Err(format!("{} --version failed", path.display()));
+        }
+        let version = String::from_utf8_lossy(&version.stdout).trim().to_owned();
+        // The probe sandbox runs bwrap's own binary from a read-only
+        // view of the host, only to show namespaces work.
+        let probe = Command::new(path)
+            .args(["--unshare-all", "--unshare-user", "--die-with-parent"])
+            .args(["--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev"])
+            .arg("--")
+            .arg(path)
+            .arg("--version")
+            .env_clear()
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("cannot run {}: {error}", path.display()))?;
+        if !probe.status.success() {
+            return Err(format!(
+                "{} cannot create a sandbox here: {}",
+                path.display(),
+                String::from_utf8_lossy(&probe.stderr).trim()
+            ));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            version,
+        })
+    }
+}
+
+/// Guest paths of the `linux` contract (`schemas/environment/linux-v1.md`).
+const GUEST_SRC: &str = "/kairo/src";
+const GUEST_HOME: &str = "/kairo/home";
+
+/// A provider's host directory and where the guest sees it.
+struct Mount {
+    host: PathBuf,
+    guest: String,
+}
+
+/// Run `plan`'s target once with `engine`, which must suit the plan:
+/// `Native` for a plan with environment `none`, an engine for one with
+/// a contract. The plan's `builds_first` must be empty and every
+/// artifact provider's artifact held; `source_epoch` is the revision's
+/// timestamp, for `SOURCE_DATE_EPOCH`.
 pub fn run_plan(
     store: &FilesystemStore,
     trees: &dyn TreeSource,
     plan: &PlanDocument,
     source_epoch: i64,
     limits: &Limits,
+    engine: &Engine,
 ) -> Result<Execution, BuildError> {
     let manifest = &plan.manifest;
     if !manifest.builds_first.is_empty() {
@@ -320,6 +427,16 @@ pub fn run_plan(
                 .collect(),
         });
     }
+    let suits = match engine {
+        Engine::Native => manifest.environment == "none",
+        Engine::Bubblewrap(_) => manifest.environment != "none",
+    };
+    if !suits {
+        return Err(BuildError::EngineMismatch {
+            environment: manifest.environment.clone(),
+        });
+    }
+    let isolated = matches!(engine, Engine::Bubblewrap(_));
     let object = ObjectId::new(manifest.object.clone()).map_err(BuildError::Id)?;
     let snapshot = SnapshotId::new(manifest.snapshot.clone()).map_err(BuildError::Id)?;
 
@@ -336,6 +453,14 @@ pub fn run_plan(
     for dir in [&src, &deps, &home, &log] {
         fs::create_dir(dir).map_err(|source| io_error("creating", dir, source))?;
     }
+    // What a path is called where the command runs.
+    let seen = |mount: &Mount| -> String {
+        if isolated {
+            mount.guest.clone()
+        } else {
+            mount.host.display().to_string()
+        }
+    };
 
     // The snapshot's tree, and the target it declares.
     if !trees
@@ -360,17 +485,19 @@ pub fn run_plan(
             target: manifest.target.clone(),
         })?;
 
-    // Providers, and the environment they contribute.
+    // Providers, at paths named by what they are (§35 sub-decision 1),
+    // and the environment they contribute.
     let mut env: BTreeMap<String, String> = BTreeMap::new();
-    let mut path_dirs: Vec<PathBuf> = Vec::new();
-    let mut host_tool_dirs: Vec<PathBuf> = Vec::new();
+    let mut mounts: Vec<Mount> = Vec::new();
+    let mut path_dirs: Vec<String> = Vec::new();
+    let mut host_tool_dirs: Vec<String> = Vec::new();
     let mut host_tools: Vec<String> = Vec::new();
     for requirement in &manifest.requirements {
         let label = match &requirement.requested {
             kairo_resolver::Requested::Provides { provides, .. } => provides.clone(),
             kairo_resolver::Requested::Object { object, .. } => format!("object:{object}"),
         };
-        match &requirement.resolved {
+        let mount = match &requirement.resolved {
             Resolved::Content {
                 object: provider,
                 snapshot: provider_snapshot,
@@ -378,11 +505,12 @@ pub fn run_plan(
                 let provider_id = ObjectId::new(provider.clone()).map_err(BuildError::Id)?;
                 let provider_snapshot =
                     SnapshotId::new(provider_snapshot.clone()).map_err(BuildError::Id)?;
-                let dest = deps.join(provider);
-                if !dest.exists() {
-                    fs::create_dir(&dest).map_err(|source| io_error("creating", &dest, source))?;
+                let host = deps.join("content").join(provider_snapshot.as_str());
+                if !host.exists() {
+                    fs::create_dir_all(&host)
+                        .map_err(|source| io_error("creating", &host, source))?;
                     if !trees
-                        .export(&provider_id, &provider_snapshot, &dest)
+                        .export(&provider_id, &provider_snapshot, &host)
                         .map_err(|source| BuildError::TreeSource {
                             object: provider_id.clone(),
                             snapshot: provider_snapshot.clone(),
@@ -395,7 +523,10 @@ pub fn run_plan(
                         });
                     }
                 }
-                env.insert(provider_var(&label), dest.display().to_string());
+                Mount {
+                    host,
+                    guest: format!("/kairo/content/{provider_snapshot}"),
+                }
             }
             Resolved::Artifact {
                 object: provider,
@@ -409,38 +540,62 @@ pub fn run_plan(
                     });
                 };
                 let artifact = BlobId::new(artifact.clone()).map_err(BuildError::Id)?;
-                let dest = deps.join(provider);
-                if !dest.exists() {
-                    fs::create_dir(&dest).map_err(|source| io_error("creating", &dest, source))?;
-                    materialize_artifact(store, &artifact, &dest)?;
+                let host = deps.join("artifact").join(artifact.as_str());
+                if !host.exists() {
+                    fs::create_dir_all(&host)
+                        .map_err(|source| io_error("creating", &host, source))?;
+                    materialize_artifact(store, &artifact, &host)?;
                 }
-                let bin = dest.join("bin");
-                if bin.is_dir() && !path_dirs.contains(&bin) {
-                    path_dirs.push(bin);
+                Mount {
+                    host,
+                    guest: format!("/kairo/artifact/{artifact}"),
                 }
-                env.insert(provider_var(&label), dest.display().to_string());
             }
             Resolved::HostTool { path, .. } => {
+                if isolated {
+                    return Err(BuildError::EngineMismatch {
+                        environment: format!("{} with host tool {path}", manifest.environment),
+                    });
+                }
                 let tool = PathBuf::from(path);
                 if let Some(dir) = tool.parent() {
-                    if !host_tool_dirs.contains(&dir.to_path_buf()) {
-                        host_tool_dirs.push(dir.to_path_buf());
+                    let dir = dir.display().to_string();
+                    if !host_tool_dirs.contains(&dir) {
+                        host_tool_dirs.push(dir);
                     }
                 }
                 host_tools.push(path.clone());
                 env.insert(provider_var(&label), path.clone());
+                continue;
             }
-            Resolved::Environment { .. } => {}
+            Resolved::Environment { .. } => continue,
+        };
+        let bin = format!("{}/bin", seen(&mount));
+        if mount.host.join("bin").is_dir() && !path_dirs.contains(&bin) {
+            path_dirs.push(bin);
+        }
+        env.insert(provider_var(&label), seen(&mount));
+        if !mounts.iter().any(|existing| existing.guest == mount.guest) {
+            mounts.push(mount);
         }
     }
     path_dirs.extend(host_tool_dirs);
-    let path_value = std::env::join_paths(&path_dirs)
-        .map_err(|error| BuildError::Environment(error.to_string()))?;
-    env.insert("HOME".to_owned(), home.display().to_string());
+    let src_mount = Mount {
+        host: src.clone(),
+        guest: GUEST_SRC.to_owned(),
+    };
+    let home_mount = Mount {
+        host: home.clone(),
+        guest: GUEST_HOME.to_owned(),
+    };
+    env.insert("HOME".to_owned(), seen(&home_mount));
     env.insert("LANG".to_owned(), "C".to_owned());
     env.insert("SOURCE_DATE_EPOCH".to_owned(), source_epoch.to_string());
-    env.insert("KAIRO_SRC".to_owned(), src.display().to_string());
-    env.insert("PATH".to_owned(), path_value.to_string_lossy().into_owned());
+    env.insert("KAIRO_SRC".to_owned(), seen(&src_mount));
+    env.insert("PATH".to_owned(), path_dirs.join(":"));
+    if isolated {
+        env.insert("TZ".to_owned(), "UTC".to_owned());
+    }
 
     // Run.
     let workdir = if target.workdir() == "." {
@@ -448,21 +603,66 @@ pub fn run_plan(
     } else {
         src.join(target.workdir())
     };
+    let guest_workdir = if target.workdir() == "." {
+        GUEST_SRC.to_owned()
+    } else {
+        format!("{GUEST_SRC}/{}", target.workdir())
+    };
     let stdout_path = log.join("stdout");
     let stderr_path = log.join("stderr");
     let stdout = fs::File::create(&stdout_path)
         .map_err(|source| io_error("creating", &stdout_path, source))?;
     let stderr = fs::File::create(&stderr_path)
         .map_err(|source| io_error("creating", &stderr_path, source))?;
+    let command = target.command();
+    let mut process = match engine {
+        Engine::Native => {
+            let mut process = Command::new(&command[0]);
+            process
+                .args(&command[1..])
+                .current_dir(&workdir)
+                .env_clear()
+                .envs(&env);
+            process
+        }
+        Engine::Bubblewrap(bwrap) => {
+            let mut process = Command::new(&bwrap.path);
+            process
+                .env_clear()
+                .args([
+                    "--unshare-all",
+                    "--unshare-user",
+                    "--die-with-parent",
+                    "--new-session",
+                ])
+                .args(["--hostname", "kairo", "--uid", "1000", "--gid", "1000"])
+                .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
+                .args(["--dir", "/kairo"])
+                .arg("--bind")
+                .arg(&src)
+                .arg(GUEST_SRC)
+                .arg("--bind")
+                .arg(&home)
+                .arg(GUEST_HOME);
+            for mount in &mounts {
+                process.arg("--ro-bind").arg(&mount.host).arg(&mount.guest);
+            }
+            process.arg("--clearenv");
+            for (key, value) in &env {
+                process.arg("--setenv").arg(key).arg(value);
+            }
+            process
+                .arg("--chdir")
+                .arg(&guest_workdir)
+                .arg("--")
+                .args(command);
+            process
+        }
+    };
     let started_at = Timestamp::now();
     let started = Instant::now();
     let mut diagnostics = Vec::new();
-    let command = target.command();
-    let mut child = Command::new(&command[0])
-        .args(&command[1..])
-        .current_dir(&workdir)
-        .env_clear()
-        .envs(&env)
+    let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -548,18 +748,16 @@ pub fn run_plan(
         object: manifest.object.clone(),
         snapshot: manifest.snapshot.clone(),
         target: manifest.target.clone(),
-        executor: ExecutorInfo {
-            id: EXECUTOR_ID.to_owned(),
-            version: EXECUTOR_VERSION,
-            isolation: "none: a host process with a scrubbed environment (development mode)"
-                .to_owned(),
-        },
+        executor: executor_info(engine),
         environment: manifest.environment.clone(),
-        host_dependent: true,
+        host_dependent: !isolated || manifest.host_dependent,
         host: HostInfo {
             system: std::env::consts::OS.to_owned(),
             arch: std::env::consts::ARCH.replace('_', "-"),
             tools: host_tools,
+            kernel: fs::read_to_string("/proc/sys/kernel/osrelease")
+                .map(|release| release.trim().to_owned())
+                .unwrap_or_default(),
         },
         started_at: started_at.to_string(),
         completed_at: Timestamp::now().to_string(),
@@ -783,6 +981,10 @@ pub enum BuildError {
         path: String,
     },
     Environment(String),
+    /// The engine doesn't suit the plan's environment.
+    EngineMismatch {
+        environment: String,
+    },
     /// A record or blob whose id doesn't match its bytes.
     Fixity {
         what: String,
@@ -827,6 +1029,10 @@ impl fmt::Display for BuildError {
                 write!(f, "artifact {artifact} has an unsafe path {path:?}")
             }
             Self::Environment(message) => write!(f, "building the environment: {message}"),
+            Self::EngineMismatch { environment } => write!(
+                f,
+                "the plan's environment ({environment}) doesn't suit this executor"
+            ),
             Self::Fixity { what, actual } => {
                 write!(f, "{what} doesn't match its contents (they hash to {actual})")
             }
@@ -849,6 +1055,7 @@ impl Error for BuildError {
             | Self::PrerequisitesUnbuilt { .. }
             | Self::UnsafeArtifactPath { .. }
             | Self::Environment(_)
+            | Self::EngineMismatch { .. }
             | Self::Fixity { .. } => None,
         }
     }

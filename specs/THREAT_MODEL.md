@@ -371,6 +371,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | `DECISIONS.md` §29. An inventory is signed by its node actor over its node actor, base URL, objects, and time; a direct one must match the source's authenticated node document, and a relayed one must verify against that node's bundled actor export through the pull verifier. A relay serves only inventories it fetched directly from nodes its actor trusts with `federation:index`, and never relays relayed ones. Hints expire (`hint_ttl_secs`) and only a strictly newer one replaces another. Hints are never permissions: `fetch` and `sync` use only listed peers unless `use_hints` is on, and then only for holders the configured `vouched_by` actor trusts with `federation:index`, directly or as the relay; each such pull pins the holder's node actor, so a hint pointing at another host fails at the node document. |
 | **Residual risk** | A node trusted for `federation:index` (or one it relays) can claim objects it doesn't serve, costing a failed pull per sync until the hint expires. A node can list objects to learn who asks, though pulls are anonymous reads anyway. Inventories reveal what a node publishes, which a pull already does. |
 
+### 5.23 Code run by a build escaping to the host
+
+| | |
+|---|---|
+| **Adversary** | The author of an object this node builds, or of any provider in its closure — possibly an actor it doesn't trust. |
+| **Attack** | Read or alter host files, reach the network, or interfere with other processes from a build target's command. |
+| **Mechanism** | `DECISIONS.md` §33–§35. Development mode (a host process) is off by default, and even when on runs only revisions signed by a keystore actor or one it trusts at `general` scope. Engine builds run under bubblewrap: an empty root with only `/kairo` paths, `/proc`, a minimal `/dev`, and `/tmp`; every namespace unshared, network included; uid 1000; a cleared environment; providers read-only. Engines are allowlisted by path in config and probed before use; none is enabled by default. Outputs are collected only from declared paths inside the source tree, and symbolic links are refused, so a build can't make Kairo read a host file into an artifact. |
+| **Residual risk** | The Linux kernel and bubblewrap are the boundary: a kernel or bubblewrap vulnerability reachable from an unprivileged user namespace escapes it. Builds can consume CPU, memory, and disk up to the wall-clock timeout; there are no other resource limits yet. A malicious build can produce a malicious artifact — isolation protects the host, not the artifact's consumers; reproduction by independent signers is the evidence for those. |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by

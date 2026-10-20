@@ -1389,7 +1389,8 @@ Sub-decisions:
    absolute `path`, optional `version`), the development-mode host
    tools. Host facts
    (`[runtime.host]`: system, architecture) are detected, never
-   configured; `[[runtime.engines]]` entries (`kind`, absolute `path`)
+   configured. Engine builds need neither `allow_local_process` nor
+   signer trust (§35 sub-decision 5); `[[runtime.engines]]` entries (`kind`, absolute `path`)
    allowlist isolation engines, each probed before use (§35
    sub-decision 2).
 
@@ -3348,8 +3349,9 @@ Sub-decisions:
      - `/kairo/content/<snapshot id>` — each content provider's tree,
        read-only;
      - `/kairo/home` and `/tmp` — empty and writable;
-     - `/proc`, and `/dev` with only `null`, `zero`, `full`, `random`,
-       `urandom`, `tty`;
+     - `/proc`, and bubblewrap's minimal `/dev` (`null`, `zero`,
+       `full`, `random`, `urandom`, `tty`, `ptmx`, `pts`, `shm`, and the
+       standard-stream links);
    - no network (a fresh namespace with only loopback), no IPC or
      process visibility outside the sandbox, hostname `kairo`, uid and
      gid 1000;
@@ -3357,7 +3359,9 @@ Sub-decisions:
      `SOURCE_DATE_EPOCH`, `KAIRO_SRC=/kairo/src`,
      `KAIRO_PROVIDER_<LABEL>` naming each provider's canonical path,
      and `PATH` made of the providers' `bin/` directories in
-     requirement order.
+     requirement order. *Amends §33 sub-decision 5:* content
+     providers' `bin/` directories join `PATH` too, in development
+     mode as well, so a toolchain can be a content provider (a seed).
 
    The clock is **not** frozen: bubblewrap has no time namespace
    control, so wall-clock reads are a known source of nondeterminism,

@@ -781,6 +781,20 @@ content unless explicitly approved by policy.
 
 ---
 
+### 20.1 Bubblewrap executor (implemented)
+
+`bubblewrap/1` in `crates/kairo-build` (`DECISIONS.md` §35) implements
+`environment:linux/<arch>` (`schemas/environment/linux-v1.md`). Kairo
+assembles the workspace on the host, then runs `bwrap` with all
+namespaces unshared, hostname `kairo`, uid and gid 1000, `/proc`, a
+minimal `/dev`, an empty `/tmp`, the source bound read-write at
+`/kairo/src`, `/kairo/home`, each provider bound read-only at its
+canonical path, a cleared environment, and the command run in the
+workdir. Engines are allowlisted under `[[runtime.engines]]` and probed
+before use. Records name the engine path and version, the kernel
+release, and "wall clock not frozen" as known nondeterminism; results
+carry the contract and `host_dependent = false`.
+
 ## 21. Local Process Executor
 
 A local process executor may exist for development or trusted workflows.

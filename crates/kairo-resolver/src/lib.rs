@@ -729,6 +729,23 @@ impl<'a> Resolver<'a> {
         let mut environment = "none".to_owned();
         let mut host_dependent = false;
         let mut needed_first: Vec<BuildFirst> = Vec::new();
+        // Under an engine, host tools are not candidates (§35
+        // sub-decision 4), so the environment is settled first.
+        let isolated = manifest
+            .dependencies()
+            .iter()
+            .chain(target.dependencies())
+            .any(|dependency| match dependency {
+                DependencyDeclaration::Provides(dependency) => {
+                    dependency.provides().starts_with(ENVIRONMENT_PREFIX)
+                        && self
+                            .host
+                            .engines
+                            .iter()
+                            .any(|contract| contract == dependency.provides())
+                }
+                DependencyDeclaration::Object(_) => false,
+            });
         for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
             let (requested, resolved) = match dependency {
                 DependencyDeclaration::Provides(dependency) => {
@@ -751,6 +768,7 @@ impl<'a> Resolver<'a> {
                             &requested,
                             dependency.provides(),
                             dependency.version(),
+                            isolated,
                             stack,
                             prerequisites,
                             &mut needed_first,
@@ -878,6 +896,7 @@ impl<'a> Resolver<'a> {
         requested: &Requested,
         label: &str,
         version: Option<&str>,
+        isolated: bool,
         stack: &mut Vec<(ObjectId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
@@ -902,7 +921,13 @@ impl<'a> Resolver<'a> {
             .iter()
             .filter(|tool| tool.provides == label)
             .filter(|tool| {
-                if version_matches(version, tool.version.as_deref()) {
+                if isolated {
+                    considered.push(format!(
+                        "host tool {} (not usable under an isolation engine)",
+                        tool.path.display()
+                    ));
+                    false
+                } else if version_matches(version, tool.version.as_deref()) {
                     true
                 } else {
                     considered.push(format!(

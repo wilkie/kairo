@@ -52,6 +52,17 @@ impl TreeSource for Trees {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| SourceError(e.to_string()))?;
             }
+            // `@copy:<host path>` copies an executable in; `@link:<target>`
+            // makes a symbolic link, as a Git tree can.
+            if let Some(from) = contents.strip_prefix("@copy:") {
+                fs::copy(from, &path).map_err(|e| SourceError(e.to_string()))?;
+                set_executable(&path, true).map_err(|e| SourceError(e.to_string()))?;
+                continue;
+            }
+            if let Some(to) = contents.strip_prefix("@link:") {
+                std::os::unix::fs::symlink(to, &path).map_err(|e| SourceError(e.to_string()))?;
+                continue;
+            }
             fs::write(&path, contents).map_err(|e| SourceError(e.to_string()))?;
             if name.ends_with(".sh") {
                 set_executable(&path, true).map_err(|e| SourceError(e.to_string()))?;
@@ -109,6 +120,13 @@ impl World {
         object
     }
 
+    fn plan_with(&self, host: &Host, object: &ObjectId, target: &str) -> PlanDocument {
+        Resolver::new(&self.fixture.store, &self.trees, &NoArtifacts, host, &[])
+            .resolve(object, &SnapshotSelector::Current, target)
+            .expect("plan")
+            .plan
+    }
+
     fn plan(&self, object: &ObjectId, target: &str) -> PlanDocument {
         let host = Host {
             system: "linux".to_owned(),
@@ -141,6 +159,7 @@ impl World {
             plan,
             1_700_000_000,
             &Limits { timeout },
+            &Engine::Native,
         )
     }
 
@@ -451,4 +470,179 @@ fn provider_variables_are_derived_from_labels() {
         provider_var("environment:linux/x86-64"),
         "KAIRO_PROVIDER_ENVIRONMENT_LINUX_X86_64"
     );
+}
+
+/// A usable bubblewrap and a statically linked busybox, or `None` to
+/// skip: the engine needs user namespaces, and the guest root is empty.
+/// Whether a 64-bit little-endian ELF has a `PT_INTERP` program
+/// header, i.e. is dynamically linked. `None` if it isn't such an ELF.
+fn has_interpreter(elf: &[u8]) -> Option<bool> {
+    if elf.get(..4)? != b"\x7fELF" || elf.get(4)? != &2 || elf.get(5)? != &1 {
+        return None;
+    }
+    let u16_at = |at: usize| Some(u16::from_le_bytes(elf.get(at..at + 2)?.try_into().ok()?));
+    let phoff = usize::try_from(u64::from_le_bytes(elf.get(0x20..0x28)?.try_into().ok()?)).ok()?;
+    let entsize = usize::from(u16_at(0x36)?);
+    let count = usize::from(u16_at(0x38)?);
+    for index in 0..count {
+        let at = phoff + index * entsize;
+        let kind = u32::from_le_bytes(elf.get(at..at + 4)?.try_into().ok()?);
+        if kind == 3 {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// With `KAIRO_REQUIRE_ENGINE` set, a missing engine fails the test
+/// instead of skipping it, so CI on a capable host can't pass vacuously.
+fn engine_fixture() -> Option<Bubblewrap> {
+    let found = (|| {
+        let busybox = fs::read("/usr/bin/busybox").ok()?;
+        if has_interpreter(&busybox)? {
+            return None; // dynamically linked: unusable in an empty root
+        }
+        Bubblewrap::probe(Path::new("/usr/bin/bwrap")).ok()
+    })();
+    assert!(
+        found.is_some() || std::env::var_os("KAIRO_REQUIRE_ENGINE").is_none(),
+        "KAIRO_REQUIRE_ENGINE is set but bubblewrap or a static busybox is unavailable"
+    );
+    found
+}
+
+#[test]
+fn the_bubblewrap_engine_runs_in_an_empty_root_with_providers_only() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(&[
+        (
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "busybox"
+            [[provides]]
+            provides = "tool:sh"
+            "#,
+        ),
+        ("bin/busybox", "@copy:/usr/bin/busybox"),
+        ("bin/sh", "@link:busybox"),
+    ]);
+    let host = Host::detect();
+    let contract = host.contract();
+    let app = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "app"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox mkdir -p out; {{ test -e /usr && echo usr-visible || echo no-usr; busybox id -u; busybox hostname; busybox cat /proc/net/dev | busybox grep -c ':'; echo $HOME $KAIRO_SRC $TZ; echo $PATH; busybox pwd; }} > out/report"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.outputs]]
+            name = "report"
+            path = "out/report"
+            artifact_path = "report"
+            kind = "file"
+            "#
+        ),
+    )]);
+
+    let mut engine_host = host.clone();
+    engine_host.engines.push(contract.clone());
+    let plan = world.plan_with(&engine_host, &app.object_id, "release");
+    assert_eq!(plan.manifest.environment, contract);
+    assert!(!plan.manifest.host_dependent);
+
+    // A plan with a contract can't run natively, nor one without under the engine.
+    assert!(matches!(
+        run_plan(
+            &world.fixture.store,
+            &world.trees,
+            &plan,
+            1,
+            &Limits {
+                timeout: Duration::from_secs(5)
+            },
+            &Engine::Native
+        ),
+        Err(BuildError::EngineMismatch { .. })
+    ));
+
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap.clone()),
+    )?;
+    let record = &execution.record;
+    assert_eq!(
+        record.status,
+        Status::Success,
+        "{:?} {}",
+        record.diagnostics,
+        world.blob_text(&record.logs.stderr)
+    );
+    assert_eq!(record.executor.id, "bubblewrap");
+    assert!(!record.host_dependent);
+    assert_eq!(record.environment, contract);
+    assert_eq!(
+        record.executor.known_nondeterminism,
+        ["wall clock not frozen"]
+    );
+    assert_eq!(
+        record.executor.engine.as_ref().map(|e| e.version.clone()),
+        Some(bwrap.version.clone())
+    );
+    assert!(!record.host.kernel.is_empty());
+
+    let tree = execution.artifact.as_ref().expect("artifact");
+    let report = world.blob_text(&tree.entries[0].blob);
+    let lines: Vec<&str> = report.lines().collect();
+    assert_eq!(lines[0], "no-usr", "{report}");
+    assert_eq!(lines[1], "1000", "{report}");
+    assert_eq!(lines[2], "kairo", "{report}");
+    assert_eq!(lines[3], "1", "only loopback: {report}");
+    assert_eq!(lines[4], "/kairo/home /kairo/src UTC", "{report}");
+    assert!(
+        lines[5].starts_with("/kairo/content/") && lines[5].ends_with("/bin"),
+        "{report}"
+    );
+    assert_eq!(lines[6], "/kairo/src", "{report}");
+
+    // The same plan under the engine again gives the same artifact.
+    let again = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap),
+    )?;
+    assert_eq!(again.record.artifact, record.artifact);
+    Ok(())
+}
+
+#[test]
+fn a_probe_of_a_missing_engine_says_why() {
+    let error = Bubblewrap::probe(Path::new("/nonexistent/bwrap")).expect_err("no such engine");
+    assert!(error.contains("cannot run"), "{error}");
 }

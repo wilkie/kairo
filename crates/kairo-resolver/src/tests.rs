@@ -476,6 +476,49 @@ fn environment_labels_resolve_to_an_engine_or_the_host_in_development_mode() -> 
     assert!(!engine.plan.manifest.host_dependent);
     assert_ne!(engine.plan.hash, dev.plan.hash);
 
+    // Under the engine, a host tool is not a candidate.
+    let (needs_cc, _) = world.object(&manifest(
+        "cc-app",
+        r#"
+        [[dependencies]]
+        kind = "provides"
+        provides = "environment:linux/x86-64"
+        [[build.targets]]
+        name = "release"
+        command = ["cc"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:cc"
+        [[build.targets.outputs]]
+        name = "bin"
+        path = "out"
+        artifact_path = "bin"
+        kind = "directory"
+        "#,
+    ));
+    let tools = [HostTool {
+        provides: "tool:cc".to_owned(),
+        version: None,
+        path: PathBuf::from("/usr/bin/cc"),
+    }];
+    let error = world
+        .resolve_with(&NoArtifacts, &host, &tools, &needs_cc.object_id, "release")
+        .expect_err("host tools are refused under an engine");
+    assert!(
+        error
+            .to_string()
+            .contains("not usable under an isolation engine"),
+        "{error}"
+    );
+    let dev = world.resolve_with(
+        &NoArtifacts,
+        &World::host(),
+        &tools,
+        &needs_cc.object_id,
+        "release",
+    )?;
+    assert!(dev.plan.manifest.host_dependent);
+
     let other = Host {
         system: "linux".to_owned(),
         arch: "aarch64".to_owned(),

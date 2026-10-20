@@ -210,6 +210,67 @@ fn check_signer(
     })
 }
 
+/// How this node may run plans: the probed engines, and whether
+/// development mode is allowed (§33 sub-decision 4, §35).
+struct RunPolicy {
+    engines: Vec<kairo_build::Bubblewrap>,
+    engine_failures: Vec<String>,
+    allow_local_process: bool,
+    config_path: std::path::PathBuf,
+}
+
+impl RunPolicy {
+    fn load(config: &kairo_config::Config, config_path: &std::path::Path) -> Self {
+        let mut engines = Vec::new();
+        let mut engine_failures = Vec::new();
+        for engine in &config.runtime.engines {
+            match engine.kind {
+                kairo_config::EngineKind::Bubblewrap => {
+                    match kairo_build::Bubblewrap::probe(&engine.path) {
+                        Ok(probed) => engines.push(probed),
+                        Err(reason) => engine_failures.push(reason),
+                    }
+                }
+            }
+        }
+        Self {
+            engines,
+            engine_failures,
+            allow_local_process: config.runtime.allow_local_process,
+            config_path: config_path.to_path_buf(),
+        }
+    }
+
+    /// The host, with the contracts its working engines implement.
+    fn host(&self) -> Host {
+        let mut host = Host::detect();
+        if !self.engines.is_empty() {
+            host.engines.push(host.contract());
+        }
+        host
+    }
+
+    /// The engine for `plan`, or the refusal that applies.
+    fn engine_for(&self, plan: &PlanDocument) -> Result<kairo_build::Engine, CliError> {
+        if plan.manifest.environment == "none" {
+            if !self.allow_local_process {
+                return Err(CliError::BuildNotAllowed {
+                    config: self.config_path.clone(),
+                });
+            }
+            return Ok(kairo_build::Engine::Native);
+        }
+        self.engines
+            .first()
+            .cloned()
+            .map(kairo_build::Engine::Bubblewrap)
+            .ok_or_else(|| CliError::NoEngine {
+                environment: plan.manifest.environment.clone(),
+                failures: self.engine_failures.clone(),
+            })
+    }
+}
+
 /// What one `kairo build` did: the builds it ran, prerequisites first.
 struct Built {
     execution: Execution,
@@ -236,7 +297,9 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     };
     let store = open_store(paths)?;
     let (config, source) = load_config(paths)?;
-    if !args.plan_only && !config.runtime.allow_local_process {
+    let policy = RunPolicy::load(&config, source.path());
+    // Nothing could run here at all: say so before resolving.
+    if !args.plan_only && policy.engines.is_empty() && !policy.allow_local_process {
         return Err(CliError::BuildNotAllowed {
             config: source.path().to_path_buf(),
         });
@@ -244,7 +307,7 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     let keystore = open_keystore(paths)?;
     let local = keystore.list_actors().map_err(CliError::ListKeystore)?;
     let manifests = CacheManifests { paths };
-    let host = Host::detect();
+    let host = policy.host();
     let tools = host_tools(&config);
     let artifacts = StoreArtifacts {
         store: &store,
@@ -322,7 +385,9 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
                 (plan, false)
             }
         };
-        let one = build_one(&store, &trees, &local, &actor_id, &secret, &plan, &limits)?;
+        let one = build_one(
+            &store, &trees, &policy, &local, &actor_id, &secret, &plan, &limits,
+        )?;
         let status = one.execution.record.status;
         built.push(one);
         if status != Status::Success || is_root {
@@ -348,9 +413,11 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
 
 /// Run one plan under the signer policy and sign its `BuildResult`
 /// (success or failure; a timeout signs nothing, §33 sub-decision 8).
+#[allow(clippy::too_many_arguments)]
 fn build_one(
     store: &FilesystemStore,
     trees: &CacheTrees<'_>,
+    policy: &RunPolicy,
     local: &[kairo_core::ActorId],
     actor_id: &kairo_core::ActorId,
     secret: &kairo_identity::SecretSigningKey,
@@ -375,7 +442,13 @@ fn build_one(
             statement: snapshot.frontier()[0].clone(),
             source,
         })?;
-    check_signer(store, local, &object, revision.unsigned().actor())?;
+    // Development mode runs the guest on the host, so it needs a signer
+    // this node vouches for; an engine is the boundary instead (§35
+    // sub-decision 5).
+    let engine = policy.engine_for(plan)?;
+    if engine == kairo_build::Engine::Native {
+        check_signer(store, local, &object, revision.unsigned().actor())?;
+    }
 
     let execution = run_plan(
         store,
@@ -383,6 +456,7 @@ fn build_one(
         plan,
         revision.unsigned().created_at().seconds(),
         limits,
+        &engine,
     )
     .map_err(|error| CliError::Build(Box::new(error)))?;
 
@@ -413,7 +487,7 @@ fn build_one(
         artifact,
         format!("{}/{}", record.executor.id, record.executor.version),
         plan.manifest.environment.clone(),
-        true,
+        record.host_dependent,
         execution.id.clone(),
     )
     .map_err(CliError::BuildResultShape)?;
@@ -466,11 +540,7 @@ pub(crate) fn run_reproduce(
     };
     let store = open_store(paths)?;
     let (config, source) = load_config(paths)?;
-    if !config.runtime.allow_local_process {
-        return Err(CliError::BuildNotAllowed {
-            config: source.path().to_path_buf(),
-        });
-    }
+    let policy = RunPolicy::load(&config, source.path());
     let cited = store
         .get_build_result(&cited_id)
         .map_err(|source| CliError::ReadBuildResult {
@@ -551,7 +621,9 @@ pub(crate) fn run_reproduce(
     let limits = Limits {
         timeout: Duration::from_secs(config.runtime.timeout_secs),
     };
-    let one = build_one(&store, &trees, &local, &actor_id, &secret, &plan, &limits)?;
+    let one = build_one(
+        &store, &trees, &policy, &local, &actor_id, &secret, &plan, &limits,
+    )?;
 
     let cited_artifact = body.artifact().map(ToString::to_string);
     let new_artifact = one.execution.record.artifact.clone();
@@ -744,7 +816,11 @@ fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
         record.executor.id, record.executor.version, record.executor.isolation
     );
     let _ = writeln!(out, "environment = {}", record.environment);
-    let _ = writeln!(out, "host_dependent = yes");
+    let _ = writeln!(
+        out,
+        "host_dependent = {}",
+        if record.host_dependent { "yes" } else { "no" }
+    );
     if let Some(code) = record.exit_code {
         let _ = writeln!(out, "exit_code = {code}");
     }

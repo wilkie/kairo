@@ -18,6 +18,19 @@ rather than per-commit.
 
 ### Added
 
+- **The bubblewrap engine (`DECISIONS.md` §35).** A target that
+  requires `environment:linux/<arch>` builds under bubblewrap when it
+  is allowlisted in `[[runtime.engines]]` and passes a probe: an empty
+  guest root with only `/kairo` paths (source, providers read-only at
+  canonical paths), `/proc`, a minimal `/dev`, and `/tmp`; no network;
+  hostname `kairo`; uid 1000 (`schemas/environment/linux-v1.md`). Such
+  builds need neither `allow_local_process` nor signer trust, carry
+  `bubblewrap/1` and the contract in their `BuildResult`, and are not
+  host-dependent. Host tools are refused under an engine. Content
+  providers' `bin/` directories join `PATH`. Execution records gain the
+  engine, kernel release, and known nondeterminism. Engine tests skip
+  without bubblewrap and a static busybox unless `KAIRO_REQUIRE_ENGINE`
+  is set.
 - **`kairo reproduce` (`DECISIONS.md` §33 sub-decision 9).** `kairo
   reproduce statement:<id> --actor <id>` re-runs exactly the plan a
   `BuildResult` cites, signs its own result, and reports `matches` or

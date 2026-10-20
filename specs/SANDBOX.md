@@ -16,6 +16,13 @@ predates that spec and now forward-references it. When this document says
 "capability" without qualification, it means *sandbox capability* — the
 runtime permission granted to an executing artifact.
 
+**Implemented so far** (`DECISIONS.md` §35): build execution under the
+bubblewrap engine grants a fixed set and nothing more — read-write
+`/kairo/src`, `/kairo/home`, and `/tmp`; read-only providers; no
+network; no host filesystem. Per-run capability grants (network
+access, devices) are not yet implemented; a build cannot request
+them.
+
 ---
 
 ## 1. Purpose

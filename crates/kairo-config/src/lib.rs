@@ -62,6 +62,30 @@ pub struct RuntimeConfig {
     /// Host programs a development-mode build may resolve a provides
     /// requirement to, in file order.
     pub host_tools: Vec<HostToolConfig>,
+    /// Allowlisted isolation engines (`DECISIONS.md` §35 sub-decision
+    /// 2), in file order. Each is probed before it is offered.
+    pub engines: Vec<EngineConfig>,
+}
+
+/// One `[[runtime.engines]]` entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineConfig {
+    pub kind: EngineKind,
+    /// The engine's executable.
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineKind {
+    Bubblewrap,
+}
+
+impl EngineKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bubblewrap => "bubblewrap",
+        }
+    }
 }
 
 impl Default for RuntimeConfig {
@@ -70,6 +94,7 @@ impl Default for RuntimeConfig {
             allow_local_process: false,
             timeout_secs: 3600,
             host_tools: Vec::new(),
+            engines: Vec::new(),
         }
     }
 }
@@ -275,6 +300,15 @@ struct RawRuntime {
     timeout_secs: Option<u64>,
     #[serde(default)]
     host: Option<RawRuntimeHost>,
+    #[serde(default)]
+    engines: Vec<RawEngine>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawEngine {
+    kind: String,
+    path: PathBuf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -628,12 +662,40 @@ fn parse_runtime(
             path: tool.path,
         });
     }
+    let mut engines: Vec<EngineConfig> = Vec::new();
+    for engine in raw.engines {
+        let kind = match engine.kind.as_str() {
+            "bubblewrap" => EngineKind::Bubblewrap,
+            other => {
+                return Err(invalid(format!(
+                    "runtime.engines: unknown kind {other:?} (supported: bubblewrap)"
+                )))
+            }
+        };
+        if !engine.path.is_absolute() {
+            return Err(invalid(format!(
+                "runtime.engines: path {:?} must be absolute",
+                engine.path
+            )));
+        }
+        if engines.iter().any(|other| other.kind == kind) {
+            return Err(invalid(format!(
+                "runtime.engines: {} is listed twice",
+                kind.as_str()
+            )));
+        }
+        engines.push(EngineConfig {
+            kind,
+            path: engine.path,
+        });
+    }
     Ok(RuntimeConfig {
         allow_local_process: raw
             .allow_local_process
             .unwrap_or(defaults.allow_local_process),
         timeout_secs: raw.timeout_secs.unwrap_or(defaults.timeout_secs),
         host_tools,
+        engines,
     })
 }
 
@@ -906,6 +968,24 @@ path = \"/usr/bin/cc\"
         )
         .contains("twice"));
         assert!(parse_err("[runtime.host]\nsystem = \"linux\"\n").contains("system"));
+
+        let config =
+            parse_ok("[[runtime.engines]]\nkind = \"bubblewrap\"\npath = \"/usr/bin/bwrap\"\n");
+        assert_eq!(
+            config.runtime.engines,
+            [EngineConfig {
+                kind: EngineKind::Bubblewrap,
+                path: PathBuf::from("/usr/bin/bwrap"),
+            }]
+        );
+        assert!(
+            parse_err("[[runtime.engines]]\nkind = \"docker\"\npath = \"/usr/bin/docker\"\n")
+                .contains("unknown kind")
+        );
+        assert!(
+            parse_err("[[runtime.engines]]\nkind = \"bubblewrap\"\npath = \"bwrap\"\n")
+                .contains("absolute")
+        );
     }
 
     #[test]

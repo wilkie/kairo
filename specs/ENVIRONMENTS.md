@@ -38,6 +38,10 @@ contract** (what the guest is promised), and an executor is an
 **isolation engine** that implements it. Guest software never runs on the
 host; the host runs only Kairo and allowlisted engines.
 
+Contracts are documented under `schemas/environment/`. The first is
+`environment:linux/<arch>` (`schemas/environment/linux-v1.md`),
+implemented by the bubblewrap engine (`DECISIONS.md` §35).
+
 ---
 
 ## 3. Environment Descriptor

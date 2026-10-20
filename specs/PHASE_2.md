@@ -445,6 +445,10 @@ isolation engines that implement environment contracts, plans are
 closures over artifact providers, and the toolchain bootstraps from a
 per-(system, architecture) seed.
 
+The first engine, bubblewrap with the `environment:linux/<arch>`
+contract, is implemented (`DECISIONS.md` §35); next on this path are
+the bootstrap import and the microVM engine.
+
 - [x] Reconcile the four specs with each other and with what's been
       implemented since they were written.
 - [x] Decide MVP scope: just declarative build description in `kairo.toml`?

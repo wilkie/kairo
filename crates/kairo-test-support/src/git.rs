@@ -116,6 +116,26 @@ pub fn init_git_repo_with_files(
     Ok((dir, oid))
 }
 
+/// Turn `dir`, already populated (binaries, symbolic links, anything
+/// a tree holds), into a SHA-1 Git repo with one commit of its whole
+/// contents. Returns the head oid; label it `git:sha1:`.
+pub fn commit_dir(dir: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    run_checked(dir, &["init", "--initial-branch=main", "--quiet"])?;
+    run_checked(dir, &["config", "user.name", "Kairo Test"])?;
+    run_checked(dir, &["config", "user.email", "test@kairo.test"])?;
+    run_checked(dir, &["config", "commit.gpgsign", "false"])?;
+    run_checked(dir, &["add", "."])?;
+    run_checked(dir, &["commit", "-m", "first", "--quiet"])?;
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err("rev-parse failed".into());
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
 /// Build a Git pack from every commit reachable in `src` (via
 /// `git pack-objects --all --stdout`) and return its raw bytes.
 /// Suitable for piping into `kairo_git::GitCache::ingest_pack` or
