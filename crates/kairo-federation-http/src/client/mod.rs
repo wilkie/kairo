@@ -91,6 +91,12 @@ pub struct Limits {
     pub max_git_bytes: u64,
     /// For the whole Git fetch, which can be large.
     pub git_timeout: Duration,
+    /// Most bytes of one file source (`DECISIONS.md` §38): a
+    /// distfile pulled from a peer, or downloaded by `kairo source
+    /// fetch-file`.
+    pub max_file_bytes: u64,
+    /// For a whole file download.
+    pub file_timeout: Duration,
 }
 
 impl Default for Limits {
@@ -103,6 +109,8 @@ impl Default for Limits {
             request_timeout: Duration::from_secs(30),
             max_git_bytes: 1024 * 1024 * 1024,
             git_timeout: Duration::from_secs(30 * 60),
+            max_file_bytes: 1024 * 1024 * 1024,
+            file_timeout: Duration::from_secs(30 * 60),
         }
     }
 }
@@ -1723,8 +1731,8 @@ impl Pull<'_> {
     }
 
     /// Fetch one blob: a revision manifest, or with `file` a file
-    /// source's bytes, named by their plain SHA-256 and as large as the
-    /// Git limit allows.
+    /// source's bytes, named by their plain SHA-256 and as large as
+    /// `max_file_bytes` allows.
     fn blob(&mut self, id: &BlobId, file: bool) -> Result<(), PullError> {
         let record = KairoRef::Blob(id.clone());
         if Self::held(self.store.open_blob(id))? {
@@ -1735,7 +1743,7 @@ impl Pull<'_> {
             Source::Peer(peer) => peer.get_bytes(
                 &format!("{API_PREFIX}/blobs/{id}"),
                 if file {
-                    self.limits.max_git_bytes
+                    self.limits.max_file_bytes
                 } else {
                     self.limits.max_blob_bytes
                 },

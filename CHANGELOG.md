@@ -18,6 +18,11 @@ rather than per-commit.
 
 ### Added
 
+- **`max_file_bytes` and `file_timeout_secs`** in `[federation.limits]`
+  cap `kairo source fetch-file` downloads and file sources' bytes in
+  pulls (1 GiB and 30 minutes by default), which reused the Git limits
+  before.
+
 - **File sources federate (`DECISIONS.md` §38 sub-decision 9).** A held
   file source can be published; its closure is its observations and its
   bytes, and its genesis route serves the `FileSourceGenesis`. Pulls

@@ -570,7 +570,7 @@ fn run_fetch_file(
     let (config, _) = load_config(paths)?;
     let limits = kairo_federation_service::limits_from(&config.federation.limits);
 
-    let bytes = download(&url, limits.max_git_bytes, limits.git_timeout)?;
+    let bytes = download(&url, limits.max_file_bytes, limits.file_timeout)?;
     let sha256 = {
         use sha2::Digest as _;
         Sha256Digest::from_bytes(sha2::Sha256::digest(&bytes).into())

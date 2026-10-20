@@ -229,9 +229,14 @@ pub struct LimitsConfig {
     pub max_batch_bytes: Option<u64>,
     pub max_blob_bytes: Option<u64>,
     pub max_git_bytes: Option<u64>,
+    /// Largest file source: a `kairo source fetch-file` download, or a
+    /// file source's bytes in a pull (`specs/DECISIONS.md` §38).
+    pub max_file_bytes: Option<u64>,
     pub max_records: Option<u64>,
     pub request_timeout_secs: Option<u64>,
     pub git_timeout_secs: Option<u64>,
+    /// For a whole `kairo source fetch-file` download.
+    pub file_timeout_secs: Option<u64>,
     /// Largest uploaded bundle a node accepts (`DECISIONS.md` §26
     /// sub-decision 3). See [`DEFAULT_MAX_PUSH_BYTES`].
     pub max_push_bytes: Option<u64>,
@@ -409,9 +414,11 @@ struct RawLimits {
     max_batch_bytes: Option<u64>,
     max_blob_bytes: Option<u64>,
     max_git_bytes: Option<u64>,
+    max_file_bytes: Option<u64>,
     max_records: Option<u64>,
     request_timeout_secs: Option<u64>,
     git_timeout_secs: Option<u64>,
+    file_timeout_secs: Option<u64>,
     max_push_bytes: Option<u64>,
     max_inbox_entries: Option<u64>,
 }
@@ -505,9 +512,11 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
         ("max_batch_bytes", limits.max_batch_bytes),
         ("max_blob_bytes", limits.max_blob_bytes),
         ("max_git_bytes", limits.max_git_bytes),
+        ("max_file_bytes", limits.max_file_bytes),
         ("max_records", limits.max_records),
         ("request_timeout_secs", limits.request_timeout_secs),
         ("git_timeout_secs", limits.git_timeout_secs),
+        ("file_timeout_secs", limits.file_timeout_secs),
         ("max_push_bytes", limits.max_push_bytes),
         ("max_inbox_entries", limits.max_inbox_entries),
     ] {
@@ -628,9 +637,11 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
                 max_batch_bytes: limits.max_batch_bytes,
                 max_blob_bytes: limits.max_blob_bytes,
                 max_git_bytes: limits.max_git_bytes,
+                max_file_bytes: limits.max_file_bytes,
                 max_records: limits.max_records,
                 request_timeout_secs: limits.request_timeout_secs,
                 git_timeout_secs: limits.git_timeout_secs,
+                file_timeout_secs: limits.file_timeout_secs,
                 max_push_bytes: limits.max_push_bytes,
                 max_inbox_entries: limits.max_inbox_entries,
             },
@@ -816,6 +827,8 @@ mod tests {
             [federation.limits]
             max_blob_bytes = 1024
             git_timeout_secs = 60
+            max_file_bytes = 4096
+            file_timeout_secs = 90
 
             [[federation.peers]]
             url = "https://archive.example.org/"
@@ -829,6 +842,8 @@ mod tests {
         assert!(!federation.enabled);
         assert_eq!(federation.limits.max_blob_bytes, Some(1024));
         assert_eq!(federation.limits.git_timeout_secs, Some(60));
+        assert_eq!(federation.limits.max_file_bytes, Some(4096));
+        assert_eq!(federation.limits.file_timeout_secs, Some(90));
         assert_eq!(federation.limits.max_json_bytes, None);
         assert_eq!(federation.peers.len(), 2);
         let archive = federation

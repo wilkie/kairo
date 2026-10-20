@@ -1668,8 +1668,9 @@ archiving everything it could.
 
 `fetch-file` downloads one file and archives it as a file source:
 `https` only (`http` for a loopback host), at most one redirect, to a
-URL the same rules accept, within the federation limits' Git size and
-time (`max_git_bytes`, `git_timeout_secs`). With `--sha256`, bytes that
+URL the same rules accept, within `[federation.limits]`'
+`max_file_bytes` and `file_timeout_secs` (1 GiB and 30 minutes by
+default). With `--sha256`, bytes that
 hash otherwise are refused (exit 1) and nothing is kept. The bytes are
 stored as the blob their hash names, and a `FileObservation` of the
 URL asked for is signed. Fetching the same file from a mirror adds an

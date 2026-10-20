@@ -1359,7 +1359,9 @@ Sub-decisions:
    - `[federation.limits]`: optional overrides of the pull client's
      limits (`max_json_bytes`, `max_batch_bytes` (§24),
      `max_blob_bytes`, `max_git_bytes`, `max_records`,
-     `request_timeout_secs`, `git_timeout_secs`).
+     `request_timeout_secs`, `git_timeout_secs`, and for file sources
+     (§38) `max_file_bytes` and `file_timeout_secs`, each defaulting to
+     1 GiB and 30 minutes).
      Zero is invalid.
    - `[[federation.peers]]` entries, each with a `url` and an
      optional `node_actor` (a bare actor id).
@@ -3758,7 +3760,7 @@ Sub-decisions:
    <hex>` downloads the URL with the source transport rules (§37
    sub-decision 2 as amended: `https` only for files, or `http` for a
    loopback host, as federation peers allow; one redirect followed;
-   size and time limits), refuses bytes that don't
+   `max_file_bytes` and `file_timeout_secs`), refuses bytes that don't
    hash to the expected value, stores the blob, and signs a file
    observation. Without `--sha256` it records whatever it got, and the
    output names the hash. Nothing fetched is ever dropped.
@@ -3845,8 +3847,8 @@ Sub-decisions:
    `FileSourceGenesis`. Pulling one (`kairo fetch --object <id>`, or
    `kairo source pull <sha256> --from <peer>`) checks the genesis by
    re-deriving the id from the hash, verifies each observation under
-   its signer, and checks the bytes against the hash, within the Git
-   size limit rather than the manifest one, since distfiles are large.
+   its signer, and checks the bytes against the hash, within
+   `max_file_bytes` rather than the manifest blob limit.
    Publishing a native object also serves the file sources its
    revisions pin, whole, and pulling it brings them, so a pulled
    wrapper such as live-bootstrap's can plan and build. Push carries

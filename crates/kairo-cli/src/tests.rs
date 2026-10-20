@@ -10425,3 +10425,32 @@ fn file_sources_federate_directly_and_with_what_pins_them() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[test]
+fn source_fetch_file_stops_at_max_file_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let base = serve_files(vec![("/abc.txt", "200 OK".to_owned(), b"abc".to_vec())])?;
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    std::fs::write(
+        store_dir.path().join("config.toml"),
+        "[federation.limits]\nmax_file_bytes = 2\n",
+    )?;
+    let refused = run_in_store(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::FetchFile {
+                url: format!("{base}/abc.txt"),
+                sha256: None,
+                actor,
+            },
+        },
+    );
+    assert!(
+        matches!(&refused, Err(CliError::FileFetch { message, .. }) if message.contains("larger than the 2-byte limit")),
+        "{refused:?}"
+    );
+    use kairo_store::SourceStore as _;
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    assert!(store.list_file_sources()?.is_empty());
+    Ok(())
+}

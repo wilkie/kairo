@@ -44,6 +44,8 @@ pub fn limits_from(config: &LimitsConfig) -> Limits {
         }),
         request_timeout: secs(config.request_timeout_secs, defaults.request_timeout),
         git_timeout: secs(config.git_timeout_secs, defaults.git_timeout),
+        max_file_bytes: config.max_file_bytes.unwrap_or(defaults.max_file_bytes),
+        file_timeout: secs(config.file_timeout_secs, defaults.file_timeout),
     }
 }
 
