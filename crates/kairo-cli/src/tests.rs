@@ -7260,7 +7260,7 @@ fn a_pushed_object_is_received_without_reaching_the_pusher(
     };
     let pushed = push()?;
     assert!(
-        pushed.contains("sent = genesis=true actors=1 statements=0"),
+        pushed.contains("sent = genesis=true sources=0 actors=1 statements=0"),
         "{pushed}"
     );
     assert!(pushed.contains("entry = push-"), "{pushed}");
@@ -10452,5 +10452,263 @@ fn source_fetch_file_stops_at_max_file_bytes() -> Result<(), Box<dyn std::error:
     use kairo_store::SourceStore as _;
     let store = kairo_store::FilesystemStore::open(store_dir.path())?;
     assert!(store.list_file_sources()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_pushed_wrapper_carries_the_sources_it_pins() -> Result<(), Box<dyn std::error::Error>> {
+    use kairo_test_support::git::{git, GitDaemon};
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    // A Git source whose tip the wrapper doesn't pin, and a file.
+    let lib = daemon.base.path().join("lib");
+    std::fs::create_dir(&lib)?;
+    git(&lib, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(lib.join("lib.h"), "/* old */\n")?;
+    git(&lib, &["add", "lib.h"]);
+    git(&lib, &["commit", "-q", "-m", "old"]);
+    let pinned = git(&lib, &["rev-parse", "HEAD"]);
+    std::fs::write(lib.join("lib.h"), "/* new */\n")?;
+    git(&lib, &["commit", "-q", "-am", "new"]);
+    let tip = git(&lib, &["rev-parse", "HEAD"]);
+    let lib_url = daemon.url("lib");
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let files = serve_files(vec![
+        ("/abc.txt", "200 OK".to_owned(), b"abc".to_vec()),
+        ("/xyz.txt", "200 OK".to_owned(), b"xyz".to_vec()),
+    ])?;
+
+    let laptop_dir = tempfile::TempDir::new()?;
+    let laptop = laptop_dir.path();
+    let laptop_node = create_node_actor(laptop)?;
+    let author = create_local_actor(laptop)?;
+    let lib_source = parse_field(
+        &run_in_store(
+            laptop,
+            Command::Source {
+                command: SourceCommand::Fetch {
+                    url: lib_url.clone(),
+                    actor: author.clone(),
+                    object_format: None,
+                    no_recurse_submodules: false,
+                    max_depth: 8,
+                    require_complete: true,
+                },
+            },
+        )?,
+        "source = ",
+    )?;
+    let file_source = parse_field(
+        &run_in_store(
+            laptop,
+            Command::Source {
+                command: SourceCommand::FetchFile {
+                    url: format!("{files}/abc.txt"),
+                    sha256: Some(abc.to_owned()),
+                    actor: author.clone(),
+                },
+            },
+        )?,
+        "source = ",
+    )?;
+    // A file pushed on its own, which no wrapper pins.
+    let lone = parse_field(
+        &run_in_store(
+            laptop,
+            Command::Source {
+                command: SourceCommand::FetchFile {
+                    url: format!("{files}/xyz.txt"),
+                    sha256: None,
+                    actor: author.clone(),
+                },
+            },
+        )?,
+        "source = ",
+    )?;
+    drop(daemon);
+    let wrapper = create_held_tree(
+        laptop,
+        &author,
+        &[(
+            "kairo.toml",
+            &format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "wrapper"
+                [[build.targets]]
+                name = "release"
+                command = ["true"]
+                [[build.targets.dependencies]]
+                kind = "source"
+                source = "{lib_url}"
+                revision = "git:sha1:{pinned}"
+                path = "lib"
+                [[build.targets.dependencies]]
+                kind = "file"
+                sha256 = "{abc}"
+                path = "distfiles/abc.txt"
+                [[build.targets.outputs]]
+                name = "out"
+                path = "out"
+                artifact_path = "out"
+                kind = "file"
+                "#
+            ),
+        )],
+    )?;
+
+    // Only the wrapper and the lone file are published.
+    for object in [&wrapper, &lone] {
+        run_in(
+            laptop,
+            federation(FederationCommand::Publish {
+                object: object.clone(),
+            }),
+        )?;
+    }
+
+    // The home node accepts the wrapper alone from the laptop, which it
+    // learns from an export and never connects to.
+    let home_dir = tempfile::TempDir::new()?;
+    let home = home_dir.path();
+    let home_node = create_node_actor(home)?;
+    std::fs::write(
+        home.join("config.toml"),
+        format!(
+            "[[federation.accept]]\nobject = \"{wrapper}\"\nfrom = \"{laptop_node}\"\n\
+             [[federation.accept]]\nobject = \"{lone}\"\nfrom = \"{laptop_node}\"\n"
+        ),
+    )?;
+    let export = laptop.join("laptop-node.json");
+    run_in(
+        laptop,
+        Command::Actor {
+            command: ActorCommand::Export {
+                actor: laptop_node.clone(),
+                out: export.clone(),
+            },
+        },
+    )?;
+    run_in(
+        home,
+        federation(FederationCommand::Learn {
+            from: None,
+            file: Some(export),
+            node_actor: Some(laptop_node.clone()),
+            allow_peer: false,
+        }),
+    )?;
+    run_in(
+        home,
+        Command::Trust {
+            command: TrustCommand::Grant {
+                by: home_node.clone(),
+                of: laptop_node.clone(),
+                scope: "federation:push".to_owned(),
+                reason: None,
+            },
+        },
+    )?;
+    let (home_url, _home_stop, _home_server) = serve_federation(home, &home_node)?;
+
+    let push = || {
+        run_in(
+            laptop,
+            Command::Push {
+                object: wrapper.clone(),
+                to: home_url.clone(),
+                node: None,
+                allow_peer: true,
+            },
+        )
+    };
+    let pushed = push()?;
+    assert!(
+        pushed.contains("sent = genesis=true sources=2 "),
+        "{pushed}"
+    );
+    let received = run_in(home, federation(FederationCommand::Receive))?;
+    assert!(
+        received.contains(&format!("ingested object={wrapper} from={laptop_node}")),
+        "{received}"
+    );
+
+    // Home holds what the wrapper pins, and only that: the pinned lib
+    // commit but not its tip, and the file's bytes.
+    let cache = kairo_git::GitCache::open(home.join("git"))?;
+    let commit = |oid: &str| kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, oid);
+    assert!(cache.has_commit(&lib_source, &commit(&pinned)?)?);
+    assert!(!cache.has_commit(&lib_source, &commit(&tip)?)?);
+    {
+        use kairo_store::SourceStore as _;
+        let store = kairo_store::FilesystemStore::open(home)?;
+        assert_eq!(
+            store.get_file_source_bytes(&kairo_core::ObjectId::new(file_source.clone())?)?,
+            b"abc"
+        );
+        assert!(!store
+            .list_source_observations(&kairo_core::ObjectId::new(lib_source.clone())?)?
+            .is_empty());
+    }
+    // So the pushed wrapper plans there.
+    create_local_actor(home)?;
+    let plan = run_in_store(
+        home,
+        Command::Build {
+            snapshot_ref: format!("object:{wrapper}"),
+            target: "release".to_owned(),
+            actor: None,
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    assert!(
+        plan.contains(&format!("file sha256:{abc} at distfiles/abc.txt -> ")),
+        "{plan}"
+    );
+    assert!(
+        plan.contains(&format!("{lib_url} at git:sha1:{pinned} in lib -> ")),
+        "{plan}"
+    );
+
+    // Nothing is left to send.
+    let again = push()?;
+    assert!(
+        again.contains("entry = none (the peer holds everything)"),
+        "{again}"
+    );
+
+    // A file source pushes on its own too: its genesis, observation,
+    // and bytes.
+    let pushed = run_in(
+        laptop,
+        Command::Push {
+            object: lone.clone(),
+            to: home_url.clone(),
+            node: None,
+            allow_peer: true,
+        },
+    )?;
+    assert!(
+        pushed.contains("sent = genesis=true sources=0 actors=0 statements=1 blobs=1"),
+        "{pushed}"
+    );
+    let received = run_in(home, federation(FederationCommand::Receive))?;
+    assert!(
+        received.contains(&format!("ingested object={lone} from={laptop_node}")),
+        "{received}"
+    );
+    use kairo_store::SourceStore as _;
+    let store = kairo_store::FilesystemStore::open(home)?;
+    assert_eq!(
+        store.get_file_source_bytes(&kairo_core::ObjectId::new(lone)?)?,
+        b"xyz"
+    );
     Ok(())
 }

@@ -99,6 +99,18 @@ impl FilesystemStore {
         Ok(closure)
     }
 
+    /// The genesis of `id` exactly as stored, whichever kind it has: a
+    /// native object's `ObjectGenesis`, or a Git or file source's.
+    pub fn get_any_genesis_bytes(&self, id: &ObjectId) -> Result<Vec<u8>, StoreError> {
+        match self.get_object_genesis_bytes(id) {
+            Err(StoreError::Missing) => match self.get_source_bytes(id) {
+                Err(StoreError::Missing) => self.get_file_source_genesis_bytes(id),
+                other => other,
+            },
+            other => other,
+        }
+    }
+
     /// A file source's genesis exactly as stored (`DECISIONS.md` §38),
     /// for serving byte-for-byte; the receiver re-derives the id from
     /// the hash.

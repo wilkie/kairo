@@ -22,6 +22,10 @@ pub const MAX_PLAN_BYTES: usize = 8 * 1024 * 1024;
 /// Most ids one inventory may name, across every list.
 pub const MAX_INVENTORY_IDS: usize = 100_000;
 
+/// Most pinned sources one push may carry (`DECISIONS.md` §38
+/// sub-decision 10).
+pub const MAX_PUSHED_SOURCES: usize = 1024;
+
 schema_tag!(
     /// `"kairo.fed.push-plan-request.v1"`.
     PushPlanRequestSchema = "kairo.fed.push-plan-request.v1"
@@ -80,6 +84,9 @@ pub enum InventoryError {
     Duplicate {
         id: String,
     },
+    TooManySources {
+        count: usize,
+    },
 }
 
 impl std::fmt::Display for InventoryError {
@@ -90,6 +97,10 @@ impl std::fmt::Display for InventoryError {
                 "an inventory names at most {MAX_INVENTORY_IDS} ids, not {count}"
             ),
             Self::Duplicate { id } => write!(f, "{id} is named twice"),
+            Self::TooManySources { count } => write!(
+                f,
+                "a push carries at most {MAX_PUSHED_SOURCES} pinned sources, not {count}"
+            ),
         }
     }
 }
@@ -166,6 +177,48 @@ pub struct PushPlanRequest {
     #[serde(with = "crate::wire_id::one")]
     pub object: ObjectId,
     pub inventory: ClosureInventory,
+    /// The sources `object`'s revisions pin, each with the closure the
+    /// pusher would serve for it (`DECISIONS.md` §38 sub-decision 10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<PinnedInventory>,
+}
+
+/// One pinned source's closure in a push.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedInventory {
+    #[serde(with = "crate::wire_id::one")]
+    pub object: ObjectId,
+    pub inventory: ClosureInventory,
+}
+
+impl PushPlanRequest {
+    /// Every inventory within bounds, at most [`MAX_PUSHED_SOURCES`]
+    /// sources, none twice and none the object itself, and the whole
+    /// request within [`MAX_INVENTORY_IDS`].
+    pub fn validate(&self) -> Result<(), InventoryError> {
+        self.inventory.validate()?;
+        if self.sources.len() > MAX_PUSHED_SOURCES {
+            return Err(InventoryError::TooManySources {
+                count: self.sources.len(),
+            });
+        }
+        let mut seen = BTreeSet::from([&self.object]);
+        let mut total = self.inventory.len();
+        for source in &self.sources {
+            if !seen.insert(&source.object) {
+                return Err(InventoryError::Duplicate {
+                    id: format!("source {}", source.object),
+                });
+            }
+            source.inventory.validate()?;
+            total += source.inventory.len();
+        }
+        if total > MAX_INVENTORY_IDS {
+            return Err(InventoryError::TooMany { count: total });
+        }
+        Ok(())
+    }
 }
 
 /// The receiver's answer: what to send.
@@ -186,14 +239,32 @@ pub struct PushPlan {
     /// Inventory commits the receiver already has: the pusher's Git
     /// pack excludes what they reach.
     pub have_commits: Vec<String>,
+    /// The same for each pinned source the request listed, in its order
+    /// (`DECISIONS.md` §38 sub-decision 10).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<SourcePlan>,
+}
+
+/// What to send of one pinned source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourcePlan {
+    #[serde(with = "crate::wire_id::one")]
+    pub object: ObjectId,
+    pub plan: PushPlan,
 }
 
 impl PushPlan {
-    /// Nothing to send but, possibly, Git history.
+    /// Nothing to send but, possibly, Git history: for the object and
+    /// every pinned source.
     pub fn wants_no_records(&self) -> bool {
         !self.genesis
             && self.actors.is_empty()
             && self.statements.is_empty()
             && self.blobs.is_empty()
+            && self
+                .sources
+                .iter()
+                .all(|source| source.plan.wants_no_records())
     }
 }

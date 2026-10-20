@@ -14,8 +14,9 @@ use kairo_bundle::closure::{
 };
 use kairo_core::{ActorId, ObjectId, Timestamp};
 use kairo_federation_core::{
-    random_node_nonce, ClosureInventory, InventoryActor, NodeAuthorization, NodeRequest, PushPlan,
-    PushPlanRequest, RequestBody, API_PREFIX, PUSH_PATH, PUSH_PLAN_PATH, SUPPORTS_PUSH,
+    random_node_nonce, ClosureInventory, InventoryActor, NodeAuthorization, NodeRequest,
+    PinnedInventory, PushPlan, PushPlanRequest, RequestBody, API_PREFIX, PUSH_PATH, PUSH_PLAN_PATH,
+    SUPPORTS_PUSH,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_statement::GitRevision;
@@ -32,6 +33,33 @@ pub fn closure_inventory(
     object: &ObjectId,
 ) -> Result<ClosureInventory, PullError> {
     let closure = store.object_closure(object).map_err(PullError::Store)?;
+    inventory_of(store, closure)
+}
+
+/// The inventories of the sources `object`'s revisions pin, as a pull
+/// from this node would serve them with it (`DECISIONS.md` §38
+/// sub-decision 10).
+pub fn pinned_inventories(
+    store: &FilesystemStore,
+    object: &ObjectId,
+) -> Result<Vec<PinnedInventory>, PullError> {
+    let closure = store.object_closure(object).map_err(PullError::Store)?;
+    crate::pinned_source_closures(store, object, &closure.statements)
+        .map_err(PullError::Store)?
+        .into_iter()
+        .map(|(source, closure)| {
+            Ok(PinnedInventory {
+                object: source,
+                inventory: inventory_of(store, closure)?,
+            })
+        })
+        .collect()
+}
+
+fn inventory_of(
+    store: &FilesystemStore,
+    closure: kairo_store::ObjectClosure,
+) -> Result<ClosureInventory, PullError> {
     let actors = closure
         .actors
         .iter()
@@ -51,10 +79,13 @@ pub fn closure_inventory(
     })
 }
 
-/// What an upload sent.
+/// What an upload sent, the pinned sources' records included.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PushSent {
     pub genesis: bool,
+    /// Pinned sources the bundle carries (`DECISIONS.md` §38
+    /// sub-decision 10).
+    pub sources: usize,
     pub actors: usize,
     pub statements: usize,
     pub blobs: usize,
@@ -102,10 +133,12 @@ pub fn push(
     };
 
     let inventory = closure_inventory(store, object)?;
+    let sources = pinned_inventories(store, object)?;
     let request = PushPlanRequest {
         schema: Default::default(),
         object: object.clone(),
         inventory: inventory.clone(),
+        sources: sources.clone(),
     };
     let plan_path = format!("{API_PREFIX}{PUSH_PLAN_PATH}");
     let body = serde_json::to_vec(&request).map_err(|error| PullError::Parse {
@@ -125,32 +158,48 @@ pub fn push(
         message: error.to_string(),
     })?;
 
-    let have: BTreeSet<&str> = plan.have_commits.iter().map(String::as_str).collect();
-    let wanted_commits: Vec<GitRevision> = inventory
-        .commits
-        .iter()
-        .filter(|commit| !have.contains(commit.as_str()))
-        .map(|commit| parse_commit(commit))
-        .collect::<Result<_, _>>()?;
+    let wanted_commits = wanted(&inventory, &plan)?;
+    // Each pinned source the plan answers for, with what it wants.
+    let mut source_plans = Vec::new();
+    for source in &sources {
+        if let Some(answer) = plan
+            .sources
+            .iter()
+            .find(|answer| answer.object == source.object)
+        {
+            let commits = wanted(&source.inventory, &answer.plan)?;
+            source_plans.push((source, &answer.plan, commits));
+        }
+    }
     let mut receipt = PushReceipt {
         peer_url: peer.base_url().to_owned(),
         peer_actor: document.node_actor.clone(),
-        inventory: inventory.len(),
+        inventory: inventory.len()
+            + sources
+                .iter()
+                .map(|source| source.inventory.len())
+                .sum::<usize>(),
         sent: PushSent::default(),
         entry: None,
     };
-    if plan.wants_no_records() && wanted_commits.is_empty() {
+    if plan.wants_no_records()
+        && wanted_commits.is_empty()
+        && source_plans
+            .iter()
+            .all(|(_, _, commits)| commits.is_empty())
+    {
         return Ok(receipt);
     }
 
     let scratch = Scratch::create(store)?;
     let bundle_dir = scratch.path().join("bundle");
-    receipt.sent = write_delta(
+    receipt.sent = write_bundle(
         store,
         object,
         &inventory,
         &plan,
         &wanted_commits,
+        &source_plans,
         &bundle_dir,
     )?;
     // The plan may want commits this node has no history for; then
@@ -221,24 +270,115 @@ fn signed_post(
     }
 }
 
+/// The inventory's commits the plan doesn't say the receiver has.
+fn wanted(inventory: &ClosureInventory, plan: &PushPlan) -> Result<Vec<GitRevision>, PullError> {
+    let have: BTreeSet<&str> = plan.have_commits.iter().map(String::as_str).collect();
+    inventory
+        .commits
+        .iter()
+        .filter(|commit| !have.contains(commit.as_str()))
+        .map(|commit| parse_commit(commit))
+        .collect()
+}
+
+fn bundle_failed(error: kairo_bundle::closure::ClosureBundleError) -> PullError {
+    PullError::Bundle(error.to_string())
+}
+
+/// Write the closure bundle at `dir`: `object`'s delta, and inside it
+/// the delta of each pinned source that has one.
+fn write_bundle(
+    store: &FilesystemStore,
+    object: &ObjectId,
+    inventory: &ClosureInventory,
+    plan: &PushPlan,
+    wanted_commits: &[GitRevision],
+    sources: &[(&PinnedInventory, &PushPlan, Vec<GitRevision>)],
+    dir: &Path,
+) -> Result<PushSent, PullError> {
+    let writer = ClosureBundleWriter::create(dir).map_err(bundle_failed)?;
+    let mut sent = PushSent::default();
+    let format = write_delta(
+        store,
+        object,
+        inventory,
+        plan,
+        wanted_commits,
+        &writer,
+        &mut sent,
+    )?;
+    let mut carried = Vec::new();
+    for (source, source_plan, commits) in sources {
+        let nested = writer.source(&source.object).map_err(bundle_failed)?;
+        let mut part = PushSent::default();
+        let source_format = write_delta(
+            store,
+            &source.object,
+            &source.inventory,
+            source_plan,
+            commits,
+            &nested,
+            &mut part,
+        )?;
+        if part == PushSent::default() {
+            drop(nested);
+            let _ = fs::remove_dir_all(dir.join("sources").join(source.object.as_str()));
+            continue;
+        }
+        nested
+            .finish(closure_manifest(
+                &source.object,
+                &source.inventory,
+                source_format,
+            ))
+            .map_err(bundle_failed)?;
+        carried.push(source.object.to_string());
+        sent.sources += 1;
+        sent.actors += part.actors;
+        sent.statements += part.statements;
+        sent.blobs += part.blobs;
+        sent.commits += part.commits;
+    }
+    let mut manifest = closure_manifest(object, inventory, format);
+    manifest.sources = carried;
+    writer.finish(manifest).map_err(bundle_failed)?;
+    Ok(sent)
+}
+
+fn closure_manifest(
+    object: &ObjectId,
+    inventory: &ClosureInventory,
+    format: Option<kairo_statement::GitObjectFormat>,
+) -> ClosureManifest {
+    ClosureManifest {
+        schema: CLOSURE_BUNDLE_SCHEMA.to_owned(),
+        object: object.to_string(),
+        created_at: Timestamp::now().to_string(),
+        inventory: inventory.clone(),
+        git: ClosureGit {
+            format: format.map(|format| format.to_string()),
+            pack: false,
+        },
+        sources: Vec::new(),
+    }
+}
+
 /// Write the records `plan` asks for, and a Git pack of the wanted
-/// commits' history less what the receiver has, into a closure bundle
-/// at `dir`.
+/// commits' history less what the receiver has, with `writer`, adding
+/// to `sent`; the commits' format.
 fn write_delta(
     store: &FilesystemStore,
     object: &ObjectId,
     inventory: &ClosureInventory,
     plan: &PushPlan,
     wanted_commits: &[GitRevision],
-    dir: &Path,
-) -> Result<PushSent, PullError> {
-    let bundle_failed =
-        |error: kairo_bundle::closure::ClosureBundleError| PullError::Bundle(error.to_string());
-    let writer = ClosureBundleWriter::create(dir).map_err(bundle_failed)?;
-    let mut sent = PushSent::default();
+    writer: &ClosureBundleWriter,
+    sent: &mut PushSent,
+) -> Result<Option<kairo_statement::GitObjectFormat>, PullError> {
     if plan.genesis {
+        // A native object's genesis, or a Git or file source's.
         let bytes = store
-            .get_object_genesis_bytes(object)
+            .get_any_genesis_bytes(object)
             .map_err(PullError::Store)?;
         writer.put_genesis(&bytes).map_err(bundle_failed)?;
         sent.genesis = true;
@@ -290,21 +430,10 @@ fn write_delta(
             cache
                 .pack_delta_to(object.as_str(), wanted_commits, &haves, pack)
                 .map_err(|e| PullError::Git(e.to_string()))?;
-            sent.commits = wanted_commits.len();
+            sent.commits += wanted_commits.len();
         }
     }
-    let manifest = ClosureManifest {
-        schema: CLOSURE_BUNDLE_SCHEMA.to_owned(),
-        object: object.to_string(),
-        created_at: Timestamp::now().to_string(),
-        inventory: inventory.clone(),
-        git: ClosureGit {
-            format: format.map(|format| format.to_string()),
-            pack: false,
-        },
-    };
-    writer.finish(manifest).map_err(bundle_failed)?;
-    Ok(sent)
+    Ok(format)
 }
 
 /// Ingest a closure bundle `pusher` uploaded (`DECISIONS.md` §26
@@ -318,6 +447,18 @@ pub fn ingest_closure_bundle(
     options: &PullOptions,
 ) -> Result<PullReport, PullError> {
     let object = bundle.object().clone();
+    // The pinned sources it carries, each its own bundle (`DECISIONS.md`
+    // §38 sub-decision 10).
+    let carried: std::collections::BTreeMap<ObjectId, Box<dyn super::BundleFiles>> = bundle
+        .sources()
+        .map_err(|error| PullError::Bundle(error.to_string()))?
+        .into_iter()
+        .map(|source| {
+            let id = source.object().clone();
+            (id, Box::new(source) as Box<dyn super::BundleFiles>)
+        })
+        .collect();
+    let listed: Vec<ObjectId> = carried.keys().cloned().collect();
     let mut pull = Pull::from_source(
         store,
         Source::Bundle(Box::new(bundle)),
@@ -327,6 +468,9 @@ pub fn ingest_closure_bundle(
         &options.limits,
     );
     pull.run(&object, 0)?;
+    // Only those its own copy of the manifests now pins, at exactly
+    // those commits, as a pull would.
+    pull.pinned_sources(&object, &listed, Some(carried))?;
     if options.require_complete && !pull.report.incomplete.is_empty() {
         return Err(PullError::IncompleteChains {
             chains: pull.report.incomplete,

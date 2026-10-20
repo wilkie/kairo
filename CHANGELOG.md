@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **Pushes carry sources (`DECISIONS.md` §38 sub-decision 10).** A Git
+  or file source can be pushed like any object, and pushing a native
+  object also carries the sources its revisions pin (a Git source at
+  only the pinned commits, a file source whole), inside the same
+  closure bundle under `sources/<id>/`. The receiver keeps only those
+  its own copy of the manifests pins. `kairo push` output gains
+  `sources=`.
+
 - **`max_file_bytes` and `file_timeout_secs`** in `[federation.limits]`
   cap `kairo source fetch-file` downloads and file sources' bytes in
   pulls (1 GiB and 30 minutes by default), which reused the Git limits
@@ -344,6 +352,12 @@ rather than per-commit.
 
 ### Changed
 
+- **Push plans and closure bundles gained optional `sources` fields**
+  (`DECISIONS.md` §38 sub-decision 10): the plan request lists pinned
+  sources' inventories, the plan answers for each, and the bundle
+  manifest lists the source bundles under `sources/`. A receiver that
+  predates them refuses a push that uses them; pushes without pinned
+  sources are unchanged on the wire.
 - **Manifest version requirements are validated.** A dependency
   `version` that isn't a Cargo-syntax requirement (e.g. `">=4 <5"`
   without the comma) is now rejected. Manifest hashes are unchanged

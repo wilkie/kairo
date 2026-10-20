@@ -42,7 +42,9 @@ mod ingest;
 mod push;
 
 pub use self::bundle_files::ObjectBundle;
-pub use self::push::{closure_inventory, ingest_closure_bundle, push, PushReceipt, PushSent};
+pub use self::push::{
+    closure_inventory, ingest_closure_bundle, pinned_inventories, push, PushReceipt, PushSent,
+};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -480,7 +482,7 @@ pub fn pull_object(
     let mut budget = 0;
     pull.authenticate(&document, &mut budget)?;
     let sources = pull.run(object, budget)?;
-    pull.pinned_sources(object, &sources)?;
+    pull.pinned_sources(object, &sources, None)?;
     if options.require_complete && !pull.report.incomplete.is_empty() {
         return Err(PullError::IncompleteChains {
             chains: pull.report.incomplete,
@@ -1059,7 +1061,16 @@ impl Pull<'_> {
     /// as this node now holds them, pin: each at exactly those commits.
     /// The pins come from the local copy of the signed manifests, not
     /// the peer's word.
-    fn pinned_sources(&mut self, object: &ObjectId, listed: &[ObjectId]) -> Result<(), PullError> {
+    ///
+    /// With `carried`, the sources come from those bundles, each carried
+    /// inside a pushed one (`DECISIONS.md` §38 sub-decision 10), rather
+    /// than from the peer.
+    fn pinned_sources(
+        &mut self,
+        object: &ObjectId,
+        listed: &[ObjectId],
+        mut carried: Option<BTreeMap<ObjectId, Box<dyn BundleFiles>>>,
+    ) -> Result<(), PullError> {
         if listed.is_empty() {
             return Ok(());
         }
@@ -1073,6 +1084,13 @@ impl Pull<'_> {
             let Some(commits) = pins.get(source) else {
                 continue;
             };
+            let bundle = match carried.as_mut() {
+                None => None,
+                Some(carried) => match carried.remove(source) {
+                    Some(bundle) => Some(Source::Bundle(bundle)),
+                    None => continue,
+                },
+            };
             let fresh = PullReport {
                 object: source.clone(),
                 peer_url: self.report.peer_url.clone(),
@@ -1085,9 +1103,13 @@ impl Pull<'_> {
                 sources: Vec::new(),
             };
             let saved = std::mem::replace(&mut self.report, fresh);
+            let peer = bundle.map(|bundle| std::mem::replace(&mut self.source, bundle));
             self.required = Some(commits.clone());
             let outcome = self.run(source, 0);
             self.required = None;
+            if let Some(peer) = peer {
+                self.source = peer;
+            }
             let pulled = std::mem::replace(&mut self.report, saved);
             outcome?;
             self.report.flagged.extend(pulled.flagged);

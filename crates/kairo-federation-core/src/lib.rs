@@ -63,9 +63,9 @@ pub use page::{
     MAX_PAGE_LIMIT,
 };
 pub use push::{
-    ClosureInventory, InventoryActor, InventoryError, PushAccepted, PushAcceptedSchema, PushPlan,
-    PushPlanRequest, PushPlanRequestSchema, PushPlanSchema, MAX_INVENTORY_IDS, MAX_PLAN_BYTES,
-    PUSH_PATH, PUSH_PLAN_PATH,
+    ClosureInventory, InventoryActor, InventoryError, PinnedInventory, PushAccepted,
+    PushAcceptedSchema, PushPlan, PushPlanRequest, PushPlanRequestSchema, PushPlanSchema,
+    SourcePlan, MAX_INVENTORY_IDS, MAX_PLAN_BYTES, MAX_PUSHED_SOURCES, PUSH_PATH, PUSH_PLAN_PATH,
 };
 pub use request_auth::{
     node_request_signing_string, random_node_nonce, NodeAuthHeaderError, NodeAuthorization,

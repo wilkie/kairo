@@ -2443,6 +2443,8 @@ Sub-decisions:
      statements/<statement-id>.json
      blobs/<blob-id>
      git/pack                      a (thin) Git pack, if any
+     sources/<source-id>/...       pinned sources' closures (§38
+                                   sub-decision 10)
      ```
 
    - **Manifest.** `{ schema: "kairo.closure-bundle.v1", object,
@@ -3851,8 +3853,32 @@ Sub-decisions:
    `max_file_bytes` rather than the manifest blob limit.
    Publishing a native object also serves the file sources its
    revisions pin, whole, and pulling it brings them, so a pulled
-   wrapper such as live-bootstrap's can plan and build. Push carries
-   neither kind of source yet.
+   wrapper such as live-bootstrap's can plan and build.
+
+10. **Pushes carry sources too** (§26 sub-decisions 6, 8). *Added when
+    built:*
+    - A Git or file source can be pushed like any object: the plan and
+      the bundle carry its unsigned genesis like an object's, and the
+      receiver ingests it as a pull would.
+    - Pushing a native object also carries the sources its revisions
+      pin, as a pull from the pusher would serve them: a Git source's
+      observations and only the pinned commits' history, a file source
+      whole. The plan request lists each source's inventory
+      (`sources: [{ object, inventory }]`, at most 1024) and the plan
+      answers for each (`sources: [{ object, plan }]`); the bundle
+      carries each source with anything to send as a bundle of its own
+      under `sources/<source id>/` (its own `manifest.json`, records,
+      and Git pack; no further `sources/`), and the top manifest lists
+      them (`sources`).
+    - The native object's accept entry and the pusher's
+      `federation:push` trust cover the sources it carries. After
+      ingesting the object, the receiver reads its own copy of the
+      manifests and ingests only the carried sources they pin, each at
+      exactly the pinned commits; anything else in `sources/` is
+      ignored.
+    - Wire format: the plan request, the plan, and the closure bundle
+      manifest gain the optional `sources` fields; a receiver that
+      predates them refuses a request or bundle that uses them.
 
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence

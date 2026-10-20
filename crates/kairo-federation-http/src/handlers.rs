@@ -930,10 +930,10 @@ async fn push_plan(
             .map_err(|error| auth_failure(&error))?;
         let request: PushPlanRequest = serde_json::from_slice(&raw)
             .map_err(|error| bad(format!("malformed plan request: {error}")))?;
-        request
-            .inventory
-            .validate()
-            .map_err(|error| bad(error.to_string()))?;
+        request.validate().map_err(|error| bad(error.to_string()))?;
+        // The object's accept entry covers the sources it pins: the
+        // receiver keeps only what its own copy of the manifests pins
+        // (`DECISIONS.md` §38 sub-decision 10).
         authorize_push(&node, &who.node, std::slice::from_ref(&request.object))?;
         let plan = plan_for(&node, &request).map_err(|fail| {
             fail.unwrap_or_else(|| {
@@ -947,15 +947,31 @@ async fn push_plan(
 
 /// `Err(None)` is a malformed commit in the inventory.
 fn plan_for(node: &Node, request: &PushPlanRequest) -> Result<PushPlan, Option<Fail>> {
+    let mut plan = inventory_plan(node, &request.object, &request.inventory)?;
+    for source in &request.sources {
+        plan.sources.push(kairo_federation_core::SourcePlan {
+            object: source.object.clone(),
+            plan: inventory_plan(node, &source.object, &source.inventory)?,
+        });
+    }
+    Ok(plan)
+}
+
+/// What of one object's inventory this node lacks.
+fn inventory_plan(
+    node: &Node,
+    object: &ObjectId,
+    inventory: &kairo_federation_core::ClosureInventory,
+) -> Result<PushPlan, Option<Fail>> {
     let store = &node.store;
     let lacks = |result: Result<(), StoreError>| match result {
         Ok(()) => Ok(false),
         Err(StoreError::Missing) => Ok(true),
         Err(error) => Err(Some(Fail::store(&error))),
     };
-    let inventory = &request.inventory;
     let mut plan = PushPlan {
-        genesis: lacks(store.get_object_genesis_bytes(&request.object).map(drop))?,
+        // A native object's genesis, or a Git or file source's.
+        genesis: lacks(store.get_any_genesis_bytes(object).map(drop))?,
         ..PushPlan::default()
     };
     for actor in &inventory.actors {

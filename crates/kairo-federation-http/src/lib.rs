@@ -129,3 +129,36 @@ pub fn manifest_source_pins<'a>(
     }
     pins
 }
+
+/// The closures of the sources `object`'s revisions pin that `store`
+/// holds, as a node serves them with it (`DECISIONS.md` §37
+/// sub-decision 9, §38): a Git source's observations with only the
+/// pinned commits' history, and a file source whole, its observations
+/// and its bytes. Sources not held here are left out.
+pub fn pinned_source_closures<'a>(
+    store: &kairo_store::FilesystemStore,
+    object: &kairo_core::ObjectId,
+    statements: impl IntoIterator<Item = &'a kairo_core::StatementId>,
+) -> Result<Vec<(kairo_core::ObjectId, kairo_store::ObjectClosure)>, kairo_store::StoreError> {
+    use kairo_store::StoreError;
+    let mut closures = Vec::new();
+    for (source, commits) in manifest_source_pins(store, object, statements) {
+        let closure = match store.source_closure(&source) {
+            Ok(full) => kairo_store::ObjectClosure {
+                statements: full.statements,
+                authority: Default::default(),
+                actors: full.actors,
+                blobs: Default::default(),
+                commits,
+            },
+            Err(StoreError::Missing) => match store.file_source_closure(&source) {
+                Ok(file) => file,
+                Err(StoreError::Missing) => continue,
+                Err(error) => return Err(error),
+            },
+            Err(error) => return Err(error),
+        };
+        closures.push((source, closure));
+    }
+    Ok(closures)
+}

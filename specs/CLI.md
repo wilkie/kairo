@@ -1599,7 +1599,12 @@ peer can't pull from. It sends the peer the object's closure
 inventory, gets back what the peer lacks, and uploads a closure bundle
 of just that, with Git history as a thin pack against the commits the
 peer has. When the peer already holds everything it uploads nothing
-(`entry = none`). It prints the inventory size and what was sent. The
+(`entry = none`). It prints the inventory size and what was sent
+(`sent = genesis=… sources=… actors=… statements=… blobs=… commits=…
+bytes=…`). A native object's push also carries the sources its
+revisions pin, which the peer keeps where its own copy of the
+manifests pins them (`DECISIONS.md` §38 sub-decision 10); `sources`
+counts those sent. Sources can be pushed on their own as well. The
 same policy, signing, and refusals as `announce` apply, plus `413
 fed_too_large` past the peer's `max_push_bytes`.
 

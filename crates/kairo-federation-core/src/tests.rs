@@ -657,3 +657,40 @@ fn an_inventory_is_sorted_signed_and_verified() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn a_push_plan_request_lists_each_pinned_source_once() -> TestResult {
+    let object = ObjectId::from_sha256_digest([1; 32]);
+    let source = ObjectId::from_sha256_digest([2; 32]);
+    let pinned = |object: &ObjectId| crate::PinnedInventory {
+        object: object.clone(),
+        inventory: crate::ClosureInventory::default(),
+    };
+    let request = |sources: Vec<crate::PinnedInventory>| crate::PushPlanRequest {
+        schema: Default::default(),
+        object: object.clone(),
+        inventory: crate::ClosureInventory::default(),
+        sources,
+    };
+    request(vec![pinned(&source)]).validate()?;
+    assert!(request(vec![pinned(&source), pinned(&source)])
+        .validate()
+        .is_err());
+    assert!(request(vec![pinned(&object)]).validate().is_err());
+    let many = (0..=crate::MAX_PUSHED_SOURCES)
+        .map(|i| {
+            let mut digest = [3; 32];
+            digest[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            pinned(&ObjectId::from_sha256_digest(digest))
+        })
+        .collect();
+    assert!(matches!(
+        request(many).validate(),
+        Err(crate::InventoryError::TooManySources { .. })
+    ));
+
+    // Without sources the request is spelled as before.
+    let json = serde_json::to_value(request(Vec::new()))?;
+    assert!(json.get("sources").is_none(), "{json}");
+    Ok(())
+}

@@ -71,41 +71,13 @@ impl PublishedView {
             view.blobs.extend(closure.blobs.iter().cloned());
             actors.extend(closure.actors.iter().cloned());
             // The sources its revisions pin are served at those commits
-            // (`DECISIONS.md` §37 sub-decision 9).
-            let pins =
-                crate::manifest_source_pins(store, &published.object_id, &closure.statements);
+            // (`DECISIONS.md` §37 sub-decision 9, §38).
             let mut served = Vec::new();
-            for (source, commits) in pins {
-                // A file source is served whole: its observations and
-                // its bytes (`DECISIONS.md` §38).
-                let closure = match store.source_closure(&source) {
-                    Err(StoreError::Missing) => match store.file_source_closure(&source) {
-                        Ok(file) => {
-                            pinned.entry(source.clone()).or_default().push(file);
-                            served.push(source);
-                            continue;
-                        }
-                        Err(error) => Err(error),
-                    },
-                    other => other,
-                };
-                match closure {
-                    Ok(full) => {
-                        let restricted = ObjectClosure {
-                            statements: full.statements,
-                            authority: Default::default(),
-                            actors: full.actors,
-                            blobs: Default::default(),
-                            commits,
-                        };
-                        pinned.entry(source.clone()).or_default().push(restricted);
-                        served.push(source);
-                    }
-                    // Not held here: nothing to serve, and the listing
-                    // doesn't name it.
-                    Err(StoreError::Missing) => {}
-                    Err(error) => return Err(error),
-                }
+            for (source, restricted) in
+                crate::pinned_source_closures(store, &published.object_id, &closure.statements)?
+            {
+                pinned.entry(source.clone()).or_default().push(restricted);
+                served.push(source);
             }
             if !served.is_empty() {
                 view.sources.insert(published.object_id.clone(), served);

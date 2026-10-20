@@ -631,11 +631,13 @@ pub(crate) fn run_push(args: &PushArgs<'_>, paths: &StorePaths) -> Result<String
     let sent = &receipt.sent;
     Ok(format!(
         "object = {object}\npeer = {}\npeer_actor = {}\nnode = {node}\ninventory = {}\n\
-         sent = genesis={} actors={} statements={} blobs={} commits={} bytes={}\nentry = {}\n",
+         sent = genesis={} sources={} actors={} statements={} blobs={} commits={} bytes={}\n\
+         entry = {}\n",
         receipt.peer_url,
         receipt.peer_actor,
         receipt.inventory,
         sent.genesis,
+        sent.sources,
         sent.actors,
         sent.statements,
         sent.blobs,
