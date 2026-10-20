@@ -71,10 +71,43 @@ impl FilesystemStore {
         read_or_missing(&path)
     }
 
-    /// Compute `object`'s closure (module docs). `StoreError::Missing`
-    /// if the object's genesis isn't in the store.
+    /// A source's genesis exactly as stored (`DECISIONS.md` §37), for
+    /// serving byte-for-byte; the receiver re-derives the id from the
+    /// URL.
+    pub fn get_source_bytes(&self, source: &ObjectId) -> Result<Vec<u8>, StoreError> {
+        let path = self.shard_path(crate::SOURCES_DIR, source.as_str(), JSON_SUFFIX)?;
+        read_or_missing(&path)
+    }
+
+    /// A source's closure (`DECISIONS.md` §37): every observation of
+    /// it, every observer, and every object an observation names (ref
+    /// targets and pinned commits) as servable history.
+    pub fn source_closure(&self, source: &ObjectId) -> Result<ObjectClosure, StoreError> {
+        crate::SourceStore::get_source(self, source)?;
+        let mut closure = ObjectClosure::default();
+        for head in crate::SourceStore::list_source_observations(self, source)? {
+            let observation =
+                crate::StatementStore::get_source_observation(self, &head.statement_id)?;
+            closure.actors.insert(head.actor);
+            closure.statements.insert(head.statement_id);
+            let body = observation.unsigned().body();
+            closure
+                .commits
+                .extend(body.refs().iter().map(|observed| observed.target().clone()));
+            closure.commits.extend(body.pinned().iter().cloned());
+        }
+        Ok(closure)
+    }
+
+    /// Compute `object`'s closure (module docs), or a source's when
+    /// `object` is one. `StoreError::Missing` if the store holds
+    /// neither genesis.
     pub fn object_closure(&self, object: &ObjectId) -> Result<ObjectClosure, StoreError> {
-        let genesis = self.get_object_genesis(object)?;
+        let genesis = match self.get_object_genesis(object) {
+            Ok(genesis) => genesis,
+            Err(StoreError::Missing) => return self.source_closure(object),
+            Err(error) => return Err(error),
+        };
         let mut closure = ObjectClosure::default();
         closure.actors.insert(genesis.body().created_by().clone());
 

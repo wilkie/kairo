@@ -1115,14 +1115,28 @@ impl Pull<'_> {
                 Err(StoreError::Missing) => continue,
                 Err(error) => return Err(PullError::Store(error)),
             };
-            if !matches!(
-                peek(&bytes),
+            match peek(&bytes) {
                 Ok(Peek {
                     kind: StatementKind::ObjectRevision,
                     ..
-                })
-            ) {
-                continue;
+                }) => {}
+                // A source's history is what its observations name: ref
+                // targets (an annotated tag's tag object included) and
+                // pinned commits (`DECISIONS.md` §37).
+                Ok(Peek {
+                    kind: StatementKind::SourceObservation,
+                    ..
+                }) => {
+                    let observation = self
+                        .store
+                        .get_source_observation(id)
+                        .map_err(PullError::Store)?;
+                    let body = observation.unsigned().body();
+                    commits.extend(body.refs().iter().map(|observed| observed.target().clone()));
+                    commits.extend(body.pinned().iter().cloned());
+                    continue;
+                }
+                _ => continue,
             }
             let revision = self
                 .store
@@ -1239,11 +1253,18 @@ impl Pull<'_> {
         object: &ObjectId,
         missing: &[GitRevision],
     ) -> Result<GitOutcome, PullError> {
+        // A source's objects get the observed pin, which is never
+        // removed (`DECISIONS.md` §37 sub-decision 3).
+        let prefix = if kairo_store::SourceStore::get_source(self.store, object).is_ok() {
+            kairo_git::OBSERVED_PIN_PREFIX.to_owned()
+        } else {
+            "refs/kairo/imported/".to_owned()
+        };
         for commit in missing {
             cache
                 .set_ref(
                     object.as_str(),
-                    &format!("refs/kairo/imported/{}", commit.oid()),
+                    &format!("{prefix}{}", commit.oid()),
                     commit,
                 )
                 .map_err(|e| PullError::Git(e.to_string()))?;
@@ -1417,7 +1438,9 @@ impl Pull<'_> {
 
     fn genesis(&mut self, object: &ObjectId) -> Result<(), PullError> {
         let record = KairoRef::Object(object.clone());
-        if Self::held(self.store.get_object_genesis(object))? {
+        if Self::held(self.store.get_object_genesis(object))?
+            || Self::held(kairo_store::SourceStore::get_source(self.store, object))?
+        {
             self.report.already_held += 1;
         } else {
             let bytes = match &self.source {
@@ -1430,7 +1453,12 @@ impl Pull<'_> {
                 }
                 Source::Export(_) => return Err(not_in_export(record)),
             };
-            ingest_genesis(self.store, object, &bytes).map_err(|reason| PullError::Record {
+            let ingested = if ingest::is_source_genesis(&bytes) {
+                ingest::ingest_source_genesis(self.store, object, &bytes)
+            } else {
+                ingest_genesis(self.store, object, &bytes)
+            };
+            ingested.map_err(|reason| PullError::Record {
                 record: record.clone(),
                 reason,
             })?;
@@ -1767,8 +1795,9 @@ fn local_has_commit(
     {
         return Ok(false);
     }
-    repo.find_commit(commit)
-        .map(|found| found.is_some())
+    // Any object, not only commits: a source's history includes
+    // annotated tags' tag objects.
+    repo.has_object(commit)
         .map_err(|e| PullError::Git(e.to_string()))
 }
 

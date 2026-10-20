@@ -34,7 +34,7 @@ use kairo_statement::json::{
     ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
     ActorKeyRotationStatementJson, ActorTrustStatementJson, BuildResultStatementJson,
     ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    ObjectVersionTagStatementJson, SourceObservationStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_multi_statement, verify_envelope_statement, ActorResolution, SignatureStatus,
@@ -235,11 +235,11 @@ pub(crate) fn ingest_statement(
                 object_section(signed.unsigned().body().object())
             })
         }
-        // Source objects don't federate yet (`DECISIONS.md` §37); no
-        // object closure lists their observations.
-        StatementKind::SourceObservation => Err(wrong_section(
-            "SourceObservation is not transferred by federation yet",
-        )),
+        StatementKind::SourceObservation => single!(
+            SourceObservationStatementJson,
+            put_source_observation,
+            |signed| object_section(signed.unsigned().body().source())
+        ),
         StatementKind::BuildResult => {
             single!(BuildResultStatementJson, put_build_result, |signed| {
                 object_section(signed.unsigned().body().object())
@@ -336,6 +336,36 @@ pub(crate) fn ingest_statement(
 /// Verify `bytes` as `object`'s `ObjectGenesis` and store it. The
 /// genesis signature covers the body, signed by `created_by`'s key
 /// active at `created_at`.
+/// A source's unsigned genesis (`DECISIONS.md` §37): nothing to verify
+/// but that its canonical URL derives the requested id.
+pub(crate) fn ingest_source_genesis(
+    store_: &FilesystemStore,
+    source: &ObjectId,
+    bytes: &[u8],
+) -> Result<(), RecordRejection> {
+    let dto: kairo_statement::json::SourceGenesisJson =
+        serde_json::from_slice(bytes).map_err(schema)?;
+    let genesis = dto.to_genesis().map_err(schema)?;
+    let derived = genesis.object_id();
+    if &derived != source {
+        return Err(RecordRejection::Fixity {
+            actual: derived.to_string(),
+        });
+    }
+    kairo_store::SourceStore::put_source(store_, &genesis).map_err(store)?;
+    Ok(())
+}
+
+/// Whether genesis bytes are a source's rather than an object's.
+pub(crate) fn is_source_genesis(bytes: &[u8]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Kind {
+        #[serde(rename = "type")]
+        kind: String,
+    }
+    serde_json::from_slice::<Kind>(bytes).is_ok_and(|kind| kind.kind == "SourceGenesis")
+}
+
 pub(crate) fn ingest_genesis(
     store_: &FilesystemStore,
     object: &ObjectId,

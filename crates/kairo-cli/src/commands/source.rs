@@ -21,6 +21,7 @@ use crate::store_paths::{open_keystore, open_store, StorePaths};
 pub(crate) fn run_source_command(
     command: SourceCommand,
     paths: &StorePaths,
+    offline: bool,
 ) -> Result<String, CliError> {
     match command {
         SourceCommand::Id { url } => {
@@ -45,6 +46,26 @@ pub(crate) fn run_source_command(
             require_complete,
         ),
         SourceCommand::Show { source, json } => run_show(paths, &source, json),
+        SourceCommand::Pull {
+            url,
+            from,
+            allow_peer,
+            json,
+        } => {
+            let url = SourceUrl::parse(&url).map_err(CliError::ParseSourceUrl)?;
+            let source = SourceGenesis::new(url).object_id().to_string();
+            crate::commands::federation::run_fetch(
+                &crate::commands::federation::FetchArgs {
+                    object: &source,
+                    from: from.as_deref(),
+                    allow_peer,
+                    require_complete: false,
+                    json,
+                    offline,
+                },
+                paths,
+            )
+        }
     }
 }
 

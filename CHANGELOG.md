@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Sources federate (`DECISIONS.md` §37 sub-decision 9).** A source
+  can be published like any object; its closure is its observations
+  and every object they name. `kairo source pull <url> --from <peer>`
+  (or `kairo fetch --object <source id>`) pulls it under the same id:
+  the unsigned genesis is checked against its URL, each observation is
+  verified under its signer (never re-signed), and the named history,
+  annotated tags included, is pinned as observed.
 - **The stage0-posix bootstrap is rebuilt on source objects
   (`DECISIONS.md` §37 sub-decision 8).** `import.sh` now archives
   stage0-posix and every submodule it pins from their real upstream

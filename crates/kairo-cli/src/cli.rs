@@ -282,6 +282,24 @@ pub(crate) enum SourceCommand {
         #[arg(long)]
         require_complete: bool,
     },
+    /// Pull a source from a federation peer, as `kairo fetch` pulls an
+    /// object (`specs/DECISIONS.md` §37): its genesis, every
+    /// observation (verified under its signer, never re-signed), and the
+    /// history they name. The source id comes from the URL, so it is the
+    /// same id the peer holds it under.
+    Pull {
+        /// The source's repository URL, any spelling.
+        url: String,
+        /// The peer's base URL. Without it, acquire the source from
+        /// wherever it is held (`specs/DECISIONS.md` §30).
+        #[arg(long)]
+        from: Option<String>,
+        /// Pull from a peer that isn't listed in the config, for this run.
+        #[arg(long)]
+        allow_peer: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// What is known of a source: its observations, newest first, and
     /// the refs the newest one saw.
     Show {

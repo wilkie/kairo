@@ -3672,6 +3672,31 @@ Sub-decisions:
    accepting specific bytes at a specific upstream commit. `seed:*`
    labels are retired with §36's seed object.
 
+9. **Sources federate like objects.** *Added when built:*
+
+   - A source can be published (`kairo federation publish --object
+     <source id>`), and its closure is every observation of it, every
+     observer, and every object an observation names (ref targets,
+     annotated tags' tag objects included, and pinned commits) as
+     servable history. Its genesis route serves the unsigned
+     `SourceGenesis`.
+   - Pulling one (`kairo fetch --object <source id>`, or `kairo source
+     pull <url> --from <peer>`, which derives the id from any spelling
+     of the URL) checks the genesis by re-deriving the id from its
+     URL, verifies each observation under its signer, fetches the
+     history the observations name through the quarantine, and pins
+     it with the never-removed observed prefix. Pulled observations
+     are evidence under their signers, never re-signed; a node can
+     observe upstream itself and compare. Two nodes so converge on one
+     source id.
+   - Publishing a native object also serves the sources its revisions
+     pin, at those commits, and pulling it brings them, so a pulled
+     wrapper can build. Such a source's served history is only the
+     pinned commits (often ancestors no observation names directly);
+     the receiver requires exactly the pins its own copy of the
+     manifest names. *(Next slice.)*
+   - Push does not carry sources yet.
+
 Rationale: an archive of software has to keep what it was given
 exactly as given, and say where it came from in a way others can
 check. Deriving a source's identity from its URL lets independent

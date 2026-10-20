@@ -9883,3 +9883,122 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
     );
     Ok(())
 }
+
+#[test]
+fn a_published_source_is_pulled_under_the_same_id() -> Result<(), Box<dyn std::error::Error>> {
+    use kairo_test_support::git::{git, GitDaemon};
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    let upstream = daemon.base.path().join("project");
+    std::fs::create_dir(&upstream)?;
+    git(&upstream, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(upstream.join("README"), "one")?;
+    git(&upstream, &["add", "README"]);
+    git(&upstream, &["commit", "-q", "-m", "one"]);
+    let commit = git(&upstream, &["rev-parse", "HEAD"]);
+    git(&upstream, &["tag", "-a", "v1", "-m", "release"]);
+    let tag = git(&upstream, &["rev-parse", "v1"]);
+    let url = daemon.url("project");
+
+    // The origin observes the source and publishes it.
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node_actor = create_node_actor(origin)?;
+    let observer = create_local_actor(origin)?;
+    let fetched = run_in_store(
+        origin,
+        Command::Source {
+            command: SourceCommand::Fetch {
+                url: url.clone(),
+                actor: observer.clone(),
+                object_format: None,
+                no_recurse_submodules: false,
+                max_depth: 8,
+                require_complete: true,
+            },
+        },
+    )?;
+    let source = parse_field(&fetched, "source = ")?;
+    let observation = parse_field(&fetched, "observation = ")?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: source.clone(),
+        }),
+    )?;
+    let (base_url, _stop, _server) = serve_federation(origin, &node_actor)?;
+
+    // Another node pulls it by URL, never touching upstream.
+    drop(daemon);
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    std::fs::write(
+        local.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{base_url}\"\nnode_actor = \"{node_actor}\"\n"),
+    )?;
+    let pulled = run_in(
+        local,
+        Command::Source {
+            command: SourceCommand::Pull {
+                url: format!("{url}.git"),
+                from: Some(base_url.clone()),
+                allow_peer: false,
+                json: false,
+            },
+        },
+    )?;
+    assert!(pulled.contains("git = ingested (2 commits)"), "{pulled}");
+
+    // Same id, the observer's observation, and every observed object
+    // held under the never-removed pin.
+    let shown = run_in(
+        local,
+        Command::Source {
+            command: SourceCommand::Show {
+                source: url.clone(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(shown.contains(&format!("source = {source}\n")), "{shown}");
+    assert!(
+        shown.contains(&format!("  {observation} by {observer} at ")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!("  refs/tags/v1 git:sha1:{tag}\n")),
+        "{shown}"
+    );
+    let cache = kairo_git::GitCache::open(local.join("git"))?;
+    let refs: Vec<String> = cache
+        .ref_snapshot(&source)?
+        .refs()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
+    for oid in [&commit, &tag] {
+        assert!(
+            refs.contains(&format!("{}{oid}", kairo_git::OBSERVED_PIN_PREFIX)),
+            "{oid}: {refs:?}"
+        );
+    }
+
+    // A second pull fetches nothing new.
+    let again = run_in(
+        local,
+        Command::Source {
+            command: SourceCommand::Pull {
+                url,
+                from: Some(base_url),
+                allow_peer: false,
+                json: false,
+            },
+        },
+    )?;
+    assert!(again.contains("git = already held"), "{again}");
+    Ok(())
+}

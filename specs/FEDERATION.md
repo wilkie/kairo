@@ -35,7 +35,10 @@ where they differ:
   `TokenAdvertisement`) that arrive with `PHASE_2.md` §7 and §8,
   and their examples are illustrative until then. `BuildResult`
   statements (`DECISIONS.md` §33 sub-decision 8) already travel in
-  an object's closure like branches and tags.
+  an object's closure like branches and tags. Source objects
+  (`DECISIONS.md` §37) federate too: a published source's closure is
+  its observations and the history they name, and its genesis is the
+  unsigned `SourceGenesis`.
 - Statements travel in the `kairo-statement` JSON wire shape
   (`type`, `version`, `actor`, `subject`, `created_at`, `body`,
   `signature`), not a separate federation envelope.
