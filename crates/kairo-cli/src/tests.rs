@@ -9395,3 +9395,125 @@ fn source_id_prints_the_canonical_url_and_the_derived_id() -> Result<(), Box<dyn
     );
     Ok(())
 }
+
+#[test]
+fn source_fetch_observes_every_ref_and_keeps_what_upstream_drops(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use kairo_test_support::git::{git, GitDaemon};
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    let upstream = daemon.base.path().join("project");
+    std::fs::create_dir(&upstream)?;
+    git(&upstream, &["init", "-q", "--initial-branch=main"]);
+    std::fs::write(upstream.join("README"), "v1")?;
+    git(&upstream, &["add", "README"]);
+    git(&upstream, &["commit", "-q", "-m", "v1"]);
+    let first = git(&upstream, &["rev-parse", "HEAD"]);
+    git(&upstream, &["tag", "-a", "v1.0", "-m", "first release"]);
+    let tag_object = git(&upstream, &["rev-parse", "v1.0"]);
+
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let fetch = |url: String| {
+        run_in_store(
+            store_dir.path(),
+            Command::Source {
+                command: SourceCommand::Fetch {
+                    url,
+                    actor: actor.clone(),
+                    object_format: None,
+                },
+            },
+        )
+    };
+    // The same repository however it's spelled.
+    let url = daemon.url("project");
+    let fetched = fetch(format!("{url}.git"))?;
+    assert!(fetched.contains(&format!("url = {url}\n")), "{fetched}");
+    assert!(fetched.contains("object_format = sha1\n"), "{fetched}");
+    assert!(fetched.contains("refs = 2\n"), "{fetched}");
+    assert!(fetched.contains("first_observation = yes\n"), "{fetched}");
+    let source = parse_field(&fetched, "source = ")?;
+    assert_eq!(
+        source,
+        kairo_statement::SourceGenesis::new(kairo_statement::SourceUrl::parse(&url)?)
+            .object_id()
+            .to_string()
+    );
+
+    // Upstream force-pushes and deletes the tag.
+    std::fs::write(upstream.join("README"), "rewritten")?;
+    git(&upstream, &["add", "README"]);
+    git(&upstream, &["commit", "-q", "--amend", "-m", "rewritten"]);
+    git(&upstream, &["tag", "-d", "v1.0"]);
+    git(&upstream, &["tag", "v2.0"]);
+    let rewritten = git(&upstream, &["rev-parse", "HEAD"]);
+    let again = fetch(url.clone())?;
+    assert!(again.contains("changes = 3\n"), "{again}");
+    assert!(
+        again.contains(&format!(
+            "  ~ refs/heads/main git:sha1:{first} -> git:sha1:{rewritten}\n"
+        )),
+        "{again}"
+    );
+    assert!(
+        again.contains(&format!("  + refs/tags/v2.0 git:sha1:{rewritten}\n")),
+        "{again}"
+    );
+    assert!(
+        again.contains(&format!(
+            "  - refs/tags/v1.0 git:sha1:{tag_object} (still held)\n"
+        )),
+        "{again}"
+    );
+
+    // Both observations are kept, and everything they named is held.
+    let shown = run_in_store(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::Show {
+                source: url.clone(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(shown.contains("observations = 2\n"), "{shown}");
+    assert!(
+        shown.contains(&format!("  refs/heads/main git:sha1:{rewritten}\n")),
+        "{shown}"
+    );
+    let cache = kairo_git::GitCache::open(store_dir.path().join("git"))?;
+    for oid in [&first, &tag_object, &rewritten] {
+        let revision = kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, oid)?;
+        let repo = kairo_git::open(&cache.path_for(&source)?)?;
+        assert!(repo.has_object(&revision)?, "{oid} is held");
+    }
+    let by_id = run_in_store(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::Show {
+                source: format!("object:{source}"),
+                json: true,
+            },
+        },
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&by_id)?;
+    assert_eq!(value["observations"].as_array().map(Vec::len), Some(2));
+    assert_eq!(value["url"], url);
+
+    // An empty repository is observed as empty.
+    let empty = daemon.base.path().join("empty");
+    std::fs::create_dir(&empty)?;
+    git(&empty, &["init", "-q", "--bare"]);
+    let observed_empty = fetch(daemon.url("empty"))?;
+    assert!(observed_empty.contains("refs = 0\n"), "{observed_empty}");
+    assert!(
+        observed_empty.contains("object_format = none (no refs)\n"),
+        "{observed_empty}"
+    );
+    Ok(())
+}

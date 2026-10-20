@@ -338,6 +338,9 @@ GC must:
 - Not remove reachable data
 - Not break snapshot closures
 - Respect pinned snapshots or objects
+- Never remove an object a source observation names: each is pinned in
+  its source's repo as `refs/kairo/observed/<oid>`, and those refs are
+  never deleted (`DECISIONS.md` §37 sub-decision 3)
 - In the managed Git cache, prune a pool object only after it has been
   unreachable from every per-object repo's refs for longer than a grace
   period, as Git's `gc.pruneExpire` does (`DECISIONS.md` §21). Readers

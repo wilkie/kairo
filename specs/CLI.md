@@ -1616,12 +1616,36 @@ canonical URL.
 
 ```text
 kairo source id <url>
+kairo source fetch <url> --actor <id> [--object-format <sha1|sha256>]
+kairo source show <url|object:id> [--json]
 ```
 
-Prints the URL's canonical form and the source object id every node
-derives from it (`url = …`, `source = …`). It reads and writes nothing.
-`file` URLs are refused: a local path identifies nothing on another
-node. Fetching and observing a source comes next.
+`id` prints the URL's canonical form and the source object id every
+node derives from it (`url = …`, `source = …`); it reads and writes
+nothing. `file` URLs are refused: a local path identifies nothing on
+another node.
+
+`fetch` fetches every branch and tag into the Git cache, pins each
+fetched object so it is never dropped, and signs a `SourceObservation`
+of what it saw. The format comes from the flag, the source's cache
+repo, and the remote, which must agree. An empty repository is
+observed as empty. Output:
+
+```text
+url = <canonical url>
+source = <id>
+observation = <statement id>
+object_format = sha1 | sha256 | none (no refs)
+refs = N
+first_observation = yes          (the first time)
+changes = N                      (later: against the newest observation)
+  + <ref> <target>
+  ~ <ref> <old> -> <new>
+  - <ref> <old> (still held)
+```
+
+`show` lists the source's observations, newest first, and the refs the
+newest one saw.
 
 ## 26. `kairo policy`
 

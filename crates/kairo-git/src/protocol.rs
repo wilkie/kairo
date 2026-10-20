@@ -89,19 +89,29 @@ pub(crate) fn upload_pack(repo: &Path, advertise: bool) -> Command {
 /// objects, so a quarantine's packs are all there is to migrate); a
 /// transfer slower than 1 KiB/s for 60 seconds aborts.
 pub(crate) fn fetch(target: &Path, url: &str) -> Command {
+    fetch_allowing(target, url, &["https", "http"])
+}
+
+/// [`fetch`] for a source object (`specs/DECISIONS.md` §37): the
+/// transports a canonical source URL can name, `https` and `git`, with
+/// refspecs (globs allowed) from stdin.
+pub(crate) fn fetch_source(target: &Path, url: &str) -> Command {
+    fetch_allowing(target, url, &["https", "git"])
+}
+
+fn fetch_allowing(target: &Path, url: &str, transports: &[&str]) -> Command {
     let mut command = isolated_git();
     command
         .arg("-C")
         .arg(target)
+        .args(["-c", "protocol.version=2", "-c", "protocol.allow=never"]);
+    for transport in transports {
+        command
+            .arg("-c")
+            .arg(format!("protocol.{transport}.allow=always"));
+    }
+    command
         .args([
-            "-c",
-            "protocol.version=2",
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "protocol.https.allow=always",
-            "-c",
-            "protocol.http.allow=always",
             "-c",
             "http.followRedirects=false",
             "-c",
@@ -124,6 +134,30 @@ pub(crate) fn fetch(target: &Path, url: &str) -> Command {
             "--no-recurse-submodules",
             "--quiet",
             "--stdin",
+        ])
+        .arg(url);
+    command
+}
+
+/// `git ls-remote` for a source: every ref the remote advertises, as
+/// `<oid>\t<name>` lines, under the same isolation and transports as
+/// [`fetch_source`].
+pub(crate) fn ls_remote_source(url: &str) -> Command {
+    let mut command = isolated_git();
+    command
+        .args([
+            "-c",
+            "protocol.version=2",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+            "-c",
+            "protocol.git.allow=always",
+            "-c",
+            "http.followRedirects=false",
+            "ls-remote",
+            "--refs",
         ])
         .arg(url);
     command

@@ -197,3 +197,79 @@ fn rev_parse(dir: &Path, rev: &str) -> String {
         .trim()
         .to_owned()
 }
+
+/// Repositories under a directory served read-only over `git://` on
+/// localhost by `git daemon`, for tests of source objects, whose URLs
+/// can't be `file://` (`specs/DECISIONS.md` §37). Stopped on drop.
+#[derive(Debug)]
+pub struct GitDaemon {
+    child: std::process::Child,
+    port: u16,
+    pub base: TempDir,
+}
+
+impl GitDaemon {
+    /// Start serving a fresh empty directory; put repositories in
+    /// [`Self::base`] (bare or not) and address them by [`Self::url`].
+    /// `None` when `git daemon` can't run here.
+    pub fn start() -> Option<Self> {
+        let base = TempDir::new().ok()?;
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .ok()?
+            .local_addr()
+            .ok()?
+            .port();
+        let child = Command::new("git")
+            .arg("daemon")
+            .arg("--reuseaddr")
+            .arg("--export-all")
+            .arg("--listen=127.0.0.1")
+            .arg(format!("--port={port}"))
+            .arg(format!("--base-path={}", base.path().display()))
+            .arg(base.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let daemon = Self { child, port, base };
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return Some(daemon);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// `git://127.0.0.1:<port>/<name>`.
+    pub fn url(&self, name: &str) -> String {
+        format!("git://127.0.0.1:{}/{name}", self.port)
+    }
+}
+
+impl Drop for GitDaemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Run `git <args>` in `dir`, returning trimmed stdout; panics on
+/// failure. For building test histories.
+pub fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Kairo Test")
+        .env("GIT_AUTHOR_EMAIL", "test@kairo.test")
+        .env("GIT_COMMITTER_NAME", "Kairo Test")
+        .env("GIT_COMMITTER_EMAIL", "test@kairo.test")
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}

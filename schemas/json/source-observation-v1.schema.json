@@ -27,10 +27,10 @@
           "description": "Every ref seen, strictly ascending by name.",
           "items": {
             "type": "object",
-            "required": ["name", "commit"],
+            "required": ["name", "target"],
             "properties": {
               "name": { "type": "string", "pattern": "^refs/(heads|tags)/.+" },
-              "commit": { "type": "string", "pattern": "^git:(sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$" }
+              "target": { "type": "string", "description": "The object the ref names: a commit, or an annotated tag's tag object.", "pattern": "^git:(sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$" }
             },
             "additionalProperties": false
           }

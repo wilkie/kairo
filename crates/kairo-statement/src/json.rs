@@ -759,8 +759,9 @@ pub struct SourceObservationBodyJson {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ObservedRefJson {
     pub name: String,
-    /// A typed revision, `git:sha1:<oid>` or `git:sha256:<oid>`.
-    pub commit: String,
+    /// The object the ref names, typed: `git:sha1:<oid>` or
+    /// `git:sha256:<oid>`.
+    pub target: String,
 }
 
 impl SourceObservationBodyJson {
@@ -774,15 +775,15 @@ impl SourceObservationBodyJson {
         }
         let mut refs = Vec::with_capacity(self.refs.len());
         for observed in &self.refs {
-            let commit = GitRevision::parse(&observed.commit)
+            let target = GitRevision::parse(&observed.target)
                 .map_err(StatementJsonError::InvalidGitRevision)?
                 .ok_or_else(|| {
                     StatementJsonError::InvalidGitRevision(crate::GitRevisionError::MissingFormat {
-                        value: observed.commit.clone(),
+                        value: observed.target.clone(),
                     })
                 })?;
             refs.push(
-                ObservedRef::new(observed.name.clone(), commit)
+                ObservedRef::new(observed.name.clone(), target)
                     .map_err(StatementJsonError::InvalidObservationShape)?,
             );
         }
@@ -814,7 +815,7 @@ impl SourceObservationBodyJson {
                 .iter()
                 .map(|observed| ObservedRefJson {
                     name: observed.name().to_owned(),
-                    commit: observed.commit().to_string(),
+                    target: observed.target().to_string(),
                 })
                 .collect(),
         }
@@ -2726,7 +2727,7 @@ mod tests {
         let a = "a".repeat(40);
         let b = "b".repeat(40);
         let refs = format!(
-            r#"{{"name":"refs/heads/main","commit":"git:sha1:{a}"}},{{"name":"refs/tags/v1","commit":"git:sha1:{b}"}}"#
+            r#"{{"name":"refs/heads/main","target":"git:sha1:{a}"}},{{"name":"refs/tags/v1","target":"git:sha1:{b}"}}"#
         );
         let statement = parse_observation(&source_observation_json(&refs, "c2ln"))?;
         assert_eq!(statement.unsigned().body().refs().len(), 2);
@@ -2734,10 +2735,10 @@ mod tests {
         assert_eq!(round, statement);
 
         let unsorted = format!(
-            r#"{{"name":"refs/tags/v1","commit":"git:sha1:{b}"}},{{"name":"refs/heads/main","commit":"git:sha1:{a}"}}"#
+            r#"{{"name":"refs/tags/v1","target":"git:sha1:{b}"}},{{"name":"refs/heads/main","target":"git:sha1:{a}"}}"#
         );
         assert!(parse_observation(&source_observation_json(&unsorted, "c2ln")).is_err());
-        let untyped = format!(r#"{{"name":"refs/heads/main","commit":"{a}"}}"#);
+        let untyped = format!(r#"{{"name":"refs/heads/main","target":"{a}"}}"#);
         assert!(parse_observation(&source_observation_json(&untyped, "c2ln")).is_err());
         let wrong_source = source_observation_json(&refs, "c2ln").replacen(
             "\"source\": \"",

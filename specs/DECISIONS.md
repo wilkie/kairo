@@ -3572,11 +3572,20 @@ Sub-decisions:
    statement per fetch lists **every** ref the remote advertised, so
    it is a faithful picture of one moment: a ref absent from a later
    observation was deleted, and two observers compare in one step.
+   *Amended when built:* each ref is recorded at the object it names
+   (`target`), which for an annotated tag is the tag object, not its
+   commit, so the tagger's message and signature are archived too.
+   The refs are fetched by name into a quarantine and read back from
+   it, so an observation names exactly what was fetched, never a
+   listing that upstream could change in between.
 
 3. **Nothing seen is ever dropped.** Fetching a tracked source again
    is additive: every commit any observation has named stays pinned
    in the Git cache (`refs/kairo/observed/<oid>`) and is exempt from
-   cache garbage collection. A ref that upstream moves, rewrites, or
+   cache garbage collection. The fetch lands in a quarantine and is
+   admitted to the pool only once every observed object's closure is
+   there (§19 sub-decision 5); what the source already holds is sent
+   as "haves", so only new history crosses the network. A ref that upstream moves, rewrites, or
    deletes gets a new observation, and the old commit stays
    reachable through the old one. Ref history is the sequence of
    observations, so a force-pushed branch or a moved tag is visible,

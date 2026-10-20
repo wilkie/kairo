@@ -27,7 +27,9 @@ unsigned envelope and body.
 
 What one fetch of a source saw (`specs/DECISIONS.md` §37 sub-decisions
 2–4): every ref the remote advertised under `refs/heads/` and
-`refs/tags/`, each at its commit as a typed revision. Signing it claims
+`refs/tags/`, each at the object it names as a typed revision: a commit,
+or for an annotated tag the tag object itself, so the tagger's message
+and signature are archived too. Signing it claims
 the observer fetched that URL at `created_at` and holds each commit's
 full closure. Commit ids are content hashes, so two observers listing
 the same commit for a ref retrieved the same content independently.
@@ -52,8 +54,8 @@ commit is dropped from the archive (sub-decision 3).
     "source": "zQmSource...",
     "url": "https://github.com/oriansj/stage0-posix",
     "refs": [
-      { "name": "refs/heads/master", "commit": "git:sha1:6435980..." },
-      { "name": "refs/tags/Release_1.9.1", "commit": "git:sha1:93006ab..." }
+      { "name": "refs/heads/master", "target": "git:sha1:6435980..." },
+      { "name": "refs/tags/Release_1.9.1", "target": "git:sha1:93006ab..." }
     ]
   },
   "signature": { "...": "..." }
@@ -75,11 +77,11 @@ body. **Actor chain** (`specs/DECISIONS.md` §23): the signer's
 | `url` | `string`: the canonical URL fetched |
 | `refs` | `list<ref>`, strictly ascending by name |
 
-`ref` is `string(name) || string(commit)`: `name` is `refs/heads/<x>` or
-`refs/tags/<x>`; `commit` is `git:sha1:<oid>` or `git:sha256:<oid>`.
+`ref` is `string(name) || string(target)`: `name` is `refs/heads/<x>` or
+`refs/tags/<x>`; `target` is `git:sha1:<oid>` or `git:sha256:<oid>`.
 
 Shape rules: `source` must be the URL's id; names unique and ascending;
-every commit in one object format, since a repository has one. Other
+every target in one object format, since a repository has one. Other
 ref namespaces (`HEAD`, `refs/pull/*`, `refs/remotes/*`) are not
 observed.
 
@@ -89,7 +91,7 @@ observed.
 canonical_body =
   string(source) ||
   string(url) ||
-  list(refs, string(name) || string(commit))
+  list(refs, string(name) || string(target))
 ```
 
 ## Test Vectors

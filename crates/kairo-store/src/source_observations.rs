@@ -4,7 +4,10 @@
 //! Each file at `<root>/source_observations/<XX>/<YY>/<source-id>.json`
 //! lists every known observation of that source, grouped by observer.
 //! Sharding on the source makes "what has been seen of this
-//! repository, by whom?" one read. Observations are never superseded:
+//! repository, by whom?" one read. Listed newest first by
+//! `created_at`; observations in the same second are ordered by arrival
+//! at this node (an index rebuild orders such ties by statement id).
+//! Observations are never superseded:
 //! each records one fetch, and together they are the source's ref
 //! history, so nothing here is ever removed (sub-decision 3).
 //!
@@ -68,27 +71,33 @@ impl ObservationIndexFile {
             id: source.to_string(),
             reason: CorruptReason::Parse(format!("source observation index {what}: {error}")),
         };
+        // Timestamps are whole seconds, so two fetches can tie; the
+        // order entries arrived at this node breaks the tie.
         let mut heads = Vec::new();
         for (actor, entries) in &self.by_actor {
             let actor = ActorId::new(actor.clone()).map_err(|e| corrupt("actor", e.to_string()))?;
-            for entry in entries {
-                heads.push(ObservationHead {
-                    actor: actor.clone(),
-                    source: source.clone(),
-                    statement_id: StatementId::new(entry.statement_id.clone())
-                        .map_err(|e| corrupt("statement_id", e.to_string()))?,
-                    created_at: entry.created_at.parse().map_err(
-                        |e: kairo_core::TimestampError| corrupt("created_at", e.to_string()),
-                    )?,
-                });
+            for (arrival, entry) in entries.iter().enumerate() {
+                heads.push((
+                    arrival,
+                    ObservationHead {
+                        actor: actor.clone(),
+                        source: source.clone(),
+                        statement_id: StatementId::new(entry.statement_id.clone())
+                            .map_err(|e| corrupt("statement_id", e.to_string()))?,
+                        created_at: entry.created_at.parse().map_err(
+                            |e: kairo_core::TimestampError| corrupt("created_at", e.to_string()),
+                        )?,
+                    },
+                ));
             }
         }
-        heads.sort_by(|a, b| {
+        heads.sort_by(|(a_arrival, a), (b_arrival, b)| {
             b.created_at
                 .cmp(&a.created_at)
+                .then_with(|| b_arrival.cmp(a_arrival))
                 .then_with(|| a.statement_id.cmp(&b.statement_id))
         });
-        Ok(heads)
+        Ok(heads.into_iter().map(|(_, head)| head).collect())
     }
 }
 

@@ -21,7 +21,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use cache::{FetchLimits, GitCache, RefSnapshot};
+pub use cache::{FetchLimits, GitCache, RefSnapshot, SourceFetch, OBSERVED_PIN_PREFIX};
 pub use kairo_statement::{GitObjectFormat, GitRevision};
 pub use transport::{FetchedRef, GitCacheTransport, GitCli};
 
@@ -309,6 +309,16 @@ impl Repository {
             commit_id: commit.id().to_string(),
             parent_ids,
         }))
+    }
+
+    /// Whether the object `revision` names (of any type: commit, tag,
+    /// tree, blob) is in this repository's object database.
+    pub fn has_object(&self, revision: &GitRevision) -> Result<bool, GitError> {
+        let oid = self.revision_oid(revision)?;
+        self.inner
+            .try_find_object(oid)
+            .map(|object| object.is_some())
+            .map_err(|error| GitError::Operation(Box::new(error)))
     }
 
     /// Read the bytes of a blob at `path` within `commit_oid`'s tree.

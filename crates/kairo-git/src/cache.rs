@@ -10,6 +10,8 @@
 //!   <XX>/<YY>/<object-id>/         # per-Kairo-object bare repo
 //!     objects/info/alternates      # → pool-<format>/objects (relative)
 //!     refs/heads/...
+//!     refs/kairo/observed/<oid>    # a source's observed objects, never
+//!                                  #   removed (DECISIONS.md §37)
 //! ```
 //!
 //! Per-object bare repos borrow Git objects from the shared pool via
@@ -591,6 +593,148 @@ impl GitCache {
     }
 }
 
+/// What one [`GitCache::fetch_source`] saw and now holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFetch {
+    /// `None` for a remote with no refs, which holds nothing to fetch.
+    pub format: Option<GitObjectFormat>,
+    /// Every `refs/heads/*` and `refs/tags/*` ref fetched, sorted by
+    /// name, each at the object it names (a commit, or an annotated
+    /// tag's tag object).
+    pub refs: Vec<(String, GitRevision)>,
+}
+
+/// Where a source's refs land in its fetch quarantine, and every
+/// observed object's pin in its repo (`specs/DECISIONS.md` §37
+/// sub-decision 3).
+const OBSERVE_PREFIX: &str = "refs/kairo/observe/";
+pub const OBSERVED_PIN_PREFIX: &str = "refs/kairo/observed/";
+
+impl GitCache {
+    /// The object format of `url`'s repository, from the length of
+    /// the ids `git ls-remote` reports; `None` when it has no refs.
+    pub fn source_format(url: &str) -> Result<Option<GitObjectFormat>, GitError> {
+        let output =
+            crate::protocol::ls_remote_source(url)
+                .output()
+                .map_err(|source| match source.kind() {
+                    std::io::ErrorKind::NotFound => GitError::CacheGitMissing { source },
+                    _ => GitError::CacheIo {
+                        path: PathBuf::from(url),
+                        source,
+                    },
+                })?;
+        if !output.status.success() {
+            return Err(GitError::CacheGitInvocation {
+                command: format!("git ls-remote {url}"),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                exit_code: output.status.code(),
+            });
+        }
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let Some(oid) = listing
+            .lines()
+            .find_map(|line| line.split_whitespace().next())
+        else {
+            return Ok(None);
+        };
+        [GitObjectFormat::Sha1, GitObjectFormat::Sha256]
+            .into_iter()
+            .find(|format| oid.len() == format.hex_len())
+            .map(Some)
+            .ok_or_else(|| GitError::CacheGitInvocation {
+                command: format!("git ls-remote {url}"),
+                stderr: format!("unrecognized object id {oid:?}"),
+                exit_code: None,
+            })
+    }
+
+    /// Fetch every `refs/heads/*` and `refs/tags/*` ref of the source
+    /// at `url` into the cache for `source_id` (§37 sub-decision 3):
+    /// into a quarantine first, admitted to the `format` pool only once
+    /// every ref's full closure is there, then each fetched object
+    /// pinned in the source's repo as `refs/kairo/observed/<oid>`. The
+    /// fetch is additive: pins are never removed, so a ref upstream
+    /// moves or deletes keeps its old object. What is returned is what
+    /// was fetched, read back from the quarantine, so an observation
+    /// built from it names exactly what the cache holds.
+    pub fn fetch_source(
+        &self,
+        source_id: &str,
+        url: &str,
+        format: GitObjectFormat,
+        limits: &FetchLimits,
+    ) -> Result<SourceFetch, GitError> {
+        if let Some(existing) = self.repo_format(source_id)? {
+            if existing != format {
+                return Err(GitError::FormatMismatch {
+                    context: format!("source {source_id}"),
+                    expected: existing,
+                    found: format,
+                });
+            }
+        }
+        let pool = self.ensure_pool(format)?;
+        let quarantine = Quarantine::create(&self.root, &pool, format)?;
+
+        // What the source already holds is a "have", so only new
+        // history crosses the network.
+        let haves = self.ref_snapshot(source_id)?;
+        if !haves.is_empty() {
+            let mut updates = String::new();
+            for (index, oid) in haves.oids().enumerate() {
+                updates.push_str(&format!("create refs/kairo/have/{index} {oid}\n"));
+            }
+            git_with_stdin(
+                quarantine.path(),
+                &["update-ref", "--stdin"],
+                updates.as_bytes(),
+            )?;
+        }
+        let refspecs =
+            format!("+refs/heads/*:{OBSERVE_PREFIX}heads/*\n+refs/tags/*:{OBSERVE_PREFIX}tags/*\n");
+        run_watched(
+            crate::protocol::fetch_source(quarantine.path(), url),
+            quarantine.path(),
+            url,
+            refspecs.as_bytes(),
+            limits,
+        )?;
+
+        let fetched = open(quarantine.path())?.ref_snapshot()?;
+        let mut refs: Vec<(String, GitRevision)> = Vec::new();
+        for (name, oid) in fetched {
+            let Some(tail) = name.strip_prefix(OBSERVE_PREFIX) else {
+                continue;
+            };
+            let revision =
+                GitRevision::new(format, &oid).map_err(|error| GitError::CacheGitInvocation {
+                    command: format!("git fetch {url}"),
+                    stderr: format!("ref {name} names {oid:?}: {error}"),
+                    exit_code: None,
+                })?;
+            refs.push((format!("refs/{tail}"), revision));
+        }
+        refs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let required: Vec<GitRevision> =
+            refs.iter().map(|(_, revision)| revision.clone()).collect();
+        admit(&pool, &quarantine, format, &required)?;
+        let _ = self.ensure_repo(source_id, format)?;
+        for revision in &required {
+            self.set_ref(
+                source_id,
+                &format!("{OBSERVED_PIN_PREFIX}{}", revision.oid()),
+                revision,
+            )?;
+        }
+        Ok(SourceFetch {
+            format: Some(format),
+            refs,
+        })
+    }
+}
+
 fn pool_path(root: &Path, format: GitObjectFormat) -> PathBuf {
     root.join(format!("{POOL_DIR_PREFIX}{format}"))
 }
@@ -688,9 +832,26 @@ fn run_watched_fetch(
     refspecs: &[u8],
     limits: &FetchLimits,
 ) -> Result<(), GitError> {
+    run_watched(
+        crate::protocol::fetch(quarantine, url),
+        quarantine,
+        url,
+        refspecs,
+        limits,
+    )
+}
+
+/// Run a prepared `git fetch` command watched as [`run_watched_fetch`].
+fn run_watched(
+    mut command: Command,
+    quarantine: &Path,
+    url: &str,
+    refspecs: &[u8],
+    limits: &FetchLimits,
+) -> Result<(), GitError> {
     use std::process::Stdio;
 
-    let mut child = crate::protocol::fetch(quarantine, url)
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -2046,6 +2207,87 @@ mod tests {
         assert!(cache
             .ingest_pack(GitObjectFormat::Sha1, &build_pack_from(src.path()))
             .is_err());
+    }
+
+    #[test]
+    fn fetch_source_is_additive_and_pins_every_observed_object() {
+        use kairo_test_support::git::{git, GitDaemon};
+        if kairo_test_support::git::skip_if_no_git() {
+            return;
+        }
+        let Some(daemon) = GitDaemon::start() else {
+            return;
+        };
+        let upstream = daemon.base.path().join("project");
+        std::fs::create_dir(&upstream).expect("mkdir");
+        git(&upstream, &["init", "-q", "--initial-branch=main"]);
+        std::fs::write(upstream.join("a"), "one").expect("write");
+        git(&upstream, &["add", "a"]);
+        git(&upstream, &["commit", "-q", "-m", "one"]);
+        let first = git(&upstream, &["rev-parse", "HEAD"]);
+        git(&upstream, &["tag", "-a", "v1", "-m", "release one"]);
+        git(&upstream, &["tag", "light"]);
+        let annotated = git(&upstream, &["rev-parse", "v1"]);
+        let url = daemon.url("project");
+
+        let root = tempfile::TempDir::new().expect("tempdir");
+        let cache = GitCache::open(root.path()).expect("cache");
+        assert_eq!(
+            GitCache::source_format(&url).expect("format"),
+            Some(GitObjectFormat::Sha1)
+        );
+        let limits = FetchLimits {
+            max_bytes: 64 << 20,
+            timeout: Duration::from_secs(60),
+        };
+        let source = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
+        let fetched = cache
+            .fetch_source(source, &url, GitObjectFormat::Sha1, &limits)
+            .expect("fetch");
+        let names: Vec<&str> = fetched.refs.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["refs/heads/main", "refs/tags/light", "refs/tags/v1"]
+        );
+        // An annotated tag is recorded as its tag object, not its commit.
+        assert_eq!(fetched.refs[2].1.oid(), annotated);
+        assert_ne!(annotated, first);
+        assert_eq!(fetched.refs[0].1.oid(), first);
+
+        // Upstream rewrites history and deletes the tags.
+        std::fs::write(upstream.join("a"), "rewritten").expect("write");
+        git(&upstream, &["add", "a"]);
+        git(&upstream, &["commit", "-q", "--amend", "-m", "rewritten"]);
+        git(&upstream, &["tag", "-d", "v1", "light"]);
+        git(&upstream, &["reflog", "expire", "--expire=now", "--all"]);
+        git(&upstream, &["gc", "-q", "--prune=now"]);
+        let rewritten = git(&upstream, &["rev-parse", "HEAD"]);
+
+        let again = cache
+            .fetch_source(source, &url, GitObjectFormat::Sha1, &limits)
+            .expect("fetch again");
+        assert_eq!(again.refs.len(), 1);
+        assert_eq!(again.refs[0].1.oid(), rewritten);
+        // What was seen before is still held and pinned.
+        let old = GitRevision::new(GitObjectFormat::Sha1, &first).expect("rev");
+        assert!(cache.has_commit(source, &old).expect("lookup"));
+        let pins: Vec<String> = cache
+            .ref_snapshot(source)
+            .expect("refs")
+            .refs()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+        for oid in [&first, &annotated, &rewritten] {
+            assert!(
+                pins.contains(&format!("{OBSERVED_PIN_PREFIX}{oid}")),
+                "{oid} pinned: {pins:?}"
+            );
+        }
+
+        // A source's format is fixed once it has a repo.
+        let mismatch = cache.fetch_source(source, &url, GitObjectFormat::Sha256, &limits);
+        assert!(matches!(mismatch, Err(GitError::FormatMismatch { .. })));
     }
 
     #[test]

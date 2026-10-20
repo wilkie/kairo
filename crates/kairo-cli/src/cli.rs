@@ -255,6 +255,29 @@ pub(crate) enum SourceCommand {
         /// An `https`, `git`, or `ssh` repository URL.
         url: String,
     },
+    /// Fetch every branch and tag of a source into the Git cache and
+    /// sign an observation of what was seen (`specs/DECISIONS.md` §37).
+    /// Additive: nothing fetched before is dropped, whatever upstream
+    /// has done since.
+    Fetch {
+        /// An `https`, `git`, or `ssh` repository URL.
+        url: String,
+        /// The actor that signs the observation.
+        #[arg(long)]
+        actor: String,
+        /// The repository's Git object format, `sha1` or `sha256`.
+        /// Otherwise taken from the source's cache repo or the remote.
+        #[arg(long)]
+        object_format: Option<String>,
+    },
+    /// What is known of a source: its observations, newest first, and
+    /// the refs the newest one saw.
+    Show {
+        /// A repository URL, or `object:<source id>`.
+        source: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

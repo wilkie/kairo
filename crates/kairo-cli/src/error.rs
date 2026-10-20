@@ -169,6 +169,11 @@ pub(crate) enum CliError {
         missing: Vec<String>,
     },
     ParseSourceUrl(kairo_statement::SourceUrlError),
+    /// Reading or writing source objects or their observations failed.
+    Sources {
+        source: kairo_store::StoreError,
+    },
+    ObservationShape(String),
     /// A bundle's execution evidence couldn't be written or read.
     BundleExecutions {
         message: String,
@@ -702,6 +707,8 @@ impl fmt::Display for CliError {
             Self::BuildResultShape(error) => write!(f, "build result: {error}"),
             Self::BundleExecutions { message } => write!(f, "bundle executions: {message}"),
             Self::ParseSourceUrl(error) => write!(f, "{error}"),
+            Self::Sources { source } => write!(f, "source objects: {source}"),
+            Self::ObservationShape(message) => write!(f, "source observation: {message}"),
             Self::NotAResultRef { input } => write!(
                 f,
                 "{input:?} is not a build result reference (expected statement:<id>)"
@@ -1208,6 +1215,7 @@ impl Error for CliError {
             | Self::ListInbox { source }
             | Self::Follows { source }
             | Self::WriteBuildResult { source }
+            | Self::Sources { source }
             | Self::ReadBuildResult { source, .. } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
@@ -1270,6 +1278,7 @@ impl Error for CliError {
             | Self::BuildActorRequired
             | Self::NoEngine { .. }
             | Self::BundleExecutions { .. }
+            | Self::ObservationShape(_)
             | Self::NotAResultRef { .. }
             | Self::ReproduceUnavailable { .. }
             | Self::ProviderUnavailable { .. }

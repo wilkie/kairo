@@ -214,17 +214,19 @@ impl CanonicalEncode for SourceGenesis {
     }
 }
 
-/// One ref an observation saw.
+/// One ref an observation saw, at the object it names: a commit, or
+/// for an annotated tag the tag object itself, so the tagger's message
+/// and signature are archived too.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservedRef {
     name: String,
-    commit: GitRevision,
+    target: GitRevision,
 }
 
 impl ObservedRef {
     pub fn new(
         name: impl Into<String>,
-        commit: GitRevision,
+        target: GitRevision,
     ) -> Result<Self, SourceObservationShapeError> {
         let name = name.into();
         let tail = name
@@ -239,7 +241,7 @@ impl ObservedRef {
         if !valid {
             return Err(SourceObservationShapeError::InvalidRef(name));
         }
-        Ok(Self { name, commit })
+        Ok(Self { name, target })
     }
 
     /// `refs/heads/...` or `refs/tags/...`.
@@ -247,8 +249,9 @@ impl ObservedRef {
         &self.name
     }
 
-    pub fn commit(&self) -> &GitRevision {
-        &self.commit
+    /// The object the ref names.
+    pub fn target(&self) -> &GitRevision {
+        &self.target
     }
 }
 
@@ -256,8 +259,8 @@ impl ObservedRef {
 /// `schemas/canonical/source-observation-v1.md`.
 ///
 /// What one fetch of a source saw (§37 sub-decision 2): every ref the
-/// remote advertised under `refs/heads/` and `refs/tags/`, each at its
-/// commit, sorted by name. Signing it claims the observer fetched that
+/// remote advertised under `refs/heads/` and `refs/tags/`, each at the
+/// object it names, sorted by name. Signing it claims the observer fetched that
 /// URL and holds each commit's full closure. A ref absent here that an
 /// earlier observation listed was deleted upstream; nothing is dropped
 /// from the archive because of it (sub-decision 3).
@@ -281,7 +284,7 @@ impl SourceObservationBody {
                 pair[0].name.clone(),
             ));
         }
-        let formats: Vec<GitObjectFormat> = refs.iter().map(|r| r.commit.format()).collect();
+        let formats: Vec<GitObjectFormat> = refs.iter().map(|r| r.target.format()).collect();
         if formats.windows(2).any(|pair| pair[0] != pair[1]) {
             return Err(SourceObservationShapeError::MixedFormats);
         }
@@ -305,10 +308,10 @@ impl SourceObservationBody {
         &self.refs
     }
 
-    /// The format of every observed commit; `None` for an empty
+    /// The format of every observed object; `None` for an empty
     /// repository.
     pub fn format(&self) -> Option<GitObjectFormat> {
-        self.refs.first().map(|r| r.commit.format())
+        self.refs.first().map(|r| r.target.format())
     }
 }
 
@@ -328,7 +331,7 @@ impl CanonicalEncode for SourceObservationBody {
         encode_str(out, self.url.as_str());
         encode_list(out, &self.refs, |out, observed| {
             encode_str(out, &observed.name);
-            encode_str(out, &observed.commit.to_string());
+            encode_str(out, &observed.target.to_string());
         });
     }
 }

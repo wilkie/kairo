@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **`kairo source fetch` and `kairo source show` (`DECISIONS.md` §37).**
+  Fetching a source brings every branch and tag into the Git cache
+  through a quarantine, pins each fetched object as
+  `refs/kairo/observed/<oid>` so nothing seen is ever dropped, and signs
+  a `SourceObservation` of exactly what was fetched. A refetch reports
+  what upstream changed (moved, added, deleted refs) while still holding
+  everything. Annotated tags are recorded as their tag objects (the
+  observation field is `target`). Sources may be `git://` as well as
+  `https`. `kairo-test-support` gains a `git daemon` fixture.
 - **Source objects, step one (`DECISIONS.md` §37).** Source geneses
   (unsigned, the object id derived from a canonical repository URL) and
   `SourceObservation` statements (every ref one fetch saw) with

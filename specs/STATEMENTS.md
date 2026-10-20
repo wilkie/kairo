@@ -717,8 +717,8 @@ schemas/canonical/build-result-v1.md
 
 A `SourceObservation` records what one fetch of a source object saw
 (`DECISIONS.md` §37): the canonical URL, and every ref the remote
-advertised under `refs/heads/` and `refs/tags/`, each at its commit as a
-typed revision, strictly ascending by name. Its `source` is the object
+advertised under `refs/heads/` and `refs/tags/`, each at the object it
+names (a commit, or an annotated tag's tag object) as a typed revision, strictly ascending by name. Its `source` is the object
 id the URL derives, since source objects are identified by URL, not
 created. Signing it claims the fetch and holding each commit's closure;
 it is an observation, not authorship, and observations never supersede
