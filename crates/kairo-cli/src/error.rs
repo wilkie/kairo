@@ -132,9 +132,28 @@ pub(crate) enum CliError {
     NotASnapshotRef {
         input: String,
     },
-    /// `kairo build` without `--plan-only`: the executor is the next
-    /// slice.
-    BuildNotYetSupported,
+    /// `[runtime] allow_local_process` is off.
+    BuildNotAllowed {
+        config: PathBuf,
+    },
+    /// The revision's signer is neither a keystore actor nor trusted
+    /// by one at `general` scope.
+    BuildSignerUntrusted {
+        signer: ActorId,
+        object: ObjectId,
+    },
+    /// The plan needs builds whose results aren't held.
+    BuildPrerequisites {
+        builds: Vec<String>,
+    },
+    /// The executor couldn't attempt the build.
+    Build(Box<kairo_build::BuildError>),
+    /// The build ran and did not succeed; the summary is the output
+    /// the user would otherwise have seen.
+    BuildFailed {
+        status: &'static str,
+        summary: String,
+    },
     /// `kairo provider show` for an object the resolver can't consider.
     ProviderUnavailable {
         object: ObjectId,
@@ -539,7 +558,12 @@ impl CliError {
         match self {
             Self::DaemonUnavailable { .. } => 9,
             // A refusal by this node's own federation policy.
-            Self::PeerNotAllowed { .. } | Self::FederationDisabled { .. } | Self::OfflineFetch => 7,
+            // A refusal by this node's own federation or build policy.
+            Self::PeerNotAllowed { .. }
+            | Self::FederationDisabled { .. }
+            | Self::OfflineFetch
+            | Self::BuildNotAllowed { .. }
+            | Self::BuildSignerUntrusted { .. } => 7,
             Self::Fetch(_) | Self::PeerRequest { .. } => 11,
             _ => 1,
         }
@@ -612,9 +636,23 @@ impl fmt::Display for CliError {
                 f,
                 "{input:?} is not a snapshot reference (expected object:<id> or object:<id>:snapshot:<id>)"
             ),
-            Self::BuildNotYetSupported => f.write_str(
-                "running a build is not implemented yet; use --plan-only to resolve and store the plan",
+            Self::BuildNotAllowed { config } => write!(
+                f,
+                "building runs the target as a host process with no isolation (development mode); \
+                 set [runtime] allow_local_process = true in {} to permit it, or use --plan-only",
+                config.display()
             ),
+            Self::BuildSignerUntrusted { signer, object } => write!(
+                f,
+                "object:{object}'s revision was signed by actor:{signer}, which this node neither holds a key for nor trusts at general scope; `kairo trust grant --by <your actor> --of {signer}` to allow building it"
+            ),
+            Self::BuildPrerequisites { builds } => write!(
+                f,
+                "the plan needs builds first, whose results aren't held: {}; build results that the resolver can find are the next slice",
+                builds.join(", ")
+            ),
+            Self::Build(error) => write!(f, "cannot build: {error}"),
+            Self::BuildFailed { status, summary } => write!(f, "{summary}build {status}"),
             Self::ProviderUnavailable { object, reason } => {
                 write!(f, "object:{object} can't be considered as a provider: {reason}")
             }
@@ -1121,6 +1159,7 @@ impl Error for CliError {
             Self::Bundle(error) => Some(error),
             Self::Fetch(error) | Self::BundleImport(error) => Some(error.as_ref()),
             Self::Resolve(error) => Some(error.as_ref()),
+            Self::Build(error) => Some(error.as_ref()),
             Self::PeerRequest { source, .. } => Some(source.as_ref()),
             Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }
@@ -1155,7 +1194,10 @@ impl Error for CliError {
             | Self::AmbiguousLocalActor { .. }
             | Self::GitRepoNotDiscovered { .. }
             | Self::NotASnapshotRef { .. }
-            | Self::BuildNotYetSupported
+            | Self::BuildNotAllowed { .. }
+            | Self::BuildSignerUntrusted { .. }
+            | Self::BuildPrerequisites { .. }
+            | Self::BuildFailed { .. }
             | Self::ProviderUnavailable { .. }
             | Self::ManifestNotUtf8
             | Self::MissingPublicKey

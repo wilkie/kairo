@@ -1623,6 +1623,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kairo-build"
+version = "0.1.0"
+dependencies = [
+ "kairo-core",
+ "kairo-object",
+ "kairo-resolver",
+ "kairo-statement",
+ "kairo-store",
+ "kairo-test-support",
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "kairo-bundle"
 version = "0.1.0"
 dependencies = [
@@ -1649,6 +1665,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "kairo-build",
  "kairo-bundle",
  "kairo-config",
  "kairo-core",

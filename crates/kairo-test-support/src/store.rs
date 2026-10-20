@@ -64,6 +64,20 @@ impl StoreFixture {
         (dir, fixture)
     }
 
+    /// A fixture over an existing store root (`<root>` is the store,
+    /// `<root>/keys` its keystore), for signing into a store another
+    /// surface, such as the CLI, also uses. Nothing is cleaned up.
+    pub fn at(root: &std::path::Path) -> Self {
+        let store = FilesystemStore::open(root).expect("open store");
+        let keystore = FilesystemKeystore::open(root.join("keys")).expect("open keystore");
+        Self {
+            root: root.to_path_buf(),
+            store,
+            keystore,
+            next_seed: Cell::new(100),
+        }
+    }
+
     /// Generate a fresh actor with one ed25519 signing key and one
     /// attestation key (threshold = 1). Persists the genesis to the
     /// store and the signing secret to the keystore. Each call uses

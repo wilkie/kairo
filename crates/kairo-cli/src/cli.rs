@@ -194,10 +194,15 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: FederationCommand,
     },
-    /// Plan a build of a snapshot (`specs/DECISIONS.md` §33). With
-    /// `--plan-only`, resolve the target's requirements against this
-    /// store and host into a resolved manifest, store it, and print
-    /// it; nothing runs. Running the plan is not implemented yet.
+    /// Build a snapshot's target (`specs/DECISIONS.md` §33–§34).
+    /// Resolves the target's requirements against this store and host
+    /// into a resolved manifest and stores it; with `--plan-only`,
+    /// prints it and stops. Otherwise runs it with the native,
+    /// development-mode executor — a host process with a scrubbed
+    /// environment and no isolation — which needs `[runtime]
+    /// allow_local_process = true` and a revision signer this node
+    /// holds a key for or trusts, collects the declared outputs into an
+    /// artifact, and writes an execution record.
     Build {
         /// `object:<id>` for the creator's head, or
         /// `object:<id>:snapshot:<id>` for a held tagged snapshot.

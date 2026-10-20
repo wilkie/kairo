@@ -9,19 +9,24 @@
 
 use std::fmt::Write as _;
 
-use kairo_core::{KairoRef, ObjectId};
+use std::path::Path;
+use std::time::Duration;
+
+use kairo_build::{run_plan, Execution, Limits, Status, TreeSource};
+use kairo_core::{KairoRef, ObjectId, SnapshotId};
+use kairo_keystore::Keystore;
 use kairo_object::ObjectManifest;
 use kairo_resolver::{
-    describe_resolved, version_matches, Host, HostTool, Index, ManifestSource, NoArtifacts,
-    Resolution, Resolver, SnapshotSelector, SourceError,
+    describe_resolved, find_snapshot, version_matches, Host, HostTool, Index, ManifestSource,
+    NoArtifacts, Resolution, Resolver, SnapshotSelector, SourceError,
 };
-use kairo_statement::RevisionId;
-use kairo_store::BlobStore;
+use kairo_statement::{RevisionId, TrustDecision, TrustScope};
+use kairo_store::{BlobStore, FilesystemStore, StatementStore, TrustResolver};
 
 use crate::cli::ProviderCommand;
 use crate::commands::config::load_config;
 use crate::error::CliError;
-use crate::store_paths::{open_store, StorePaths};
+use crate::store_paths::{open_keystore, open_store, StorePaths};
 
 pub(crate) struct BuildArgs<'a> {
     pub snapshot_ref: &'a str,
@@ -66,24 +71,86 @@ impl ManifestSource for CacheManifests<'_> {
     }
 }
 
-fn host_tools(paths: &StorePaths) -> Result<Vec<HostTool>, CliError> {
-    let (config, _) = load_config(paths)?;
-    Ok(config
+/// Trees from the managed Git cache, for the executor.
+struct CacheTrees<'a> {
+    paths: &'a StorePaths,
+    store: &'a FilesystemStore,
+}
+
+impl TreeSource for CacheTrees<'_> {
+    fn export(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        dest: &Path,
+    ) -> Result<bool, SourceError> {
+        let Some(snapshot) = find_snapshot(self.store, object, snapshot)
+            .map_err(|error| SourceError(error.to_string()))?
+        else {
+            return Ok(false);
+        };
+        let revision = snapshot.revision();
+        let Some(repo) = crate::try_cache_repo_for_revision(self.paths, object.as_str(), revision)
+            .map_err(|error| SourceError(error.to_string()))?
+        else {
+            return Ok(false);
+        };
+        let Some(commit) = revision
+            .git()
+            .map_err(|error| SourceError(error.to_string()))?
+        else {
+            return Ok(false);
+        };
+        repo.export_tree(&commit, dest)
+            .map_err(|error| SourceError(error.to_string()))
+    }
+}
+
+fn host_tools(config: &kairo_config::Config) -> Vec<HostTool> {
+    config
         .runtime
         .host_tools
-        .into_iter()
+        .iter()
         .map(|tool| HostTool {
-            provides: tool.provides,
-            version: tool.version,
-            path: tool.path,
+            provides: tool.provides.clone(),
+            version: tool.version.clone(),
+            path: tool.path.clone(),
         })
-        .collect())
+        .collect()
+}
+
+/// Development-mode policy (`DECISIONS.md` §33 sub-decision 4): the
+/// revision's signer is an actor this node holds a key for, or one a
+/// keystore actor trusts at `general` scope.
+fn check_signer(
+    store: &FilesystemStore,
+    paths: &StorePaths,
+    object: &ObjectId,
+    signer: &kairo_core::ActorId,
+) -> Result<(), CliError> {
+    let keystore = open_keystore(paths)?;
+    let local = keystore.list_actors().map_err(CliError::ListKeystore)?;
+    if local.contains(signer) {
+        return Ok(());
+    }
+    for by_actor in &local {
+        let trusted = store
+            .latest_trust(by_actor, signer, &TrustScope::general())
+            .map_err(CliError::ReadBranch)?
+            .is_some_and(|trust| {
+                trust.unsigned().body().decision() == Some(TrustDecision::Trusted)
+            });
+        if trusted {
+            return Ok(());
+        }
+    }
+    Err(CliError::BuildSignerUntrusted {
+        signer: signer.clone(),
+        object: object.clone(),
+    })
 }
 
 pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
-    if !args.plan_only {
-        return Err(CliError::BuildNotYetSupported);
-    }
     let (object, selector) = match args.snapshot_ref.parse::<KairoRef>() {
         Ok(KairoRef::Object(object)) => (object, SnapshotSelector::Current),
         Ok(KairoRef::ObjectSnapshot { object, snapshot }) => {
@@ -102,9 +169,15 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
         }
     };
     let store = open_store(paths)?;
+    let (config, source) = load_config(paths)?;
+    if !args.plan_only && !config.runtime.allow_local_process {
+        return Err(CliError::BuildNotAllowed {
+            config: source.path().to_path_buf(),
+        });
+    }
     let manifests = CacheManifests { paths };
     let host = Host::detect();
-    let tools = host_tools(paths)?;
+    let tools = host_tools(&config);
     let resolution = Resolver::new(&store, &manifests, &NoArtifacts, &host, &tools)
         .resolve(&object, &selector, args.target)
         .map_err(|error| CliError::Resolve(Box::new(error)))?;
@@ -124,11 +197,138 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
             })?;
     }
 
-    Ok(if args.json {
-        format_resolution_json(&resolution)
+    if args.plan_only {
+        return Ok(if args.json {
+            format_resolution_json(&resolution)
+        } else {
+            format_resolution(&resolution)
+        });
+    }
+
+    if !resolution.plan.manifest.builds_first.is_empty() {
+        return Err(CliError::BuildPrerequisites {
+            builds: resolution
+                .plan
+                .manifest
+                .builds_first
+                .iter()
+                .map(|build| format!("object:{} target {}", build.object, build.target))
+                .collect(),
+        });
+    }
+    let snapshot_id = SnapshotId::new(resolution.plan.manifest.snapshot.clone())
+        .map_err(|error| CliError::Build(Box::new(kairo_build::BuildError::Id(error))))?;
+    let snapshot = find_snapshot(&store, &object, &snapshot_id)
+        .map_err(|error| CliError::Resolve(Box::new(error)))?
+        .ok_or_else(|| {
+            CliError::Build(Box::new(kairo_build::BuildError::TreeNotHeld {
+                object: object.clone(),
+                snapshot: snapshot_id.clone(),
+            }))
+        })?;
+    let revision = store
+        .get_object_revision(&snapshot.frontier()[0])
+        .map_err(|source| CliError::ReadRevision {
+            statement: snapshot.frontier()[0].clone(),
+            source,
+        })?;
+    check_signer(&store, paths, &object, revision.unsigned().actor())?;
+
+    let trees = CacheTrees {
+        paths,
+        store: &store,
+    };
+    let execution = run_plan(
+        &store,
+        &trees,
+        &resolution.plan,
+        revision.unsigned().created_at().seconds(),
+        &Limits {
+            timeout: Duration::from_secs(config.runtime.timeout_secs),
+        },
+    )
+    .map_err(|error| CliError::Build(Box::new(error)))?;
+
+    let summary = if args.json {
+        format_execution_json(&store, &execution)
     } else {
-        format_resolution(&resolution)
-    })
+        format_execution(&store, &execution)
+    };
+    match execution.record.status {
+        Status::Success => Ok(summary),
+        status => Err(CliError::BuildFailed {
+            status: status.as_str(),
+            summary,
+        }),
+    }
+}
+
+fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
+    let record = &execution.record;
+    let mut out = String::new();
+    let _ = writeln!(out, "execution = {}", execution.id);
+    let _ = writeln!(out, "status = {}", record.status.as_str());
+    let _ = writeln!(out, "plan = {}", record.plan);
+    let _ = writeln!(out, "object = {}", record.object);
+    let _ = writeln!(out, "snapshot = {}", record.snapshot);
+    let _ = writeln!(out, "target = {}", record.target);
+    let _ = writeln!(
+        out,
+        "executor = {}/{} ({})",
+        record.executor.id, record.executor.version, record.executor.isolation
+    );
+    let _ = writeln!(out, "environment = {}", record.environment);
+    let _ = writeln!(out, "host_dependent = yes");
+    if let Some(code) = record.exit_code {
+        let _ = writeln!(out, "exit_code = {code}");
+    }
+    if let Some(artifact) = &record.artifact {
+        let _ = writeln!(out, "artifact = {artifact}");
+    }
+    let _ = writeln!(out, "outputs = {}", record.outputs.len());
+    for output in &record.outputs {
+        let _ = writeln!(
+            out,
+            "  {} -> {} ({} files)",
+            output.name, output.artifact_path, output.files
+        );
+    }
+    if let Some(tree) = &execution.artifact {
+        let _ = writeln!(out, "files = {}", tree.entries.len());
+        for entry in &tree.entries {
+            let _ = writeln!(
+                out,
+                "  {}{} {}",
+                entry.path,
+                if entry.executable { "*" } else { "" },
+                entry.blob
+            );
+        }
+    }
+    let _ = writeln!(out, "stdout = {}", record.logs.stdout);
+    let _ = writeln!(out, "stderr = {}", record.logs.stderr);
+    for line in &record.diagnostics {
+        let _ = writeln!(out, "diagnostic = {line}");
+    }
+    let _ = writeln!(
+        out,
+        "record = {}",
+        kairo_build::record_path(store, &execution.id).display()
+    );
+    out
+}
+
+fn format_execution_json(store: &FilesystemStore, execution: &Execution) -> String {
+    let value = serde_json::json!({
+        "execution": execution.id.to_string(),
+        "record": serde_json::to_value(&execution.record).unwrap_or_default(),
+        "record_path": kairo_build::record_path(store, &execution.id).display().to_string(),
+        "artifact_tree": execution.artifact.as_ref().and_then(|tree| serde_json::to_value(tree).ok()),
+    });
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&value).unwrap_or_default()
+    )
 }
 
 fn format_resolution(resolution: &Resolution) -> String {
@@ -331,7 +531,8 @@ pub(crate) fn run_provider_command(
             json,
         } => {
             let offers = index.offers(&provides);
-            let tools = host_tools(paths)?;
+            let (config, _) = load_config(paths)?;
+            let tools = host_tools(&config);
             let mut matching = Vec::new();
             let mut rejected = Vec::new();
             for offer in offers {

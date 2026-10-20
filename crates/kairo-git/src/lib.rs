@@ -17,6 +17,8 @@ mod transport;
 
 use std::error::Error;
 use std::fmt;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 pub use cache::{FetchLimits, GitCache, RefSnapshot};
@@ -343,6 +345,80 @@ impl Repository {
             .map_err(|error| GitError::Operation(Box::new(error)))?;
         Ok(Some(blob.data.clone()))
     }
+
+    /// Write `revision`'s whole tree under `dest`, which must exist
+    /// and be empty: regular files with their executable bit, symbolic
+    /// links as links. Returns `Ok(false)` when the commit is absent.
+    pub fn export_tree(&self, revision: &GitRevision, dest: &Path) -> Result<bool, GitError> {
+        let oid = self.revision_oid(revision)?;
+        let object = match self.inner.try_find_object(oid) {
+            Ok(Some(object)) => object,
+            Ok(None) => return Ok(false),
+            Err(error) => return Err(GitError::Operation(Box::new(error))),
+        };
+        let commit = object
+            .try_into_commit()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let tree = commit
+            .tree()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        export_tree_into(&tree, dest)?;
+        Ok(true)
+    }
+}
+
+fn export_tree_into(tree: &gix::Tree<'_>, dest: &Path) -> Result<(), GitError> {
+    for entry in tree.iter() {
+        let entry = entry.map_err(|error| GitError::Operation(Box::new(error)))?;
+        let name = std::str::from_utf8(entry.filename()).map_err(|error| {
+            GitError::Operation(Box::new(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("tree entry name is not UTF-8: {error}"),
+            )))
+        })?;
+        if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+            return Err(GitError::Operation(Box::new(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsafe tree entry name {name:?}"),
+            ))));
+        }
+        let path = dest.join(name);
+        let mode = entry.mode();
+        let object = entry
+            .object()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        if mode.is_tree() {
+            fs::create_dir(&path).map_err(|error| GitError::Operation(Box::new(error)))?;
+            let subtree = object
+                .try_into_tree()
+                .map_err(|error| GitError::Operation(Box::new(error)))?;
+            export_tree_into(&subtree, &path)?;
+        } else if mode.is_link() {
+            let target = std::str::from_utf8(&object.data).map_err(|error| {
+                GitError::Operation(Box::new(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("symlink target is not UTF-8: {error}"),
+                )))
+            })?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, &path)
+                .map_err(|error| GitError::Operation(Box::new(error)))?;
+            #[cfg(not(unix))]
+            fs::write(&path, target).map_err(|error| GitError::Operation(Box::new(error)))?;
+        } else if mode.is_blob() {
+            fs::write(&path, &object.data).map_err(|error| GitError::Operation(Box::new(error)))?;
+            #[cfg(unix)]
+            if mode.is_executable() {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                    .map_err(|error| GitError::Operation(Box::new(error)))?;
+            }
+        } else {
+            // A submodule (commit entry) has no content to write.
+            continue;
+        }
+    }
+    Ok(())
 }
 
 fn parse_oid(hex: &str) -> Result<gix::ObjectId, GitError> {
@@ -498,6 +574,72 @@ mod tests {
             .expect("present");
         let text = String::from_utf8(bytes).expect("utf8");
         assert!(text.contains("name = \"two\""));
+    }
+
+    #[test]
+    fn export_tree_writes_files_dirs_links_and_modes() {
+        let (dir, _, second) = init_repo();
+        fs::create_dir(dir.path().join("sub")).expect("mkdir");
+        fs::write(dir.path().join("sub/data.txt"), "data\n").expect("write");
+        fs::write(dir.path().join("run.sh"), "#!/bin/sh\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.path().join("run.sh"), fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+            std::os::unix::fs::symlink("run.sh", dir.path().join("link")).expect("symlink");
+        }
+        run(&dir, &["add", "."]);
+        run(&dir, &["commit", "-m", "tree", "--quiet"]);
+        let head = GitRevision::new(
+            second.format(),
+            String::from_utf8(
+                Command::new("git")
+                    .args([
+                        "-C",
+                        dir.path().to_str().expect("path"),
+                        "rev-parse",
+                        "HEAD",
+                    ])
+                    .output()
+                    .expect("rev-parse")
+                    .stdout,
+            )
+            .expect("utf8")
+            .trim(),
+        )
+        .expect("revision");
+
+        let repo = discover(dir.path()).expect("discover");
+        let out = TempDir::new().expect("tempdir");
+        assert!(repo.export_tree(&head, out.path()).expect("export"));
+        assert_eq!(
+            fs::read_to_string(out.path().join("sub/data.txt")).expect("read"),
+            "data\n"
+        );
+        assert!(fs::read_to_string(out.path().join("kairo.toml"))
+            .expect("read")
+            .contains("name = \"two\""));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(out.path().join("run.sh"))
+                .expect("meta")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o111, 0o111, "executable bit kept");
+            assert_eq!(
+                fs::read_link(out.path().join("link")).expect("link"),
+                PathBuf::from("run.sh")
+            );
+        }
+
+        let absent = GitRevision::new(second.format(), &"0".repeat(second.oid().len()))
+            .expect("well-formed");
+        let empty = TempDir::new().expect("tempdir");
+        assert!(!repo
+            .export_tree(&absent, empty.path())
+            .expect("absent is Ok(false)"));
     }
 
     #[test]

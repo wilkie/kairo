@@ -12,6 +12,7 @@ clap = { version = "4.4", features = ["derive", "env"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+kairo-build = { path = "../kairo-build" }
 kairo-bundle = { path = "../kairo-bundle" }
 kairo-config = { path = "../kairo-config" }
 kairo-core = { path = "../kairo-core" }

@@ -764,7 +764,7 @@ kairo export         [post-v1] subsumed by `bundle export` in v1
 kairo inspect        [post-v1] depends on snapshot resolution
 kairo fetch          [post-v1] depends on Phase 2 §4
 kairo sync           [post-v1] depends on Phase 2 §4
-kairo build          [post-v1] --plan-only implemented (DECISIONS.md §33)
+kairo build          [v1, development mode] DECISIONS.md §33–§34
 kairo provider       [v1] DECISIONS.md §33
 kairo run            [post-v1] depends on Phase 2 §7
 kairo reproduce      [post-v1] depends on Phase 2 §7
@@ -1142,14 +1142,24 @@ Sync must not execute object content.
 
 ## 17. `kairo build`
 
-**[post-v1; `--plan-only` implemented].** `DECISIONS.md` §33–§34.
+**[implemented in development mode].** `DECISIONS.md` §33–§34.
 Planning resolves the target's requirements against this store and
 host into a resolved manifest (`schemas/canonical/resolved-manifest-v1.md`),
 stores it and the plans of the builds it needs first by hash, and
-prints it. Candidates' manifests are read from the managed Git cache
-at their revisions' commits; an object whose tree isn't held is
-reported as skipped. Without `--plan-only` the command refuses: the
-executor is the next slice.
+with `--plan-only` prints it and stops. Candidates' manifests are read
+from the managed Git cache at their revisions' commits; an object
+whose tree isn't held is reported as skipped.
+
+Without `--plan-only`, the native development-mode executor runs the
+plan: a host process with a scrubbed environment and no isolation
+(§34 sub-decision 10). It requires `[runtime] allow_local_process =
+true` (else exit 7) and a revision signer this node holds a key for or
+trusts at `general` scope (else exit 7). A plan with builds needed
+first is refused until build results exist. The declared outputs
+become an artifact (`schemas/canonical/artifact-tree-v1.md`), and an
+unsigned execution record is written under `<store>/executions/`. A
+build that runs and fails, or hits `timeout_secs`, is reported with
+its record and exits 1. Signing a `BuildResult` is the next slice.
 
 Builds a snapshot.
 
@@ -1205,6 +1215,30 @@ skipped:             (held objects the resolver couldn't consider)
 ```
 
 `--json` gives the same with the stored document under `manifest`.
+
+Build output:
+
+```text
+execution = <record id>
+status = success | failure | timeout
+plan = <plan hash>
+object = <id>
+snapshot = <id>
+target = release
+executor = native/1 (none: a host process with a scrubbed environment (development mode))
+environment = none
+host_dependent = yes
+exit_code = 0
+artifact = <artifact id>          (on success)
+outputs = N
+  <name> -> <artifact_path> (<n> files)
+files = N                         (on success; `*` marks executables)
+  <path>[*] <blob id>
+stdout = <blob id>
+stderr = <blob id>
+diagnostic = <line>               (on failure)
+record = <store>/executions/<record id>.json
+```
 
 ### 17.1 `kairo provider`
 

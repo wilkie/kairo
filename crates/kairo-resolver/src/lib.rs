@@ -489,6 +489,24 @@ pub fn current_snapshot(
     snapshot_at(store, object, branch.unsigned().body().revision()).map(Some)
 }
 
+/// The held `Snapshot` with id `snapshot`: the creator's head or one
+/// of the creator's tagged versions, as the resolver would pin it.
+pub fn find_snapshot(
+    store: &FilesystemStore,
+    object: &ObjectId,
+    snapshot: &SnapshotId,
+) -> Result<Option<Snapshot>, ResolveError> {
+    if let Some(current) = current_snapshot(store, object)? {
+        if &current.snapshot_id() == snapshot {
+            return Ok(Some(current));
+        }
+    }
+    Ok(tagged_snapshots(store, object)?
+        .into_iter()
+        .map(|(_, tagged)| tagged)
+        .find(|tagged| &tagged.snapshot_id() == snapshot))
+}
+
 fn snapshot_at(
     store: &FilesystemStore,
     object: &ObjectId,

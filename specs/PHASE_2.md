@@ -451,7 +451,7 @@ per-(system, architecture) seed.
       Or actual build invocation (`kairo build --object <id>`)?
 - [x] Implement deterministic build planning (planner consults the snapshot
       frontier and resolved dependencies).
-- [ ] Implement an MVP executor (probably native subprocess; container /
+- [x] Implement an MVP executor (probably native subprocess; container /
       VM executors are larger work).
 - [ ] Add execution-record bundle type (deferred from `specs/PACKAGE.md`
       §4.4).

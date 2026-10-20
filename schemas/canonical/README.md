@@ -55,3 +55,4 @@ is explicitly a standalone reference.
 - `node-document-v1.md` (signing bytes only; no derived id)
 - `inventory-v1.md` (signing bytes only; no derived id)
 - `resolved-manifest-v1.md` (canonical JSON; derived id is the plan hash)
+- `artifact-tree-v1.md` (canonical JSON; derived id is the artifact id)

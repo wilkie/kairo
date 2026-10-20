@@ -2015,7 +2015,9 @@ fn parses_verify_object_command() {
     ));
 }
 
-use kairo_test_support::git::{build_pack_from, init_git_repo_with_manifest};
+use kairo_test_support::git::{
+    build_pack_from, init_git_repo_with_files, init_git_repo_with_manifest,
+};
 
 #[test]
 fn verify_object_with_real_git_repo_can_reach_valid() -> Result<(), Box<dyn std::error::Error>> {
@@ -8312,7 +8314,10 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             json: false,
         },
     );
-    assert!(matches!(not_yet, Err(CliError::BuildNotYetSupported)));
+    assert!(
+        matches!(not_yet, Err(CliError::BuildNotAllowed { .. })),
+        "{not_yet:?}"
+    );
 
     let no_target = run_in_store(
         store_dir.path(),
@@ -8338,5 +8343,308 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
         },
     );
     assert!(matches!(bad_ref, Err(CliError::NotASnapshotRef { .. })));
+    Ok(())
+}
+
+/// Like [`create_held_object`], with the whole tree given.
+fn create_held_tree(
+    store_dir: &std::path::Path,
+    actor: &str,
+    files: &[(&str, &str)],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let object_id = create_local_object(store_dir, actor)?;
+    let (git_dir, commit_oid) = init_git_repo_with_files(files)?;
+    populate_cache(store_dir, git_dir.path(), &object_id, &commit_oid)?;
+    let revision = run_in_store(
+        store_dir,
+        Command::Revision {
+            command: RevisionCommand::Create {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                revision: format!("git:sha1:{commit_oid}"),
+                manifest: git_dir.path().join("kairo.toml"),
+                parents: vec![],
+                no_attests_reachable_history: false,
+            },
+        },
+    )?;
+    let statement = parse_field(&revision, "statement = ")?;
+    run_in_store(
+        store_dir,
+        Command::Branch {
+            command: BranchCommand::Set {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                revision: statement,
+                name: "head".to_owned(),
+            },
+        },
+    )?;
+    Ok(object_id)
+}
+
+#[test]
+fn build_runs_the_target_in_development_mode_and_records_it(
+) -> Result<(), Box<dyn std::error::Error>> {
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let zlib = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[
+            (
+                "kairo.toml",
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "zlib"
+                [[provides]]
+                provides = "lib:zlib:source"
+                version = "1.3.1"
+                "#,
+            ),
+            ("zlib.h", "/* zlib */\n"),
+        ],
+    )?;
+    let app = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[
+            (
+                "kairo.toml",
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "app"
+                [[dependencies]]
+                kind = "provides"
+                provides = "lib:zlib:source"
+                [[build.targets]]
+                name = "release"
+                command = ["sh", "build.sh"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "tool:sh"
+                [[build.targets.outputs]]
+                name = "cli"
+                path = "dist/app"
+                artifact_path = "bin/app"
+                kind = "file"
+                [[build.targets.outputs]]
+                name = "headers"
+                path = "dist/include"
+                artifact_path = "include"
+                kind = "directory"
+                "#,
+            ),
+            (
+                "build.sh",
+                "#!/bin/sh\nset -e\nmkdir -p dist/include\n\
+                 cp \"$KAIRO_PROVIDER_LIB_ZLIB_SOURCE/zlib.h\" dist/include/\n\
+                 printf 'built at %s\\n' \"$SOURCE_DATE_EPOCH\" > dist/app\nchmod +x dist/app\n",
+            ),
+        ],
+    )?;
+
+    // Development mode is off by default.
+    let denied = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            plan_only: false,
+            json: false,
+        },
+    );
+    assert!(
+        matches!(&denied, Err(CliError::BuildNotAllowed { .. })),
+        "{denied:?}"
+    );
+    assert_eq!(denied.err().map(|error| error.exit_code()), Some(7));
+
+    std::fs::write(
+        store_dir.path().join("config.toml"),
+        "[runtime]\nallow_local_process = true\ntimeout_secs = 60\n\n\
+         [[runtime.host.tools]]\nprovides = \"tool:sh\"\npath = \"/bin/sh\"\n",
+    )?;
+    let built = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            plan_only: false,
+            json: false,
+        },
+    )?;
+    assert!(built.contains("status = success\n"), "{built}");
+    assert!(built.contains("executor = native/1 (none:"), "{built}");
+    assert!(built.contains("host_dependent = yes\n"), "{built}");
+    assert!(built.contains("  cli -> bin/app (1 files)\n"), "{built}");
+    assert!(
+        built.contains("  headers -> include (1 files)\n"),
+        "{built}"
+    );
+    assert!(built.contains("files = 2\n  bin/app* z"), "{built}");
+    assert!(built.contains("\n  include/zlib.h z"), "{built}");
+    let artifact = parse_field(&built, "artifact = ")?;
+    let record_path = parse_field(&built, "record = ")?;
+    assert!(
+        std::path::Path::new(&record_path).is_file(),
+        "{record_path}"
+    );
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&record_path)?)?;
+    assert_eq!(record["status"], "success");
+    assert_eq!(record["artifact"], artifact);
+    assert_eq!(record["host"]["tools"], serde_json::json!(["/bin/sh"]));
+
+    // The artifact's files are blobs in the store, with the build's
+    // SOURCE_DATE_EPOCH taken from the revision.
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let tree = kairo_build::load_artifact(&store, &kairo_core::BlobId::new(artifact)?)?;
+    let app_bytes = kairo_store::BlobStore::get_blob(
+        &store,
+        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+    )?;
+    assert!(String::from_utf8(app_bytes)?.starts_with("built at 1"));
+    let header = kairo_store::BlobStore::get_blob(
+        &store,
+        &kairo_core::BlobId::new(tree.entries[1].blob.clone())?,
+    )?;
+    assert_eq!(header, b"/* zlib */\n");
+    let _ = zlib;
+
+    // A failing build is a recorded failure and a non-zero exit.
+    let broken = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[(
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "broken"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "echo no >&2; exit 2"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.outputs]]
+            name = "cli"
+            path = "dist/app"
+            artifact_path = "bin/app"
+            kind = "file"
+            "#,
+        )],
+    )?;
+    let failed = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{broken}"),
+            target: "release".to_owned(),
+            plan_only: false,
+            json: false,
+        },
+    );
+    let Err(CliError::BuildFailed { status, summary }) = failed else {
+        return Err(format!("expected a recorded failure: {failed:?}").into());
+    };
+    assert_eq!(status, "failure");
+    assert!(summary.contains("exit_code = 2\n"), "{summary}");
+    assert!(
+        summary.contains("diagnostic = \"sh\" exited with status 2\n"),
+        "{summary}"
+    );
+
+    // A revision signed by an actor this node holds no key for and
+    // doesn't trust is refused (exit 7) until a local actor trusts it.
+    let (_other_dir, fixture) = kairo_test_support::store::StoreFixture::temp();
+    let stranger = fixture.make_actor();
+    let actor_store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    kairo_store::ActorStore::put_actor(&actor_store, &stranger.genesis)?;
+    let foreign = {
+        let (git_dir, commit_oid) = init_git_repo_with_files(&[(
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "foreign"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "mkdir -p dist && echo hi > dist/app"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.outputs]]
+            name = "cli"
+            path = "dist/app"
+            artifact_path = "bin/app"
+            kind = "file"
+            "#,
+        )])?;
+        let local_fixture = kairo_test_support::store::StoreFixture::at(store_dir.path());
+        let object = local_fixture.make_object(&stranger, "software");
+        let manifest = std::fs::read_to_string(git_dir.path().join("kairo.toml"))?;
+        let revision = local_fixture.make_revision(
+            &stranger,
+            &object,
+            kairo_statement::RevisionId::new(format!("git:sha1:{commit_oid}")),
+            &manifest,
+            Vec::new(),
+        );
+        local_fixture.set_branch(&stranger, &object, &revision, "head");
+        populate_cache(
+            store_dir.path(),
+            git_dir.path(),
+            object.object_id.as_str(),
+            &commit_oid,
+        )?;
+        object.object_id.to_string()
+    };
+    let refused = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{foreign}"),
+            target: "release".to_owned(),
+            plan_only: false,
+            json: false,
+        },
+    );
+    assert!(
+        matches!(&refused, Err(CliError::BuildSignerUntrusted { signer, .. }) if signer == &stranger.actor_id),
+        "{refused:?}"
+    );
+    assert_eq!(refused.err().map(|error| error.exit_code()), Some(7));
+
+    run_in_store(
+        store_dir.path(),
+        Command::Trust {
+            command: TrustCommand::Grant {
+                by: actor.clone(),
+                of: stranger.actor_id.to_string(),
+                scope: "general".to_owned(),
+                reason: None,
+            },
+        },
+    )?;
+    let allowed = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{foreign}"),
+            target: "release".to_owned(),
+            plan_only: false,
+            json: true,
+        },
+    )?;
+    let value: serde_json::Value = serde_json::from_str(&allowed)?;
+    assert_eq!(value["record"]["status"], "success");
+    assert_eq!(value["artifact_tree"]["entries"][0]["path"], "bin/app");
     Ok(())
 }

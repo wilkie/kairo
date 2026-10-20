@@ -653,6 +653,15 @@ pub struct ExecutionRecord {
 Execution records are operational evidence. They do not by themselves modify object
 truth unless incorporated through valid statements.
 
+The implemented record (`kairo.execution-record.v1`, `crates/kairo-build`)
+is a JSON file under `<store>/executions/<id>.json`, its id a `BlobId`
+over its bytes: plan hash, object, snapshot, target, executor id,
+version and isolation claim, environment contract (`none` in
+development mode), `host_dependent`, host system, architecture and the
+host tools used, start and end times, status (`success`, `failure`,
+`timeout`), exit code, outputs with file counts, the artifact id, the
+stdout and stderr blobs, and diagnostics.
+
 ---
 
 ## 16. Reproducibility
@@ -779,6 +788,15 @@ A local process executor may exist for development or trusted workflows.
 Per `DECISIONS.md` §33–§34 it is Kairo's **development mode**: it
 implements no environment contract, its results are marked
 `host_dependent`, and they are never substitutable or archival.
+Implemented in `crates/kairo-build` as executor `native/1`: a fresh
+workspace under `<store>/build/`, the snapshot's tree at `src/`, each
+provider under `deps/<object>/`, a scrubbed environment (`HOME`,
+`LANG=C`, `SOURCE_DATE_EPOCH`, `KAIRO_SRC`, `KAIRO_PROVIDER_<LABEL>`,
+and a `PATH` of artifact providers' `bin/` directories then declared
+host tools' directories), the command run with no shell in its process
+group and killed at `timeout_secs`, declared outputs collected into an
+artifact tree (`schemas/canonical/artifact-tree-v1.md`), and an
+unsigned record under `<store>/executions/`.
 
 It is inherently less isolated.
 

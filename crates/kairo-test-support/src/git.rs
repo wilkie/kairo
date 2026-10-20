@@ -84,6 +84,38 @@ pub fn init_git_repo_with_manifest_in(
     Ok((dir, oid))
 }
 
+/// Spin up a temp SHA-1 Git repo with `files` (`(path, contents)`,
+/// paths relative, parent directories created) committed once.
+/// Returns `(tempdir, head_oid)`; label the oid `git:sha1:`.
+pub fn init_git_repo_with_files(
+    files: &[(&str, &str)],
+) -> Result<(TempDir, String), Box<dyn std::error::Error>> {
+    let dir = TempDir::new()?;
+    let path = dir.path();
+    run_checked(path, &["init", "--initial-branch=main", "--quiet"])?;
+    run_checked(path, &["config", "user.name", "Kairo Test"])?;
+    run_checked(path, &["config", "user.email", "test@kairo.test"])?;
+    run_checked(path, &["config", "commit.gpgsign", "false"])?;
+    for (name, contents) in files {
+        let file = path.join(name);
+        if let Some(parent) = file.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(file, contents)?;
+    }
+    run_checked(path, &["add", "."])?;
+    run_checked(path, &["commit", "-m", "first", "--quiet"])?;
+    let output = Command::new("git")
+        .current_dir(path)
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        return Err("rev-parse failed".into());
+    }
+    let oid = String::from_utf8(output.stdout)?.trim().to_owned();
+    Ok((dir, oid))
+}
+
 /// Build a Git pack from every commit reachable in `src` (via
 /// `git pack-objects --all --stdout`) and return its raw bytes.
 /// Suitable for piping into `kairo_git::GitCache::ingest_pack` or

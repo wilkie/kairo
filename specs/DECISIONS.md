@@ -3055,11 +3055,12 @@ Sub-decisions:
    temporary directory that holds a copy of the snapshot's tree;
    providers are materialized beside it under `deps/<object>`. The
    environment is scrubbed to `HOME` (the temp dir), `LANG=C`,
-   `SOURCE_DATE_EPOCH` (the revision's timestamp), `KAIRO_*`
-   variables naming the workspace and each provider path, and a
-   `PATH` made of the artifact providers' `bin/` directories followed
-   by the directories of the declared host tools — never the host's
-   own `PATH`. The wall-clock limit kills the process group. Only
+   `SOURCE_DATE_EPOCH` (the revision's timestamp), `KAIRO_SRC` and
+   one `KAIRO_PROVIDER_<LABEL>` per requirement naming the provider's
+   path (or the host tool's), and a `PATH` made of the artifact
+   providers' `bin/` directories followed by the directories of the
+   declared host tools — never the host's own `PATH`, so a command
+   not provided by anything can't start. The wall-clock limit kills the process group. Only
    declared outputs are collected; a missing one fails the build
    (EXECUTOR §14.1). Paths are confined to the workspace (EXECUTOR
    §10.3). There is no network or filesystem isolation and no
@@ -3072,7 +3073,7 @@ Sub-decisions:
    `BlobId` is the artifact id (BUILD §6/§9's "artifact snapshot").
 
 7. **Execution records** are unsigned local JSON under
-   `<store>/executions/`. Each records the plan hash, snapshot,
+   `<store>/executions/<id>.json`, the id a `BlobId` over the bytes. Each records the plan hash, snapshot,
    target, executor id and version, the host (OS, architecture,
    kernel, tool versions for the resolved host labels), start and end
    times, exit status, the artifact id, and log blobs. They are

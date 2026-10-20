@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **Development-mode builds (`DECISIONS.md` §33–§34).** `kairo build
+  <snapshot-ref> --target <name>` runs the plan with the new
+  `kairo-build` crate's native executor — a host process with a
+  scrubbed environment and no isolation — behind `[runtime]
+  allow_local_process = true` and a revision signer this node holds a
+  key for or trusts (exit 7 otherwise). Declared outputs become a
+  content-addressed artifact (`schemas/canonical/artifact-tree-v1.md`)
+  and an unsigned execution record is written under
+  `<store>/executions/`. `kairo-git` can export a commit's tree.
 - **Build planning (`DECISIONS.md` §33–§34).** `kairo build
   <snapshot-ref> --target <name> --plan-only` resolves a target's
   requirements against the local store and host into a

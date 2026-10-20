@@ -14,6 +14,7 @@ use ed25519_dalek as _;
 use http_body_util as _;
 use hyper as _;
 use hyper_util as _;
+use kairo_build as _;
 use kairo_bundle as _;
 use kairo_config as _;
 use kairo_core as _;
