@@ -10,9 +10,10 @@
 #    every submodule its commits pin (the seeds, M2-Planet, M2libc,
 #    mescc-tools, ...), each as its own source, under its real upstream
 #    URL. This needs the network.
-# 2. The native wrapper -- this directory's kairo.toml and kairo.kaem,
-#    which pin every source the AMD64 chain uses at its Release_1.9.1
-#    commit -- is committed as SHA-256 history and created as an object.
+# 2. The native wrapper -- this directory's kairo.toml and
+#    kairo-<arch>.kaem, which pin every source the AMD64 and x86 chains
+#    use at its Release_1.9.1 commit -- is committed as SHA-256 history
+#    and created as an object.
 #
 # Extra arguments go before the command in every `kairo` call, e.g.
 # `--store <path>`. KAIRO names the kairo binary (default: kairo on
@@ -53,11 +54,11 @@ trap 'rm -rf "$WORK"' EXIT
 export GIT_AUTHOR_NAME=kairo-bootstrap GIT_AUTHOR_EMAIL=bootstrap@kairo.invalid
 export GIT_COMMITTER_NAME=kairo-bootstrap GIT_COMMITTER_EMAIL=bootstrap@kairo.invalid
 export GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
-cp "$HERE/kairo.toml" "$HERE/kairo.kaem" "$WORK/"
+cp "$HERE/kairo.toml" "$HERE/kairo-amd64.kaem" "$HERE/kairo-x86.kaem" "$WORK/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
-git -C "$WORK" add kairo.toml kairo.kaem
-git -C "$WORK" commit -q -m "stage0-posix 1.9.1 AMD64 bootstrap"
+git -C "$WORK" add kairo.toml kairo-amd64.kaem kairo-x86.kaem
+git -C "$WORK" commit -q -m "stage0-posix 1.9.1 AMD64 and x86 bootstrap"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)
@@ -73,8 +74,9 @@ cat <<OUT
 wrapper = $WRAPPER
 
 # Add to <store>/config.toml after auditing the seeds (POSIX/AMD64/*-seed
-# against their .hex0 sources in $SEEDS_URL), then
+# and POSIX/x86/*-seed against their .hex0 sources in $SEEDS_URL), then
 #   kairo build object:$WRAPPER --target amd64 --actor $ACTOR
+#   kairo build object:$WRAPPER --target x86 --actor $ACTOR
 [[runtime.seeds]]
 source = "$SEEDS_URL"
 revision = "$SEEDS_REVISION"

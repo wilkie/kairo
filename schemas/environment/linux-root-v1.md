@@ -6,9 +6,12 @@
 environment:linux-root/<arch>
 ```
 
-`<arch>` is the architecture in label spelling: `x86-64`, `aarch64`, ...
-An engine implements the contract only for the architecture it runs
-natively.
+`<arch>` is the architecture in label spelling: `x86-64`, `x86`,
+`aarch64`, ... An engine implements the contract only for an
+architecture the host runs natively. An x86-64 kernel with IA32
+emulation runs `x86` natively, and bubblewrap offers `x86` there only
+when its probe runs a static i386 program in a sandbox
+(`specs/DECISIONS.md` §38 sub-decision 7).
 
 ## Status
 

@@ -3794,16 +3794,18 @@ Sub-decisions:
    outputs (tcc embeds its prefix), so results under the two contracts
    must not be confused. The bubblewrap engine implements both.
 
-6. **The live-bootstrap wrapper** (`bootstrap/live-bootstrap/`):
+6. **The live-bootstrap wrapper** (`bootstrap/live-bootstrap/`), for
+   **x86** (sub-decision 7):
    - live-bootstrap is a source object at a pinned commit; its `steps/`
      and the files of its `seed/` are placed where live-bootstrap's own
      `rootfs.py` puts them (`/steps`, `/`);
    - each distfile the milestone's steps list is a file source,
      placed in `/external/distfiles`;
-   - the stage0-posix wrapper's `bin` artifact (§36–§37) is placed at
-     `/AMD64/bin`, since live-bootstrap pins exactly the same
-     stage0-posix commit; this is Kairo's artifact chaining between
-     native objects, replacing live-bootstrap's rerun of stage0;
+   - the stage0-posix wrapper's x86 `bin` artifact (§36–§37) is
+     placed at `/x86/bin`, and stage0-posix's M2libc at `/M2libc`,
+     since live-bootstrap pins exactly the same stage0-posix commit;
+     this is Kairo's artifact chaining between native objects,
+     replacing live-bootstrap's rerun of stage0;
    - the wrapper supplies `bootstrap.cfg` and a manifest truncated
      after `tcc-0.9.27`, over live-bootstrap's (`overlay = true`), and
      starts from live-bootstrap's `seed/after.kaem`;
@@ -3814,6 +3816,27 @@ Sub-decisions:
    distfiles' hashes and its built packages against the checksums it
    publishes, so a passing build means the archive's output matches
    upstream's.
+
+7. **The milestone is x86, not AMD64.** live-bootstrap's own path,
+   its CI and its published checksums, is x86 (32-bit): for AMD64 it
+   publishes checksums only through mes-0.27.1, and its tcc-0.9.27 step
+   targets i386. Running it unmodified with its checks therefore means
+   x86. An x86-64 Linux kernel with IA32 emulation runs i386 code
+   natively, so on such a host bubblewrap also implements
+   `environment:linux/x86` and `environment:linux-root/x86`, but only
+   when its probe shows it: a tiny static i386 program must run inside a
+   sandbox. Where it doesn't, the x86 contracts aren't offered. The
+   stage0-posix wrapper gains an `x86` target alongside `amd64`, from
+   the same seeds repository and stage0-posix's x86 submodule.
+
+8. **Artifact offers match the consumer's architecture.** Binaries are
+   architecture-specific while provides labels (`tool:kaem`) are not,
+   so an artifact offer is a candidate only when the environment its
+   build target declares has the same architecture (the label's part
+   after `/`) as the environment the consuming target declares. Where
+   either declares none (development mode), offers are not filtered.
+   Content offers are never filtered. Rejected offers are listed among
+   what the resolver considered.
 
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence

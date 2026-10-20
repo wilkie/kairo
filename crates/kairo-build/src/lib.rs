@@ -66,7 +66,7 @@ pub const EXECUTOR_VERSION: u32 = 1;
 pub const BUBBLEWRAP_EXECUTOR_ID: &str = "bubblewrap";
 pub const BUBBLEWRAP_EXECUTOR_VERSION: u32 = 1;
 
-fn executor_info(engine: &Engine) -> ExecutorInfo {
+fn executor_info(engine: &Engine, rooted: bool) -> ExecutorInfo {
     match engine {
         Engine::Native => ExecutorInfo {
             id: EXECUTOR_ID.to_owned(),
@@ -79,9 +79,14 @@ fn executor_info(engine: &Engine) -> ExecutorInfo {
         Engine::Bubblewrap(bwrap) => ExecutorInfo {
             id: BUBBLEWRAP_EXECUTOR_ID.to_owned(),
             version: BUBBLEWRAP_EXECUTOR_VERSION,
-            isolation: "linux namespaces (bubblewrap): only /kairo, /proc, /dev and /tmp visible; \
-                        no network; hostname kairo; uid and gid 1000"
-                .to_owned(),
+            isolation: if rooted {
+                "linux namespaces (bubblewrap): the build tree as /, with /proc, /dev and /tmp \
+                 over it; no network; hostname kairo; uid and gid 1000"
+            } else {
+                "linux namespaces (bubblewrap): only /kairo, /proc, /dev and /tmp visible; \
+                 no network; hostname kairo; uid and gid 1000"
+            }
+            .to_owned(),
             engine: Some(EngineInfo {
                 path: bwrap.path.display().to_string(),
                 version: bwrap.version.clone(),
@@ -366,6 +371,9 @@ pub enum Engine {
 pub struct Bubblewrap {
     pub path: PathBuf,
     pub version: String,
+    /// Whether i386 programs run in its sandboxes: an x86-64 kernel
+    /// with IA32 emulation (`DECISIONS.md` §38 sub-decision 7).
+    pub runs_x86: bool,
 }
 
 impl Bubblewrap {
@@ -403,8 +411,62 @@ impl Bubblewrap {
         Ok(Self {
             path: path.to_path_buf(),
             version,
+            runs_x86: std::env::consts::ARCH == "x86_64" && probe_x86(path),
         })
     }
+}
+
+/// A static i386 program of 96 bytes that exits with status 42 (the
+/// `exit` system call through `int 0x80`).
+fn i386_exit_42() -> Vec<u8> {
+    const BASE: u32 = 0x0804_8000;
+    let code: [u8; 12] = [
+        0xb8, 1, 0, 0, 0, // mov eax, 1 (exit)
+        0xbb, 42, 0, 0, 0, // mov ebx, 42
+        0xcd, 0x80, // int 0x80
+    ];
+    // The ELF header (52 bytes), one program header (32), the code.
+    const SIZE: u32 = 52 + 32 + 12;
+    let mut elf = Vec::with_capacity(96);
+    elf.extend_from_slice(b"\x7fELF\x01\x01\x01");
+    elf.extend_from_slice(&[0; 9]);
+    for half in [2u16, 3] {
+        elf.extend_from_slice(&half.to_le_bytes()); // ET_EXEC, EM_386
+    }
+    for word in [1u32, BASE + 84, 52, 0, 0] {
+        elf.extend_from_slice(&word.to_le_bytes()); // version, entry, phoff, shoff, flags
+    }
+    for half in [52u16, 32, 1, 0, 0, 0] {
+        elf.extend_from_slice(&half.to_le_bytes()); // ehsize, phentsize, phnum, sh*
+    }
+    for word in [1u32, 0, BASE, BASE, SIZE, SIZE, 5, 0x1000] {
+        elf.extend_from_slice(&word.to_le_bytes()); // PT_LOAD, r-x
+    }
+    elf.extend_from_slice(&code);
+    elf
+}
+
+/// Whether the i386 probe program runs inside a sandbox.
+fn probe_x86(bwrap: &Path) -> bool {
+    let Ok(dir) = tempfile::tempdir() else {
+        return false;
+    };
+    let program = dir.path().join("probe");
+    if fs::write(&program, i386_exit_42()).is_err() || set_executable(&program, true).is_err() {
+        return false;
+    }
+    Command::new(bwrap)
+        .args(["--unshare-all", "--unshare-user", "--die-with-parent"])
+        .arg("--ro-bind")
+        .arg(dir.path())
+        .arg("/probe")
+        .args(["--proc", "/proc", "--dev", "/dev", "--", "/probe/probe"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.code() == Some(42))
 }
 
 /// Where `path` (relative, already validated) lands under `src`. No
@@ -1091,7 +1153,7 @@ pub fn run_plan(
         object: manifest.object.clone(),
         snapshot: manifest.snapshot.clone(),
         target: manifest.target.clone(),
-        executor: executor_info(engine),
+        executor: executor_info(engine, rooted),
         environment: manifest.environment.clone(),
         host_dependent: !isolated || manifest.host_dependent,
         host: HostInfo {

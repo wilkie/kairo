@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2023 Samuel Tyler <samuel@samuelt.me>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# live-bootstrap's steps/manifest at b1ceced7, truncated after
+# tcc-0.9.27 for Kairo's second bootstrap milestone (specs/DECISIONS.md
+# §38). The syntax is upstream's; see its manifest for the full list.
+
+build: checksum-transcriber-1.0
+build: simple-patch-1.0
+build: mes-0.27.1
+build: tcc-0.9.26
+build: tcc-0.9.27

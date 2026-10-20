@@ -2,9 +2,10 @@
 //! §37): `bootstrap/stage0-posix/import.sh` archives stage0-posix and,
 //! recursively, every submodule it pins as source objects from their
 //! real upstream URLs, and creates the native wrapper; `kairo build`
-//! then runs the whole AMD64 chain under the bubblewrap engine from the
-//! seeds alone; the artifact matches upstream's `amd64.answers`, read
-//! from the archived source; and `kairo reproduce` matches.
+//! then runs the whole AMD64 chain, and the x86 one (§38 sub-decision
+//! 7), under the bubblewrap engine from the seeds alone; each artifact
+//! matches upstream's `<arch>.answers`, read from the archived source;
+//! and `kairo reproduce` matches.
 //!
 //! Ignored by default: it needs the network (GitHub and Savannah),
 //! bubblewrap, and a few minutes.
@@ -160,43 +161,63 @@ fn stage0_posix_bootstraps_from_archived_sources_under_the_engine() {
     );
 
     std::fs::write(store.join("config.toml"), config).expect("config");
-    let built = kairo(store, &build);
-    assert_eq!(field(&built, "status"), "success", "{built}");
-    assert_eq!(field(&built, "environment"), "environment:linux/x86-64");
-    assert_eq!(field(&built, "host_dependent"), "no");
-    assert!(built.contains("executor = bubblewrap/1"), "{built}");
-    let artifact = field(&built, "artifact").to_owned();
-
-    // The artifact agrees with upstream's published hashes, as the
-    // archived stage0-posix source holds them.
     let stage0 = field(&kairo(store, &["source", "id", STAGE0_URL]), "source").to_owned();
     let cache = kairo_git::GitCache::open(store.join("git")).expect("cache");
     let repo = kairo_git::open(&cache.path_for(&stage0).expect("path")).expect("repo");
     let release = kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, STAGE0_RELEASE)
         .expect("revision");
-    let answers = String::from_utf8(
-        repo.read_blob_at_path(&release, "amd64.answers")
-            .expect("read")
-            .expect("amd64.answers in the release"),
-    )
-    .expect("utf8");
     let blob_store = kairo_store::FilesystemStore::open(store).expect("store");
-    let mut files = std::collections::BTreeMap::new();
-    for line in built.lines().filter(|line| line.starts_with("  bin/")) {
-        let mut parts = line.split_whitespace();
-        let path = parts.next().expect("path").trim_end_matches('*').to_owned();
-        let blob = kairo_core::BlobId::new(parts.next().expect("blob")).expect("blob id");
-        files.insert(path, blob);
+    let mut built_amd64 = String::new();
+    for (target, dir, environment) in [
+        ("amd64", "AMD64", "environment:linux/x86-64"),
+        ("x86", "x86", "environment:linux/x86"),
+    ] {
+        let built = kairo(
+            store,
+            &[
+                "build",
+                snapshot_ref.as_str(),
+                "--target",
+                target,
+                "--actor",
+                actor.as_str(),
+            ],
+        );
+        assert_eq!(field(&built, "status"), "success", "{built}");
+        assert_eq!(field(&built, "environment"), environment);
+        assert_eq!(field(&built, "host_dependent"), "no");
+        assert!(built.contains("executor = bubblewrap/1"), "{built}");
+
+        // The artifact agrees with upstream's published hashes, as the
+        // archived stage0-posix source holds them.
+        let answers = String::from_utf8(
+            repo.read_blob_at_path(&release, &format!("{target}.answers"))
+                .expect("read")
+                .expect("the answers in the release"),
+        )
+        .expect("utf8");
+        let mut files = std::collections::BTreeMap::new();
+        for line in built.lines().filter(|line| line.starts_with("  bin/")) {
+            let mut parts = line.split_whitespace();
+            let path = parts.next().expect("path").trim_end_matches('*').to_owned();
+            let blob = kairo_core::BlobId::new(parts.next().expect("blob")).expect("blob id");
+            files.insert(path, blob);
+        }
+        for line in answers.lines() {
+            let (digest, path) = line.split_once("  ").expect("answers line");
+            let path = path.replacen(&format!("{dir}/bin/"), "bin/", 1);
+            let blob = files
+                .get(&path)
+                .unwrap_or_else(|| panic!("{target}: {path} is not in the artifact"));
+            let bytes = kairo_store::BlobStore::get_blob(&blob_store, blob).expect("blob");
+            assert_eq!(sha256(&bytes), digest, "{target}: {path}");
+        }
+        if target == "amd64" {
+            built_amd64 = built;
+        }
     }
-    for line in answers.lines() {
-        let (digest, path) = line.split_once("  ").expect("answers line");
-        let path = path.replacen("AMD64/bin/", "bin/", 1);
-        let blob = files
-            .get(&path)
-            .unwrap_or_else(|| panic!("{path} is not in the artifact"));
-        let bytes = kairo_store::BlobStore::get_blob(&blob_store, blob).expect("blob");
-        assert_eq!(sha256(&bytes), digest, "{path}");
-    }
+    let built = built_amd64;
+    let artifact = field(&built, "artifact").to_owned();
 
     // Another run of the same plan gives the same artifact.
     let result = field(&built, "result").to_owned();

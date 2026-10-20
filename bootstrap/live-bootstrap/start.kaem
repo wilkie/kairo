@@ -1,0 +1,26 @@
+# The wrapper's start (specs/DECISIONS.md §38 sub-decision 6), run by
+# stage0-posix's kaem from the archive's x86 artifact at /x86/bin. It
+# stands in for the end of stage0-posix's kaem.run, which live-bootstrap
+# would otherwise rerun: the variables x86/kaem.run sets, verbatim,
+# then its hook, `exec kaem --file ./after.kaem` from /. Like
+# live-bootstrap's own rootfs.py, it first copies the seed files to /.
+ARCH="x86"
+ARCH_DIR="x86"
+TOOLS="../${ARCH_DIR}/bin"
+BLOOD_FLAG=" "
+BASE_ADDRESS="0x08048000"
+ENDIAN_FLAG="--little-endian"
+BINDIR="../${ARCH_DIR}/bin"
+BUILDDIR="../${ARCH_DIR}/artifact"
+TMPDIR="${BUILDDIR}"
+OPERATING_SYSTEM="Linux"
+cd /seed
+/x86/bin/cp after.kaem /after.kaem
+/x86/bin/cp configurator.c /configurator.c
+/x86/bin/cp configurator.x86.checksums /configurator.x86.checksums
+/x86/bin/cp preseeded.kaem /preseeded.kaem
+/x86/bin/cp script-generator.c /script-generator.c
+/x86/bin/cp script-generator.x86.checksums /script-generator.x86.checksums
+/x86/bin/cp seed.kaem /seed.kaem
+cd /
+/x86/bin/kaem --verbose --strict --file ./after.kaem

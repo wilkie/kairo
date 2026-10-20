@@ -684,3 +684,94 @@ fn unknown_targets_missing_trees_and_tampered_manifests_are_errors() -> TestResu
     assert!(index.skipped[0].reason.contains("not held"));
     Ok(())
 }
+
+#[test]
+fn artifact_offers_must_be_built_for_the_consumers_architecture() -> TestResult {
+    let mut world = World::new();
+    let built_for = |arch: &str| {
+        manifest(
+            &format!("tool-{arch}"),
+            &format!(
+                r#"
+                [[provides]]
+                provides = "tool:kaem"
+                target = "release"
+                output = "bin"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "environment:linux/{arch}"
+                [[build.targets.outputs]]
+                name = "bin"
+                path = "out/bin"
+                artifact_path = "bin"
+                kind = "directory"
+                "#
+            ),
+        )
+    };
+    let (amd64, _) = world.object(&built_for("x86-64"));
+    let (x86, _) = world.object(&built_for("x86"));
+    let consumer = |arch: &str| {
+        manifest(
+            "app",
+            &format!(
+                r#"
+                [[dependencies]]
+                kind = "provides"
+                provides = "environment:linux-root/{arch}"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "tool:kaem"
+                [[build.targets.outputs]]
+                name = "bin"
+                path = "out"
+                artifact_path = "out"
+                kind = "directory"
+                "#
+            ),
+        )
+    };
+    let mut host = World::host();
+    host.engines = [
+        "environment:linux/x86-64",
+        "environment:linux/x86",
+        "environment:linux-root/x86-64",
+        "environment:linux-root/x86",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    for (arch, wanted) in [("x86", &x86), ("x86-64", &amd64)] {
+        let (app, _) = world.object(&consumer(arch));
+        let resolution = world.resolve_with(&NoArtifacts, &host, &[], &app.object_id, "release")?;
+        let chosen = resolution
+            .plan
+            .manifest
+            .requirements
+            .iter()
+            .find_map(|requirement| match &requirement.resolved {
+                Resolved::Artifact { object, .. } => Some(object.clone()),
+                _ => None,
+            });
+        assert_eq!(chosen, Some(wanted.object_id.to_string()), "{arch}");
+        // The other architecture's offer was never an alternative.
+        assert!(resolution.diagnostics.alternatives.is_empty(), "{arch}");
+    }
+
+    // With only the wrong architecture held, nothing satisfies it.
+    let mut world = World::new();
+    world.object(&built_for("x86-64"));
+    let (app, _) = world.object(&consumer("x86"));
+    let unsatisfied = world.resolve_with(&NoArtifacts, &host, &[], &app.object_id, "release");
+    assert!(
+        matches!(&unsatisfied, Err(ResolveError::Unsatisfied(details))
+            if details.considered.iter().any(|line| line.contains("built for environment:linux/x86-64, not x86"))),
+        "{unsatisfied:?}"
+    );
+    Ok(())
+}

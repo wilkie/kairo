@@ -302,10 +302,20 @@ impl RunPolicy {
     /// The host, with the contracts its working engines implement.
     fn host(&self) -> Host {
         let mut host = Host::detect();
-        // Bubblewrap implements both Linux contracts (§35, §38).
+        // Bubblewrap implements both Linux contracts (§35, §38), and on
+        // an x86-64 kernel that runs i386, both for x86 too (§38
+        // sub-decision 7).
         if !self.engines.is_empty() {
             host.engines.push(host.contract());
             host.engines.push(host.root_contract());
+        }
+        if host.arch == "x86-64" && self.engines.iter().any(|engine| engine.runs_x86) {
+            let x86 = Host {
+                arch: "x86".to_owned(),
+                ..host.clone()
+            };
+            host.engines.push(x86.contract());
+            host.engines.push(x86.root_contract());
         }
         host
     }

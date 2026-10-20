@@ -1,21 +1,19 @@
-# The stage0-posix bootstrap for AMD64 (specs/DECISIONS.md §36, §37):
-# a native object that builds stage0-posix Release_1.9.1 from its seeds
-# under the bubblewrap engine. It holds nothing upstream wrote; every
-# upstream repository is a source object, pinned here by its exact
+# The stage0-posix bootstrap for AMD64 and x86 (specs/DECISIONS.md §36,
+# §37, §38 sub-decision 7): a native object that builds stage0-posix
+# Release_1.9.1 from its seeds under the bubblewrap engine. It holds
+# nothing upstream wrote; every upstream repository is a source object,
+# pinned here by its exact
 # Release_1.9.1 commit and placed at its upstream path, so the archive
-# proves which upstream commits the build used. Only the AMD64 chain's
-# repositories are pinned; the other architectures' submodules are
+# proves which upstream commits the build used. The repositories every
+# chain uses are pinned here; each target adds its architecture's
+# repository and environment. The other architectures' submodules are
 # archived by `kairo source fetch` but not built.
 
 [kairo]
 schema = 1
 kind = "software"
-name = "stage0-posix-amd64-bootstrap"
-summary = "stage0-posix 1.9.1 for AMD64: hex0 to M2-Planet and mescc-tools from 847 bytes of seed."
-
-[[dependencies]]
-kind = "provides"
-provides = "environment:linux/x86-64"
+name = "stage0-posix-bootstrap"
+summary = "stage0-posix 1.9.1 for AMD64 and x86: hex0 to M2-Planet and mescc-tools from seeds of under a kilobyte."
 
 # stage0-posix
 [[dependencies]]
@@ -24,20 +22,13 @@ source = "https://github.com/oriansj/stage0-posix"
 revision = "git:sha1:45d90f5955b6907dc6cdea9ebafce558359edcd3"
 path = "stage0"
 
-# AMD64
-[[dependencies]]
-kind = "source"
-source = "https://github.com/oriansj/stage0-posix-amd64"
-revision = "git:sha1:82efa0d6be1c9bb993a7a62af1cccd8d2cda91f6"
-path = "stage0/AMD64"
-
 # bootstrap-seeds
 [[dependencies]]
 kind = "source"
 source = "https://github.com/oriansj/bootstrap-seeds"
 revision = "git:sha1:cedec6b8066d1db229b6c77d42d120a23c6980ed"
 path = "stage0/bootstrap-seeds"
-seed = true   # hex0-seed (229 bytes) and kaem-optional-seed (618 bytes)
+seed = true   # per architecture, hex0-seed and kaem-optional-seed
 
 # M2libc
 [[dependencies]]
@@ -106,14 +97,51 @@ path = "stage0/mescc-tools-extra/M2libc"
 name = "amd64"
 # Phases 0-23 from the seeds alone, ending in upstream's own
 # `sha256sum -c amd64.answers`.
-command = ["./bootstrap-seeds/POSIX/AMD64/kaem-optional-seed", "../kairo.kaem"]
+command = ["./bootstrap-seeds/POSIX/AMD64/kaem-optional-seed", "../kairo-amd64.kaem"]
 workdir = "stage0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/stage0-posix-amd64"
+revision = "git:sha1:82efa0d6be1c9bb993a7a62af1cccd8d2cda91f6"
+path = "stage0/AMD64"
 
 [[build.targets.outputs]]
 name = "bin"
 path = "AMD64/bin"
 artifact_path = "bin"
 kind = "directory"
+
+[[build.targets]]
+name = "x86"
+# Phases 0-23 from the seeds alone, ending in upstream's own
+# `sha256sum -c x86.answers`.
+# i386 code, so it needs a host whose kernel runs it (§38).
+command = ["./bootstrap-seeds/POSIX/x86/kaem-optional-seed", "../kairo-x86.kaem"]
+workdir = "stage0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/stage0-posix-x86"
+revision = "git:sha1:3b9c2bb6d4155e4f2e5f642b5e0f59255dfc5934"
+path = "stage0/x86"
+
+[[build.targets.outputs]]
+name = "bin"
+path = "x86/bin"
+artifact_path = "bin"
+kind = "directory"
+
+# What each target's bin output provides; the resolver picks the one
+# built for the consumer's architecture (§38 sub-decision 8).
 
 [[provides]]
 provides = "tool:kaem"
@@ -233,4 +261,124 @@ output = "bin"
 provides = "tool:wrap"
 version = "1.9.1"
 target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:kaem"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:hex2"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:M1"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:blood-elf"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:M2-Planet"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:M2-Mesoplanet"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:get_machine"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:catm"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:cp"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:chmod"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:mkdir"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:rm"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:sha256sum"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:match"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:replace"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:untar"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:ungz"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:unbz2"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:unxz"
+version = "1.9.1"
+target = "x86"
+output = "bin"
+
+[[provides]]
+provides = "tool:wrap"
+version = "1.9.1"
+target = "x86"
 output = "bin"

@@ -85,6 +85,17 @@ pub(crate) fn format_manifest_inspection(manifest: &ObjectManifest) -> String {
     output
 }
 
+fn push_placement(output: &mut String, placement: Option<&kairo_object::Placement>, indent: &str) {
+    let Some(placement) = placement else { return };
+    output.push_str(&format!("{indent}  path = {}\n", placement.path()));
+    if let Some(from) = placement.from() {
+        output.push_str(&format!("{indent}  from = {from}\n"));
+    }
+    if placement.overlay() {
+        output.push_str(&format!("{indent}  overlay = true\n"));
+    }
+}
+
 fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration], indent: &str) {
     for dependency in dependencies {
         match dependency {
@@ -93,6 +104,7 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                 if let Some(version) = dependency.version() {
                     output.push_str(&format!("{indent}  version = {version}\n"));
                 }
+                push_placement(output, dependency.placement(), indent);
             }
             DependencyDeclaration::Source(dependency) => {
                 output.push_str(&format!(
@@ -100,9 +112,7 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                     dependency.url(),
                     dependency.revision()
                 ));
-                if let Some(path) = dependency.path() {
-                    output.push_str(&format!("{indent}  path = {path}\n"));
-                }
+                push_placement(output, dependency.placement(), indent);
                 if dependency.seed() {
                     output.push_str(&format!("{indent}  seed = true\n"));
                 }
@@ -113,6 +123,9 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                     dependency.sha256(),
                     dependency.path()
                 ));
+                if dependency.overlay() {
+                    output.push_str(&format!("{indent}  overlay = true\n"));
+                }
             }
             DependencyDeclaration::Object(dependency) => {
                 output.push_str(&format!("{indent}object {}\n", dependency.object()));
@@ -124,6 +137,7 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                         output.push_str(&format!("{indent}  snapshot = {snapshot}\n"));
                     }
                 }
+                push_placement(output, dependency.placement(), indent);
             }
         }
     }

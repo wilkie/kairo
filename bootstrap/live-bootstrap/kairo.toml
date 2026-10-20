@@ -1,0 +1,97 @@
+# The live-bootstrap bootstrap for x86, through tcc-0.9.27
+# (specs/DECISIONS.md §38): a native object that runs live-bootstrap's
+# own scripts, unmodified, from the archive's stage0-posix x86 artifact
+# to Mes and tcc under the engine. Every input is pinned: live-bootstrap
+# and M2libc as source objects by commit, each distfile as a file source
+# by its SHA-256, and stage0-posix as the artifact its wrapper builds.
+# Each step checks its distfiles and what it built against the
+# checksums live-bootstrap publishes, so a success agrees with upstream.
+
+[kairo]
+schema = 1
+kind = "software"
+name = "live-bootstrap-x86"
+summary = "live-bootstrap b1ceced7 for x86 through tcc-0.9.27: Mes, then tcc, from stage0-posix."
+
+# The guest's / is this tree; live-bootstrap assumes it owns it.
+[[dependencies]]
+kind = "provides"
+provides = "environment:linux-root/x86"
+
+# live-bootstrap's steps, under the wrapper's bootstrap.cfg and
+# truncated manifest, which win.
+[[dependencies]]
+kind = "source"
+source = "https://github.com/fosslinux/live-bootstrap"
+revision = "git:sha1:b1ceced7ea8a819a26f23796f6dd7ae8496a33a4"
+path = "steps"
+from = "steps"
+overlay = true
+
+# Its seed files; start.kaem copies them to /, as rootfs.py does.
+[[dependencies]]
+kind = "source"
+source = "https://github.com/fosslinux/live-bootstrap"
+revision = "git:sha1:b1ceced7ea8a819a26f23796f6dd7ae8496a33a4"
+path = "seed"
+from = "seed"
+
+# stage0-posix's M2libc at Release_1.9.1, where seed.kaem's
+# M2LIBC_PATH points.
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:68a23cfd05d5a355ba7a30c770d684cbe86fcc4e"
+path = "M2libc"
+
+# stage0-posix 1.9.1's x86 tools, built by its wrapper, where
+# live-bootstrap's seed looks for them (/${ARCH_DIR}/bin).
+[[dependencies]]
+kind = "provides"
+provides = "tool:kaem"
+version = "1.9.1"
+path = "x86"
+
+# The distfiles the steps check and unpack.
+[[dependencies]]
+kind = "file"
+sha256 = "183a40ea47ea49f8a1e3bd1b9d12e676374d64d63bc79e7bc1ae7d673dfdf25d"
+path = "external/distfiles/mes-0.27.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "708c943f89c972910e9544ee077771acbd0a2c0fc6d33496fe158264ddb65327"
+path = "external/distfiles/nyacc-1.00.2-lb1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "6b8cbd0a5fed0636d4f0f763a603247bc1935e206e1cc5bda6a2818bab6e819f"
+path = "external/distfiles/tcc-0.9.26.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
+path = "external/distfiles/tcc-0.9.27.tar.bz2"
+
+[[build.targets]]
+name = "x86"
+# Each step ends in upstream's own `sha256sum -c` of what it built.
+command = ["/x86/bin/kaem", "--verbose", "--strict", "--file", "/start.kaem"]
+
+[[build.targets.outputs]]
+name = "usr"
+path = "usr"
+artifact_path = "usr"
+kind = "directory"
+
+[[provides]]
+provides = "tool:mes"
+version = "0.27.1"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:tcc"
+version = "0.9.27"
+target = "x86"
+output = "usr"

@@ -117,6 +117,13 @@ Candidate evidence may include:
 
 ### 4.2 Candidate Selection
 
+An artifact candidate is eligible only when the environment its build
+target declares has the same architecture as the environment the
+consuming target declares (`DECISIONS.md` §38 sub-decision 8): binaries
+are for one architecture while labels such as `tool:kaem` are not.
+Where either side declares no environment, candidates are not filtered;
+content candidates never are.
+
 The planner ranks candidates using local policy.
 
 Signals may include:

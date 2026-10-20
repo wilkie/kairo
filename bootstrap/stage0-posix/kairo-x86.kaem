@@ -1,0 +1,6 @@
+# Run by the seed kaem (kaem-optional-seed) from stage0/: the three
+# lines of upstream's kaem.x86, so the whole x86 chain starts from
+# the seeds with no shell (specs/DECISIONS.md §36).
+./bootstrap-seeds/POSIX/x86/kaem-optional-seed ./x86/mescc-tools-seed-kaem.kaem
+./x86/artifact/kaem-0 ./x86/mescc-tools-mini-kaem.kaem
+./x86/bin/kaem --verbose --strict --file ./x86/kaem.run

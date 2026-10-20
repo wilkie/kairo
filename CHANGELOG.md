@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap through tcc-0.9.27 for x86 (`DECISIONS.md` §38).**
+  `bootstrap/live-bootstrap/` is a native wrapper that runs
+  live-bootstrap `b1ceced7`'s own scripts, unmodified, under
+  `environment:linux-root/x86` from the stage0-posix x86 artifact
+  through Mes 0.27.1 to tcc 0.9.27, every step passing upstream's own
+  checksums; live-bootstrap and M2libc are pinned as sources, the four
+  distfiles as file sources. The stage0-posix wrapper gains an `x86`
+  target. On an x86-64 host whose kernel runs i386 (probed in a
+  sandbox), bubblewrap also implements `environment:linux/x86` and
+  `environment:linux-root/x86`. Artifact offers are now candidates only
+  when built for the consumer's architecture (sub-decision 8).
+
 - **Placement options and the `linux-root` contract (`DECISIONS.md`
   §38 sub-decisions 4–5).** A dependency's `path` placement can take
   `from = "<subpath>"` (only that subtree) and `overlay = true` (fill

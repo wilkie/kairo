@@ -514,6 +514,34 @@ pub struct Offer {
     pub version: Option<String>,
     /// `Some((target, output))` for an artifact provider.
     pub artifact: Option<(String, String)>,
+    /// The environment contract the artifact's build target declares,
+    /// if any (§38 sub-decision 8).
+    pub environment: Option<String>,
+}
+
+/// The environment contract a target declares, among its own and its
+/// manifest's dependencies.
+pub fn declared_environment(
+    manifest: &ObjectManifest,
+    target: &kairo_object::BuildTarget,
+) -> Option<String> {
+    manifest
+        .dependencies()
+        .iter()
+        .chain(target.dependencies())
+        .find_map(|dependency| match dependency {
+            DependencyDeclaration::Provides(dependency)
+                if dependency.provides().starts_with(ENVIRONMENT_PREFIX) =>
+            {
+                Some(dependency.provides().to_owned())
+            }
+            _ => None,
+        })
+}
+
+/// A contract label's architecture: what follows its `/`.
+fn contract_arch(label: &str) -> &str {
+    label.rsplit_once('/').map_or(label, |(_, arch)| arch)
 }
 
 impl Offer {
@@ -585,26 +613,31 @@ impl Index {
     /// Candidates offering `label`, in rank order (artifact providers
     /// first, then by object id).
     pub fn offers(&self, label: &str) -> Vec<Offer> {
-        let mut offers: Vec<Offer> = self
-            .candidates
-            .iter()
-            .flat_map(|candidate| {
-                candidate
-                    .manifest
-                    .provides()
-                    .iter()
-                    .filter(|declaration| declaration.provides() == label)
-                    .map(move |declaration| Offer {
-                        object: candidate.object.clone(),
-                        snapshot: candidate.snapshot.clone(),
-                        provides: declaration.provides().to_owned(),
-                        version: declaration.version().map(str::to_owned),
-                        artifact: declaration.artifact().map(|artifact| {
-                            (artifact.target().to_owned(), artifact.output().to_owned())
-                        }),
-                    })
-            })
-            .collect();
+        let mut offers: Vec<Offer> =
+            self.candidates
+                .iter()
+                .flat_map(|candidate| {
+                    candidate
+                        .manifest
+                        .provides()
+                        .iter()
+                        .filter(|declaration| declaration.provides() == label)
+                        .map(move |declaration| Offer {
+                            object: candidate.object.clone(),
+                            snapshot: candidate.snapshot.clone(),
+                            provides: declaration.provides().to_owned(),
+                            version: declaration.version().map(str::to_owned),
+                            artifact: declaration.artifact().map(|artifact| {
+                                (artifact.target().to_owned(), artifact.output().to_owned())
+                            }),
+                            environment: declaration.artifact().and_then(|artifact| {
+                                candidate.manifest.build_target(artifact.target()).and_then(
+                                    |target| declared_environment(&candidate.manifest, target),
+                                )
+                            }),
+                        })
+                })
+                .collect();
         offers.sort_by(|a, b| {
             a.rank()
                 .cmp(&b.rank())
@@ -907,6 +940,7 @@ impl<'a> Resolver<'a> {
         let mut needed_first: Vec<BuildFirst> = Vec::new();
         // Under an engine, host tools are not candidates (§35
         // sub-decision 4), so the environment is settled first.
+        let consumer_environment = declared_environment(&manifest, target);
         let isolated = manifest
             .dependencies()
             .iter()
@@ -951,6 +985,7 @@ impl<'a> Resolver<'a> {
                             dependency.provides(),
                             dependency.version(),
                             isolated,
+                            consumer_environment.as_deref(),
                             stack,
                             prerequisites,
                             &mut needed_first,
@@ -1130,6 +1165,7 @@ impl<'a> Resolver<'a> {
         label: &str,
         version: Option<&str>,
         isolated: bool,
+        consumer_environment: Option<&str>,
         stack: &mut Vec<(ObjectId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
@@ -1138,6 +1174,17 @@ impl<'a> Resolver<'a> {
         let mut considered = Vec::new();
         let mut matching = Vec::new();
         for offer in index.offers(label) {
+            // Binaries are for one architecture (§38 sub-decision 8).
+            if let (Some(wanted), Some(built)) = (consumer_environment, &offer.environment) {
+                if contract_arch(wanted) != contract_arch(built) {
+                    considered.push(format!(
+                        "{} is built for {built}, not {}",
+                        offer.describe(),
+                        contract_arch(wanted)
+                    ));
+                    continue;
+                }
+            }
             if version_matches(version, offer.version.as_deref()) {
                 matching.push(offer);
             } else {

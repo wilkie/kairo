@@ -729,6 +729,24 @@ fn the_bubblewrap_engine_runs_in_an_empty_root_with_providers_only() -> TestResu
 }
 
 #[test]
+fn the_probe_reports_whether_sandboxes_run_i386() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    // The same program, run directly, says whether this kernel runs
+    // i386 at all.
+    let dir = tempfile::TempDir::new()?;
+    let program = dir.path().join("probe");
+    fs::write(&program, i386_exit_42())?;
+    set_executable(&program, true)?;
+    let direct = std::process::Command::new(&program)
+        .status()
+        .is_ok_and(|status| status.code() == Some(42));
+    assert_eq!(bwrap.runs_x86, direct && std::env::consts::ARCH == "x86_64");
+    Ok(())
+}
+
+#[test]
 fn a_probe_of_a_missing_engine_says_why() {
     let error = Bubblewrap::probe(Path::new("/nonexistent/bwrap")).expect_err("no such engine");
     assert!(error.contains("cannot run"), "{error}");
@@ -913,6 +931,11 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
         world.blob_text(&record.logs.stderr)
     );
     assert_eq!(record.environment, contract);
+    assert!(
+        record.executor.isolation.contains("the build tree as /"),
+        "{}",
+        record.executor.isolation
+    );
     let tree = execution.artifact.as_ref().expect("artifact");
     let report = world.blob_text(&tree.entries[0].blob);
     let lines: Vec<&str> = report.lines().collect();
