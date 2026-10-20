@@ -730,6 +730,22 @@ The canonical form is documented in:
 schemas/canonical/source-observation-v1.md
 ```
 
+### 4.3b FileObservation Statement
+
+A `FileObservation` records one download of a file source
+(`DECISIONS.md` §38): fetching `url`, the observer got `size` bytes
+hashing to `sha256`. Its `source` is the object id the hash derives,
+since a file source is identified by its bytes; mirrors of one file are
+several observations of one source. Signing it claims the fetch and
+holding the bytes; observations never supersede each other. Chained in
+the signer's object chain for the file source.
+
+The canonical form is documented in:
+
+```text
+schemas/canonical/file-observation-v1.md
+```
+
 > The following sketches (§4.4–§4.6) predate the PascalCase, `version:
 > 1` convention and are superseded in form by `DECISIONS.md` §33; their
 > types are defined when built.

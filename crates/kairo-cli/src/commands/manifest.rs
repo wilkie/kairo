@@ -107,6 +107,13 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                     output.push_str(&format!("{indent}  seed = true\n"));
                 }
             }
+            DependencyDeclaration::File(dependency) => {
+                output.push_str(&format!(
+                    "{indent}file sha256:{}\n{indent}  path = {}\n",
+                    dependency.sha256(),
+                    dependency.path()
+                ));
+            }
             DependencyDeclaration::Object(dependency) => {
                 output.push_str(&format!("{indent}object {}\n", dependency.object()));
                 match dependency.selector() {

@@ -21,6 +21,10 @@ pub fn encode_u32(out: &mut Vec<u8>, value: u32) {
     out.extend(value.to_be_bytes());
 }
 
+pub fn encode_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend(value.to_be_bytes());
+}
+
 pub fn encode_i64(out: &mut Vec<u8>, value: i64) {
     out.extend(value.to_be_bytes());
 }

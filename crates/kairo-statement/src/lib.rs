@@ -1,10 +1,15 @@
 //! Signed statement envelope primitives.
 
+mod file_source;
 mod git_revision;
 pub mod json;
 mod source;
 pub mod verify;
 
+pub use file_source::{
+    FileObservationBody, FileSourceGenesis, FileUrl, FileUrlError, Sha256Digest, Sha256DigestError,
+    FILE_SOURCE_GENESIS_DOMAIN,
+};
 pub use git_revision::{check_revision_ids, GitObjectFormat, GitRevision, GitRevisionError};
 pub use source::{
     ObservedRef, SourceGenesis, SourceObservationBody, SourceObservationShapeError, SourceUrl,
@@ -1319,6 +1324,7 @@ pub enum StatementKind {
     ActorAttestationThresholdChange,
     BuildResult,
     SourceObservation,
+    FileObservation,
 }
 
 impl StatementKind {
@@ -1340,6 +1346,7 @@ impl StatementKind {
             Self::ActorAttestationThresholdChange => "ActorAttestationThresholdChange",
             Self::BuildResult => "BuildResult",
             Self::SourceObservation => "SourceObservation",
+            Self::FileObservation => "FileObservation",
         }
     }
 
@@ -1361,6 +1368,7 @@ impl StatementKind {
             "ActorAttestationThresholdChange" => Ok(Self::ActorAttestationThresholdChange),
             "BuildResult" => Ok(Self::BuildResult),
             "SourceObservation" => Ok(Self::SourceObservation),
+            "FileObservation" => Ok(Self::FileObservation),
             other => Err(StatementKindParseError {
                 input: other.to_owned(),
             }),
@@ -3488,6 +3496,7 @@ mod tests {
             StatementKind::ActorAttestationThresholdChange,
             StatementKind::BuildResult,
             StatementKind::SourceObservation,
+            StatementKind::FileObservation,
         ] {
             assert_eq!(StatementKind::parse(kind.as_str()), Ok(kind));
         }

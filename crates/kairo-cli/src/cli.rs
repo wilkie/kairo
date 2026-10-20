@@ -249,10 +249,12 @@ pub(crate) enum Command {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum SourceCommand {
-    /// Print a repository URL's canonical form and the source object
-    /// id every node derives from it. Reads and writes nothing.
+    /// Print a repository URL's canonical form, or a file's SHA-256,
+    /// and the source object id every node derives from it. Reads and
+    /// writes nothing.
     Id {
-        /// An `https`, `git`, or `ssh` repository URL.
+        /// An `https`, `git`, or `ssh` repository URL, or a file's
+        /// SHA-256 as 64 lowercase hex digits.
         url: String,
     },
     /// Fetch every branch and tag of a source into the Git cache and
@@ -282,6 +284,24 @@ pub(crate) enum SourceCommand {
         #[arg(long)]
         require_complete: bool,
     },
+    /// Download one file (a distfile, a release tarball) and archive it
+    /// as a file source identified by its SHA-256 (`specs/DECISIONS.md`
+    /// §38), signing an observation of where it came from. Fetching the
+    /// same file from a mirror adds an observation of the same source.
+    FetchFile {
+        /// An `https` URL (`http` only for a loopback host). One
+        /// redirect is followed, to another `https` URL.
+        url: String,
+        /// The SHA-256 the bytes must hash to, as 64 lowercase hex
+        /// digits. Bytes that don't are refused and nothing is kept.
+        /// Without it, whatever was served is archived and its hash
+        /// printed.
+        #[arg(long)]
+        sha256: Option<String>,
+        /// The actor that signs the observation.
+        #[arg(long)]
+        actor: String,
+    },
     /// Pull a source from a federation peer, as `kairo fetch` pulls an
     /// object (`specs/DECISIONS.md` §37): its genesis, every
     /// observation (verified under its signer, never re-signed), and the
@@ -303,7 +323,7 @@ pub(crate) enum SourceCommand {
     /// What is known of a source: its observations, newest first, and
     /// the refs the newest one saw.
     Show {
-        /// A repository URL, or `object:<source id>`.
+        /// A repository URL, a file's SHA-256, or `object:<source id>`.
         source: String,
         #[arg(long)]
         json: bool,

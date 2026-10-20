@@ -10140,3 +10140,147 @@ fn pulling_a_native_object_brings_the_sources_it_pins() -> Result<(), Box<dyn st
     );
     Ok(())
 }
+
+/// A loopback HTTP server answering each path in `routes` with its
+/// status line, headers, and body, for `kairo source fetch-file`.
+fn serve_files(routes: Vec<(&'static str, String, Vec<u8>)>) -> std::io::Result<String> {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let base = format!("http://{}", listener.local_addr()?);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buffer[..n]),
+                }
+            }
+            let text = String::from_utf8_lossy(&request);
+            let path = text
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_default()
+                .to_owned();
+            let (head, body) = routes.iter().find(|(route, _, _)| *route == path).map_or(
+                ("404 Not Found".to_owned(), Vec::new()),
+                |(_, head, body)| (head.clone(), body.clone()),
+            );
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {head}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    Ok(base)
+}
+
+#[test]
+fn source_fetch_file_archives_a_file_by_its_hash_from_each_mirror(
+) -> Result<(), Box<dyn std::error::Error>> {
+    // SHA-256("abc").
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let base = serve_files(vec![
+        ("/a/abc.txt", "200 OK".to_owned(), b"abc".to_vec()),
+        ("/b/abc.txt", "200 OK".to_owned(), b"abc".to_vec()),
+        (
+            "/moved",
+            "302 Found\r\nlocation: /b/abc.txt".to_owned(),
+            Vec::new(),
+        ),
+        (
+            "/twice",
+            "302 Found\r\nlocation: /moved".to_owned(),
+            Vec::new(),
+        ),
+        (
+            "/away",
+            "302 Found\r\nlocation: http://example.org/abc.txt".to_owned(),
+            Vec::new(),
+        ),
+        ("/other.txt", "200 OK".to_owned(), b"abd".to_vec()),
+    ])?;
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let fetch = |path: &str, sha256: Option<&str>| {
+        run_in_store(
+            store_dir.path(),
+            Command::Source {
+                command: SourceCommand::FetchFile {
+                    url: format!("{base}{path}"),
+                    sha256: sha256.map(str::to_owned),
+                    actor: actor.clone(),
+                },
+            },
+        )
+    };
+
+    let first = fetch("/a/abc.txt", Some(abc))?;
+    assert!(first.contains(&format!("sha256 = {abc}\n")), "{first}");
+    assert!(first.contains("size = 3\n"), "{first}");
+    assert!(first.contains("observations = 1\n"), "{first}");
+    let source = parse_field(&first, "source = ")?;
+    assert_eq!(
+        source,
+        kairo_statement::FileSourceGenesis::new(kairo_statement::Sha256Digest::parse(abc)?)
+            .object_id()
+            .to_string()
+    );
+    // A mirror, through one redirect: the same source, a second
+    // observation, recorded under the URL asked for.
+    let mirror = fetch("/moved", None)?;
+    assert_eq!(parse_field(&mirror, "source = ")?, source);
+    assert!(mirror.contains("observations = 2\n"), "{mirror}");
+
+    for (path, expected) in [
+        ("/twice", "more than once"),
+        ("/away", "loopback"),
+        ("/missing", "404"),
+    ] {
+        let refused = fetch(path, None);
+        assert!(
+            matches!(&refused, Err(CliError::FileFetch { message, .. }) if message.contains(expected)),
+            "{path}: {refused:?}"
+        );
+    }
+    let mismatch = fetch("/other.txt", Some(abc));
+    assert!(
+        matches!(&mismatch, Err(CliError::FileHashMismatch { .. })),
+        "{mismatch:?}"
+    );
+
+    let shown = run_in_store(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::Show {
+                source: abc.to_owned(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(shown.contains("observations = 2\n"), "{shown}");
+    assert!(shown.contains(&format!(": {base}/moved\n")), "{shown}");
+    assert!(shown.contains(&format!(": {base}/a/abc.txt\n")), "{shown}");
+    // Only the matching bytes were kept.
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    use kairo_store::SourceStore as _;
+    assert_eq!(store.list_file_sources()?.len(), 1);
+    assert_eq!(
+        store.get_file_source_bytes(&kairo_core::ObjectId::new(source)?)?,
+        b"abc"
+    );
+    let id = run_in_store(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::Id {
+                url: abc.to_owned(),
+            },
+        },
+    )?;
+    assert!(id.contains(&format!("sha256 = {abc}\n")), "{id}");
+    Ok(())
+}

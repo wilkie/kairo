@@ -390,6 +390,93 @@ fn symlinked_outputs_are_refused() -> TestResult {
 }
 
 #[test]
+fn file_sources_are_placed_in_the_tree_by_hash() -> TestResult {
+    use kairo_store::SourceStore as _;
+    // SHA-256("abc").
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let deps = format!(
+        r#"
+        [[dependencies]]
+        kind = "file"
+        sha256 = "{abc}"
+        path = "distfiles/abc.txt"
+        "#
+    );
+    let outputs = r#"
+        [[build.targets.outputs]]
+        name = "copy"
+        path = "out/abc.txt"
+        artifact_path = "abc.txt"
+        kind = "file"
+    "#;
+    let mut world = World::new();
+    let app = world.object(&[(
+        "kairo.toml",
+        &app_manifest(
+            r#"["sh", "-c", "mkdir out && cp distfiles/abc.txt out/"]"#,
+            outputs,
+            &deps,
+        ),
+    )]);
+    // Not held: the plan can't be made.
+    let host = Host {
+        system: "linux".to_owned(),
+        arch: "x86-64".to_owned(),
+        engines: Vec::new(),
+    };
+    let tools = [HostTool {
+        provides: "tool:sh".to_owned(),
+        version: None,
+        path: PathBuf::from("/bin/sh"),
+    }];
+    let unheld = Resolver::new(
+        &world.fixture.store,
+        &world.trees,
+        &NoArtifacts,
+        &host,
+        &tools,
+    )
+    .resolve(&app.object_id, &SnapshotSelector::Current, "release");
+    assert!(
+        matches!(&unheld, Err(error) if error.to_string().contains("fetch-file")),
+        "{unheld:?}"
+    );
+
+    let genesis =
+        kairo_statement::FileSourceGenesis::new(kairo_statement::Sha256Digest::parse(abc)?);
+    world.fixture.store.put_file_source(&genesis, b"abc")?;
+    let plan = world.plan(&app.object_id, "release");
+    let execution = world.run(&plan, Duration::from_secs(30))?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?}",
+        execution.record.diagnostics
+    );
+    let tree = execution.artifact.as_ref().expect("artifact");
+    assert_eq!(world.blob_text(&tree.entries[0].blob), "abc");
+
+    // A tree whose own symlink would carry the placement elsewhere is
+    // refused, as is one that already holds the path.
+    for (name, contents) in [("distfiles", "@link:/tmp"), ("distfiles/abc.txt", "mine")] {
+        let other = world.object(&[
+            (
+                "kairo.toml",
+                &app_manifest(r#"["sh", "-c", "true"]"#, outputs, &deps),
+            ),
+            (name, contents),
+        ]);
+        let plan = world.plan(&other.object_id, "release");
+        let refused = world.run(&plan, Duration::from_secs(30));
+        assert!(
+            matches!(&refused, Err(BuildError::PlacementOccupied { path }) if path == "distfiles/abc.txt"),
+            "{name}: {refused:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn the_wall_clock_limit_kills_the_process_group() -> TestResult {
     let mut world = World::new();
     let slow = world.object(&[(

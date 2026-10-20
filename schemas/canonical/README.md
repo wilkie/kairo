@@ -59,3 +59,5 @@ is explicitly a standalone reference.
 - `build-result-v1.md`
 - `source-genesis-v1.md` (unsigned; derived id is the source's object id)
 - `source-observation-v1.md`
+- `file-source-genesis-v1.md` (unsigned; derived id is the file source's object id)
+- `file-observation-v1.md`

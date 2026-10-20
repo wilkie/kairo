@@ -84,17 +84,18 @@ use kairo_statement::json::{
     ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
     ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
     ActorKeyRotationStatementJson, ActorTrustStatementJson, BuildResultStatementJson,
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson, SourceGenesisJson, SourceObservationStatementJson,
+    FileObservationStatementJson, FileSourceGenesisJson, ObjectBranchStatementJson,
+    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    SourceGenesisJson, SourceObservationStatementJson,
 };
 use kairo_statement::{
     ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
     ActorAttestationThresholdChangeBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
     ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
     ActorKeyRotationBody, ActorTrustBody, BuildResultBody, CapabilityScope, ChainKey, ChainScope,
-    MultiSignedStatement, ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody,
-    ObjectVersionTagBody, SignedStatement, SourceGenesis, SourceObservationBody, StatementKind,
-    TrustScope,
+    FileObservationBody, FileSourceGenesis, MultiSignedStatement, ObjectBranchBody,
+    ObjectGenesisStatement, ObjectRevisionBody, ObjectVersionTagBody, Previous, SignedStatement,
+    SourceGenesis, SourceObservationBody, StatementKind, TrustScope,
 };
 
 pub use actor_chains::{ChainCompleteness, ChainReport};
@@ -138,6 +139,8 @@ const VERSION_TAGS_DIR: &str = "version_tags";
 const BUILD_RESULTS_DIR: &str = "build_results";
 pub(crate) const SOURCES_DIR: &str = "sources";
 const SOURCE_OBSERVATIONS_DIR: &str = "source_observations";
+const FILE_SOURCES_DIR: &str = "file_sources";
+const FILE_OBSERVATIONS_DIR: &str = "file_observations";
 const TRUST_DIR: &str = "trust";
 const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
 const ACTOR_CAPABILITY_BY_OBJECT_DIR: &str = "actor_capability_by_object";
@@ -235,6 +238,16 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<SourceObservationBody>, StoreError>;
+
+    fn put_file_observation(
+        &self,
+        statement: &SignedStatement<FileObservationBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_file_observation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<FileObservationBody>, StoreError>;
 
     fn get_build_result(
         &self,
@@ -421,6 +434,27 @@ pub trait SourceStore {
         &self,
         source: &ObjectId,
     ) -> Result<Vec<ObservationHead>, StoreError>;
+
+    /// Store a file source (`DECISIONS.md` §38 sub-decision 1): its
+    /// bytes as the blob named by their hash, and its genesis. Bytes
+    /// that don't hash to the genesis's digest are refused. Returns the
+    /// id, derived from the hash.
+    fn put_file_source(
+        &self,
+        genesis: &FileSourceGenesis,
+        bytes: &[u8],
+    ) -> Result<ObjectId, StoreError>;
+    fn get_file_source(&self, id: &ObjectId) -> Result<FileSourceGenesis, StoreError>;
+    /// A file source's bytes, checked against its hash.
+    fn get_file_source_bytes(&self, id: &ObjectId) -> Result<Vec<u8>, StoreError>;
+    /// Whether the file source's genesis and bytes are both held,
+    /// without reading the bytes.
+    fn holds_file_source(&self, id: &ObjectId) -> Result<bool, StoreError>;
+    /// Every file source held, ascending by id.
+    fn list_file_sources(&self) -> Result<Vec<ObjectId>, StoreError>;
+    /// Every known observation of file source `source`, newest first.
+    fn list_file_observations(&self, source: &ObjectId)
+        -> Result<Vec<ObservationHead>, StoreError>;
 }
 
 /// What is known about an object's builds (`DECISIONS.md` §33
@@ -912,6 +946,9 @@ impl FilesystemStore {
             StatementKind::SourceObservation => {
                 rebuild_arm!(SourceObservationStatementJson, index_source_observation);
             }
+            StatementKind::FileObservation => {
+                rebuild_arm!(FileObservationStatementJson, index_file_observation);
+            }
             StatementKind::ActorTrust => {
                 rebuild_arm!(ActorTrustStatementJson, index_actor_trust);
             }
@@ -1234,6 +1271,44 @@ impl StatementStore for FilesystemStore {
         let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
         let bytes = read_or_missing(&path)?;
         let json: SourceObservationStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let statement = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let actual = statement.statement_id();
+        if &actual != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: actual.to_string(),
+                },
+            });
+        }
+        Ok(statement)
+    }
+
+    fn put_file_observation(
+        &self,
+        statement: &SignedStatement<FileObservationBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = FileObservationStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+        self.index_file_observation(statement, &id)?;
+        Ok(id)
+    }
+
+    fn get_file_observation(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<FileObservationBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: FileObservationStatementJson =
             serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
         let statement = json.to_statement().map_err(|error| StoreError::Corrupt {
             id: id.to_string(),
@@ -1929,16 +2004,55 @@ impl FilesystemStore {
         statement: &SignedStatement<SourceObservationBody>,
         id: &StatementId,
     ) -> Result<(), StoreError> {
-        let actor = statement.unsigned().actor();
-        let body = statement.unsigned().body();
-        let created_at = statement.unsigned().created_at();
-        let path = self.shard_path(SOURCE_OBSERVATIONS_DIR, body.source().as_str(), JSON_SUFFIX)?;
+        let unsigned = statement.unsigned();
+        self.index_observation(
+            SOURCE_OBSERVATIONS_DIR,
+            StatementKind::SourceObservation,
+            unsigned.body().source(),
+            unsigned.actor(),
+            id,
+            unsigned.previous(),
+            unsigned.created_at(),
+        )
+    }
+
+    fn index_file_observation(
+        &self,
+        statement: &SignedStatement<FileObservationBody>,
+        id: &StatementId,
+    ) -> Result<(), StoreError> {
+        let unsigned = statement.unsigned();
+        self.index_observation(
+            FILE_OBSERVATIONS_DIR,
+            StatementKind::FileObservation,
+            unsigned.body().source(),
+            unsigned.actor(),
+            id,
+            unsigned.previous(),
+            unsigned.created_at(),
+        )
+    }
+
+    /// Record one observation of `source` in its per-source index under
+    /// `dir`, its signer's chain, and the by-actor index.
+    #[allow(clippy::too_many_arguments)]
+    fn index_observation(
+        &self,
+        dir: &str,
+        kind: StatementKind,
+        source: &ObjectId,
+        actor: &ActorId,
+        id: &StatementId,
+        previous: &Previous,
+        created_at: Timestamp,
+    ) -> Result<(), StoreError> {
+        let path = self.shard_path(dir, source.as_str(), JSON_SUFFIX)?;
         lock::with_index_lock(&path, || {
             let mut index = match fs::read(&path) {
                 Ok(bytes) => {
                     serde_json::from_slice::<source_observations::ObservationIndexFile>(&bytes)
                         .map_err(|error| StoreError::Corrupt {
-                            id: body.source().to_string(),
+                            id: source.to_string(),
                             reason: CorruptReason::Parse(format!(
                                 "invalid source observation index: {error}"
                             )),
@@ -1950,25 +2064,19 @@ impl FilesystemStore {
                 Err(error) => return Err(StoreError::Unavailable(error)),
             };
             if index.upsert(actor, id, created_at) {
-                let bytes =
-                    serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(body.source()))?;
+                let bytes = serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(source))?;
                 atomic_write(&path, &bytes)?;
             }
             Ok(())
         })?;
         self.upsert_actor_chain(
             actor,
-            &ChainKey::Scope(ChainScope::Object(body.source().clone())),
+            &ChainKey::Scope(ChainScope::Object(source.clone())),
             id,
-            statement.unsigned().previous(),
+            previous,
             created_at,
         )?;
-        self.upsert_statement_by_actor_index(
-            actor,
-            id,
-            StatementKind::SourceObservation,
-            created_at,
-        )
+        self.upsert_statement_by_actor_index(actor, id, kind, created_at)
     }
 
     fn index_build_result(
@@ -3354,28 +3462,132 @@ impl SourceStore for FilesystemStore {
     }
 
     fn list_sources(&self) -> Result<Vec<ObjectId>, StoreError> {
-        let mut sources = Vec::new();
-        let mut report = RebuildReport::default();
-        self.rebuild_walk_dir(SOURCES_DIR, &mut report, |_, path, _| {
-            let stem = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default();
-            sources.push(ObjectId::new(stem).map_err(|error| StoreError::Corrupt {
-                id: stem.to_owned(),
-                reason: CorruptReason::Parse(error.to_string()),
-            })?);
-            Ok(())
-        })?;
-        sources.sort();
-        Ok(sources)
+        self.list_ids_in(SOURCES_DIR)
     }
 
     fn list_source_observations(
         &self,
         source: &ObjectId,
     ) -> Result<Vec<ObservationHead>, StoreError> {
-        let path = self.shard_path(SOURCE_OBSERVATIONS_DIR, source.as_str(), JSON_SUFFIX)?;
+        self.list_observations(SOURCE_OBSERVATIONS_DIR, source)
+    }
+
+    fn put_file_source(
+        &self,
+        genesis: &FileSourceGenesis,
+        bytes: &[u8],
+    ) -> Result<ObjectId, StoreError> {
+        let id = genesis.object_id();
+        let blob = genesis.sha256().blob_id();
+        // A blob id with no domain is the bytes' plain SHA-256.
+        let actual = BlobId::from_bytes(b"", bytes);
+        if actual != blob {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: blob.to_string(),
+                    actual: actual.to_string(),
+                },
+            });
+        }
+        self.put_blob(&blob, bytes)?;
+        let json = FileSourceGenesisJson::from_genesis(genesis);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(FILE_SOURCES_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+        Ok(id)
+    }
+
+    fn get_file_source(&self, id: &ObjectId) -> Result<FileSourceGenesis, StoreError> {
+        let path = self.shard_path(FILE_SOURCES_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: FileSourceGenesisJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let genesis = json.to_genesis().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let actual = genesis.object_id();
+        if &actual != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: actual.to_string(),
+                },
+            });
+        }
+        Ok(genesis)
+    }
+
+    fn get_file_source_bytes(&self, id: &ObjectId) -> Result<Vec<u8>, StoreError> {
+        let genesis = self.get_file_source(id)?;
+        let blob = genesis.sha256().blob_id();
+        let bytes = self.get_blob(&blob)?;
+        let actual = BlobId::from_bytes(b"", &bytes);
+        if actual != blob {
+            return Err(StoreError::Corrupt {
+                id: blob.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: blob.to_string(),
+                    actual: actual.to_string(),
+                },
+            });
+        }
+        Ok(bytes)
+    }
+
+    fn holds_file_source(&self, id: &ObjectId) -> Result<bool, StoreError> {
+        let genesis = match self.get_file_source(id) {
+            Ok(genesis) => genesis,
+            Err(StoreError::Missing) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let blob = genesis.sha256().blob_id();
+        Ok(self
+            .shard_path(BLOBS_DIR, blob.as_str(), BLOB_SUFFIX)?
+            .is_file())
+    }
+
+    fn list_file_sources(&self) -> Result<Vec<ObjectId>, StoreError> {
+        self.list_ids_in(FILE_SOURCES_DIR)
+    }
+
+    fn list_file_observations(
+        &self,
+        source: &ObjectId,
+    ) -> Result<Vec<ObservationHead>, StoreError> {
+        self.list_observations(FILE_OBSERVATIONS_DIR, source)
+    }
+}
+
+impl FilesystemStore {
+    /// The ids named by the files under `dir`, ascending.
+    fn list_ids_in(&self, dir: &str) -> Result<Vec<ObjectId>, StoreError> {
+        let mut ids = Vec::new();
+        let mut report = RebuildReport::default();
+        self.rebuild_walk_dir(dir, &mut report, |_, path, _| {
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
+            ids.push(ObjectId::new(stem).map_err(|error| StoreError::Corrupt {
+                id: stem.to_owned(),
+                reason: CorruptReason::Parse(error.to_string()),
+            })?);
+            Ok(())
+        })?;
+        ids.sort();
+        Ok(ids)
+    }
+
+    /// The per-source observation index under `dir`, newest first.
+    fn list_observations(
+        &self,
+        dir: &str,
+        source: &ObjectId,
+    ) -> Result<Vec<ObservationHead>, StoreError> {
+        let path = self.shard_path(dir, source.as_str(), JSON_SUFFIX)?;
         match fs::read(&path) {
             Ok(bytes) => {
                 let index: source_observations::ObservationIndexFile =
@@ -4277,6 +4489,88 @@ mod tests {
             Some(&2)
         );
         assert_eq!(store.list_source_observations(&source)?.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn file_sources_hold_their_bytes_and_observations() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        // SHA-256("abc").
+        let digest = kairo_statement::Sha256Digest::parse(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )?;
+        let genesis = FileSourceGenesis::new(digest);
+        assert!(matches!(
+            store.put_file_source(&genesis, b"abd"),
+            Err(StoreError::Corrupt { .. })
+        ));
+        assert!(store.list_file_sources()?.is_empty(), "nothing kept");
+        let source = store.put_file_source(&genesis, b"abc")?;
+        assert_eq!(source, genesis.object_id());
+        assert_eq!(store.get_file_source(&source)?, genesis);
+        assert_eq!(store.get_file_source_bytes(&source)?, b"abc");
+        assert!(store.holds_file_source(&source)?);
+        assert!(!store.holds_file_source(&ObjectId::from_sha256_digest([9; 32]))?);
+        assert_eq!(store.get_blob(&digest.blob_id())?, b"abc");
+        assert_eq!(store.list_file_sources()?, std::slice::from_ref(&source));
+        // Not a Git source.
+        assert!(store.list_sources()?.is_empty());
+
+        // Two mirrors, two observations of one file.
+        let mut ids = Vec::new();
+        for (offset, url) in [
+            (0, "https://mirror-a.example.org/abc.txt"),
+            (60, "https://mirror-b.example.org/pub/abc.txt"),
+        ] {
+            let body = FileObservationBody::new(kairo_statement::FileUrl::parse(url)?, digest, 3);
+            let subject: KairoRef = format!("object:{}", body.source()).parse()?;
+            let unsigned = UnsignedStatement::new(
+                actor.clone(),
+                subject,
+                Timestamp::from_seconds(timestamp().seconds() + offset),
+                body,
+            );
+            let signature = Signature::new(
+                actor.clone(),
+                public_key().key_id().to_string(),
+                "ed25519",
+                signing_key()
+                    .sign(&unsigned.canonical_bytes())
+                    .to_bytes()
+                    .to_vec(),
+            );
+            let statement = SignedStatement::new(unsigned, signature);
+            let id = store.put_file_observation(&statement)?;
+            assert_eq!(store.get_file_observation(&id)?, statement);
+            ids.push(id);
+        }
+        let heads: Vec<StatementId> = store
+            .list_file_observations(&source)?
+            .into_iter()
+            .map(|head| head.statement_id)
+            .collect();
+        assert_eq!(heads, [ids[1].clone(), ids[0].clone()], "newest first");
+        assert!(store.list_source_observations(&source)?.is_empty());
+
+        let index = store.shard_path(FILE_OBSERVATIONS_DIR, source.as_str(), JSON_SUFFIX)?;
+        fs::remove_file(&index)?;
+        let report = store.rebuild_indexes()?;
+        assert_eq!(
+            report.by_kind.get(&StatementKind::FileObservation),
+            Some(&2)
+        );
+        assert_eq!(store.list_file_observations(&source)?.len(), 2);
+
+        // Bytes changed on disk are caught on read.
+        fs::write(
+            store.shard_path(BLOBS_DIR, digest.blob_id().as_str(), BLOB_SUFFIX)?,
+            b"abd",
+        )?;
+        assert!(matches!(
+            store.get_file_source_bytes(&source),
+            Err(StoreError::Corrupt { .. })
+        ));
         Ok(())
     }
 

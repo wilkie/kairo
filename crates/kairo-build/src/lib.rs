@@ -42,7 +42,7 @@ use kairo_core::{BlobId, ObjectId, SnapshotId, Timestamp};
 use kairo_object::{ObjectManifest, OutputKind};
 use kairo_resolver::{PlanDocument, Resolved, SourceError};
 use kairo_statement::GitRevision;
-use kairo_store::{BlobStore, FilesystemStore};
+use kairo_store::{BlobStore, FilesystemStore, SourceStore};
 use serde::{Deserialize, Serialize};
 
 /// Blob id domain for an artifact's files.
@@ -407,6 +407,26 @@ impl Bubblewrap {
     }
 }
 
+/// Where `path` (relative, already validated) lands under `src`. No
+/// part of it that exists may be a symlink: the snapshot's tree could
+/// otherwise point a placement outside the build directory.
+fn placement_target(src: &Path, path: &str) -> Result<PathBuf, BuildError> {
+    let mut at = src.to_path_buf();
+    for part in path.split('/') {
+        at.push(part);
+        match at.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(BuildError::PlacementOccupied {
+                    path: path.to_owned(),
+                })
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    Ok(src.join(path))
+}
+
 /// A source dependency placed at a path in the source tree.
 struct Placement {
     path: String,
@@ -540,6 +560,7 @@ pub fn run_plan(
     let mut host_tool_dirs: Vec<String> = Vec::new();
     let mut host_tools: Vec<String> = Vec::new();
     let mut placements: Vec<Placement> = Vec::new();
+    let mut files: Vec<(String, ObjectId)> = Vec::new();
     for requirement in &manifest.requirements {
         let label = match &requirement.requested {
             kairo_resolver::Requested::Provides { provides, .. } => provides.clone(),
@@ -548,6 +569,7 @@ pub fn run_plan(
                 "source:{}",
                 source.rsplit('/').next().unwrap_or(source.as_str())
             ),
+            kairo_resolver::Requested::File { path, .. } => format!("file:{path}"),
         };
         let mount = match &requirement.resolved {
             Resolved::Content {
@@ -621,6 +643,15 @@ pub fn run_plan(
                 continue;
             }
             Resolved::Environment { .. } => continue,
+            // Placed once the source placements are in, so a file can
+            // go inside a placed source's tree.
+            Resolved::File { source, path, .. } => {
+                files.push((
+                    path.clone(),
+                    ObjectId::new(source.clone()).map_err(BuildError::Id)?,
+                ));
+                continue;
+            }
             Resolved::Source {
                 source,
                 url,
@@ -676,7 +707,7 @@ pub fn run_plan(
     }
     placements.sort_by_key(|placement| placement.path.split('/').count());
     for placement in placements {
-        let inside = src.join(&placement.path);
+        let inside = placement_target(&src, &placement.path)?;
         // A gitlink leaves a hole in its parent's tree; anything there
         // already is the snapshot's own content.
         let occupied = fs::read_dir(&inside)
@@ -700,6 +731,25 @@ pub fn run_plan(
             guest: format!("{GUEST_SRC}/{}", placement.path),
         };
         env.insert(provider_var(&placement.label), seen(&mount));
+    }
+    // File sources (§38 sub-decision 3), each checked against its hash
+    // as it is read.
+    for (path, source) in files {
+        let inside = placement_target(&src, &path)?;
+        if inside.symlink_metadata().is_ok() {
+            return Err(BuildError::PlacementOccupied { path });
+        }
+        let bytes =
+            store
+                .get_file_source_bytes(&source)
+                .map_err(|error| BuildError::FileSource {
+                    path: path.clone(),
+                    reason: error.to_string(),
+                })?;
+        if let Some(parent) = inside.parent() {
+            fs::create_dir_all(parent).map_err(|source| io_error("creating", parent, source))?;
+        }
+        fs::write(&inside, bytes).map_err(|source| io_error("writing", &inside, source))?;
     }
     path_dirs.extend(host_tool_dirs);
     let src_mount = Mount {
@@ -1118,6 +1168,11 @@ pub enum BuildError {
     PlacementOccupied {
         path: String,
     },
+    /// A file source's bytes couldn't be read or failed their hash.
+    FileSource {
+        path: String,
+        reason: String,
+    },
     /// A record or blob whose id doesn't match its bytes.
     Fixity {
         what: String,
@@ -1169,8 +1224,11 @@ impl fmt::Display for BuildError {
             } => write!(f, "source {url} at {revision}: {reason}"),
             Self::PlacementOccupied { path } => write!(
                 f,
-                "a source dependency is placed at {path}, which the snapshot's tree already fills"
+                "a dependency is placed at {path}, which the snapshot's tree already fills (or reaches through a symlink)"
             ),
+            Self::FileSource { path, reason } => {
+                write!(f, "the file placed at {path}: {reason}")
+            }
             Self::EngineMismatch { environment } => write!(
                 f,
                 "the plan's environment ({environment}) doesn't suit this executor"
@@ -1200,6 +1258,7 @@ impl Error for BuildError {
             | Self::EngineMismatch { .. }
             | Self::SourceTree { .. }
             | Self::PlacementOccupied { .. }
+            | Self::FileSource { .. }
             | Self::Fixity { .. } => None,
         }
     }

@@ -245,6 +245,8 @@ pub enum Requested {
         #[serde(skip_serializing_if = "std::ops::Not::not", default)]
         seed: bool,
     },
+    /// A file source by its hash, placed at `path` (§38).
+    File { sha256: String, path: String },
 }
 
 impl fmt::Display for Requested {
@@ -278,6 +280,7 @@ impl fmt::Display for Requested {
                 (_, Some(snapshot)) => write!(f, "object:{object}:snapshot:{snapshot}"),
                 (None, None) => write!(f, "object:{object}"),
             },
+            Self::File { sha256, path } => write!(f, "file sha256:{sha256} at {path}"),
         }
     }
 }
@@ -319,6 +322,12 @@ pub enum Resolved {
         path: Option<String>,
         #[serde(skip_serializing_if = "std::ops::Not::not", default)]
         seed: bool,
+    },
+    /// A held file source's bytes, placed at `path` in the source tree.
+    File {
+        source: String,
+        sha256: String,
+        path: String,
     },
 }
 
@@ -822,7 +831,9 @@ impl<'a> Resolver<'a> {
                             .iter()
                             .any(|contract| contract == dependency.provides())
                 }
-                DependencyDeclaration::Object(_) | DependencyDeclaration::Source(_) => false,
+                DependencyDeclaration::Object(_)
+                | DependencyDeclaration::Source(_)
+                | DependencyDeclaration::File(_) => false,
             });
         for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
             let (requested, resolved) = match dependency {
@@ -888,6 +899,35 @@ impl<'a> Resolver<'a> {
                         self.resolve_source(object, target_name, &requested, dependency)?;
                     (requested, resolved)
                 }
+                DependencyDeclaration::File(dependency) => {
+                    let requested = Requested::File {
+                        sha256: dependency.sha256().to_string(),
+                        path: dependency.path().to_owned(),
+                    };
+                    let source = dependency.source();
+                    if !self
+                        .store
+                        .holds_file_source(&source)
+                        .map_err(ResolveError::Store)?
+                    {
+                        return Err(ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                            object: object.clone(),
+                            target: target_name.to_owned(),
+                            requested,
+                            considered: vec![format!(
+                                "file sha256:{} is not held (kairo source fetch-file <url> --sha256 {})",
+                                dependency.sha256(),
+                                dependency.sha256()
+                            )],
+                        })));
+                    }
+                    let resolved = Resolved::File {
+                        source: source.to_string(),
+                        sha256: dependency.sha256().to_string(),
+                        path: dependency.path().to_owned(),
+                    };
+                    (requested, resolved)
+                }
             };
             match &resolved {
                 Resolved::Environment {
@@ -897,7 +937,10 @@ impl<'a> Resolver<'a> {
                 Resolved::Environment { engine: None, .. } | Resolved::HostTool { .. } => {
                     host_dependent = true;
                 }
-                Resolved::Artifact { .. } | Resolved::Content { .. } | Resolved::Source { .. } => {}
+                Resolved::Artifact { .. }
+                | Resolved::Content { .. }
+                | Resolved::Source { .. }
+                | Resolved::File { .. } => {}
             }
             requirements.push(Requirement {
                 requested,
@@ -1282,6 +1325,7 @@ pub fn describe_resolved(resolved: &Resolved) -> String {
             Some(version) => format!("host tool {path} version {version}"),
             None => format!("host tool {path}"),
         },
+        Resolved::File { sha256, path, .. } => format!("file sha256:{sha256} at {path}"),
     }
 }
 

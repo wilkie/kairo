@@ -17,13 +17,14 @@ use crate::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody,
     ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
     ActorTrustShapeError, BuildOutcome, BuildResultBody, BuildResultShapeError, Capability,
-    CapabilityConstraint, CapabilityScope, CapabilityShapeError, GitRevision, MultiSignedStatement,
+    CapabilityConstraint, CapabilityScope, CapabilityShapeError, FileObservationBody,
+    FileSourceGenesis, FileUrl, FileUrlError, GitRevision, MultiSignedStatement,
     MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody,
     ObjectVersionTagBody, ObjectVersionTagShapeError, ObservedRef, Previous, PreviousError,
-    RevisionId, SemverParseError, SemverVersion, Signature, SignedStatement, SourceGenesis,
-    SourceObservationBody, SourceObservationShapeError, SourceUrl, SourceUrlError, StatementKind,
-    StatementKindParseError, TrustDecision, TrustDecisionParseError, TrustScope, TrustScopeError,
-    UnsignedStatement,
+    RevisionId, SemverParseError, SemverVersion, Sha256Digest, Sha256DigestError, Signature,
+    SignedStatement, SourceGenesis, SourceObservationBody, SourceObservationShapeError, SourceUrl,
+    SourceUrlError, StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError,
+    TrustScope, TrustScopeError, UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,10 @@ pub enum StatementJsonError {
     InvalidBuildResultShape(BuildResultShapeError),
     InvalidSourceUrl(SourceUrlError),
     InvalidObservationShape(SourceObservationShapeError),
+    InvalidFileUrl(FileUrlError),
+    InvalidSha256(Sha256DigestError),
+    /// A file observation's `source` isn't the id its hash derives.
+    FileSourceMismatch,
     InvalidGitRevision(crate::GitRevisionError),
     InvalidSnapshot(kairo_core::IdError),
     InvalidTrustDecision(TrustDecisionParseError),
@@ -87,6 +92,11 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidBuildResultShape(error) => write!(f, "{error}"),
             Self::InvalidSourceUrl(error) => write!(f, "{error}"),
             Self::InvalidObservationShape(error) => write!(f, "{error}"),
+            Self::InvalidFileUrl(error) => write!(f, "{error}"),
+            Self::InvalidSha256(error) => write!(f, "{error}"),
+            Self::FileSourceMismatch => {
+                f.write_str("file observation's source is not the id its hash derives")
+            }
             Self::InvalidGitRevision(error) => write!(f, "{error}"),
             Self::InvalidSnapshot(error) => write!(f, "invalid snapshot id: {error}"),
             Self::InvalidTrustDecision(error) => write!(f, "{error}"),
@@ -117,6 +127,8 @@ impl Error for StatementJsonError {
             Self::InvalidBuildResultShape(error) => Some(error),
             Self::InvalidSourceUrl(error) => Some(error),
             Self::InvalidObservationShape(error) => Some(error),
+            Self::InvalidFileUrl(error) => Some(error),
+            Self::InvalidSha256(error) => Some(error),
             Self::InvalidGitRevision(error) => Some(error),
             Self::InvalidTrustDecision(error) => Some(error),
             Self::InvalidTrustShape(error) => Some(error),
@@ -128,6 +140,7 @@ impl Error for StatementJsonError {
             Self::InvalidPrevious(error) => Some(error),
             Self::InvalidTrustScope(error) => Some(error),
             Self::UnexpectedType { .. }
+            | Self::FileSourceMismatch
             | Self::UnexpectedVersion { .. }
             | Self::InvalidNonceHex
             | Self::InvalidSignatureBase64 => None,
@@ -846,6 +859,122 @@ impl SourceObservationBodyJson {
                 })
                 .collect(),
             pinned: body.pinned().iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
+/// `schemas/json/file-source-genesis-v1.schema.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileSourceGenesisJson {
+    #[serde(rename = "type")]
+    pub genesis_type: String,
+    pub version: u8,
+    /// 64 lowercase hex digits.
+    pub sha256: String,
+}
+
+impl FileSourceGenesisJson {
+    pub fn to_genesis(&self) -> Result<FileSourceGenesis, StatementJsonError> {
+        ensure_statement_shape(&self.genesis_type, self.version, "FileSourceGenesis", 1)?;
+        let sha256 =
+            Sha256Digest::parse(&self.sha256).map_err(StatementJsonError::InvalidSha256)?;
+        Ok(FileSourceGenesis::new(sha256))
+    }
+
+    pub fn from_genesis(genesis: &FileSourceGenesis) -> Self {
+        Self {
+            genesis_type: "FileSourceGenesis".to_owned(),
+            version: 1,
+            sha256: genesis.sha256().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FileObservationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
+    pub body: FileObservationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl FileObservationStatementJson {
+    pub fn to_statement(&self) -> Result<SignedStatement<FileObservationBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "FileObservation", 1)?;
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<FileObservationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "FileObservation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
+            body: FileObservationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+/// `schemas/json/file-observation-v1.schema.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct FileObservationBodyJson {
+    pub source: String,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl FileObservationBodyJson {
+    pub fn to_body(&self) -> Result<FileObservationBody, StatementJsonError> {
+        let url = FileUrl::parse(&self.url).map_err(StatementJsonError::InvalidFileUrl)?;
+        if url.as_str() != self.url {
+            return Err(StatementJsonError::InvalidFileUrl(FileUrlError {
+                input: self.url.clone(),
+                reason: "is not in normal form",
+            }));
+        }
+        let sha256 =
+            Sha256Digest::parse(&self.sha256).map_err(StatementJsonError::InvalidSha256)?;
+        let body = FileObservationBody::new(url, sha256, self.size);
+        if body.source().as_str() != self.source {
+            return Err(StatementJsonError::FileSourceMismatch);
+        }
+        Ok(body)
+    }
+
+    pub fn from_body(body: &FileObservationBody) -> Self {
+        Self {
+            source: body.source().to_string(),
+            url: body.url().to_string(),
+            sha256: body.sha256().to_string(),
+            size: body.size(),
         }
     }
 }
@@ -2793,6 +2922,91 @@ mod tests {
             r#"{"type":"SourceGenesis","version":1,"url":"https://Example.org/x.git"}"#,
         )?;
         assert!(loose.to_genesis().is_err());
+        Ok(())
+    }
+
+    const FILE_SHA256: &str = "183a40ea47ea49f8a1e3bd1b9d12e676374d64d63bc79e7bc1ae7d673dfdf25d";
+
+    fn file_observation_json(url: &str, size: &str, signature: &str) -> String {
+        let source = FileSourceGenesis::new(
+            Sha256Digest::parse(FILE_SHA256).unwrap_or_else(|_| Sha256Digest::from_bytes([0; 32])),
+        )
+        .object_id();
+        format!(
+            r#"{{
+              "type": "FileObservation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "object:{source}",
+              "created_at": "{CREATED_AT}",
+              "previous": [],
+              "body": {{ "source": "{source}", "url": "{url}", "sha256": "{FILE_SHA256}", "size": {size} }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_file_observation(
+        json: &str,
+    ) -> Result<SignedStatement<FileObservationBody>, Box<dyn std::error::Error>> {
+        let dto: FileObservationStatementJson = serde_json::from_str(json)?;
+        Ok(dto.to_statement()?)
+    }
+
+    #[test]
+    fn file_observation_round_trips_and_checks_its_shape() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let url = "https://mirrors.kernel.org/gnu/mes/mes-0.27.1.tar.gz";
+        let statement = parse_file_observation(&file_observation_json(url, "1000", "c2ln"))?;
+        assert_eq!(statement.unsigned().body().size(), 1000);
+        assert_eq!(
+            statement.unsigned().body().sha256().to_string(),
+            FILE_SHA256
+        );
+        let round = FileObservationStatementJson::from_statement(&statement).to_statement()?;
+        assert_eq!(round, statement);
+        // The signature doesn't change the id; the size does.
+        let resigned = parse_file_observation(&file_observation_json(url, "1000", "b3RoZXI="))?;
+        assert_eq!(resigned.statement_id(), statement.statement_id());
+        let bigger = parse_file_observation(&file_observation_json(url, "1001", "c2ln"))?;
+        assert_ne!(bigger.statement_id(), statement.statement_id());
+
+        let wrong_source = file_observation_json(url, "1000", "c2ln").replacen(
+            "\"source\": \"",
+            "\"source\": \"zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu",
+            1,
+        );
+        assert!(parse_file_observation(&wrong_source).is_err());
+        let loose = file_observation_json(
+            "HTTPS://Mirrors.kernel.org/gnu/mes/mes-0.27.1.tar.gz",
+            "1000",
+            "c2ln",
+        );
+        assert!(parse_file_observation(&loose).is_err());
+        let plain_http = file_observation_json("http://example.org/mes.tar.gz", "1000", "c2ln");
+        assert!(parse_file_observation(&plain_http).is_err());
+        let upper = file_observation_json(url, "1000", "c2ln")
+            .replace(FILE_SHA256, &FILE_SHA256.to_ascii_uppercase());
+        assert!(parse_file_observation(&upper).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn file_source_genesis_json_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let genesis: FileSourceGenesisJson = serde_json::from_str(&format!(
+            r#"{{"type":"FileSourceGenesis","version":1,"sha256":"{FILE_SHA256}"}}"#
+        ))?;
+        let parsed = genesis.to_genesis()?;
+        assert_eq!(FileSourceGenesisJson::from_genesis(&parsed), genesis);
+        let wrong_type: FileSourceGenesisJson = serde_json::from_str(&format!(
+            r#"{{"type":"SourceGenesis","version":1,"sha256":"{FILE_SHA256}"}}"#
+        ))?;
+        assert!(wrong_type.to_genesis().is_err());
         Ok(())
     }
 

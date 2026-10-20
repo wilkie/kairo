@@ -240,6 +240,11 @@ pub(crate) fn ingest_statement(
             put_source_observation,
             |signed| object_section(signed.unsigned().body().source())
         ),
+        // File sources don't federate yet (`DECISIONS.md` §38): no
+        // peer lists one, so an observation in a pull is out of place.
+        StatementKind::FileObservation => Err(wrong_section(
+            "FileObservation statements are not federated yet",
+        )),
         StatementKind::BuildResult => {
             single!(BuildResultStatementJson, put_build_result, |signed| {
                 object_section(signed.unsigned().body().object())

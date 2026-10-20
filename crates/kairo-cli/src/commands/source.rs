@@ -1,6 +1,7 @@
-//! `kairo source ...` runners (`specs/DECISIONS.md` §37): source
+//! `kairo source ...` runners (`specs/DECISIONS.md` §37–§38): source
 //! objects, external Git repositories archived faithfully and
-//! identified by their canonical URL.
+//! identified by their canonical URL, and single files identified by
+//! their SHA-256.
 
 use std::fmt::Write as _;
 
@@ -8,8 +9,8 @@ use kairo_core::canonical::CanonicalEncode;
 use kairo_core::{KairoRef, ObjectId, Timestamp};
 use kairo_git::{FetchLimits, GitCache, GitObjectFormat};
 use kairo_statement::{
-    ObservedRef, Signature, SignedStatement, SourceGenesis, SourceObservationBody, SourceUrl,
-    UnsignedStatement,
+    FileObservationBody, FileSourceGenesis, FileUrl, ObservedRef, Sha256Digest, Signature,
+    SignedStatement, SourceGenesis, SourceObservationBody, SourceUrl, UnsignedStatement,
 };
 use kairo_store::{SourceStore, StatementStore};
 
@@ -24,6 +25,12 @@ pub(crate) fn run_source_command(
     offline: bool,
 ) -> Result<String, CliError> {
     match command {
+        SourceCommand::Id { url } if Sha256Digest::parse(&url).is_ok() => {
+            let sha256 = Sha256Digest::parse(&url)
+                .map_err(|error| CliError::ParseFileSource(error.to_string()))?;
+            let source = FileSourceGenesis::new(sha256).object_id();
+            Ok(format!("sha256 = {sha256}\nsource = {source}\n"))
+        }
         SourceCommand::Id { url } => {
             let url = SourceUrl::parse(&url).map_err(CliError::ParseSourceUrl)?;
             let source = SourceGenesis::new(url.clone()).object_id();
@@ -45,6 +52,9 @@ pub(crate) fn run_source_command(
             max_depth,
             require_complete,
         ),
+        SourceCommand::FetchFile { url, sha256, actor } => {
+            run_fetch_file(paths, &url, sha256.as_deref(), &actor)
+        }
         SourceCommand::Show { source, json } => run_show(paths, &source, json),
         SourceCommand::Pull {
             url,
@@ -195,35 +205,10 @@ impl Fetcher<'_> {
         let body = SourceObservationBody::new(url.clone(), observed)
             .and_then(|body| body.with_pinned(pinned))
             .map_err(|error| CliError::ObservationShape(error.to_string()))?;
-        let subject: KairoRef =
-            format!("object:{source}")
-                .parse()
-                .map_err(|error| CliError::BuildSubjectRef {
-                    object: source.clone(),
-                    source: error,
-                })?;
-        let unsigned = self
-            .store
-            .link_to_chain(UnsignedStatement::new(
-                self.actor.clone(),
-                subject,
-                Timestamp::now(),
-                body.clone(),
-            ))
-            .map_err(|error| CliError::ReadActorChain {
-                actor: self.actor.clone(),
-                source: error,
-            })?;
-        let signature_bytes = self.secret.sign(&unsigned.canonical_bytes());
-        let signature = Signature::new(
-            self.actor.clone(),
-            self.secret.public_key().key_id().to_string(),
-            "ed25519",
-            signature_bytes.bytes().to_vec(),
-        );
+        let statement = sign(self.store, &self.actor, &self.secret, &source, body.clone())?;
         let observation = self
             .store
-            .put_source_observation(&SignedStatement::new(unsigned, signature))
+            .put_source_observation(&statement)
             .map_err(|source| CliError::Sources { source })?;
         Ok(Observed {
             url: url.clone(),
@@ -519,13 +504,178 @@ fn latest_refs(
         .collect())
 }
 
+/// Sign `body` as `actor`, linked to its chain.
+fn sign<B: kairo_statement::StatementBody + Clone>(
+    store: &kairo_store::FilesystemStore,
+    actor: &kairo_core::ActorId,
+    secret: &kairo_identity::SecretSigningKey,
+    source: &ObjectId,
+    body: B,
+) -> Result<SignedStatement<B>, CliError> {
+    let subject: KairoRef =
+        format!("object:{source}")
+            .parse()
+            .map_err(|error| CliError::BuildSubjectRef {
+                object: source.clone(),
+                source: error,
+            })?;
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(
+            actor.clone(),
+            subject,
+            Timestamp::now(),
+            body,
+        ))
+        .map_err(|error| CliError::ReadActorChain {
+            actor: actor.clone(),
+            source: error,
+        })?;
+    let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor.clone(),
+        secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    Ok(SignedStatement::new(unsigned, signature))
+}
+
+/// `kairo source fetch-file` (§38 sub-decision 2).
+fn run_fetch_file(
+    paths: &StorePaths,
+    url: &str,
+    expected: Option<&str>,
+    actor: &str,
+) -> Result<String, CliError> {
+    let url = FileUrl::parse(url).map_err(|error| CliError::ParseFileSource(error.to_string()))?;
+    let expected = expected
+        .map(Sha256Digest::parse)
+        .transpose()
+        .map_err(|error| CliError::ParseFileSource(error.to_string()))?;
+    let actor_id =
+        kairo_core::ActorId::new(actor.to_owned()).map_err(|source| CliError::ParseActorId {
+            actor: actor.to_owned(),
+            source,
+        })?;
+    let store = open_store(paths)?;
+    let keystore = open_keystore(paths)?;
+    let secret = crate::require_active_signing_key(&store, &keystore, &actor_id)?;
+    let (config, _) = load_config(paths)?;
+    let limits = kairo_federation_service::limits_from(&config.federation.limits);
+
+    let bytes = download(&url, limits.max_git_bytes, limits.git_timeout)?;
+    let sha256 = {
+        use sha2::Digest as _;
+        Sha256Digest::from_bytes(sha2::Sha256::digest(&bytes).into())
+    };
+    if let Some(expected) = expected {
+        if expected != sha256 {
+            return Err(CliError::FileHashMismatch {
+                url: url.to_string(),
+                expected: expected.to_string(),
+                actual: sha256.to_string(),
+            });
+        }
+    }
+    let source = store
+        .put_file_source(&FileSourceGenesis::new(sha256), &bytes)
+        .map_err(|source| CliError::Sources { source })?;
+    let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    let statement = sign(
+        &store,
+        &actor_id,
+        &secret,
+        &source,
+        FileObservationBody::new(url.clone(), sha256, size),
+    )?;
+    let observation = store
+        .put_file_observation(&statement)
+        .map_err(|source| CliError::Sources { source })?;
+    let observations = store
+        .list_file_observations(&source)
+        .map_err(|source| CliError::Sources { source })?
+        .len();
+    Ok(format!(
+        "url = {url}\nsha256 = {sha256}\nsize = {size}\nsource = {source}\nobservation = {observation}\nobservations = {observations}\n"
+    ))
+}
+
+/// GET `url`, following at most one redirect, to a URL the same rules
+/// accept; at most `limit` bytes within `timeout`.
+fn download(url: &FileUrl, limit: u64, timeout: std::time::Duration) -> Result<Vec<u8>, CliError> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let fail = |at: &FileUrl, message: String| CliError::FileFetch {
+        url: at.to_string(),
+        message,
+    };
+    let mut current = url.clone();
+    for hop in 0..2 {
+        let mut response = agent
+            .get(current.as_str())
+            .call()
+            .map_err(|error| fail(&current, error.to_string()))?;
+        let status = response.status();
+        if status.is_redirection() {
+            if hop > 0 {
+                return Err(fail(url, "redirected more than once".to_owned()));
+            }
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| fail(&current, format!("{status} without a Location")))?;
+            let target = if location.starts_with('/') {
+                let origin_end = current.as_str()["https://".len()..]
+                    .find('/')
+                    .map_or(current.as_str().len(), |at| at + "https://".len());
+                format!("{}{location}", &current.as_str()[..origin_end])
+            } else {
+                location.to_owned()
+            };
+            current = FileUrl::parse(&target)
+                .map_err(|error| fail(url, format!("refused redirect: {error}")))?;
+            continue;
+        }
+        if !status.is_success() {
+            return Err(fail(&current, format!("server answered {status}")));
+        }
+        return response
+            .body_mut()
+            .with_config()
+            .limit(limit)
+            .read_to_vec()
+            .map_err(|error| match error {
+                ureq::Error::BodyExceedsLimit(_) => {
+                    fail(&current, format!("larger than the {limit}-byte limit"))
+                }
+                other => fail(&current, other.to_string()),
+            });
+    }
+    Err(fail(url, "redirected more than once".to_owned()))
+}
+
 fn run_show(paths: &StorePaths, source: &str, json: bool) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+    let file_source = match Sha256Digest::parse(source) {
+        Ok(sha256) => Some(FileSourceGenesis::new(sha256).object_id()),
+        Err(_) => match source.parse::<KairoRef>() {
+            Ok(KairoRef::Object(object)) if store.get_file_source(&object).is_ok() => Some(object),
+            _ => None,
+        },
+    };
+    if let Some(file_source) = file_source {
+        return show_file_source(&store, &file_source, json);
+    }
     let source_id = match source.parse::<KairoRef>() {
         Ok(KairoRef::Object(object)) => object,
         _ => SourceGenesis::new(SourceUrl::parse(source).map_err(CliError::ParseSourceUrl)?)
             .object_id(),
     };
-    let store = open_store(paths)?;
     let genesis = store
         .get_source(&source_id)
         .map_err(|source| CliError::Sources { source })?;
@@ -572,6 +722,66 @@ fn run_show(paths: &StorePaths, source: &str, json: bool) -> Result<String, CliE
         for observed in refs {
             let _ = writeln!(out, "  {} {}", observed.name(), observed.target());
         }
+    }
+    Ok(out)
+}
+
+/// A file source's hash and every observation of it: each mirror it was
+/// fetched from, by whom, and when.
+fn show_file_source(
+    store: &kairo_store::FilesystemStore,
+    source: &ObjectId,
+    json: bool,
+) -> Result<String, CliError> {
+    let genesis = store
+        .get_file_source(source)
+        .map_err(|source| CliError::Sources { source })?;
+    let mut observations = Vec::new();
+    for head in store
+        .list_file_observations(source)
+        .map_err(|source| CliError::Sources { source })?
+    {
+        let statement = store
+            .get_file_observation(&head.statement_id)
+            .map_err(|source| CliError::Sources { source })?;
+        observations.push((head, statement));
+    }
+    let size = observations
+        .first()
+        .map(|(_, statement)| statement.unsigned().body().size());
+    if json {
+        let value = serde_json::json!({
+            "sha256": genesis.sha256().to_string(),
+            "source": source.to_string(),
+            "size": size,
+            "observations": observations.iter().map(|(head, statement)| serde_json::json!({
+                "statement": head.statement_id.to_string(),
+                "observer": head.actor.to_string(),
+                "observed_at": head.created_at.to_string(),
+                "url": statement.unsigned().body().url().as_str(),
+            })).collect::<Vec<_>>(),
+        });
+        return Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&value).unwrap_or_default()
+        ));
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "sha256 = {}", genesis.sha256());
+    let _ = writeln!(out, "source = {source}");
+    if let Some(size) = size {
+        let _ = writeln!(out, "size = {size}");
+    }
+    let _ = writeln!(out, "observations = {}", observations.len());
+    for (head, statement) in &observations {
+        let _ = writeln!(
+            out,
+            "  {} by {} at {}: {}",
+            head.statement_id,
+            head.actor,
+            head.created_at,
+            statement.unsigned().body().url()
+        );
     }
     Ok(out)
 }

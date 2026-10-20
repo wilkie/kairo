@@ -1611,13 +1611,15 @@ Search results must be labeled as unverified until core validation occurs.
 
 **[step one implemented].** Source objects (`DECISIONS.md` §37):
 external Git repositories archived faithfully, identified by their
-canonical URL.
+canonical URL; and file sources (§38): single files identified by the
+SHA-256 of their bytes.
 
 ```text
-kairo source id <url>
+kairo source id <url|sha256>
 kairo source fetch <url> --actor <id> [--object-format <sha1|sha256>]
                    [--no-recurse-submodules] [--max-depth <n>] [--require-complete]
-kairo source show <url|object:id> [--json]
+kairo source fetch-file <url> --actor <id> [--sha256 <hex>]
+kairo source show <url|sha256|object:id> [--json]
 kairo source pull <url> [--from <peer>] [--allow-peer] [--json]
 ```
 
@@ -1664,8 +1666,30 @@ complete = yes | no
 `--require-complete` makes `complete = no` an error (exit 1), after
 archiving everything it could.
 
+`fetch-file` downloads one file and archives it as a file source:
+`https` only (`http` for a loopback host), at most one redirect, to a
+URL the same rules accept, within the federation limits' Git size and
+time (`max_git_bytes`, `git_timeout_secs`). With `--sha256`, bytes that
+hash otherwise are refused (exit 1) and nothing is kept. The bytes are
+stored as the blob their hash names, and a `FileObservation` of the
+URL asked for is signed. Fetching the same file from a mirror adds an
+observation to the same source. Output:
+
+```text
+url = <url asked for>
+sha256 = <hex>
+size = <bytes>
+source = <file source id>
+observation = <statement id>
+observations = N                 (of this file, every mirror)
+```
+
+`id` given 64 lowercase hex digits prints `sha256 = …` and the file
+source's id.
+
 `show` lists the source's observations, newest first, and the refs the
-newest one saw.
+newest one saw. For a file source (a hash, or its `object:` id) it
+lists every observation with the URL each fetched.
 
 `pull` pulls a source from a peer exactly as `kairo fetch --object`
 does, with the same peer policy and output, deriving the source id

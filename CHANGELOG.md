@@ -18,6 +18,20 @@ rather than per-commit.
 
 ### Added
 
+- **File sources (`DECISIONS.md` §38 sub-decisions 1–3).** A single
+  file, a distfile or release tarball, is a source object identified
+  by the SHA-256 of its bytes: an unsigned `FileSourceGenesis` holding
+  the hash, the bytes as the blob that hash names, and signed
+  `FileObservation` statements of where each download came from, so
+  mirrors are observations of one source. `kairo source fetch-file
+  <url> [--sha256 <hex>]` downloads (`https`, one redirect), refuses a
+  mismatched hash, and signs the observation; `kairo source show` and
+  `kairo source id` take a hash. Manifests depend on one with
+  `kind = "file"`, `sha256`, and `path`; the build places the file
+  there, checked against its hash, and refuses a placement the tree
+  already fills or reaches through a symlink. File observations don't
+  federate yet.
+
 - **Pulling a native object brings the sources it pins (`DECISIONS.md`
   §37 sub-decision 9).** Publishing a native object also serves each
   source its revisions pin, with that source's observations and only

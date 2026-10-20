@@ -240,6 +240,17 @@ a `kairo.toml`; it depends on sources pinned by upstream commit.
 
 See `DECISIONS.md` §37.
 
+## File Source
+
+A file source archives one external file, a distfile or a release
+tarball, identified by the SHA-256 of its bytes rather than by where it
+came from: every node holding the same bytes derives the same id. The
+bytes are a blob named by that hash. Actors sign `FileObservation`
+statements about it, one per download, so mirrors of one file are
+observations of one source. Manifests depend on it with `kind = "file"`.
+
+See `DECISIONS.md` §38.
+
 ## Environment Contract
 
 An environment contract is what an `environment:<system>/<arch>` label

@@ -676,6 +676,16 @@ pub(crate) fn run_reproduce(
                     missing.push(format!("{url} at {revision} (kairo source fetch {url})"));
                 }
             }
+            kairo_resolver::Resolved::File { source, sha256, .. } => {
+                let held = ObjectId::new(source.clone()).ok().is_some_and(|source| {
+                    kairo_store::SourceStore::holds_file_source(&store, &source).unwrap_or(false)
+                });
+                if !held {
+                    missing.push(format!(
+                        "the file sha256:{sha256} (kairo source fetch-file <url> --sha256 {sha256})"
+                    ));
+                }
+            }
             kairo_resolver::Resolved::HostTool { path, .. } => {
                 if !std::path::Path::new(path).is_file() {
                     missing.push(format!("the host tool {path}"));

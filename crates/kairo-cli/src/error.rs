@@ -174,6 +174,19 @@ pub(crate) enum CliError {
         source: kairo_store::StoreError,
     },
     ObservationShape(String),
+    /// A file source's URL or digest didn't parse.
+    ParseFileSource(String),
+    /// Downloading a file source failed.
+    FileFetch {
+        url: String,
+        message: String,
+    },
+    /// The downloaded bytes don't hash to `--sha256`; nothing was kept.
+    FileHashMismatch {
+        url: String,
+        expected: String,
+        actual: String,
+    },
     /// `--require-complete` and a pinned submodule commit couldn't be
     /// archived; the summary is the output otherwise printed.
     SourceIncomplete {
@@ -715,6 +728,16 @@ impl fmt::Display for CliError {
             Self::ParseSourceUrl(error) => write!(f, "{error}"),
             Self::Sources { source } => write!(f, "source objects: {source}"),
             Self::ObservationShape(message) => write!(f, "source observation: {message}"),
+            Self::ParseFileSource(message) => write!(f, "{message}"),
+            Self::FileFetch { url, message } => write!(f, "fetching {url}: {message}"),
+            Self::FileHashMismatch {
+                url,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "{url} served bytes hashing to {actual}, not the expected {expected}; nothing was kept"
+            ),
             Self::SourceIncomplete { summary, missing } => write!(
                 f,
                 "{summary}{missing} pinned submodule commit(s) could not be archived (--require-complete)"
@@ -1289,6 +1312,9 @@ impl Error for CliError {
             | Self::NoEngine { .. }
             | Self::BundleExecutions { .. }
             | Self::ObservationShape(_)
+            | Self::ParseFileSource(_)
+            | Self::FileFetch { .. }
+            | Self::FileHashMismatch { .. }
             | Self::SourceIncomplete { .. }
             | Self::NotAResultRef { .. }
             | Self::ReproduceUnavailable { .. }

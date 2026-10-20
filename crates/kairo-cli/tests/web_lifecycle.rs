@@ -36,7 +36,9 @@ use kairo_test_support as _;
 use kairo_web as _;
 use nix as _;
 use serde_json as _;
+use sha2 as _;
 use tokio as _;
+use ureq as _;
 
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;

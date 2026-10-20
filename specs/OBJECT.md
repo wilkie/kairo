@@ -305,6 +305,17 @@ path = "M2libc"   # optional: copied here in the source tree for the build
 seed = true       # optional: a seed; must be accepted in [[runtime.seeds]]
 ```
 
+A **file** dependency names a file source (`DECISIONS.md` §38) by the
+SHA-256 of its bytes, and places the file at `path` in the source tree.
+It resolves only when the bytes are held (`kairo source fetch-file`).
+
+```toml
+[[dependencies]]
+kind = "file"
+sha256 = "183a40ea47ea49f8a1e3bd1b9d12e676374d64d63bc79e7bc1ae7d673dfdf25d"
+path = "external/distfiles/mes-0.27.1.tar.gz"
+```
+
 In `kairo.toml`, fields such as `object` and `snapshot` use bare ID payloads
 because the field names provide type context. Standalone references use typed
 forms such as `object:z6MkObject...` or

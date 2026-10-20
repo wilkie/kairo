@@ -599,6 +599,40 @@ pub enum DependencyDeclaration {
     /// A source object at an exact upstream commit (`DECISIONS.md` §37
     /// sub-decision 6).
     Source(SourceDependency),
+    /// A file source, by the SHA-256 of its bytes, placed at a file
+    /// path in the source tree (`DECISIONS.md` §38 sub-decision 3).
+    File(FileDependency),
+}
+
+/// A dependency on a file source: its hash, which is its identity, and
+/// where the file goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileDependency {
+    sha256: kairo_statement::Sha256Digest,
+    path: String,
+}
+
+impl FileDependency {
+    pub fn sha256(&self) -> &kairo_statement::Sha256Digest {
+        &self.sha256
+    }
+
+    /// The file source; its object id derives from the hash.
+    pub fn source(&self) -> ObjectId {
+        kairo_statement::FileSourceGenesis::new(self.sha256).object_id()
+    }
+
+    /// The file's path in the source tree.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+impl CanonicalEncode for FileDependency {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.sha256.to_string());
+        encode_str(out, &self.path);
+    }
 }
 
 /// A dependency on a source object, pinned by upstream commit: the
@@ -659,6 +693,10 @@ impl CanonicalEncode for DependencyDeclaration {
             }
             Self::Source(dependency) => {
                 encode_str(out, "source");
+                dependency.encode_canonical(out);
+            }
+            Self::File(dependency) => {
+                encode_str(out, "file");
                 dependency.encode_canonical(out);
             }
         }
@@ -898,6 +936,8 @@ pub enum ManifestError {
     /// `object` dependency.
     SourceFieldsOnOtherKind(String),
     InvalidSourceDependency(String),
+    /// A `kind = "file"` dependency is malformed.
+    InvalidFileDependency(String),
     /// Two dependencies of one target placed at the same path.
     PlacementConflict {
         target: String,
@@ -957,9 +997,10 @@ impl fmt::Display for ManifestError {
             ),
             Self::SourceFieldsOnOtherKind(kind) => write!(
                 f,
-                "a {kind} dependency can't take source, revision, path, or seed (those are for kind = \"source\")"
+                "a {kind} dependency can't take source, revision, path, seed, or sha256 (those are for kind = \"source\" and kind = \"file\")"
             ),
             Self::InvalidSourceDependency(message) => write!(f, "source dependency {message}"),
+            Self::InvalidFileDependency(message) => write!(f, "file dependency {message}"),
             Self::PlacementConflict { target, path } => write!(
                 f,
                 "build target {target} places two dependencies at {path}"
@@ -1001,6 +1042,7 @@ impl Error for ManifestError {
             | Self::UnknownArtifactProvider { .. }
             | Self::SourceFieldsOnOtherKind(_)
             | Self::InvalidSourceDependency(_)
+            | Self::InvalidFileDependency(_)
             | Self::PlacementConflict { .. } => None,
         }
     }
@@ -1090,10 +1132,12 @@ impl RawObjectManifest {
         for target in &build_targets {
             let mut placed: Vec<&str> = Vec::new();
             for dependency in dependencies.iter().chain(&target.dependencies) {
-                let DependencyDeclaration::Source(source) = dependency else {
-                    continue;
+                let path = match dependency {
+                    DependencyDeclaration::Source(source) => source.path(),
+                    DependencyDeclaration::File(file) => Some(file.path()),
+                    _ => None,
                 };
-                let Some(path) = source.path() else { continue };
+                let Some(path) = path else { continue };
                 if placed.contains(&path) {
                     return Err(ManifestError::PlacementConflict {
                         target: target.name.clone(),
@@ -1343,6 +1387,7 @@ struct RawDependencyDeclaration {
     revision: Option<String>,
     path: Option<String>,
     seed: Option<bool>,
+    sha256: Option<String>,
 }
 
 impl RawDependencyDeclaration {
@@ -1350,7 +1395,8 @@ impl RawDependencyDeclaration {
         let source_fields = self.source.is_some()
             || self.revision.is_some()
             || self.path.is_some()
-            || self.seed.is_some();
+            || self.seed.is_some()
+            || self.sha256.is_some();
         match self.kind.as_str() {
             "provides" | "object" if source_fields => {
                 Err(ManifestError::SourceFieldsOnOtherKind(self.kind.clone()))
@@ -1358,8 +1404,38 @@ impl RawDependencyDeclaration {
             "provides" => self.validate_provides(),
             "object" => self.validate_object(),
             "source" => self.validate_source(),
+            "file" => self.validate_file(),
             kind => Err(ManifestError::UnknownDependencyKind(kind.to_owned())),
         }
+    }
+
+    fn validate_file(self) -> Result<DependencyDeclaration, ManifestError> {
+        if self.provides.is_some()
+            || self.object.is_some()
+            || self.version.is_some()
+            || self.snapshot.is_some()
+            || self.source.is_some()
+            || self.revision.is_some()
+            || self.seed.is_some()
+        {
+            return Err(ManifestError::InvalidFileDependency(
+                "takes sha256 and path only; a file is named by its hash".to_owned(),
+            ));
+        }
+        let sha256 = self.sha256.ok_or_else(|| {
+            ManifestError::InvalidFileDependency(
+                "needs sha256, the file's hash as 64 lowercase hex digits".to_owned(),
+            )
+        })?;
+        let sha256 = kairo_statement::Sha256Digest::parse(&sha256)
+            .map_err(|error| ManifestError::InvalidFileDependency(error.to_string()))?;
+        let path = self.path.ok_or_else(|| {
+            ManifestError::InvalidFileDependency(
+                "needs path, where the file goes in the source tree".to_owned(),
+            )
+        })?;
+        let path = ensure_relative_path("dependencies.path", path)?;
+        Ok(DependencyDeclaration::File(FileDependency { sha256, path }))
     }
 
     fn validate_source(self) -> Result<DependencyDeclaration, ManifestError> {
@@ -1367,6 +1443,7 @@ impl RawDependencyDeclaration {
             || self.object.is_some()
             || self.version.is_some()
             || self.snapshot.is_some()
+            || self.sha256.is_some()
         {
             return Err(ManifestError::InvalidSourceDependency(
                 "takes source, revision, path, and seed only; sources are pinned by revision, \
@@ -2164,6 +2241,85 @@ mod tests {
                 "{from} -> {to:?}: {manifest:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn parses_file_dependencies_named_by_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let sha = "183a40ea47ea49f8a1e3bd1b9d12e676374d64d63bc79e7bc1ae7d673dfdf25d";
+        let manifest = |fields: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "wrapper"
+                [[build.targets]]
+                name = "amd64"
+                command = ["./run"]
+                [[build.targets.dependencies]]
+                kind = "file"
+                {fields}
+                [[build.targets.outputs]]
+                name = "bin"
+                path = "out"
+                artifact_path = "bin"
+                kind = "directory"
+                "#
+            )
+        };
+        let base = format!("sha256 = \"{sha}\"\npath = \"distfiles/mes-0.27.1.tar.gz\"");
+        let parsed = ObjectManifest::parse_toml(&manifest(&base))?;
+        let target = parsed.build_target("amd64").ok_or("target")?;
+        let DependencyDeclaration::File(file) = &target.dependencies()[0] else {
+            return Err("not a file dependency".into());
+        };
+        assert_eq!(file.sha256().to_string(), sha);
+        assert_eq!(file.path(), "distfiles/mes-0.27.1.tar.gz");
+        assert_eq!(
+            file.source(),
+            kairo_statement::FileSourceGenesis::new(*file.sha256()).object_id()
+        );
+        let moved = base.replace("distfiles/", "external/");
+        assert_ne!(
+            ObjectManifest::parse_toml(&manifest(&moved))?.manifest_hash(),
+            parsed.manifest_hash()
+        );
+
+        for (fields, expected) in [
+            ("path = \"x\"".to_owned(), "needs sha256"),
+            (format!("sha256 = \"{sha}\""), "needs path"),
+            (
+                format!("sha256 = \"{}\"\npath = \"x\"", sha.to_ascii_uppercase()),
+                "lowercase hex",
+            ),
+            (
+                format!("{base}\nrevision = \"git:sha1:{}\"", "a".repeat(40)),
+                "sha256 and path only",
+            ),
+            (base.replace("distfiles/", "../"), "relative path"),
+        ] {
+            let result = ObjectManifest::parse_toml(&manifest(&fields));
+            assert!(
+                matches!(&result, Err(error) if error.to_string().contains(expected)),
+                "{fields}: {result:?}"
+            );
+        }
+        let mixed =
+            manifest(&base).replace("kind = \"file\"", "kind = \"provides\"\nprovides = \"x\"");
+        assert!(matches!(
+            ObjectManifest::parse_toml(&mixed),
+            Err(ManifestError::SourceFieldsOnOtherKind(_))
+        ));
+        // Two placements at one path conflict, whatever their kinds.
+        let doubled = manifest(&base).replace(
+            "[[build.targets.outputs]]",
+            &format!("[[build.targets.dependencies]]\nkind = \"file\"\nsha256 = \"{}\"\npath = \"distfiles/mes-0.27.1.tar.gz\"\n[[build.targets.outputs]]", "0".repeat(64)),
+        );
+        assert!(matches!(
+            ObjectManifest::parse_toml(&doubled),
+            Err(ManifestError::PlacementConflict { .. })
+        ));
         Ok(())
     }
 

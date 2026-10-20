@@ -22,6 +22,8 @@ Documents:
 - `build-result-v1.schema.json`
 - `source-genesis-v1.schema.json`
 - `source-observation-v1.schema.json`
+- `file-source-genesis-v1.schema.json`
+- `file-observation-v1.schema.json`
 
 These JSON schemas describe interchange shape only. Canonical hash and signature
 inputs are defined by the corresponding documents in `schemas/canonical/`.

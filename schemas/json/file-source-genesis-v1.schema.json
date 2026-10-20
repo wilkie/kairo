@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/file-source-genesis-v1.schema.json",
+  "title": "Kairo FileSourceGenesis v1",
+  "description": "A file source's unsigned genesis: the SHA-256 of its bytes. The object id derives from it (schemas/canonical/file-source-genesis-v1.md).",
+  "type": "object",
+  "required": ["type", "version", "sha256"],
+  "properties": {
+    "type": { "const": "FileSourceGenesis" },
+    "version": { "const": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

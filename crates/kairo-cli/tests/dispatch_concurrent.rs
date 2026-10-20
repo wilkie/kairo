@@ -34,8 +34,10 @@ use kairo_store as _;
 use kairo_web as _;
 use nix as _;
 use serde_json as _;
+use sha2 as _;
 use tempfile as _;
 use tokio as _;
+use ureq as _;
 
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
