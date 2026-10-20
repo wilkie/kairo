@@ -516,8 +516,9 @@ pub(crate) enum GitCommand {
         #[arg(long, default_value = "main")]
         branch: String,
         /// The repository's Git object format, `sha1` or `sha256`.
-        /// Needed only when neither the object's revisions nor its
-        /// cache repo already determine it (`specs/DECISIONS.md` §19).
+        /// Otherwise taken from the object's revisions, its cache repo,
+        /// or the remote branch itself, which must all agree. Needed
+        /// only when none of them says (`specs/DECISIONS.md` §19).
         #[arg(long)]
         object_format: Option<String>,
     },

@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **`kairo git fetch` takes the remote's object format
+  (`DECISIONS.md` §19).** It reads the remote branch's format too, so a
+  new object fetching an existing repository needs no
+  `--object-format`, and refuses a flag, cache repo, or revisions that
+  disagree with it. The output says which source decided
+  (`object_format = sha1 (the remote)`). History born in the archive is
+  SHA-256 by default.
 - **The stage0-posix bootstrap (`DECISIONS.md` §36).**
   `bootstrap/stage0-posix/import.sh` imports stage0-posix Release_1.9.1
   as a seed object (`seed:stage0-posix/amd64`) and a sources object

@@ -1600,7 +1600,15 @@ Sub-decisions:
 7. **`kairo git fetch --object-format`.** The format comes from the
    flag, the existing cache repo, or the object's stored revisions,
    and every source that is present must agree. If none is
-   present, the command asks for the flag.
+   present, the command asks for the flag. *Amended:* the remote is a
+   fourth source, read from the length of the id `git ls-remote`
+   reports for the branch, and must agree with the others too, so a
+   fetched history takes its source's format without a flag. When
+   none of the four says, the command still asks, before creating
+   anything. Its output names which source decided. History born in
+   the archive (not fetched from a source) is **SHA-256**, the default
+   for new objects; history that extends or mirrors a source keeps
+   the source's format (§37).
 
 8. **gix 0.89 with `sha1` and `sha256`.** Upgraded from 0.66, which
    only knew SHA-1. `kairo-git`'s read surface (discover/open,

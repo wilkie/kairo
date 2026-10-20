@@ -6877,34 +6877,77 @@ fn revision_create_enforces_git_revision_ids() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn git_fetch_needs_a_format_for_an_unknown_object() -> Result<(), Box<dyn std::error::Error>> {
+fn git_fetch_takes_a_new_objects_format_from_the_remote() -> Result<(), Box<dyn std::error::Error>>
+{
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
     let store_dir = tempfile::TempDir::new()?;
-    let error = run_in(
-        store_dir.path(),
-        Command::Git {
-            command: GitCommand::Fetch {
-                object: OBJECT_ID.to_owned(),
-                remote: "file:///nonexistent".to_owned(),
-                branch: "main".to_owned(),
-                object_format: None,
+    let actor = create_local_actor(store_dir.path())?;
+    let fetch = |object: &str, remote: &str, format: Option<&str>| {
+        run_in(
+            store_dir.path(),
+            Command::Git {
+                command: GitCommand::Fetch {
+                    object: object.to_owned(),
+                    remote: remote.to_owned(),
+                    branch: "main".to_owned(),
+                    object_format: format.map(str::to_owned),
+                },
             },
-        },
-    )
-    .err()
-    .ok_or("fetch without a format was accepted")?;
-    assert!(error.to_string().contains("--object-format"), "{error}");
+        )
+    };
+    let (sha1_repo, _) = init_git_repo_with_manifest("[kairo]\n")?;
+    let sha1_url = format!("file://{}", sha1_repo.path().display());
+    let (sha256_repo, _) =
+        kairo_test_support::git::init_git_repo_with_manifest_in("[kairo]\n", "sha256")?;
+    let sha256_url = format!("file://{}", sha256_repo.path().display());
 
-    let bad = run_in(
-        store_dir.path(),
-        Command::Git {
-            command: GitCommand::Fetch {
-                object: OBJECT_ID.to_owned(),
-                remote: "file:///nonexistent".to_owned(),
-                branch: "main".to_owned(),
-                object_format: Some("md5".to_owned()),
-            },
-        },
+    // A new object's history takes the remote's format.
+    let first = create_local_object(store_dir.path(), &actor)?;
+    let fetched = fetch(&first, &sha1_url, None)?;
+    assert!(
+        fetched.contains("object_format = sha1 (the remote)\n"),
+        "{fetched}"
     );
+    let second = create_local_object(store_dir.path(), &actor)?;
+    let fetched = fetch(&second, &sha256_url, None)?;
+    assert!(
+        fetched.contains("object_format = sha256 (the remote)\n"),
+        "{fetched}"
+    );
+
+    // A flag that contradicts the remote is refused before fetching.
+    let third = create_local_object(store_dir.path(), &actor)?;
+    let conflict = fetch(&third, &sha1_url, Some("sha256")).expect_err("format conflict");
+    assert!(
+        conflict
+            .to_string()
+            .contains("--object-format says sha256 but the remote says sha1"),
+        "{conflict}"
+    );
+
+    // Once the cache repo exists, it decides and must agree too.
+    let again = fetch(&first, &sha256_url, None).expect_err("repo is sha1");
+    assert!(
+        again
+            .to_string()
+            .contains("the cache repo says sha1 but the remote says sha256"),
+        "{again}"
+    );
+
+    // When nothing says, the command asks, and creates no cache repo
+    // that would pin a guess.
+    let fourth = create_local_object(store_dir.path(), &actor)?;
+    let unknown = fetch(&fourth, "file:///nonexistent/repo", None).expect_err("no format");
+    assert!(unknown.to_string().contains("--object-format"), "{unknown}");
+    let fetched = fetch(&fourth, &sha1_url, None)?;
+    assert!(
+        fetched.contains("object_format = sha1 (the remote)\n"),
+        "{fetched}"
+    );
+
+    let bad = fetch(&fourth, &sha1_url, Some("md5"));
     assert!(bad.is_err());
     Ok(())
 }

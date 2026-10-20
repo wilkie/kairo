@@ -14,7 +14,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::GitError;
+use crate::{GitError, GitObjectFormat};
 
 /// One ref that landed in the target repo as a result of a fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +61,28 @@ pub struct GitCli;
 impl GitCli {
     pub fn new() -> Self {
         Self
+    }
+
+    /// The object format of `url`'s `refs/heads/<branch>`, read from
+    /// the length of the id `git ls-remote` reports (40 hex for SHA-1,
+    /// 64 for SHA-256). `None` when the remote can't say: the branch
+    /// is absent, or the remote can't be listed (the fetch that
+    /// follows reports why).
+    pub fn remote_format(&self, url: &str, branch: &str) -> Option<GitObjectFormat> {
+        let output = Command::new("git")
+            .args(["-c", "protocol.version=2", "ls-remote", url])
+            .arg(format!("refs/heads/{branch}"))
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let oid = listing.lines().next()?.split_whitespace().next()?;
+        [GitObjectFormat::Sha1, GitObjectFormat::Sha256]
+            .into_iter()
+            .find(|format| oid.len() == format.hex_len())
     }
 }
 
@@ -190,6 +212,34 @@ mod tests {
     use kairo_test_support::git::{init_source_repo, skip_if_no_git};
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[test]
+    fn remote_format_reads_the_listed_id_length() {
+        if skip_if_no_git() {
+            return;
+        }
+        let (_sha1, sha1_url, branch, _) = init_source_repo();
+        assert_eq!(
+            GitCli::new().remote_format(&sha1_url, &branch),
+            Some(GitObjectFormat::Sha1)
+        );
+        assert_eq!(
+            GitCli::new().remote_format(&sha1_url, "no-such-branch"),
+            None
+        );
+        let (sha256, _) =
+            kairo_test_support::git::init_git_repo_with_manifest_in("[kairo]\n", "sha256")
+                .expect("sha256 repo");
+        let sha256_url = format!("file://{}", sha256.path().display());
+        assert_eq!(
+            GitCli::new().remote_format(&sha256_url, "main"),
+            Some(GitObjectFormat::Sha256)
+        );
+        assert_eq!(
+            GitCli::new().remote_format("file:///nonexistent/repo", "main"),
+            None
+        );
+    }
 
     /// Initialize a bare repo at `path` to serve as the fetch target.
     fn init_bare(path: &std::path::Path) {

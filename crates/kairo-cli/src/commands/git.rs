@@ -43,7 +43,8 @@ fn run_fetch(
     let branch = strip_refs_heads_prefix(branch);
     let cache =
         GitCache::open(paths.git_root()).map_err(|source| CliError::GitOperation { source })?;
-    let format = resolve_object_format(paths, &cache, object, object_format)?;
+    let (format, source) =
+        resolve_object_format(paths, &cache, object, remote, branch, object_format)?;
     let fetched = cache
         .fetch(object, remote, branch, format, &GitCli::new())
         .map_err(|source| CliError::GitOperation { source })?;
@@ -51,23 +52,28 @@ fn run_fetch(
     out.push_str("fetched\n");
     out.push_str(&format!("object = {object}\n"));
     out.push_str(&format!("remote = {remote}\n"));
-    out.push_str(&format!("object_format = {format}\n"));
+    out.push_str(&format!("object_format = {format} ({source})\n"));
     out.push_str(&format!("ref = {}\n", fetched.ref_name));
     out.push_str(&format!("oid = {}\n", fetched.oid));
     Ok(out)
 }
 
-/// The object format to fetch `object` in. An object's history has
-/// one format (`specs/DECISIONS.md` §19), so `--object-format`, the
-/// existing cache repo, and the object's stored `git:` revisions must
-/// all agree; the first one present decides, and any disagreement is
-/// an error rather than a silent pick.
+/// The object format to fetch `object` in, and what decided it. An
+/// object's history has one format (`specs/DECISIONS.md` §19), so
+/// `--object-format`, the existing cache repo, the object's stored
+/// `git:` revisions, and the remote branch's own format must all agree
+/// where present; the first one present decides, and any disagreement
+/// is an error rather than a silent pick. When none says, the command
+/// asks for the flag before creating anything: a fetched history's
+/// format is the source's, never a default (§19 sub-decision 7).
 fn resolve_object_format(
     paths: &StorePaths,
     cache: &GitCache,
     object: &str,
+    remote: &str,
+    branch: &str,
     flag: Option<&str>,
-) -> Result<GitObjectFormat, CliError> {
+) -> Result<(GitObjectFormat, &'static str), CliError> {
     let conflict = |message: String| CliError::GitFormatConflict {
         object: object.to_owned(),
         message,
@@ -110,8 +116,9 @@ fn resolve_object_format(
         ("--object-format", flag),
         ("the cache repo", repo),
         ("its revisions", from_revisions),
+        ("the remote", GitCli::new().remote_format(remote, branch)),
     ];
-    let mut chosen: Option<(&str, GitObjectFormat)> = None;
+    let mut chosen: Option<(&'static str, GitObjectFormat)> = None;
     for (source, format) in candidates {
         let Some(format) = format else { continue };
         match chosen {
@@ -125,7 +132,7 @@ fn resolve_object_format(
         }
     }
     chosen
-        .map(|(_, format)| format)
+        .map(|(source, format)| (format, source))
         .ok_or_else(|| CliError::GitFormatUnknown {
             object: object.to_owned(),
         })

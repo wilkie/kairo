@@ -728,8 +728,8 @@ impl fmt::Display for CliError {
             ),
             Self::GitFormatUnknown { object } => write!(
                 f,
-                "object {object} has no Git revisions or cache repo to take an object format \
-                 from; pass --object-format sha1 or sha256"
+                "object {object} has no revisions or cache repo to take a Git object format from, \
+                 and the remote didn't report one; pass --object-format sha1 or sha256"
             ),
             Self::GitFormatConflict { object, message } => {
                 write!(f, "object {object}: {message}")
