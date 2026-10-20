@@ -1,17 +1,16 @@
-//! The stage0-posix bootstrap, end to end (`specs/DECISIONS.md` §36):
-//! `bootstrap/stage0-posix/import.sh` imports the seed and the sources
-//! into a fresh store, `kairo build` runs the whole AMD64 chain under
-//! the bubblewrap engine from the seeds alone, the artifact matches
-//! upstream's `amd64.answers`, and `kairo reproduce` matches.
+//! The stage0-posix bootstrap, end to end (`specs/DECISIONS.md` §36,
+//! §37): `bootstrap/stage0-posix/import.sh` archives stage0-posix and,
+//! recursively, every submodule it pins as source objects from their
+//! real upstream URLs, and creates the native wrapper; `kairo build`
+//! then runs the whole AMD64 chain under the bubblewrap engine from the
+//! seeds alone; the artifact matches upstream's `amd64.answers`, read
+//! from the archived source; and `kairo reproduce` matches.
 //!
-//! Ignored by default: it needs a local checkout of the pinned upstream
-//! (tests don't use the network), bubblewrap, and about a minute.
+//! Ignored by default: it needs the network (GitHub and Savannah),
+//! bubblewrap, and a few minutes.
 //!
 //! ```text
-//! git clone --branch Release_1.9.1 --recurse-submodules \
-//!   https://github.com/oriansj/stage0-posix.git /path/to/stage0-posix
-//! KAIRO_STAGE0_DIR=/path/to/stage0-posix \
-//!   cargo test -p kairo-cli --test bootstrap_stage0 -- --ignored
+//! cargo test -p kairo-cli --test bootstrap_stage0 -- --ignored
 //! ```
 
 #![allow(clippy::expect_used, clippy::panic)]
@@ -27,29 +26,31 @@ use hyper_util as _;
 use kairo_build as _;
 use kairo_bundle as _;
 use kairo_config as _;
-use kairo_core as _;
+
 use kairo_daemon as _;
 use kairo_daemon_client as _;
 use kairo_federation_core as _;
 use kairo_federation_http as _;
 use kairo_federation_service as _;
-use kairo_git as _;
+
 use kairo_identity as _;
 use kairo_keystore as _;
 use kairo_object as _;
 use kairo_resolver as _;
 use kairo_statement as _;
-use kairo_store as _;
+
 use kairo_test_support as _;
 use kairo_web as _;
 use nix as _;
 use serde_json as _;
 use tokio as _;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 const KAIRO: &str = env!("CARGO_BIN_EXE_kairo");
+const STAGE0_URL: &str = "https://github.com/oriansj/stage0-posix";
+const STAGE0_RELEASE: &str = "45d90f5955b6907dc6cdea9ebafce558359edcd3";
 
 fn kairo(store: &Path, args: &[&str]) -> String {
     let output = Command::new(KAIRO)
@@ -74,9 +75,12 @@ fn field<'a>(text: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {name} in:\n{text}"))
 }
 
-fn sha256(path: &Path) -> String {
+fn sha256(bytes: &[u8]) -> String {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let path = dir.path().join("file");
+    std::fs::write(&path, bytes).expect("write");
     let output = Command::new("sha256sum")
-        .arg(path)
+        .arg(&path)
         .output()
         .expect("sha256sum");
     String::from_utf8_lossy(&output.stdout)
@@ -87,12 +91,8 @@ fn sha256(path: &Path) -> String {
 }
 
 #[test]
-#[ignore = "needs KAIRO_STAGE0_DIR (a Release_1.9.1 checkout), bubblewrap, and about a minute"]
-fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
-    let checkout = PathBuf::from(
-        std::env::var_os("KAIRO_STAGE0_DIR")
-            .expect("KAIRO_STAGE0_DIR names a stage0-posix checkout"),
-    );
+#[ignore = "needs the network (GitHub, Savannah), bubblewrap, and a few minutes"]
+fn stage0_posix_bootstraps_from_archived_sources_under_the_engine() {
     let store_dir = tempfile::TempDir::new().expect("tempdir");
     let store = store_dir.path();
     let actor = field(
@@ -113,7 +113,6 @@ fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
     let script =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bootstrap/stage0-posix/import.sh");
     let output = Command::new(&script)
-        .arg(&checkout)
         .arg(&actor)
         .arg("--store")
         .arg(store)
@@ -121,15 +120,15 @@ fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
         .output()
         .expect("run import.sh");
     let imported = String::from_utf8_lossy(&output.stdout).into_owned();
+    let log = String::from_utf8_lossy(&output.stderr).into_owned();
     assert!(
         output.status.success(),
-        "import.sh failed:\n{imported}{}",
-        String::from_utf8_lossy(&output.stderr)
+        "import.sh failed:\n{imported}{log}"
     );
-    let seed = field(&imported, "seed").to_owned();
-    let sources = field(&imported, "sources").to_owned();
+    assert!(log.contains("complete = yes"), "{log}");
+    let wrapper = field(&imported, "wrapper").to_owned();
     let config = &imported[imported.find("[[runtime.seeds]]").expect("config lines")..];
-    let snapshot_ref = format!("object:{sources}");
+    let snapshot_ref = format!("object:{wrapper}");
     let build = [
         "build",
         snapshot_ref.as_str(),
@@ -139,7 +138,7 @@ fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
         actor.as_str(),
     ];
 
-    // Without accepting the seed, the label is unsatisfiable.
+    // Without accepting the seed, the build is refused.
     std::fs::write(
         store.join("config.toml"),
         "[[runtime.engines]]\nkind = \"bubblewrap\"\npath = \"/usr/bin/bwrap\"\n",
@@ -153,7 +152,7 @@ fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
         .expect("run kairo");
     assert!(!refused.status.success());
     assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("is not an accepted seed"),
+        String::from_utf8_lossy(&refused.stderr).contains("not an accepted seed"),
         "{}",
         String::from_utf8_lossy(&refused.stderr)
     );
@@ -166,38 +165,36 @@ fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
     assert!(built.contains("executor = bubblewrap/1"), "{built}");
     let artifact = field(&built, "artifact").to_owned();
 
-    // The artifact agrees with upstream's published hashes.
-    let out = tempfile::TempDir::new().expect("tempdir");
+    // The artifact agrees with upstream's published hashes, as the
+    // archived stage0-posix source holds them.
+    let stage0 = field(&kairo(store, &["source", "id", STAGE0_URL]), "source").to_owned();
+    let cache = kairo_git::GitCache::open(store.join("git")).expect("cache");
+    let repo = kairo_git::open(&cache.path_for(&stage0).expect("path")).expect("repo");
+    let release = kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, STAGE0_RELEASE)
+        .expect("revision");
+    let answers = String::from_utf8(
+        repo.read_blob_at_path(&release, "amd64.answers")
+            .expect("read")
+            .expect("amd64.answers in the release"),
+    )
+    .expect("utf8");
+    let blob_store = kairo_store::FilesystemStore::open(store).expect("store");
     let mut files = std::collections::BTreeMap::new();
     for line in built.lines().filter(|line| line.starts_with("  bin/")) {
         let mut parts = line.split_whitespace();
-        let path = parts.next().expect("path").trim_end_matches('*');
-        let blob = parts.next().expect("blob");
-        files.insert(path.to_owned(), blob.to_owned());
+        let path = parts.next().expect("path").trim_end_matches('*').to_owned();
+        let blob = kairo_core::BlobId::new(parts.next().expect("blob")).expect("blob id");
+        files.insert(path, blob);
     }
-    let answers = std::fs::read_to_string(checkout.join("amd64.answers")).expect("answers");
-    let mut checked = 0;
     for line in answers.lines() {
         let (digest, path) = line.split_once("  ").expect("answers line");
         let path = path.replacen("AMD64/bin/", "bin/", 1);
         let blob = files
             .get(&path)
             .unwrap_or_else(|| panic!("{path} is not in the artifact"));
-        let file = Command::new("sh")
-            .arg("-c")
-            .arg(format!(
-                "ls {}/blobs/*/*/{blob}* | head -n 1",
-                store.display()
-            ))
-            .output()
-            .expect("find blob");
-        let file = String::from_utf8_lossy(&file.stdout).trim().to_owned();
-        let copy = out.path().join(path.replace('/', "_"));
-        std::fs::copy(&file, &copy).expect("copy blob");
-        assert_eq!(sha256(&copy), digest, "{path}");
-        checked += 1;
+        let bytes = kairo_store::BlobStore::get_blob(&blob_store, blob).expect("blob");
+        assert_eq!(sha256(&bytes), digest, "{path}");
     }
-    assert_eq!(checked, answers.lines().count());
 
     // Another run of the same plan gives the same artifact.
     let result = field(&built, "result").to_owned();
@@ -216,5 +213,4 @@ fn stage0_posix_bootstraps_from_the_seeds_under_the_engine() {
         "{reproduced}"
     );
     assert_eq!(field(&reproduced, "reproduced_artifact"), artifact);
-    assert!(!seed.is_empty());
 }

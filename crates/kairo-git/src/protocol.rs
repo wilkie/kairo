@@ -89,17 +89,20 @@ pub(crate) fn upload_pack(repo: &Path, advertise: bool) -> Command {
 /// objects, so a quarantine's packs are all there is to migrate); a
 /// transfer slower than 1 KiB/s for 60 seconds aborts.
 pub(crate) fn fetch(target: &Path, url: &str) -> Command {
-    fetch_allowing(target, url, &["https", "http"])
+    fetch_allowing(target, url, &["https", "http"], "false")
 }
 
 /// [`fetch`] for a source object (`specs/DECISIONS.md` §37): the
 /// transports a canonical source URL can name, `https` and `git`, with
-/// refspecs (globs allowed) from stdin.
+/// refspecs (globs allowed) from stdin. Unlike a federation fetch, a
+/// redirect on the initial request is followed, as Git does by
+/// default: the operator named the repository, hosts move them, and
+/// every object is checked against its hash whoever serves it.
 pub(crate) fn fetch_source(target: &Path, url: &str) -> Command {
-    fetch_allowing(target, url, &["https", "git"])
+    fetch_allowing(target, url, &["https", "git"], "initial")
 }
 
-fn fetch_allowing(target: &Path, url: &str, transports: &[&str]) -> Command {
+fn fetch_allowing(target: &Path, url: &str, transports: &[&str], redirects: &str) -> Command {
     let mut command = isolated_git();
     command
         .arg("-C")
@@ -111,9 +114,9 @@ fn fetch_allowing(target: &Path, url: &str, transports: &[&str]) -> Command {
             .arg(format!("protocol.{transport}.allow=always"));
     }
     command
+        .arg("-c")
+        .arg(format!("http.followRedirects={redirects}"))
         .args([
-            "-c",
-            "http.followRedirects=false",
             "-c",
             "http.lowSpeedLimit=1024",
             "-c",
@@ -155,7 +158,7 @@ pub(crate) fn ls_remote_source(url: &str) -> Command {
             "-c",
             "protocol.git.allow=always",
             "-c",
-            "http.followRedirects=false",
+            "http.followRedirects=initial",
             "ls-remote",
             "--refs",
         ])

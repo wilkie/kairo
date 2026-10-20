@@ -1393,8 +1393,7 @@ Sub-decisions:
    signer trust (§35 sub-decision 5); `[[runtime.engines]]` entries (`kind`, absolute `path`)
    allowlist isolation engines, each probed before use (§35
    sub-decision 2); `[[runtime.seeds]]` entries name a `source` and a
-   `revision` (§37 sub-decision 8), or, until §36's seed objects are
-   retired, an `object` (a bare id) that may satisfy `seed:*` labels.
+   `revision` (§37 sub-decision 8).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -3441,6 +3440,14 @@ Affected specs:
 
 ## 36. Bootstrap Import: stage0-posix for AMD64
 
+> *Superseded in part by §37 sub-decision 8:* the bootstrap is now
+> stage0-posix and its submodules as source objects, archived from
+> their upstream URLs, plus one native wrapper; sub-decisions 1, 2, and
+> 4's two flattened objects and their packaging, and sub-decision 3's
+> `seed:*` labels, are retired. Seeds are `(source, revision)` pairs.
+> The pinned release, the one target, its glue, and the answers check
+> stand.
+
 Decision: the archive's first bootstrap (§34 sub-decision 9) is the
 Bootstrappable Builds project's **stage0-posix**, pinned at
 `Release_1.9.1` (commit `45d90f5955b6907dc6cdea9ebafce558359edcd3`),
@@ -3568,7 +3575,13 @@ Sub-decisions:
    on a ref's commit have independently retrieved the same content.
    Trust policy decides whose observations a node relies on; they
    never override each other. The OBJECT §4 rule that a revision's
-   tree carries `kairo.toml` applies to native objects only. One
+   tree carries `kairo.toml` applies to native objects only. *Amended
+   when built:* source fetches follow a redirect on the initial
+   request (`http.followRedirects=initial`, Git's default), unlike
+   federation fetches, which follow none: the operator named the
+   repository, hosts move them (Savannah redirects every request to
+   another host), and every object is checked against its hash however
+   it is served. One
    statement per fetch lists **every** ref the remote advertised, so
    it is a faithful picture of one moment: a ref absent from a later
    observation was deleted, and two observers compare in one step.
@@ -3635,11 +3648,16 @@ Sub-decisions:
    tree (`path = "M2libc"`); the executor materializes it there,
    read-only, instead of at `/kairo/content/<snapshot>` only, so
    upstream layouts that expect sibling repositories build unchanged.
-   *Built for source dependencies:* bound read-only over an empty
-   directory under an engine (the snapshot's tree must not already fill
-   the path), copied in for development mode; without `path`, a source
-   is at `/kairo/source/<source id>/<oid>`. A target's placements may
-   not overlap.
+   *Amended when the bootstrap was rebuilt on sources:* a placed source
+   is a **writable copy**, made fresh for each build, not a read-only
+   mount, because upstream builds write into their own trees
+   (stage0-posix writes into its `AMD64/` submodule). Placements may
+   **nest**, as submodules do: outer paths are copied first, inner ones
+   into the holes their gitlinks leave; two at one path, or one over
+   files the outer tree already holds, are refused. Purity doesn't
+   rest on read-only: the plan pins every input by commit and only
+   declared outputs leave. Without `path`, a source stays read-only at
+   `/kairo/source/<source id>/<oid>`.
 
 8. **The bootstrap becomes sources plus a native wrapper.**
    stage0-posix, its eleven submodules, and bootstrap-seeds become

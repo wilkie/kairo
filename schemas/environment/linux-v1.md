@@ -26,7 +26,7 @@ A guest command running under this contract sees exactly:
 | `/kairo/artifact/<artifact id>` | each artifact provider's artifact tree | read-only |
 | `/kairo/content/<snapshot id>` | each content provider's tree | read-only |
 | `/kairo/source/<source id>/<oid>` | each source dependency without a `path`, at its pinned commit | read-only |
-| `/kairo/src/<path>` | each source dependency with a `path`, bound over an empty directory | read-only |
+| `/kairo/src/<path>` | each source dependency with a `path`, a fresh copy at its pinned commit; placements may nest | read-write |
 | `/kairo/home` | empty | read-write |
 | `/tmp` | empty | read-write |
 | `/proc` | the sandbox's own processes | — |

@@ -94,6 +94,7 @@ impl Fetcher<'_> {
         // sub-decision 7).
         let repo = self.cache.repo_format(source.as_str()).map_err(git_error)?;
         let remote = GitCache::source_format(url.as_str()).map_err(git_error)?;
+        let fetch_url = url.as_str();
         let pinned_format = required.first().map(kairo_git::GitRevision::format);
         let mut chosen: Option<(&str, GitObjectFormat)> = None;
         for (what, format) in [
@@ -121,7 +122,7 @@ impl Fetcher<'_> {
             None => Vec::new(),
             Some((_, format)) => {
                 self.cache
-                    .fetch_source(source.as_str(), url.as_str(), format, &self.limits)
+                    .fetch_source(source.as_str(), fetch_url, format, &self.limits)
                     .map_err(git_error)?
                     .refs
             }
@@ -141,12 +142,10 @@ impl Fetcher<'_> {
             .cloned()
             .collect();
         if !wanted.is_empty() {
-            match self.cache.fetch_source_commits(
-                source.as_str(),
-                url.as_str(),
-                &wanted,
-                &self.limits,
-            ) {
+            match self
+                .cache
+                .fetch_source_commits(source.as_str(), fetch_url, &wanted, &self.limits)
+            {
                 Ok(()) => pinned.extend(wanted),
                 // One at a time, so one unavailable commit doesn't cost
                 // the others.
@@ -154,7 +153,7 @@ impl Fetcher<'_> {
                     for commit in wanted {
                         match self.cache.fetch_source_commits(
                             source.as_str(),
-                            url.as_str(),
+                            fetch_url,
                             std::slice::from_ref(&commit),
                             &self.limits,
                         ) {

@@ -407,6 +407,40 @@ impl Bubblewrap {
     }
 }
 
+/// A source dependency placed at a path in the source tree.
+struct Placement {
+    path: String,
+    source: ObjectId,
+    revision: GitRevision,
+    url: String,
+    label: String,
+}
+
+fn export_source(
+    trees: &dyn TreeSource,
+    source: &ObjectId,
+    revision: &GitRevision,
+    url: &str,
+    dest: &Path,
+) -> Result<(), BuildError> {
+    let held = trees
+        .export_source(source, revision, dest)
+        .map_err(|error| BuildError::SourceTree {
+            url: url.to_owned(),
+            revision: revision.to_string(),
+            reason: error.to_string(),
+        })?;
+    if held {
+        Ok(())
+    } else {
+        Err(BuildError::SourceTree {
+            url: url.to_owned(),
+            revision: revision.to_string(),
+            reason: "not held (kairo source fetch)".to_owned(),
+        })
+    }
+}
+
 /// Guest paths of the `linux` contract (`schemas/environment/linux-v1.md`).
 const GUEST_SRC: &str = "/kairo/src";
 const GUEST_HOME: &str = "/kairo/home";
@@ -505,6 +539,7 @@ pub fn run_plan(
     let mut path_dirs: Vec<String> = Vec::new();
     let mut host_tool_dirs: Vec<String> = Vec::new();
     let mut host_tools: Vec<String> = Vec::new();
+    let mut placements: Vec<Placement> = Vec::new();
     for requirement in &manifest.requirements {
         let label = match &requirement.requested {
             kairo_resolver::Requested::Provides { provides, .. } => provides.clone(),
@@ -597,78 +632,34 @@ pub fn run_plan(
                 let revision = GitRevision::parse(revision).ok().flatten().ok_or_else(|| {
                     BuildError::Environment(format!("{revision} is not a git: revision"))
                 })?;
-                let export = |dest: &Path| -> Result<(), BuildError> {
-                    let held =
-                        trees
-                            .export_source(&source_id, &revision, dest)
-                            .map_err(|error| BuildError::SourceTree {
-                                url: url.clone(),
-                                revision: revision.to_string(),
-                                reason: error.to_string(),
-                            })?;
-                    if held {
-                        Ok(())
-                    } else {
-                        Err(BuildError::SourceTree {
-                            url: url.clone(),
-                            revision: revision.to_string(),
-                            reason: "not held (kairo source fetch)".to_owned(),
-                        })
-                    }
-                };
+                // Placed in the source tree (§37 sub-decision 7): a
+                // writable copy, made once the loop is done so outer
+                // placements land before the ones nested inside them.
+                if let Some(path) = path {
+                    placements.push(Placement {
+                        path: path.clone(),
+                        source: source_id,
+                        revision,
+                        url: url.clone(),
+                        label,
+                    });
+                    continue;
+                }
                 let staged = deps
                     .join("source")
                     .join(source_id.as_str())
                     .join(revision.oid());
-                let mount = match path {
-                    // Placed inside the source tree (§37 sub-decision 7):
-                    // bound read-only over an empty directory under an
-                    // engine, copied in for development mode.
-                    Some(path) => {
-                        let inside = src.join(path);
-                        let occupied = fs::read_dir(&inside)
-                            .map(|mut entries| entries.next().is_some())
-                            .unwrap_or_else(|_| inside.exists());
-                        if occupied {
-                            return Err(BuildError::PlacementOccupied { path: path.clone() });
-                        }
-                        fs::create_dir_all(&inside)
-                            .map_err(|source| io_error("creating", &inside, source))?;
-                        if isolated {
-                            if !staged.exists() {
-                                fs::create_dir_all(&staged)
-                                    .map_err(|source| io_error("creating", &staged, source))?;
-                                export(&staged)?;
-                            }
-                            Mount {
-                                host: staged,
-                                guest: format!("{GUEST_SRC}/{path}"),
-                            }
-                        } else {
-                            export(&inside)?;
-                            Mount {
-                                host: inside,
-                                guest: format!("{GUEST_SRC}/{path}"),
-                            }
-                        }
-                    }
-                    None => {
-                        if !staged.exists() {
-                            fs::create_dir_all(&staged)
-                                .map_err(|source| io_error("creating", &staged, source))?;
-                            export(&staged)?;
-                        }
-                        Mount {
-                            host: staged,
-                            guest: format!("/kairo/source/{source_id}/{}", revision.oid()),
-                        }
-                    }
+                if !staged.exists() {
+                    fs::create_dir_all(&staged)
+                        .map_err(|source| io_error("creating", &staged, source))?;
+                    export_source(trees, &source_id, &revision, url, &staged)?;
+                }
+                let mount = Mount {
+                    host: staged,
+                    guest: format!("/kairo/source/{source_id}/{}", revision.oid()),
                 };
                 env.insert(provider_var(&label), seen(&mount));
-                // A copied-in placement is part of the source tree
-                // already; anything else is bound.
-                let copied = path.is_some() && !isolated;
-                if !copied && !mounts.iter().any(|existing| existing.guest == mount.guest) {
+                if !mounts.iter().any(|existing| existing.guest == mount.guest) {
                     mounts.push(mount);
                 }
                 continue;
@@ -682,6 +673,33 @@ pub fn run_plan(
         if !mounts.iter().any(|existing| existing.guest == mount.guest) {
             mounts.push(mount);
         }
+    }
+    placements.sort_by_key(|placement| placement.path.split('/').count());
+    for placement in placements {
+        let inside = src.join(&placement.path);
+        // A gitlink leaves a hole in its parent's tree; anything there
+        // already is the snapshot's own content.
+        let occupied = fs::read_dir(&inside)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or_else(|_| inside.exists());
+        if occupied {
+            return Err(BuildError::PlacementOccupied {
+                path: placement.path,
+            });
+        }
+        fs::create_dir_all(&inside).map_err(|source| io_error("creating", &inside, source))?;
+        export_source(
+            trees,
+            &placement.source,
+            &placement.revision,
+            &placement.url,
+            &inside,
+        )?;
+        let mount = Mount {
+            host: inside,
+            guest: format!("{GUEST_SRC}/{}", placement.path),
+        };
+        env.insert(provider_var(&placement.label), seen(&mount));
     }
     path_dirs.extend(host_tool_dirs);
     let src_mount = Mount {

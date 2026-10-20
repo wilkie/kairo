@@ -9700,7 +9700,7 @@ fn source_fetch_archives_pinned_submodules_recursively() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn builds_use_sources_pinned_by_revision_placed_in_the_tree(
+fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use kairo_test_support::git::{git, GitDaemon};
     let usable = !kairo_test_support::git::skip_if_no_git()
@@ -9771,7 +9771,7 @@ fn builds_use_sources_pinned_by_revision_placed_in_the_tree(
             provides = "{contract}"
             [[build.targets]]
             name = "release"
-            command = ["sh", "-c", "busybox mkdir -p out; {{ busybox cat vendor/lib/lib.h; busybox cat \"$KAIRO_PROVIDER_SOURCE_SEEDS/hello\"; ( : > vendor/lib/probe ) 2>/dev/null && echo writable || echo read-only; }} > out/report"]
+            command = ["sh", "-c", "busybox mkdir -p out; {{ busybox cat vendor/lib/lib.h; busybox cat \"$KAIRO_PROVIDER_SOURCE_SEEDS/hello\"; ( : > vendor/lib/probe ) 2>/dev/null && echo writable || echo read-only; busybox cat vendor/lib/nested/lib.h; }} > out/report"]
             [[build.targets.dependencies]]
             kind = "provides"
             provides = "tool:sh"
@@ -9780,6 +9780,11 @@ fn builds_use_sources_pinned_by_revision_placed_in_the_tree(
             source = "{lib}"
             revision = "git:sha1:{lib_revision}"
             path = "vendor/lib"
+            [[build.targets.dependencies]]
+            kind = "source"
+            source = "{lib}"
+            revision = "git:sha1:{lib_revision}"
+            path = "vendor/lib/nested"
             [[build.targets.dependencies]]
             kind = "source"
             source = "{seeds}"
@@ -9838,9 +9843,11 @@ fn builds_use_sources_pinned_by_revision_placed_in_the_tree(
         &store,
         &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
     )?;
+    // Placed sources are fresh writable copies, nested ones inside
+    // their parents (§37 sub-decision 7, as amended).
     assert_eq!(
         String::from_utf8(report)?,
-        "/* lib */\nseed bytes\nread-only\n"
+        "/* lib */\nseed bytes\nwritable\n/* lib */\n"
     );
 
     let plan = run_in_store(

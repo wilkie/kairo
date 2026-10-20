@@ -898,8 +898,7 @@ pub enum ManifestError {
     /// `object` dependency.
     SourceFieldsOnOtherKind(String),
     InvalidSourceDependency(String),
-    /// Two dependencies of one target placed at the same path, or one
-    /// inside another.
+    /// Two dependencies of one target placed at the same path.
     PlacementConflict {
         target: String,
         path: String,
@@ -963,7 +962,7 @@ impl fmt::Display for ManifestError {
             Self::InvalidSourceDependency(message) => write!(f, "source dependency {message}"),
             Self::PlacementConflict { target, path } => write!(
                 f,
-                "build target {target} places two dependencies at or inside {path}"
+                "build target {target} places two dependencies at {path}"
             ),
             Self::UnknownArtifactProvider {
                 provides,
@@ -1087,7 +1086,7 @@ impl RawObjectManifest {
             .map(RawDependencyDeclaration::validate)
             .collect::<Result<Vec<_>, _>>()?;
         // A target's placed dependencies (its own and the manifest's)
-        // must not overlap.
+        // may nest, as submodules do, but not share a path.
         for target in &build_targets {
             let mut placed: Vec<&str> = Vec::new();
             for dependency in dependencies.iter().chain(&target.dependencies) {
@@ -1095,12 +1094,7 @@ impl RawObjectManifest {
                     continue;
                 };
                 let Some(path) = source.path() else { continue };
-                let overlaps = placed.iter().any(|other| {
-                    other == &path
-                        || path.starts_with(&format!("{other}/"))
-                        || other.starts_with(&format!("{path}/"))
-                });
-                if overlaps {
+                if placed.contains(&path) {
                     return Err(ManifestError::PlacementConflict {
                         target: target.name.clone(),
                         path: path.to_owned(),
@@ -2256,14 +2250,18 @@ mod tests {
             Err(ManifestError::SourceFieldsOnOtherKind(_))
         ));
 
-        let overlapping = manifest("path = \"lib\"").replace(
-            "[[build.targets.outputs]]",
-            &format!(
-                "[[build.targets.dependencies]]\nkind = \"source\"\nsource = \"https://example.org/x\"\nrevision = \"git:sha1:{oid}\"\npath = \"lib/inner\"\n[[build.targets.outputs]]"
-            ),
-        );
+        let second = |path: &str| {
+            manifest("path = \"lib\"").replace(
+                "[[build.targets.outputs]]",
+                &format!(
+                    "[[build.targets.dependencies]]\nkind = \"source\"\nsource = \"https://example.org/x\"\nrevision = \"git:sha1:{oid}\"\npath = \"{path}\"\n[[build.targets.outputs]]"
+                ),
+            )
+        };
+        // Nesting, as submodules do, is fine; sharing a path isn't.
+        assert!(ObjectManifest::parse_toml(&second("lib/inner")).is_ok());
         assert!(matches!(
-            ObjectManifest::parse_toml(&overlapping),
+            ObjectManifest::parse_toml(&second("lib")),
             Err(ManifestError::PlacementConflict { .. })
         ));
         Ok(())

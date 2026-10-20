@@ -264,11 +264,11 @@ See `DECISIONS.md` §34.
 ## Seed
 
 A seed is the root of a bootstrap chain for one (system, architecture)
-pair: an Object whose provided binary is its own content, auditable by
-hand, with no `BuildResult`. Seeds are roots of trust alongside signing
-keys: only objects listed under `[[runtime.seeds]]` can satisfy a
-`seed:*` label, and only through their own content; trusting the
-signer does not accept the seed (`DECISIONS.md` §36).
+pair: hand-auditable machine code with no `BuildResult`, archived as a
+source object at an exact upstream commit. Seeds are roots of trust
+alongside signing keys: a dependency marked `seed = true` resolves only
+to a `(source, revision)` pair listed under `[[runtime.seeds]]`;
+trusting a signer never accepts a seed (`DECISIONS.md` §36–§37).
 
 See `DECISIONS.md` §34.
 

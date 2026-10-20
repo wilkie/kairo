@@ -217,7 +217,7 @@ impl kairo_resolver::SourceHolder for CacheSources<'_> {
 fn source_seeds(config: &kairo_config::Config) -> Vec<kairo_resolver::SourceSeed> {
     config
         .runtime
-        .source_seeds
+        .seeds
         .iter()
         .map(|seed| kairo_resolver::SourceSeed {
             source: kairo_statement::SourceGenesis::new(seed.source.clone()).object_id(),
@@ -375,7 +375,6 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     let accepted_sources = source_seeds(&config);
     let resolve = || {
         Resolver::new(&store, &manifests, &artifacts, &host, &tools)
-            .with_seeds(&config.runtime.seeds)
             .with_sources(&sources)
             .with_source_seeds(&accepted_sources)
             .resolve(&object, &selector, args.target)

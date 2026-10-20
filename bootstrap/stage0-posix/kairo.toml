@@ -1,0 +1,236 @@
+# The stage0-posix bootstrap for AMD64 (specs/DECISIONS.md §36, §37):
+# a native object that builds stage0-posix Release_1.9.1 from its seeds
+# under the bubblewrap engine. It holds nothing upstream wrote; every
+# upstream repository is a source object, pinned here by its exact
+# Release_1.9.1 commit and placed at its upstream path, so the archive
+# proves which upstream commits the build used. Only the AMD64 chain's
+# repositories are pinned; the other architectures' submodules are
+# archived by `kairo source fetch` but not built.
+
+[kairo]
+schema = 1
+kind = "software"
+name = "stage0-posix-amd64-bootstrap"
+summary = "stage0-posix 1.9.1 for AMD64: hex0 to M2-Planet and mescc-tools from 847 bytes of seed."
+
+[[dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+# stage0-posix
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/stage0-posix"
+revision = "git:sha1:45d90f5955b6907dc6cdea9ebafce558359edcd3"
+path = "stage0"
+
+# AMD64
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/stage0-posix-amd64"
+revision = "git:sha1:82efa0d6be1c9bb993a7a62af1cccd8d2cda91f6"
+path = "stage0/AMD64"
+
+# bootstrap-seeds
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/bootstrap-seeds"
+revision = "git:sha1:cedec6b8066d1db229b6c77d42d120a23c6980ed"
+path = "stage0/bootstrap-seeds"
+seed = true   # hex0-seed (229 bytes) and kaem-optional-seed (618 bytes)
+
+# M2libc
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:68a23cfd05d5a355ba7a30c770d684cbe86fcc4e"
+path = "stage0/M2libc"
+
+# M2-Planet
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2-Planet"
+revision = "git:sha1:bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d"
+path = "stage0/M2-Planet"
+
+# M2-Planet's M2libc
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:68a23cfd05d5a355ba7a30c770d684cbe86fcc4e"
+path = "stage0/M2-Planet/M2libc"
+
+# M2-Mesoplanet
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2-Mesoplanet"
+revision = "git:sha1:4b011a85da73a7c97212468d41f17e806ba99547"
+path = "stage0/M2-Mesoplanet"
+
+# M2-Mesoplanet's M2libc
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:68a23cfd05d5a355ba7a30c770d684cbe86fcc4e"
+path = "stage0/M2-Mesoplanet/M2libc"
+
+# mescc-tools
+[[dependencies]]
+kind = "source"
+source = "https://git.savannah.nongnu.org/git/mescc-tools"
+revision = "git:sha1:5adfbf3364261a77109878a56b100aeeb6ef9ac4"
+path = "stage0/mescc-tools"
+
+# mescc-tools's M2libc
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:5a7c12a7be39cbce113c5459d77467b829a1ecc5"
+path = "stage0/mescc-tools/M2libc"
+
+# mescc-tools-extra
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/mescc-tools-extra"
+revision = "git:sha1:a151c245e512076971a3c85bb1502cf92cfa83b6"
+path = "stage0/mescc-tools-extra"
+
+# mescc-tools-extra's M2libc
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:5a7c12a7be39cbce113c5459d77467b829a1ecc5"
+path = "stage0/mescc-tools-extra/M2libc"
+
+[[build.targets]]
+name = "amd64"
+# Phases 0-23 from the seeds alone, ending in upstream's own
+# `sha256sum -c amd64.answers`.
+command = ["./bootstrap-seeds/POSIX/AMD64/kaem-optional-seed", "../kairo.kaem"]
+workdir = "stage0"
+
+[[build.targets.outputs]]
+name = "bin"
+path = "AMD64/bin"
+artifact_path = "bin"
+kind = "directory"
+
+[[provides]]
+provides = "tool:kaem"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:hex2"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:M1"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:blood-elf"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:M2-Planet"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:M2-Mesoplanet"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:get_machine"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:catm"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:cp"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:chmod"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:mkdir"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:rm"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:sha256sum"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:match"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:replace"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:untar"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:ungz"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:unbz2"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:unxz"
+version = "1.9.1"
+target = "amd64"
+output = "bin"
+
+[[provides]]
+provides = "tool:wrap"
+version = "1.9.1"
+target = "amd64"
+output = "bin"

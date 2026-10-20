@@ -301,7 +301,7 @@ using a newer upstream is an edit of the pin.
 kind = "source"
 source = "https://github.com/oriansj/M2libc"
 revision = "git:sha1:68a23cfd05d5a355ba7a30c770d684cbe86fcc4e"
-path = "M2libc"   # optional: placed here in the source tree, read-only
+path = "M2libc"   # optional: copied here in the source tree for the build
 seed = true       # optional: a seed; must be accepted in [[runtime.seeds]]
 ```
 

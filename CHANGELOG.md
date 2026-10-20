@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **The stage0-posix bootstrap is rebuilt on source objects
+  (`DECISIONS.md` §37 sub-decision 8).** `import.sh` now archives
+  stage0-posix and every submodule it pins from their real upstream
+  URLs (`kairo source fetch --require-complete`) and creates one native
+  wrapper with SHA-256 history that pins each source the AMD64 chain
+  uses at its Release_1.9.1 commit and path. The build produces the
+  same artifact as before. Placed sources are now writable copies made
+  fresh per build, and placements may nest. Source fetches follow an
+  initial redirect (Savannah needs it); federation fetches still follow
+  none. The `seed:*` labels and object-form `[[runtime.seeds]]` are
+  retired: seeds are `(source, revision)` pairs. The ignored
+  `bootstrap_stage0` test now needs the network instead of a checkout.
 - **Builds depend on sources by revision (`DECISIONS.md` §37
   sub-decisions 6–8).** A manifest dependency `kind = "source"` names a
   source by URL (hashed canonical) at an exact upstream `revision`, with

@@ -1,6 +1,6 @@
-# Run by the seed kaem (kaem-optional-seed): the three lines of
-# upstream's kaem.amd64, so the whole AMD64 chain starts from the seeds
-# with no shell (specs/DECISIONS.md §36 sub-decision 2).
+# Run by the seed kaem (kaem-optional-seed) from stage0/: the three
+# lines of upstream's kaem.amd64, so the whole AMD64 chain starts from
+# the seeds with no shell (specs/DECISIONS.md §36).
 ./bootstrap-seeds/POSIX/AMD64/kaem-optional-seed ./AMD64/mescc-tools-seed-kaem.kaem
 ./AMD64/artifact/kaem-0 ./AMD64/mescc-tools-mini-kaem.kaem
 ./AMD64/bin/kaem --verbose --strict --file ./AMD64/kaem.run
