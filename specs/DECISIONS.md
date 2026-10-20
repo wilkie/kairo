@@ -3607,7 +3607,18 @@ Sub-decisions:
    own source object and recorded in that source's own observation;
    recursion stops at a source already holding the pinned commit,
    guards against cycles, and has a depth limit. An archive that holds
-   a commit but not what it pins is incomplete.
+   a commit but not what it pins is incomplete. *Amended when built:*
+   the top source's submodules are those its observed refs' commits
+   (tags peeled) pin; a submodule source's are those of the commits
+   its parents pin. Each submodule source is fetched by ref as usual;
+   a pinned commit its refs no longer reach is then fetched by id and
+   listed in its observation's `pinned` (tagged, present only when
+   non-empty). The link itself needs no statement: the gitlink is in
+   the parent's tree and the URL in its `.gitmodules`, both archived
+   content. A link with no `.gitmodules` URL, a URL with no source
+   identity, or a commit nobody serves is reported, and `kairo source
+   fetch` says `complete = no`; `--require-complete` fails then.
+   Depth defaults to 8; `--no-recurse-submodules` skips it all.
 
 6. **Native objects pin sources by upstream revision.** An object
    dependency on a source names the source (its URL, or its object

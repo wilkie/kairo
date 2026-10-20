@@ -174,6 +174,12 @@ pub(crate) enum CliError {
         source: kairo_store::StoreError,
     },
     ObservationShape(String),
+    /// `--require-complete` and a pinned submodule commit couldn't be
+    /// archived; the summary is the output otherwise printed.
+    SourceIncomplete {
+        summary: String,
+        missing: usize,
+    },
     /// A bundle's execution evidence couldn't be written or read.
     BundleExecutions {
         message: String,
@@ -709,6 +715,10 @@ impl fmt::Display for CliError {
             Self::ParseSourceUrl(error) => write!(f, "{error}"),
             Self::Sources { source } => write!(f, "source objects: {source}"),
             Self::ObservationShape(message) => write!(f, "source observation: {message}"),
+            Self::SourceIncomplete { summary, missing } => write!(
+                f,
+                "{summary}{missing} pinned submodule commit(s) could not be archived (--require-complete)"
+            ),
             Self::NotAResultRef { input } => write!(
                 f,
                 "{input:?} is not a build result reference (expected statement:<id>)"
@@ -1279,6 +1289,7 @@ impl Error for CliError {
             | Self::NoEngine { .. }
             | Self::BundleExecutions { .. }
             | Self::ObservationShape(_)
+            | Self::SourceIncomplete { .. }
             | Self::NotAResultRef { .. }
             | Self::ReproduceUnavailable { .. }
             | Self::ProviderUnavailable { .. }

@@ -76,6 +76,12 @@ body. **Actor chain** (`specs/DECISIONS.md` §23): the signer's
 | `source` | `ObjectId` payload as `string`: the id the URL derives (`source-genesis-v1.md`) |
 | `url` | `string`: the canonical URL fetched |
 | `refs` | `list<ref>`, strictly ascending by name |
+| `pinned` | present only when non-empty: `string("pinned") \|\| list<string>`, typed revisions ascending by id |
+
+`pinned` lists commits fetched by id because another source's commit
+pins them as a submodule while this source's refs no longer reach them
+(`DECISIONS.md` §37 sub-decision 5); they are held with their closures
+like any ref's target, in the refs' format.
 
 `ref` is `string(name) || string(target)`: `name` is `refs/heads/<x>` or
 `refs/tags/<x>`; `target` is `git:sha1:<oid>` or `git:sha256:<oid>`.
@@ -91,7 +97,8 @@ observed.
 canonical_body =
   string(source) ||
   string(url) ||
-  list(refs, string(name) || string(target))
+  list(refs, string(name) || string(target)) ||
+  (if pinned non-empty: string("pinned") || list(pinned, string))
 ```
 
 ## Test Vectors

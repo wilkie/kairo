@@ -466,6 +466,44 @@ impl GitCache {
         commits: &[GitRevision],
         limits: &FetchLimits,
     ) -> Result<(), GitError> {
+        self.fetch_commits_with(object_id, url, commits, limits, crate::protocol::fetch)
+    }
+
+    /// Fetch `commits` by id from a source at `url` (§37 sub-decision
+    /// 5: commits a parent pins that the source's refs don't reach) and
+    /// pin each in the source's repo as an observed object.
+    pub fn fetch_source_commits(
+        &self,
+        source_id: &str,
+        url: &str,
+        commits: &[GitRevision],
+        limits: &FetchLimits,
+    ) -> Result<(), GitError> {
+        self.fetch_commits_with(
+            source_id,
+            url,
+            commits,
+            limits,
+            crate::protocol::fetch_source,
+        )?;
+        for commit in commits {
+            self.set_ref(
+                source_id,
+                &format!("{OBSERVED_PIN_PREFIX}{}", commit.oid()),
+                commit,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn fetch_commits_with(
+        &self,
+        object_id: &str,
+        url: &str,
+        commits: &[GitRevision],
+        limits: &FetchLimits,
+        command: fn(&Path, &str) -> Command,
+    ) -> Result<(), GitError> {
         let Some(format) = commits.first().map(GitRevision::format) else {
             return Ok(());
         };
@@ -499,7 +537,13 @@ impl GitCache {
             let oid = commit.oid();
             refspecs.push_str(&format!("{oid}:refs/kairo/fetched/{oid}\n"));
         }
-        run_watched_fetch(quarantine.path(), url, refspecs.as_bytes(), limits)?;
+        run_watched(
+            command(quarantine.path(), url),
+            quarantine.path(),
+            url,
+            refspecs.as_bytes(),
+            limits,
+        )?;
         admit(&pool, &quarantine, format, commits)
     }
 
@@ -821,27 +865,11 @@ fn git_with_stdin(repo: &Path, args: &[&str], input: &[u8]) -> Result<(), GitErr
 /// How often a running fetch is checked against its limits.
 const FETCH_POLL: Duration = Duration::from_millis(50);
 
-/// Run the pinned `git fetch` into `quarantine`, killing it if the
+/// Run a prepared `git fetch` into `quarantine`, killing it if the
 /// quarantine's object directory outgrows `limits.max_bytes` or the
 /// fetch outlives `limits.timeout`. Git has no fetch-side size cap of
 /// its own (`receive.maxInputSize` is push-only), so this watches
 /// what lands on disk.
-fn run_watched_fetch(
-    quarantine: &Path,
-    url: &str,
-    refspecs: &[u8],
-    limits: &FetchLimits,
-) -> Result<(), GitError> {
-    run_watched(
-        crate::protocol::fetch(quarantine, url),
-        quarantine,
-        url,
-        refspecs,
-        limits,
-    )
-}
-
-/// Run a prepared `git fetch` command watched as [`run_watched_fetch`].
 fn run_watched(
     mut command: Command,
     quarantine: &Path,

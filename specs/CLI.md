@@ -1617,6 +1617,7 @@ canonical URL.
 ```text
 kairo source id <url>
 kairo source fetch <url> --actor <id> [--object-format <sha1|sha256>]
+                   [--no-recurse-submodules] [--max-depth <n>] [--require-complete]
 kairo source show <url|object:id> [--json]
 ```
 
@@ -1643,6 +1644,25 @@ changes = N                      (later: against the newest observation)
   ~ <ref> <old> -> <new>
   - <ref> <old> (still held)
 ```
+
+Then, unless `--no-recurse-submodules`, every submodule the observed
+refs' commits pin is archived as its own source, recursively up to
+`--max-depth` (8): each submodule source is fetched and observed once
+per level, a pinned commit its refs no longer reach is fetched by id
+(and listed as `pinned` in its observation), and the run reports:
+
+```text
+submodules = N
+  <parent url> <path> -> <submodule url> <commit>
+  <parent url>@<commit> <path> -> <commit>: unresolved (<why>)
+  <submodule url> <commit>: not archived (<why>)
+observed:
+  <submodule url> = <observation id> (refs N, pinned M)
+complete = yes | no
+```
+
+`--require-complete` makes `complete = no` an error (exit 1), after
+archiving everything it could.
 
 `show` lists the source's observations, newest first, and the refs the
 newest one saw.

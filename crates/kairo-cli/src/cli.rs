@@ -269,6 +269,18 @@ pub(crate) enum SourceCommand {
         /// Otherwise taken from the source's cache repo or the remote.
         #[arg(long)]
         object_format: Option<String>,
+        /// Don't follow submodules. By default each submodule the
+        /// observed refs' commits pin is archived as its own source,
+        /// recursively (`specs/DECISIONS.md` §37 sub-decision 5).
+        #[arg(long)]
+        no_recurse_submodules: bool,
+        /// How many levels of submodules to follow.
+        #[arg(long, default_value_t = 8)]
+        max_depth: u32,
+        /// Fail (after archiving what it can) if any pinned submodule
+        /// commit couldn't be archived.
+        #[arg(long)]
+        require_complete: bool,
     },
     /// What is known of a source: its observations, newest first, and
     /// the refs the newest one saw.

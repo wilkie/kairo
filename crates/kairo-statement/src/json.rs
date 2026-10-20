@@ -754,6 +754,9 @@ pub struct SourceObservationBodyJson {
     pub source: String,
     pub url: String,
     pub refs: Vec<ObservedRefJson>,
+    /// Commits fetched by id because a parent source pins them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -787,8 +790,32 @@ impl SourceObservationBodyJson {
                     .map_err(StatementJsonError::InvalidObservationShape)?,
             );
         }
+        let mut pinned = Vec::with_capacity(self.pinned.len());
+        for commit in &self.pinned {
+            pinned.push(
+                GitRevision::parse(commit)
+                    .map_err(StatementJsonError::InvalidGitRevision)?
+                    .ok_or_else(|| {
+                        StatementJsonError::InvalidGitRevision(
+                            crate::GitRevisionError::MissingFormat {
+                                value: commit.clone(),
+                            },
+                        )
+                    })?,
+            );
+        }
         let body = SourceObservationBody::new(url, refs)
+            .and_then(|body| body.with_pinned(pinned))
             .map_err(StatementJsonError::InvalidObservationShape)?;
+        let listed_pinned: Vec<String> = self.pinned.clone();
+        let sorted_pinned: Vec<String> = body.pinned().iter().map(ToString::to_string).collect();
+        if listed_pinned != sorted_pinned {
+            return Err(StatementJsonError::InvalidObservationShape(
+                SourceObservationShapeError::InvalidRef(
+                    "pinned commits not in ascending order, or repeated".to_owned(),
+                ),
+            ));
+        }
         // Refs are canonically sorted; the listed order must be it, and
         // the listed source must be the URL's.
         let listed: Vec<&str> = self.refs.iter().map(|r| r.name.as_str()).collect();
@@ -818,6 +845,7 @@ impl SourceObservationBodyJson {
                     target: observed.target().to_string(),
                 })
                 .collect(),
+            pinned: body.pinned().iter().map(ToString::to_string).collect(),
         }
     }
 }

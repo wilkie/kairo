@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **Submodules are archived as their own sources (`DECISIONS.md` §37
+  sub-decision 5).** `kairo source fetch` follows the submodules its
+  observed commits pin, recursively (`--max-depth`, default 8;
+  `--no-recurse-submodules` to skip), observing each submodule source
+  once per level; a pinned commit the submodule's refs no longer reach
+  is fetched by id and listed in the new optional `pinned` field of its
+  observation. Unresolvable or unservable links are reported (`complete
+  = no`); `--require-complete` fails on them.
 - **`kairo source fetch` and `kairo source show` (`DECISIONS.md` §37).**
   Fetching a source brings every branch and tag into the Git cache
   through a quarantine, pins each fetched object as

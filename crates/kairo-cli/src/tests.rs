@@ -9426,6 +9426,9 @@ fn source_fetch_observes_every_ref_and_keeps_what_upstream_drops(
                     url,
                     actor: actor.clone(),
                     object_format: None,
+                    no_recurse_submodules: false,
+                    max_depth: 8,
+                    require_complete: false,
                 },
             },
         )
@@ -9515,5 +9518,183 @@ fn source_fetch_observes_every_ref_and_keeps_what_upstream_drops(
         observed_empty.contains("object_format = none (no refs)\n"),
         "{observed_empty}"
     );
+    Ok(())
+}
+
+#[test]
+fn source_fetch_archives_pinned_submodules_recursively() -> Result<(), Box<dyn std::error::Error>> {
+    use kairo_test_support::git::{git, GitDaemon};
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    let repo = |name: &str| -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let path = daemon.base.path().join(name);
+        std::fs::create_dir(&path)?;
+        git(&path, &["init", "-q", "--initial-branch=main"]);
+        // Commits a rewrite drops must still be servable by id.
+        git(&path, &["config", "uploadpack.allowAnySHA1InWant", "true"]);
+        Ok(path)
+    };
+    let commit = |path: &std::path::Path,
+                  file: &str,
+                  text: &str|
+     -> Result<String, Box<dyn std::error::Error>> {
+        std::fs::write(path.join(file), text)?;
+        git(path, &["add", file]);
+        git(path, &["commit", "-q", "-m", text]);
+        Ok(git(path, &["rev-parse", "HEAD"]))
+    };
+    let gitlink = |path: &std::path::Path, at: &str, oid: &str| {
+        git(
+            path,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{oid},{at}"),
+            ],
+        );
+    };
+
+    let deep = repo("deep")?;
+    let deep_commit = commit(&deep, "d", "deep")?;
+
+    let lib = repo("lib")?;
+    std::fs::write(
+        lib.join(".gitmodules"),
+        "[submodule \"deep\"]\n\tpath = deep\n\turl = ../deep\n",
+    )?;
+    git(&lib, &["add", ".gitmodules"]);
+    gitlink(&lib, "deep", &deep_commit);
+    let lib_old = commit(&lib, "l", "lib old")?;
+
+    let top = repo("top")?;
+    std::fs::write(
+        top.join(".gitmodules"),
+        format!(
+            "[submodule \"lib\"]\n\tpath = vendor/lib\n\turl = ../lib\n\
+             [submodule \"gone\"]\n\tpath = gone\n\turl = {}\n",
+            daemon.url("deep")
+        ),
+    )?;
+    git(&top, &["add", ".gitmodules"]);
+    gitlink(&top, "vendor/lib", &lib_old);
+    // A commit nobody has, and a gitlink .gitmodules doesn't describe.
+    gitlink(&top, "gone", &"1".repeat(40));
+    gitlink(&top, "orphan", &deep_commit);
+    commit(&top, "t", "top")?;
+
+    // lib rewrites its history after top pinned it: the pinned commit
+    // is no longer reachable from lib's refs.
+    git(&lib, &["checkout", "-q", "--orphan", "fresh"]);
+    let lib_new = commit(&lib, "l", "lib rewritten")?;
+    git(&lib, &["branch", "-D", "main"]);
+    git(&lib, &["branch", "-m", "main"]);
+    assert_ne!(lib_new, lib_old);
+
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let fetch = |require_complete: bool| {
+        run_in_store(
+            store_dir.path(),
+            Command::Source {
+                command: SourceCommand::Fetch {
+                    url: daemon.url("top"),
+                    actor: actor.clone(),
+                    object_format: None,
+                    no_recurse_submodules: false,
+                    max_depth: 8,
+                    require_complete,
+                },
+            },
+        )
+    };
+    let fetched = fetch(false)?;
+    let lib_url = daemon.url("lib");
+    let deep_url = daemon.url("deep");
+    assert!(
+        fetched.contains(&format!("vendor/lib -> {lib_url} git:sha1:{lib_old}\n")),
+        "{fetched}"
+    );
+    assert!(
+        fetched.contains(&format!("deep -> {deep_url} git:sha1:{deep_commit}\n")),
+        "{fetched}"
+    );
+    assert!(fetched.contains(" orphan -> "), "{fetched}");
+    assert!(
+        fetched.contains("unresolved (no .gitmodules entry for this path)"),
+        "{fetched}"
+    );
+    assert!(
+        fetched.contains(&format!(
+            "{deep_url} git:sha1:{}: not archived",
+            "1".repeat(40)
+        )),
+        "{fetched}"
+    );
+    // lib's observation lists its refs and, separately, the commit top
+    // pins that its refs no longer reach.
+    assert!(fetched.contains(&format!("  {lib_url} = z")), "{fetched}");
+    assert!(fetched.contains("(refs 1, pinned 1)"), "{fetched}");
+    assert!(fetched.contains("complete = no\n"), "{fetched}");
+
+    // Every pinned commit is held, under its own source.
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let cache = kairo_git::GitCache::open(store_dir.path().join("git"))?;
+    for (url, oid) in [
+        (&lib_url, &lib_old),
+        (&lib_url, &lib_new),
+        (&deep_url, &deep_commit),
+    ] {
+        let source = kairo_statement::SourceGenesis::new(kairo_statement::SourceUrl::parse(url)?)
+            .object_id();
+        let revision = kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, oid)?;
+        assert!(
+            cache.has_commit(source.as_str(), &revision)?,
+            "{url} holds {oid}"
+        );
+    }
+    let lib_source =
+        kairo_statement::SourceGenesis::new(kairo_statement::SourceUrl::parse(&lib_url)?)
+            .object_id();
+    let newest = kairo_store::SourceStore::list_source_observations(&store, &lib_source)?;
+    let observation =
+        kairo_store::StatementStore::get_source_observation(&store, &newest[0].statement_id)?;
+    assert_eq!(
+        observation
+            .unsigned()
+            .body()
+            .pinned()
+            .iter()
+            .map(|c| c.oid().to_owned())
+            .collect::<Vec<_>>(),
+        std::slice::from_ref(&lib_old)
+    );
+
+    // --require-complete reports the same and fails.
+    let strict = fetch(true);
+    assert!(
+        matches!(&strict, Err(CliError::SourceIncomplete { missing, .. }) if *missing == 2),
+        "{strict:?}"
+    );
+
+    // Without recursion, only the top source is observed.
+    let shallow = run_in_store(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::Fetch {
+                url: daemon.url("top"),
+                actor: actor.clone(),
+                object_format: None,
+                no_recurse_submodules: true,
+                max_depth: 8,
+                require_complete: true,
+            },
+        },
+    )?;
+    assert!(!shallow.contains("submodules ="), "{shallow}");
     Ok(())
 }

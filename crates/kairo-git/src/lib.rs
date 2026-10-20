@@ -311,6 +311,63 @@ impl Repository {
         }))
     }
 
+    /// The commit `revision` names, peeling annotated tags; `None` when
+    /// the object is absent or isn't a commit or a tag of one.
+    pub fn peel_to_commit(&self, revision: &GitRevision) -> Result<Option<GitRevision>, GitError> {
+        let oid = self.revision_oid(revision)?;
+        let object = match self.inner.try_find_object(oid) {
+            Ok(Some(object)) => object,
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(GitError::Operation(Box::new(error))),
+        };
+        match object.peel_to_commit() {
+            Ok(commit) => GitRevision::new(revision.format(), &commit.id().to_string())
+                .map(Some)
+                .map_err(|error| GitError::Operation(Box::new(error))),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// The submodules `revision`'s commit pins: every gitlink in its
+    /// tree, with the URL `.gitmodules` gives for its path (`None` when
+    /// `.gitmodules` has no entry for it). Sorted by path.
+    pub fn submodules_at(&self, revision: &GitRevision) -> Result<Vec<SubmoduleLink>, GitError> {
+        let oid = self.revision_oid(revision)?;
+        let object = match self.inner.try_find_object(oid) {
+            Ok(Some(object)) => object,
+            Ok(None) => return Ok(Vec::new()),
+            Err(error) => return Err(GitError::Operation(Box::new(error))),
+        };
+        let commit = object
+            .try_into_commit()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let tree = commit
+            .tree()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let mut gitlinks = Vec::new();
+        collect_gitlinks(&tree, "", revision.format(), &mut gitlinks)?;
+        if gitlinks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let urls = self
+            .read_blob_at_path(revision, ".gitmodules")?
+            .map(|bytes| parse_gitmodules(&String::from_utf8_lossy(&bytes)))
+            .unwrap_or_default();
+        let mut links: Vec<SubmoduleLink> = gitlinks
+            .into_iter()
+            .map(|(path, commit)| SubmoduleLink {
+                url: urls
+                    .iter()
+                    .find(|(module_path, _)| module_path == &path)
+                    .map(|(_, url)| url.clone()),
+                path,
+                commit,
+            })
+            .collect();
+        links.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(links)
+    }
+
     /// Whether the object `revision` names (of any type: commit, tag,
     /// tree, blob) is in this repository's object database.
     pub fn has_object(&self, revision: &GitRevision) -> Result<bool, GitError> {
@@ -429,6 +486,95 @@ fn export_tree_into(tree: &gix::Tree<'_>, dest: &Path) -> Result<(), GitError> {
         }
     }
     Ok(())
+}
+
+/// A submodule a commit pins: the gitlink's path and commit, and the
+/// URL `.gitmodules` gives for that path, as written there (possibly
+/// relative to the superproject's URL).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmoduleLink {
+    pub path: String,
+    pub url: Option<String>,
+    pub commit: GitRevision,
+}
+
+fn collect_gitlinks(
+    tree: &gix::Tree<'_>,
+    prefix: &str,
+    format: kairo_statement::GitObjectFormat,
+    out: &mut Vec<(String, GitRevision)>,
+) -> Result<(), GitError> {
+    for entry in tree.iter() {
+        let entry = entry.map_err(|error| GitError::Operation(Box::new(error)))?;
+        let name = String::from_utf8_lossy(entry.filename()).into_owned();
+        let path = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let mode = entry.mode();
+        if mode.is_commit() {
+            let commit = GitRevision::new(format, &entry.oid().to_string())
+                .map_err(|error| GitError::Operation(Box::new(error)))?;
+            out.push((path, commit));
+        } else if mode.is_tree() {
+            let subtree = entry
+                .object()
+                .map_err(|error| GitError::Operation(Box::new(error)))?
+                .try_into_tree()
+                .map_err(|error| GitError::Operation(Box::new(error)))?;
+            collect_gitlinks(&subtree, &path, format, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// `(path, url)` for each `[submodule "..."]` section of a
+/// `.gitmodules` file that has both. A small reader of Git's config
+/// syntax: sections, `key = value` lines, `#` and `;` comments, and
+/// double-quoted values.
+pub fn parse_gitmodules(text: &str) -> Vec<(String, String)> {
+    let mut modules: Vec<(Option<String>, Option<String>)> = Vec::new();
+    let mut in_submodule = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_submodule = line
+                .trim_start_matches('[')
+                .trim_start()
+                .starts_with("submodule");
+            if in_submodule {
+                modules.push((None, None));
+            }
+            continue;
+        }
+        if !in_submodule {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(value)
+            .to_owned();
+        if let Some(module) = modules.last_mut() {
+            match key.trim().to_ascii_lowercase().as_str() {
+                "path" => module.0 = Some(value),
+                "url" => module.1 = Some(value),
+                _ => {}
+            }
+        }
+    }
+    modules
+        .into_iter()
+        .filter_map(|(path, url)| Some((path?, url?)))
+        .collect()
 }
 
 fn parse_oid(hex: &str) -> Result<gix::ObjectId, GitError> {
@@ -650,6 +796,24 @@ mod tests {
         assert!(!repo
             .export_tree(&absent, empty.path())
             .expect("absent is Ok(false)"));
+    }
+
+    #[test]
+    fn gitmodules_parse_paths_and_urls() {
+        let text = "# comment\n[core]\n\turl = not-a-module\n\
+                    [submodule \"M2libc\"]\n\tpath = M2libc\n\turl = ../M2libc\n\
+                    [submodule \"quoted\"]\n\tPath = \"with space\"\n\tURL = https://example.org/q.git\n\
+                    [submodule \"no-url\"]\n\tpath = lonely\n";
+        assert_eq!(
+            parse_gitmodules(text),
+            [
+                ("M2libc".to_owned(), "../M2libc".to_owned()),
+                (
+                    "with space".to_owned(),
+                    "https://example.org/q.git".to_owned()
+                ),
+            ]
+        );
     }
 
     #[test]

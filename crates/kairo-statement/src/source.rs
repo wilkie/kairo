@@ -269,6 +269,7 @@ pub struct SourceObservationBody {
     source: ObjectId,
     url: SourceUrl,
     refs: Vec<ObservedRef>,
+    pinned: Vec<GitRevision>,
 }
 
 impl SourceObservationBody {
@@ -292,7 +293,32 @@ impl SourceObservationBody {
             source: SourceGenesis::new(url.clone()).object_id(),
             url,
             refs,
+            pinned: Vec::new(),
         })
+    }
+
+    /// Add the commits fetched by id because another source's commit
+    /// pins them as a submodule (§37 sub-decision 5): not refs, but
+    /// held with their full closures all the same. Sorted, unique, and
+    /// in the refs' format.
+    pub fn with_pinned(
+        mut self,
+        mut pinned: Vec<GitRevision>,
+    ) -> Result<Self, SourceObservationShapeError> {
+        pinned.sort_by(|a, b| a.oid().cmp(b.oid()));
+        pinned.dedup();
+        let format = self.format();
+        if pinned
+            .windows(2)
+            .any(|pair| pair[0].format() != pair[1].format())
+            || format
+                .zip(pinned.first())
+                .is_some_and(|(format, first)| first.format() != format)
+        {
+            return Err(SourceObservationShapeError::MixedFormats);
+        }
+        self.pinned = pinned;
+        Ok(self)
     }
 
     /// The source object, derived from `url`.
@@ -308,10 +334,18 @@ impl SourceObservationBody {
         &self.refs
     }
 
+    /// Commits fetched by id because a parent source pins them.
+    pub fn pinned(&self) -> &[GitRevision] {
+        &self.pinned
+    }
+
     /// The format of every observed object; `None` for an empty
     /// repository.
     pub fn format(&self) -> Option<GitObjectFormat> {
-        self.refs.first().map(|r| r.target.format())
+        self.refs
+            .first()
+            .map(|r| r.target.format())
+            .or_else(|| self.pinned.first().map(GitRevision::format))
     }
 }
 
@@ -333,6 +367,14 @@ impl CanonicalEncode for SourceObservationBody {
             encode_str(out, &observed.name);
             encode_str(out, &observed.target.to_string());
         });
+        // Tagged and present only when non-empty, so an observation
+        // without pinned commits encodes as it did before they existed.
+        if !self.pinned.is_empty() {
+            encode_str(out, "pinned");
+            encode_list(out, &self.pinned, |out, commit| {
+                encode_str(out, &commit.to_string());
+            });
+        }
     }
 }
 
@@ -499,6 +541,31 @@ mod tests {
             mixed,
             Err(SourceObservationShapeError::MixedFormats)
         ));
+    }
+
+    #[test]
+    fn pinned_commits_are_encoded_only_when_present() {
+        let url = SourceUrl::parse("https://example.org/x").expect("url");
+        let sha1 = |c: char| {
+            GitRevision::new(GitObjectFormat::Sha1, &c.to_string().repeat(40)).expect("rev")
+        };
+        let refs = vec![ObservedRef::new("refs/heads/main", sha1('a')).expect("ref")];
+        let plain = SourceObservationBody::new(url.clone(), refs.clone()).expect("body");
+        let empty = plain.clone().with_pinned(Vec::new()).expect("empty");
+        assert_eq!(plain.canonical_bytes(), empty.canonical_bytes());
+        let pinned = plain
+            .clone()
+            .with_pinned(vec![sha1('c'), sha1('b'), sha1('c')])
+            .expect("pinned");
+        assert_eq!(pinned.pinned(), [sha1('b'), sha1('c')]);
+        assert_ne!(pinned.canonical_bytes(), plain.canonical_bytes());
+        let sha256 = GitRevision::new(GitObjectFormat::Sha256, &"d".repeat(64)).expect("rev");
+        assert!(plain.with_pinned(vec![sha256.clone()]).is_err());
+        // With no refs, the pinned commits give the format.
+        let only_pinned = SourceObservationBody::new(url, Vec::new())
+            .and_then(|body| body.with_pinned(vec![sha256]))
+            .expect("only pinned");
+        assert_eq!(only_pinned.format(), Some(GitObjectFormat::Sha256));
     }
 
     #[test]
