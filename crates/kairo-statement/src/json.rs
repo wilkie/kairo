@@ -3,7 +3,9 @@ use std::fmt;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp, TimestampError};
+use kairo_core::{
+    ActorId, BlobId, KairoRef, ObjectId, SnapshotId, StatementId, Timestamp, TimestampError,
+};
 use kairo_identity::json::{ActorGenesisJsonError, PublicKeyJson};
 use kairo_identity::KeyId;
 use serde::{Deserialize, Serialize};
@@ -14,12 +16,13 @@ use crate::{
     ActorAttestationThresholdChangeBody, ActorAttestationThresholdChangeShapeError,
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody,
     ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
-    ActorTrustShapeError, Capability, CapabilityConstraint, CapabilityScope, CapabilityShapeError,
-    MultiSignedStatement, MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody,
-    ObjectKind, ObjectRevisionBody, ObjectVersionTagBody, ObjectVersionTagShapeError, Previous,
-    PreviousError, RevisionId, SemverParseError, SemverVersion, Signature, SignedStatement,
-    StatementKind, StatementKindParseError, TrustDecision, TrustDecisionParseError, TrustScope,
-    TrustScopeError, UnsignedStatement,
+    ActorTrustShapeError, BuildOutcome, BuildResultBody, BuildResultShapeError, Capability,
+    CapabilityConstraint, CapabilityScope, CapabilityShapeError, MultiSignedStatement,
+    MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody,
+    ObjectVersionTagBody, ObjectVersionTagShapeError, Previous, PreviousError, RevisionId,
+    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
+    StatementKindParseError, TrustDecision, TrustDecisionParseError, TrustScope, TrustScopeError,
+    UnsignedStatement,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +45,8 @@ pub enum StatementJsonError {
     InvalidCreatedAt(TimestampError),
     InvalidVersion(SemverParseError),
     InvalidTagShape(ObjectVersionTagShapeError),
+    InvalidBuildResultShape(BuildResultShapeError),
+    InvalidSnapshot(kairo_core::IdError),
     InvalidTrustDecision(TrustDecisionParseError),
     InvalidTrustShape(ActorTrustShapeError),
     InvalidStatementKind(StatementKindParseError),
@@ -75,6 +80,8 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidCreatedAt(error) => write!(f, "invalid created_at: {error}"),
             Self::InvalidVersion(error) => write!(f, "{error}"),
             Self::InvalidTagShape(error) => write!(f, "{error}"),
+            Self::InvalidBuildResultShape(error) => write!(f, "{error}"),
+            Self::InvalidSnapshot(error) => write!(f, "invalid snapshot id: {error}"),
             Self::InvalidTrustDecision(error) => write!(f, "{error}"),
             Self::InvalidTrustShape(error) => write!(f, "{error}"),
             Self::InvalidStatementKind(error) => write!(f, "{error}"),
@@ -95,10 +102,12 @@ impl Error for StatementJsonError {
             | Self::InvalidObject(error)
             | Self::InvalidSubject(error)
             | Self::InvalidBlob(error)
+            | Self::InvalidSnapshot(error)
             | Self::InvalidStatement(error) => Some(error),
             Self::InvalidCreatedAt(error) => Some(error),
             Self::InvalidVersion(error) => Some(error),
             Self::InvalidTagShape(error) => Some(error),
+            Self::InvalidBuildResultShape(error) => Some(error),
             Self::InvalidTrustDecision(error) => Some(error),
             Self::InvalidTrustShape(error) => Some(error),
             Self::InvalidStatementKind(error) => Some(error),
@@ -525,6 +534,117 @@ impl ObjectVersionTagBodyJson {
             version: body.version().as_str().to_owned(),
             target: body.target().map(|id| id.to_string()),
             supersedes: body.supersedes().map(|id| id.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BuildResultStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
+    pub body: BuildResultBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl BuildResultStatementJson {
+    pub fn to_statement(&self) -> Result<SignedStatement<BuildResultBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "BuildResult", 1)?;
+
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
+
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<BuildResultBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "BuildResult".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
+            body: BuildResultBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+/// `schemas/json/build-result-v1.schema.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct BuildResultBodyJson {
+    pub object: String,
+    pub snapshot: String,
+    pub target: String,
+    pub resolved_manifest: String,
+    /// `success` or `failure`.
+    pub result: String,
+    pub artifact: Option<String>,
+    pub executor: String,
+    pub environment: String,
+    pub host_dependent: bool,
+    pub execution: String,
+}
+
+impl BuildResultBodyJson {
+    pub fn to_body(&self) -> Result<BuildResultBody, StatementJsonError> {
+        let artifact = match &self.artifact {
+            Some(value) => {
+                Some(BlobId::new(value.clone()).map_err(StatementJsonError::InvalidBlob)?)
+            }
+            None => None,
+        };
+        BuildResultBody::new(
+            ObjectId::new(self.object.clone()).map_err(StatementJsonError::InvalidObject)?,
+            SnapshotId::new(self.snapshot.clone()).map_err(StatementJsonError::InvalidSnapshot)?,
+            self.target.clone(),
+            BlobId::new(self.resolved_manifest.clone()).map_err(StatementJsonError::InvalidBlob)?,
+            BuildOutcome::parse(&self.result)
+                .map_err(StatementJsonError::InvalidBuildResultShape)?,
+            artifact,
+            self.executor.clone(),
+            self.environment.clone(),
+            self.host_dependent,
+            BlobId::new(self.execution.clone()).map_err(StatementJsonError::InvalidBlob)?,
+        )
+        .map_err(StatementJsonError::InvalidBuildResultShape)
+    }
+
+    pub fn from_body(body: &BuildResultBody) -> Self {
+        Self {
+            object: body.object().to_string(),
+            snapshot: body.snapshot().to_string(),
+            target: body.target().to_owned(),
+            resolved_manifest: body.resolved_manifest().to_string(),
+            result: body.result().as_str().to_owned(),
+            artifact: body.artifact().map(ToString::to_string),
+            executor: body.executor().to_owned(),
+            environment: body.environment().to_owned(),
+            host_dependent: body.host_dependent(),
+            execution: body.execution().to_string(),
         }
     }
 }
@@ -2273,6 +2393,126 @@ mod tests {
         let dto = ObjectVersionTagStatementJson::from_statement(&revoke);
         let round_tripped = dto.to_statement()?;
         assert_eq!(revoke.statement_id(), round_tripped.statement_id());
+        Ok(())
+    }
+
+    const SNAPSHOT_ID: &str = "zQmPrz1SBNXD1XAPCaWrTtpBbEZHGevtUoWY8ibihamaApZ";
+    const PLAN_ID: &str = "zQmfBE2w2UqKJhGZAxK4ZWb4JuCrvxnN9P4YKuvzfbPSvD5";
+
+    fn build_result_json(result: &str, artifact: &str, signature: &str) -> String {
+        format!(
+            r#"{{
+              "type": "BuildResult",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "object:{OBJECT_ID}",
+              "created_at": "{CREATED_AT}",
+              "previous": [],
+              "body": {{
+                "object": "{OBJECT_ID}",
+                "snapshot": "{SNAPSHOT_ID}",
+                "target": "release",
+                "resolved_manifest": "{PLAN_ID}",
+                "result": "{result}",
+                "artifact": {artifact},
+                "executor": "native/1",
+                "environment": "none",
+                "host_dependent": true,
+                "execution": "{PLAN_ID}"
+              }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_build_result_json(
+        json: &str,
+    ) -> Result<SignedStatement<BuildResultBody>, Box<dyn std::error::Error>> {
+        let dto: BuildResultStatementJson = serde_json::from_str(json)?;
+        Ok(dto.to_statement()?)
+    }
+
+    #[test]
+    fn parses_build_result_json() -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = format!("\"{PLAN_ID}\"");
+        let statement = parse_build_result_json(&build_result_json("success", &artifact, "c2ln"))?;
+        let body = statement.unsigned().body();
+        assert_eq!(body.result(), BuildOutcome::Success);
+        assert_eq!(
+            body.artifact().map(ToString::to_string).as_deref(),
+            Some(PLAN_ID)
+        );
+        assert_eq!(body.snapshot().as_str(), SNAPSHOT_ID);
+        assert_eq!(body.executor(), "native/1");
+        assert!(body.host_dependent());
+
+        let failure = parse_build_result_json(&build_result_json("failure", "null", "c2ln"))?;
+        assert_eq!(failure.unsigned().body().result(), BuildOutcome::Failure);
+        assert!(failure.unsigned().body().artifact().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_build_result_with_bad_shape() {
+        let artifact = format!("\"{PLAN_ID}\"");
+        for (result, artifact) in [
+            ("success", "null"),
+            ("failure", artifact.as_str()),
+            ("timeout", "null"),
+        ] {
+            let parsed = parse_build_result_json(&build_result_json(result, artifact, "c2ln"));
+            assert!(parsed.is_err(), "{result} with {artifact}");
+        }
+        let bad_snapshot =
+            build_result_json("failure", "null", "c2ln").replace(SNAPSHOT_ID, "not-a-snapshot");
+        assert!(parse_build_result_json(&bad_snapshot).is_err());
+    }
+
+    #[test]
+    fn json_key_order_does_not_affect_build_result_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = parse_build_result_json(&build_result_json("failure", "null", "c2ln"))?;
+        let reordered = format!(
+            r#"{{
+              "signature": {{ "bytes": "b3RoZXI=", "algorithm": "example", "key_id": "k2", "actor": "{ACTOR_ID}" }},
+              "body": {{
+                "execution": "{PLAN_ID}",
+                "host_dependent": true,
+                "environment": "none",
+                "executor": "native/1",
+                "artifact": null,
+                "result": "failure",
+                "resolved_manifest": "{PLAN_ID}",
+                "target": "release",
+                "snapshot": "{SNAPSHOT_ID}",
+                "object": "{OBJECT_ID}"
+              }},
+              "previous": [],
+              "created_at": "{CREATED_AT}",
+              "subject": "object:{OBJECT_ID}",
+              "actor": "{ACTOR_ID}",
+              "version": 1,
+              "type": "BuildResult"
+            }}"#
+        );
+        let second = parse_build_result_json(&reordered)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn build_result_round_trips_through_from_statement() -> Result<(), Box<dyn std::error::Error>> {
+        let artifact = format!("\"{PLAN_ID}\"");
+        let statement = parse_build_result_json(&build_result_json("success", &artifact, "c2ln"))?;
+        let dto = BuildResultStatementJson::from_statement(&statement);
+        let round_tripped = dto.to_statement()?;
+        assert_eq!(statement.statement_id(), round_tripped.statement_id());
+        assert_eq!(statement, round_tripped);
         Ok(())
     }
 

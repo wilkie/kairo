@@ -217,6 +217,17 @@ dataset).
 
 See `PLANNER.md`, `ENVIRONMENTS.md`, and `DECISIONS.md` §33–§34.
 
+## Build Result
+
+A `BuildResult` is a signed statement that one run of one build plan
+produced a given outcome: the plan hash, success or failure, the
+artifact id on success, the executor, the environment contract, whether
+the host took part, and the execution record id. Any actor may sign
+one; agreeing results from different signers are reproduction
+evidence. Build results never join a snapshot's frontier.
+
+See `DECISIONS.md` §33–§34 and `schemas/canonical/build-result-v1.md`.
+
 ## Environment Contract
 
 An environment contract is what an `environment:<system>/<arch>` label

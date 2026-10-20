@@ -33,7 +33,9 @@ where they differ:
   describe the later discovery phase. They depend on statement
   types (`ProvidesCapability`, `ResolutionSucceeded`,
   `TokenAdvertisement`) that arrive with `PHASE_2.md` §7 and §8,
-  and their examples are illustrative until then.
+  and their examples are illustrative until then. `BuildResult`
+  statements (`DECISIONS.md` §33 sub-decision 8) already travel in
+  an object's closure like branches and tags.
 - Statements travel in the `kairo-statement` JSON wire shape
   (`type`, `version`, `actor`, `subject`, `created_at`, `body`,
   `signature`), not a separate federation envelope.

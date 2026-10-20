@@ -8234,6 +8234,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
         Command::Build {
             snapshot_ref: format!("object:{app}"),
             target: "release".to_owned(),
+            actor: None,
             plan_only: true,
             json: false,
         },
@@ -8296,6 +8297,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
         Command::Build {
             snapshot_ref: format!("object:{app}"),
             target: "release".to_owned(),
+            actor: None,
             plan_only: true,
             json: true,
         },
@@ -8310,6 +8312,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
         Command::Build {
             snapshot_ref: format!("object:{app}"),
             target: "release".to_owned(),
+            actor: Some(actor.clone()),
             plan_only: false,
             json: false,
         },
@@ -8324,6 +8327,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
         Command::Build {
             snapshot_ref: format!("object:{app}"),
             target: "debug".to_owned(),
+            actor: None,
             plan_only: true,
             json: false,
         },
@@ -8338,6 +8342,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
         Command::Build {
             snapshot_ref: format!("actor:{actor}"),
             target: "release".to_owned(),
+            actor: None,
             plan_only: true,
             json: false,
         },
@@ -8457,6 +8462,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
         Command::Build {
             snapshot_ref: format!("object:{app}"),
             target: "release".to_owned(),
+            actor: Some(actor.clone()),
             plan_only: false,
             json: false,
         },
@@ -8477,12 +8483,34 @@ fn build_runs_the_target_in_development_mode_and_records_it(
         Command::Build {
             snapshot_ref: format!("object:{app}"),
             target: "release".to_owned(),
+            actor: Some(actor.clone()),
             plan_only: false,
             json: false,
         },
     )?;
+    assert!(built.contains("builds = 1\n"), "{built}");
     assert!(built.contains("status = success\n"), "{built}");
     assert!(built.contains("executor = native/1 (none:"), "{built}");
+    let result = parse_field(&built, "result = ")?;
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let signed = kairo_store::StatementStore::get_build_result(
+        &store,
+        &kairo_core::StatementId::new(result.clone())?,
+    )?;
+    assert_eq!(signed.unsigned().actor().to_string(), actor);
+    assert_eq!(
+        signed.unsigned().body().result(),
+        kairo_statement::BuildOutcome::Success
+    );
+    assert_eq!(signed.unsigned().body().target(), "release");
+    assert_eq!(signed.unsigned().body().executor(), "native/1");
+    assert!(signed.unsigned().body().host_dependent());
+    let heads = kairo_store::BuildResultResolver::list_build_results(
+        &store,
+        &kairo_core::ObjectId::new(app.clone())?,
+    )?;
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].statement_id.to_string(), result);
     assert!(built.contains("host_dependent = yes\n"), "{built}");
     assert!(built.contains("  cli -> bin/app (1 files)\n"), "{built}");
     assert!(
@@ -8502,9 +8530,17 @@ fn build_runs_the_target_in_development_mode_and_records_it(
     assert_eq!(record["artifact"], artifact);
     assert_eq!(record["host"]["tools"], serde_json::json!(["/bin/sh"]));
 
+    assert_eq!(
+        signed.unsigned().body().artifact().map(ToString::to_string),
+        Some(artifact.clone())
+    );
+    assert_eq!(
+        signed.unsigned().body().execution().to_string(),
+        parse_field(&built, "execution = ")?
+    );
+
     // The artifact's files are blobs in the store, with the build's
     // SOURCE_DATE_EPOCH taken from the revision.
-    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
     let tree = kairo_build::load_artifact(&store, &kairo_core::BlobId::new(artifact)?)?;
     let app_bytes = kairo_store::BlobStore::get_blob(
         &store,
@@ -8518,7 +8554,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
     assert_eq!(header, b"/* zlib */\n");
     let _ = zlib;
 
-    // A failing build is a recorded failure and a non-zero exit.
+    // A failed build signs a failure result too.
     let broken = create_held_tree(
         store_dir.path(),
         &actor,
@@ -8548,6 +8584,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
         Command::Build {
             snapshot_ref: format!("object:{broken}"),
             target: "release".to_owned(),
+            actor: Some(actor.clone()),
             plan_only: false,
             json: false,
         },
@@ -8561,6 +8598,16 @@ fn build_runs_the_target_in_development_mode_and_records_it(
         summary.contains("diagnostic = \"sh\" exited with status 2\n"),
         "{summary}"
     );
+    let failed_result = parse_field(&summary, "result = ")?;
+    let failed_signed = kairo_store::StatementStore::get_build_result(
+        &store,
+        &kairo_core::StatementId::new(failed_result)?,
+    )?;
+    assert_eq!(
+        failed_signed.unsigned().body().result(),
+        kairo_statement::BuildOutcome::Failure
+    );
+    assert!(failed_signed.unsigned().body().artifact().is_none());
 
     // A revision signed by an actor this node holds no key for and
     // doesn't trust is refused (exit 7) until a local actor trusts it.
@@ -8613,6 +8660,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
         Command::Build {
             snapshot_ref: format!("object:{foreign}"),
             target: "release".to_owned(),
+            actor: Some(actor.clone()),
             plan_only: false,
             json: false,
         },
@@ -8639,12 +8687,181 @@ fn build_runs_the_target_in_development_mode_and_records_it(
         Command::Build {
             snapshot_ref: format!("object:{foreign}"),
             target: "release".to_owned(),
+            actor: Some(actor.clone()),
             plan_only: false,
             json: true,
         },
     )?;
     let value: serde_json::Value = serde_json::from_str(&allowed)?;
-    assert_eq!(value["record"]["status"], "success");
-    assert_eq!(value["artifact_tree"]["entries"][0]["path"], "bin/app");
+    assert_eq!(value["builds"][0]["record"]["status"], "success");
+    assert_eq!(
+        value["builds"][0]["artifact_tree"]["entries"][0]["path"],
+        "bin/app"
+    );
+    assert!(value["builds"][0]["result"]
+        .as_str()
+        .is_some_and(|id| id.starts_with('z')));
+    Ok(())
+}
+
+#[test]
+fn build_builds_an_artifact_provider_first_and_reuses_its_result(
+) -> Result<(), Box<dyn std::error::Error>> {
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    std::fs::write(
+        store_dir.path().join("config.toml"),
+        "[runtime]\nallow_local_process = true\n\n\
+         [[runtime.host.tools]]\nprovides = \"tool:sh\"\npath = \"/bin/sh\"\n",
+    )?;
+    // `make` is built from source: its artifact is a `bin/make` script.
+    let make = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[
+            (
+                "kairo.toml",
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "make"
+                [[provides]]
+                provides = "tool:make"
+                version = "4.4"
+                target = "release"
+                output = "bin"
+                [[build.targets]]
+                name = "release"
+                command = ["sh", "build.sh"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "tool:sh"
+                [[build.targets.outputs]]
+                name = "bin"
+                path = "out/bin"
+                artifact_path = "bin"
+                kind = "directory"
+                "#,
+            ),
+            (
+                "build.sh",
+                "#!/bin/sh\nset -e\nmkdir -p out/bin\n\
+                 printf '#!/bin/sh\\necho made with make > \"$1\"\\n' > out/bin/make\nchmod +x out/bin/make\n",
+            ),
+        ],
+    )?;
+    let app = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[
+            (
+                "kairo.toml",
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "app"
+                [[build.targets]]
+                name = "release"
+                command = ["sh", "build.sh"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "tool:sh"
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "tool:make"
+                version = ">=4"
+                [[build.targets.outputs]]
+                name = "cli"
+                path = "dist/app"
+                artifact_path = "bin/app"
+                kind = "file"
+                "#,
+            ),
+            (
+                "build.sh",
+                "#!/bin/sh\nset -e\nmkdir -p dist\nmake dist/app\n",
+            ),
+        ],
+    )?;
+
+    let first = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            actor: Some(actor.clone()),
+            plan_only: false,
+            json: false,
+        },
+    )?;
+    assert!(first.contains("builds = 2\n"), "{first}");
+    assert!(
+        first.contains("--- build 1 of 2 (needed first) ---\n"),
+        "{first}"
+    );
+    assert!(first.contains(&format!("object = {make}\n")), "{first}");
+    assert!(
+        first.contains("--- build 2 of 2 (the target) ---\n"),
+        "{first}"
+    );
+    assert_eq!(first.matches("status = success\n").count(), 2, "{first}");
+    assert_eq!(first.matches("\nresult = z").count(), 2, "{first}");
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let app_results = kairo_store::BuildResultResolver::list_build_results(
+        &store,
+        &kairo_core::ObjectId::new(app.clone())?,
+    )?;
+    let artifact = app_results[0].artifact.clone().ok_or("app artifact")?;
+    let tree = kairo_build::load_artifact(&store, &artifact)?;
+    let bytes = kairo_store::BlobStore::get_blob(
+        &store,
+        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+    )?;
+    assert_eq!(bytes, b"made with make\n");
+
+    // Now `make`'s result pins its artifact: the plan needs nothing
+    // first, and the second build runs the target alone.
+    let plan = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            actor: None,
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    assert!(plan.contains("builds_first = 0\n"), "{plan}");
+    assert!(
+        plan.contains(&format!(
+            "tool:make >=4 -> object:{make} target release output bin (artifact z"
+        )),
+        "{plan}"
+    );
+    let second = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            actor: Some(actor.clone()),
+            plan_only: false,
+            json: false,
+        },
+    )?;
+    assert!(second.contains("builds = 1\n"), "{second}");
+    assert_eq!(
+        kairo_store::BuildResultResolver::list_build_results(
+            &store,
+            &kairo_core::ObjectId::new(make.clone())?,
+        )?
+        .len(),
+        1,
+        "make was not rebuilt"
+    );
     Ok(())
 }

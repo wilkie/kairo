@@ -3081,7 +3081,8 @@ Sub-decisions:
    (PACKAGE §4.4) comes with `kairo reproduce`.
 
 8. **`BuildResult` statement**, version 1, signed by the acting actor
-   after every completed build, success or failure. Its body holds:
+   (`kairo build --actor`) after every completed build, success or
+   failure. Its body holds:
 
    - `object`, `snapshot`, `target`;
    - `resolved_manifest` (`BlobId`);
@@ -3091,7 +3092,18 @@ Sub-decisions:
    - `environment` (the contract label, or `none`);
    - `host_dependent` (`true` whenever the executor implements no
      contract or a host tool was used; such results are never
-     substitutable, §34 sub-decision 10).
+     substitutable, §34 sub-decision 10);
+   - `execution` (the signer's execution record id, so the evidence
+     can be asked for; *added when built*).
+
+   It is chained in the signer's object chain, rides in object bundles
+   and federation closures, and is accepted by the daemon's statement
+   endpoint without object authority: any actor may report a build.
+   The resolver treats an artifact as held when a successful result
+   for `(object, snapshot, target)` by an accepted signer — a keystore
+   actor, or one a keystore actor trusts at `general` scope — names a
+   blob this node has. `kairo build` builds what the plan needs first,
+   one at a time, re-resolving after each so its result pins the next.
 
    It is indexed by object but never enters the frontier. Timeouts and
    policy refusals sign nothing: they are operational errors, not

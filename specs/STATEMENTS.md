@@ -689,29 +689,33 @@ The canonical ObjectRevision v1 form is documented in:
 schemas/canonical/object-revision-v1.md
 ```
 
-### 4.3 Build Statement
+### 4.3 BuildResult Statement
 
-> **Superseded in part by `DECISIONS.md` §33.** New statement types use the
-> PascalCase, `version: 1` convention; the build statement is `BuildResult`.
-> The dotted sketches below are kept for the fields they suggest.
+A `BuildResult` records what one run of one build plan produced
+(`DECISIONS.md` §33 sub-decision 8, §34): the object, snapshot and
+target; the plan hash (`resolved_manifest`, which covers the whole
+input closure); `success` or `failure`; the artifact id, present
+exactly on success; the executor; the environment contract an engine
+provided, or `none`; `host_dependent`; and the signer's execution
+record id. It is chained in the signer's object chain like a branch
+or tag, and is **evidence about a snapshot that never joins the
+frontier**.
 
-Records a successful build:
+Any actor may sign one. Two results by different signers agreeing on
+`(resolved_manifest, artifact)` are independent reproduction evidence;
+a `host_dependent` result never counts toward substitution.
+Timeouts and policy refusals are operational outcomes and are never
+signed.
 
-{
-  "type": "kairo.statement.build.v1",
-  "subject": {
-    "object": "z6MkObject...",
-    "snapshot": "z6MkSnapshot..."
-  },
-  "target": "release",
-  "resolvedManifest": {
-    "hash": "z6MkResolvedManifest..."
-  },
-  "artifact": {
-    "snapshot": "z6MkArtifactSnapshot..."
-  },
-  "result": "success"
-}
+The canonical form is documented in:
+
+```text
+schemas/canonical/build-result-v1.md
+```
+
+> The following sketches (§4.4–§4.6) predate the PascalCase, `version:
+> 1` convention and are superseded in form by `DECISIONS.md` §33; their
+> types are defined when built.
 
 ---
 

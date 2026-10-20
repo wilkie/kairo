@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **`BuildResult` statements (`DECISIONS.md` §33 sub-decision 8).**
+  `kairo build --actor <id>` signs a `BuildResult` for every completed
+  build (`schemas/canonical/build-result-v1.md`): object, snapshot,
+  target, plan hash, outcome, artifact, executor, environment,
+  `host_dependent`, and the execution record id. Results are indexed
+  per object (`BuildResultResolver`), ride in bundles and federation
+  closures, and are accepted by the daemon's statement endpoint. The
+  resolver pins an artifact provider to a held artifact when an
+  accepted signer's successful result names it, so `kairo build`
+  builds a plan's prerequisites first, one at a time, then the target.
 - **Development-mode builds (`DECISIONS.md` §33–§34).** `kairo build
   <snapshot-ref> --target <name>` runs the plan with the new
   `kairo-build` crate's native executor — a host process with a

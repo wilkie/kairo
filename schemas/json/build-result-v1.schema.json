@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/build-result-v1.schema.json",
+  "title": "Kairo BuildResult Statement v1",
+  "type": "object",
+  "required": ["type", "version", "actor", "subject", "created_at", "previous", "body", "signature"],
+  "properties": {
+    "type": { "const": "BuildResult" },
+    "version": { "const": 1 },
+    "actor": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$" },
+    "subject": { "type": "string", "pattern": "^object:z[1-9A-HJ-NP-Za-km-z]+$" },
+    "created_at": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "Strict RFC 3339 UTC seconds."
+    },
+    "previous": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$" },
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "body": {
+      "type": "object",
+      "required": ["object", "snapshot", "target", "resolved_manifest", "result", "artifact", "executor", "environment", "host_dependent", "execution"],
+      "properties": {
+        "object": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$" },
+        "snapshot": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$" },
+        "target": { "type": "string", "minLength": 1 },
+        "resolved_manifest": {
+          "type": "string",
+          "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$",
+          "description": "The plan hash: BlobId of the kairo.resolved-manifest.v1 document."
+        },
+        "result": { "enum": ["success", "failure"] },
+        "artifact": {
+          "oneOf": [
+            { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$", "description": "The artifact id (kairo.artifact-tree.v1); present exactly on success." },
+            { "type": "null" }
+          ]
+        },
+        "executor": { "type": "string", "minLength": 1, "description": "Executor id and version, e.g. native/1." },
+        "environment": { "type": "string", "minLength": 1, "description": "The environment contract label an engine provided, or none." },
+        "host_dependent": { "type": "boolean" },
+        "execution": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]+$", "description": "The signer's execution record id." }
+      },
+      "additionalProperties": false
+    },
+    "signature": { "$ref": "statement-envelope-v1.schema.json#/$defs/signature" }
+  },
+  "additionalProperties": false
+}

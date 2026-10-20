@@ -44,6 +44,7 @@
 
 mod actor_chains;
 mod branches;
+mod build_results;
 mod capabilities;
 mod capabilities_by_object;
 mod chain;
@@ -81,20 +82,22 @@ use kairo_statement::json::{
     ActorAttestationThresholdChangeStatementJson, ActorCapabilityGrantStatementJson,
     ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
     ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
-    ActorKeyRotationStatementJson, ActorTrustStatementJson, ObjectBranchStatementJson,
-    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    ActorKeyRotationStatementJson, ActorTrustStatementJson, BuildResultStatementJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
 };
 use kairo_statement::{
     ActorAttestationKeyAddBody, ActorAttestationKeyRevocationBody,
     ActorAttestationThresholdChangeBody, ActorCapabilityGrantBody, ActorCapabilityRevocationBody,
     ActorEmergencyKeyRevocationBody, ActorEmergencyKeyRotationBody, ActorKeyRevocationBody,
-    ActorKeyRotationBody, ActorTrustBody, CapabilityScope, ChainKey, ChainScope,
+    ActorKeyRotationBody, ActorTrustBody, BuildResultBody, CapabilityScope, ChainKey, ChainScope,
     MultiSignedStatement, ObjectBranchBody, ObjectGenesisStatement, ObjectRevisionBody,
     ObjectVersionTagBody, SignedStatement, StatementKind, TrustScope,
 };
 
 pub use actor_chains::{ChainCompleteness, ChainReport};
 pub use branches::BranchTip;
+pub use build_results::BuildResultHead;
 pub use capabilities::{CapabilityHead, CapabilityRevocationRecord};
 pub use capabilities_by_object::CapabilityByObjectHead;
 pub use error::{CorruptReason, StoreError};
@@ -129,6 +132,7 @@ const OBJECTS_DIR: &str = "objects";
 const STATEMENTS_DIR: &str = "statements";
 const BRANCHES_DIR: &str = "branches";
 const VERSION_TAGS_DIR: &str = "version_tags";
+const BUILD_RESULTS_DIR: &str = "build_results";
 const TRUST_DIR: &str = "trust";
 const ACTOR_CAPABILITY_DIR: &str = "actor_capability";
 const ACTOR_CAPABILITY_BY_OBJECT_DIR: &str = "actor_capability_by_object";
@@ -211,6 +215,16 @@ pub trait StatementStore {
         &self,
         id: &StatementId,
     ) -> Result<SignedStatement<ObjectVersionTagBody>, StoreError>;
+
+    fn put_build_result(
+        &self,
+        statement: &SignedStatement<BuildResultBody>,
+    ) -> Result<StatementId, StoreError>;
+
+    fn get_build_result(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<BuildResultBody>, StoreError>;
 
     fn put_actor_trust(
         &self,
@@ -376,6 +390,14 @@ pub trait VersionTagResolver {
 
     /// All known `(actor, version)` tag heads for an object.
     fn list_version_tags(&self, object: &ObjectId) -> Result<Vec<VersionTagHead>, StoreError>;
+}
+
+/// What is known about an object's builds (`DECISIONS.md` §33
+/// sub-decision 8). Backed by the per-object index in
+/// `<root>/build_results/`.
+pub trait BuildResultResolver {
+    /// Every known `BuildResult` about `object`, newest first.
+    fn list_build_results(&self, object: &ObjectId) -> Result<Vec<BuildResultHead>, StoreError>;
 }
 
 /// Resolver for the current `(by_actor, trusted_actor)` trust head.
@@ -853,6 +875,9 @@ impl FilesystemStore {
             StatementKind::ObjectVersionTag => {
                 rebuild_arm!(ObjectVersionTagStatementJson, index_object_version_tag);
             }
+            StatementKind::BuildResult => {
+                rebuild_arm!(BuildResultStatementJson, index_build_result);
+            }
             StatementKind::ActorTrust => {
                 rebuild_arm!(ActorTrustStatementJson, index_actor_trust);
             }
@@ -1153,6 +1178,46 @@ impl StatementStore for FilesystemStore {
             });
         }
         Ok(signed)
+    }
+
+    fn put_build_result(
+        &self,
+        statement: &SignedStatement<BuildResultBody>,
+    ) -> Result<StatementId, StoreError> {
+        let id = statement.statement_id();
+        let json = BuildResultStatementJson::from_statement(statement);
+        let bytes = serde_json::to_vec_pretty(&json).map_err(json_to_corrupt(&id))?;
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        atomic_write(&path, &bytes)?;
+
+        self.index_build_result(statement, &id)?;
+
+        Ok(id)
+    }
+
+    fn get_build_result(
+        &self,
+        id: &StatementId,
+    ) -> Result<SignedStatement<BuildResultBody>, StoreError> {
+        let path = self.shard_path(STATEMENTS_DIR, id.as_str(), JSON_SUFFIX)?;
+        let bytes = read_or_missing(&path)?;
+        let json: BuildResultStatementJson =
+            serde_json::from_slice(&bytes).map_err(json_to_corrupt(id))?;
+        let statement = json.to_statement().map_err(|error| StoreError::Corrupt {
+            id: id.to_string(),
+            reason: CorruptReason::Parse(error.to_string()),
+        })?;
+        let actual = statement.statement_id();
+        if &actual != id {
+            return Err(StoreError::Corrupt {
+                id: id.to_string(),
+                reason: CorruptReason::HashMismatch {
+                    expected: id.to_string(),
+                    actual: actual.to_string(),
+                },
+            });
+        }
+        Ok(statement)
     }
 
     fn put_actor_trust(
@@ -1785,6 +1850,46 @@ impl FilesystemStore {
             created_at,
         )?;
         self.upsert_statement_by_actor_index(actor, id, StatementKind::ObjectVersionTag, created_at)
+    }
+
+    fn index_build_result(
+        &self,
+        statement: &SignedStatement<BuildResultBody>,
+        id: &StatementId,
+    ) -> Result<(), StoreError> {
+        let actor = statement.unsigned().actor();
+        let body = statement.unsigned().body();
+        let created_at = statement.unsigned().created_at();
+        let path = self.shard_path(BUILD_RESULTS_DIR, body.object().as_str(), JSON_SUFFIX)?;
+        lock::with_index_lock(&path, || {
+            let mut index = match fs::read(&path) {
+                Ok(bytes) => serde_json::from_slice::<build_results::BuildResultIndexFile>(&bytes)
+                    .map_err(|error| StoreError::Corrupt {
+                        id: body.object().to_string(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid build result index: {error}"
+                        )),
+                    })?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    build_results::BuildResultIndexFile::default()
+                }
+                Err(error) => return Err(StoreError::Unavailable(error)),
+            };
+            if index.upsert(actor, id, body, created_at) {
+                let bytes =
+                    serde_json::to_vec_pretty(&index).map_err(json_to_corrupt(body.object()))?;
+                atomic_write(&path, &bytes)?;
+            }
+            Ok(())
+        })?;
+        self.upsert_actor_chain(
+            actor,
+            &ChainKey::Scope(ChainScope::Object(body.object().clone())),
+            id,
+            statement.unsigned().previous(),
+            created_at,
+        )?;
+        self.upsert_statement_by_actor_index(actor, id, StatementKind::BuildResult, created_at)
     }
 
     fn index_actor_trust(
@@ -3096,6 +3201,26 @@ impl FilesystemStore {
     }
 }
 
+impl BuildResultResolver for FilesystemStore {
+    fn list_build_results(&self, object: &ObjectId) -> Result<Vec<BuildResultHead>, StoreError> {
+        let path = self.shard_path(BUILD_RESULTS_DIR, object.as_str(), JSON_SUFFIX)?;
+        match fs::read(&path) {
+            Ok(bytes) => {
+                let index: build_results::BuildResultIndexFile = serde_json::from_slice(&bytes)
+                    .map_err(|error| StoreError::Corrupt {
+                        id: object.to_string(),
+                        reason: CorruptReason::Parse(format!(
+                            "invalid build result index: {error}"
+                        )),
+                    })?;
+                index.heads(object)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(StoreError::Unavailable(error)),
+        }
+    }
+}
+
 impl TrustResolver for FilesystemStore {
     fn latest_trust(
         &self,
@@ -3826,6 +3951,96 @@ mod tests {
             signature_bytes.to_vec(),
         );
         Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    fn signed_build_result(
+        actor: ActorId,
+        object: ObjectId,
+        target: &str,
+        result: kairo_statement::BuildOutcome,
+        created_at: Timestamp,
+    ) -> Result<SignedStatement<BuildResultBody>, Box<dyn std::error::Error>> {
+        let plan = BlobId::from_sha256_digest([0x11; 32]);
+        let artifact = matches!(result, kairo_statement::BuildOutcome::Success)
+            .then(|| BlobId::from_sha256_digest([0x22; 32]));
+        let body = BuildResultBody::new(
+            object.clone(),
+            kairo_core::SnapshotId::from_sha256_digest([0x33; 32]),
+            target.to_owned(),
+            plan,
+            result,
+            artifact,
+            "native/1".to_owned(),
+            "none".to_owned(),
+            true,
+            BlobId::from_sha256_digest([0x44; 32]),
+        )?;
+        let subject: KairoRef = format!("object:{object}").parse()?;
+        let unsigned = UnsignedStatement::new(actor.clone(), subject, created_at, body);
+        let signature_bytes = signing_key().sign(&unsigned.canonical_bytes()).to_bytes();
+        let signature = Signature::new(
+            actor,
+            public_key().key_id().to_string(),
+            "ed25519",
+            signature_bytes.to_vec(),
+        );
+        Ok(SignedStatement::new(unsigned, signature))
+    }
+
+    #[test]
+    fn build_results_round_trip_and_index_by_object() -> TestResult {
+        let (_dir, store) = open_temp_store()?;
+        let actor = fresh_genesis().actor_id();
+        let object = ObjectId::new(OBJECT_ID)?;
+        let failed = signed_build_result(
+            actor.clone(),
+            object.clone(),
+            "release",
+            kairo_statement::BuildOutcome::Failure,
+            timestamp(),
+        )?;
+        let succeeded = signed_build_result(
+            actor.clone(),
+            object.clone(),
+            "release",
+            kairo_statement::BuildOutcome::Success,
+            Timestamp::from_seconds(timestamp().seconds() + 10),
+        )?;
+        let failed_id = store.put_build_result(&failed)?;
+        let succeeded_id = store.put_build_result(&succeeded)?;
+        assert_eq!(store.get_build_result(&failed_id)?, failed);
+        assert_eq!(
+            store.put_build_result(&failed)?,
+            failed_id,
+            "a repeat put is a no-op"
+        );
+
+        let heads = store.list_build_results(&object)?;
+        assert_eq!(heads.len(), 2, "{heads:?}");
+        assert_eq!(heads[0].statement_id, succeeded_id, "newest first");
+        assert_eq!(heads[0].result, kairo_statement::BuildOutcome::Success);
+        assert!(heads[0].artifact.is_some());
+        assert_eq!(heads[1].statement_id, failed_id);
+        assert!(heads[1].artifact.is_none());
+        assert!(heads[0].host_dependent);
+        assert!(store
+            .list_build_results(&ObjectId::from_sha256_digest([9; 32]))?
+            .is_empty());
+
+        // The index is a materialization: rebuilt from the statements.
+        let index_path = store.shard_path(BUILD_RESULTS_DIR, object.as_str(), JSON_SUFFIX)?;
+        fs::remove_file(&index_path)?;
+        assert!(store.list_build_results(&object)?.is_empty());
+        let report = store.rebuild_indexes()?;
+        assert_eq!(report.by_kind.get(&StatementKind::BuildResult), Some(&2));
+        assert_eq!(store.list_build_results(&object)?.len(), 2);
+
+        // The statement is by its signer and in the object's closure.
+        let by_actor = store.list_statements_by_actor(&actor)?;
+        assert!(by_actor
+            .iter()
+            .any(|entry| entry.kind == StatementKind::BuildResult));
+        Ok(())
     }
 
     #[test]

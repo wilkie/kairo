@@ -13,15 +13,19 @@ use std::path::Path;
 use std::time::Duration;
 
 use kairo_build::{run_plan, Execution, Limits, Status, TreeSource};
-use kairo_core::{KairoRef, ObjectId, SnapshotId};
+use kairo_core::canonical::CanonicalEncode;
+use kairo_core::{BlobId, KairoRef, ObjectId, SnapshotId, StatementId, Timestamp};
 use kairo_keystore::Keystore;
 use kairo_object::ObjectManifest;
 use kairo_resolver::{
-    describe_resolved, find_snapshot, version_matches, Host, HostTool, Index, ManifestSource,
-    NoArtifacts, Resolution, Resolver, SnapshotSelector, SourceError,
+    describe_resolved, find_snapshot, version_matches, ArtifactSource, Host, HostTool, Index,
+    ManifestSource, PlanDocument, Resolution, Resolver, SnapshotSelector, SourceError,
 };
-use kairo_statement::{RevisionId, TrustDecision, TrustScope};
-use kairo_store::{BlobStore, FilesystemStore, StatementStore, TrustResolver};
+use kairo_statement::{
+    BuildOutcome, BuildResultBody, RevisionId, Signature, SignedStatement, TrustDecision,
+    TrustScope, UnsignedStatement,
+};
+use kairo_store::{BlobStore, BuildResultResolver, FilesystemStore, StatementStore, TrustResolver};
 
 use crate::cli::ProviderCommand;
 use crate::commands::config::load_config;
@@ -31,8 +35,66 @@ use crate::store_paths::{open_keystore, open_store, StorePaths};
 pub(crate) struct BuildArgs<'a> {
     pub snapshot_ref: &'a str,
     pub target: &'a str,
+    /// Signs the `BuildResult`; required unless `plan_only`.
+    pub actor: Option<&'a str>,
     pub plan_only: bool,
     pub json: bool,
+}
+
+/// Held artifacts, from `BuildResult`s this node accepts: signed by a
+/// keystore actor or one a keystore actor trusts at `general` scope,
+/// successful, and with the artifact blob present. Newest first.
+struct StoreArtifacts<'a> {
+    store: &'a FilesystemStore,
+    accepted: Vec<kairo_core::ActorId>,
+}
+
+impl StoreArtifacts<'_> {
+    fn accepts(&self, signer: &kairo_core::ActorId) -> bool {
+        if self.accepted.contains(signer) {
+            return true;
+        }
+        self.accepted.iter().any(|by_actor| {
+            self.store
+                .latest_trust(by_actor, signer, &TrustScope::general())
+                .ok()
+                .flatten()
+                .is_some_and(|trust| {
+                    trust.unsigned().body().decision() == Some(TrustDecision::Trusted)
+                })
+        })
+    }
+}
+
+impl ArtifactSource for StoreArtifacts<'_> {
+    fn artifact(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<BlobId>, SourceError> {
+        let heads = self
+            .store
+            .list_build_results(object)
+            .map_err(|error| SourceError(error.to_string()))?;
+        for head in heads {
+            if &head.snapshot != snapshot || head.target != target {
+                continue;
+            }
+            let Some(artifact) = head.artifact else {
+                continue;
+            };
+            if !self.accepts(&head.actor) {
+                continue;
+            }
+            match self.store.get_blob(&artifact) {
+                Ok(_) => return Ok(Some(artifact)),
+                Err(kairo_store::StoreError::Missing) => continue,
+                Err(error) => return Err(SourceError(error.to_string())),
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Manifests from the managed Git cache, at the revision's commit.
@@ -124,16 +186,14 @@ fn host_tools(config: &kairo_config::Config) -> Vec<HostTool> {
 /// keystore actor trusts at `general` scope.
 fn check_signer(
     store: &FilesystemStore,
-    paths: &StorePaths,
+    local: &[kairo_core::ActorId],
     object: &ObjectId,
     signer: &kairo_core::ActorId,
 ) -> Result<(), CliError> {
-    let keystore = open_keystore(paths)?;
-    let local = keystore.list_actors().map_err(CliError::ListKeystore)?;
     if local.contains(signer) {
         return Ok(());
     }
-    for by_actor in &local {
+    for by_actor in local {
         let trusted = store
             .latest_trust(by_actor, signer, &TrustScope::general())
             .map_err(CliError::ReadBranch)?
@@ -148,6 +208,12 @@ fn check_signer(
         signer: signer.clone(),
         object: object.clone(),
     })
+}
+
+/// What one `kairo build` did: the builds it ran, prerequisites first.
+struct Built {
+    execution: Execution,
+    result: StatementId,
 }
 
 pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
@@ -175,28 +241,40 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
             config: source.path().to_path_buf(),
         });
     }
+    let keystore = open_keystore(paths)?;
+    let local = keystore.list_actors().map_err(CliError::ListKeystore)?;
     let manifests = CacheManifests { paths };
     let host = Host::detect();
     let tools = host_tools(&config);
-    let resolution = Resolver::new(&store, &manifests, &NoArtifacts, &host, &tools)
-        .resolve(&object, &selector, args.target)
-        .map_err(|error| CliError::Resolve(Box::new(error)))?;
+    let artifacts = StoreArtifacts {
+        store: &store,
+        accepted: local.clone(),
+    };
+    let resolve = || {
+        Resolver::new(&store, &manifests, &artifacts, &host, &tools)
+            .resolve(&object, &selector, args.target)
+            .map_err(|error| CliError::Resolve(Box::new(error)))
+    };
+    let store_plans = |resolution: &Resolution| -> Result<(), CliError> {
+        // The plan and what it needs first are stored, so results
+        // and `kairo reproduce` can cite them by hash.
+        for plan in resolution
+            .prerequisites
+            .iter()
+            .chain(std::iter::once(&resolution.plan))
+        {
+            store
+                .put_blob(&plan.hash, &plan.bytes)
+                .map_err(|source| CliError::WriteBlob {
+                    blob: plan.hash.clone(),
+                    source,
+                })?;
+        }
+        Ok(())
+    };
 
-    // The plan and what it needs first are stored, so a later `kairo
-    // build` and `kairo reproduce` can cite them by hash.
-    for plan in resolution
-        .prerequisites
-        .iter()
-        .chain(std::iter::once(&resolution.plan))
-    {
-        store
-            .put_blob(&plan.hash, &plan.bytes)
-            .map_err(|source| CliError::WriteBlob {
-                blob: plan.hash.clone(),
-                source,
-            })?;
-    }
-
+    let resolution = resolve()?;
+    store_plans(&resolution)?;
     if args.plan_only {
         return Ok(if args.json {
             format_resolution_json(&resolution)
@@ -205,20 +283,85 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
         });
     }
 
-    if !resolution.plan.manifest.builds_first.is_empty() {
-        return Err(CliError::BuildPrerequisites {
-            builds: resolution
-                .plan
-                .manifest
-                .builds_first
-                .iter()
-                .map(|build| format!("object:{} target {}", build.object, build.target))
-                .collect(),
-        });
+    let actor = args.actor.ok_or(CliError::BuildActorRequired)?;
+    let actor_id =
+        kairo_core::ActorId::new(actor.to_owned()).map_err(|source| CliError::ParseActorId {
+            actor: actor.to_owned(),
+            source,
+        })?;
+    let secret = crate::require_active_signing_key(&store, &keystore, &actor_id)?;
+    let trees = CacheTrees {
+        paths,
+        store: &store,
+    };
+    let limits = Limits {
+        timeout: Duration::from_secs(config.runtime.timeout_secs),
+    };
+
+    // Each round builds the first build the plan still needs, whose
+    // own plan needs nothing by construction (dependencies come
+    // first), and re-resolves so its result pins the next one. The
+    // last round builds the target itself.
+    let mut built: Vec<Built> = Vec::new();
+    let mut resolution = resolution;
+    let outcome = loop {
+        let (plan, is_root) = match resolution.plan.manifest.builds_first.first() {
+            None => (resolution.plan.clone(), true),
+            Some(first) => {
+                let hash = BlobId::new(first.plan.clone()).map_err(|error| {
+                    CliError::Build(Box::new(kairo_build::BuildError::Id(error)))
+                })?;
+                let plan = resolution
+                    .prerequisites
+                    .iter()
+                    .find(|plan| plan.hash == hash)
+                    .cloned()
+                    .ok_or_else(|| CliError::BuildPrerequisites {
+                        builds: vec![format!("object:{} target {}", first.object, first.target)],
+                    })?;
+                (plan, false)
+            }
+        };
+        let one = build_one(&store, &trees, &local, &actor_id, &secret, &plan, &limits)?;
+        let status = one.execution.record.status;
+        built.push(one);
+        if status != Status::Success || is_root {
+            break status;
+        }
+        resolution = resolve()?;
+        store_plans(&resolution)?;
+    };
+
+    let summary = if args.json {
+        format_built_json(&store, &built)
+    } else {
+        format_built(&store, &built)
+    };
+    match outcome {
+        Status::Success => Ok(summary),
+        status => Err(CliError::BuildFailed {
+            status: status.as_str(),
+            summary,
+        }),
     }
-    let snapshot_id = SnapshotId::new(resolution.plan.manifest.snapshot.clone())
+}
+
+/// Run one plan under the signer policy and sign its `BuildResult`
+/// (success or failure; a timeout signs nothing, §33 sub-decision 8).
+fn build_one(
+    store: &FilesystemStore,
+    trees: &CacheTrees<'_>,
+    local: &[kairo_core::ActorId],
+    actor_id: &kairo_core::ActorId,
+    secret: &kairo_identity::SecretSigningKey,
+    plan: &PlanDocument,
+    limits: &Limits,
+) -> Result<Built, CliError> {
+    let object = ObjectId::new(plan.manifest.object.clone())
         .map_err(|error| CliError::Build(Box::new(kairo_build::BuildError::Id(error))))?;
-    let snapshot = find_snapshot(&store, &object, &snapshot_id)
+    let snapshot_id = SnapshotId::new(plan.manifest.snapshot.clone())
+        .map_err(|error| CliError::Build(Box::new(kairo_build::BuildError::Id(error))))?;
+    let snapshot = find_snapshot(store, &object, &snapshot_id)
         .map_err(|error| CliError::Resolve(Box::new(error)))?
         .ok_or_else(|| {
             CliError::Build(Box::new(kairo_build::BuildError::TreeNotHeld {
@@ -232,102 +375,119 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
             statement: snapshot.frontier()[0].clone(),
             source,
         })?;
-    check_signer(&store, paths, &object, revision.unsigned().actor())?;
+    check_signer(store, local, &object, revision.unsigned().actor())?;
 
-    let trees = CacheTrees {
-        paths,
-        store: &store,
-    };
     let execution = run_plan(
-        &store,
-        &trees,
-        &resolution.plan,
+        store,
+        trees,
+        plan,
         revision.unsigned().created_at().seconds(),
-        &Limits {
-            timeout: Duration::from_secs(config.runtime.timeout_secs),
-        },
+        limits,
     )
     .map_err(|error| CliError::Build(Box::new(error)))?;
 
-    let summary = if args.json {
-        format_execution_json(&store, &execution)
-    } else {
-        format_execution(&store, &execution)
+    let record = &execution.record;
+    let outcome = match record.status {
+        Status::Success => BuildOutcome::Success,
+        Status::Failure => BuildOutcome::Failure,
+        // A timeout signs nothing; it is reported from the record.
+        Status::Timeout => {
+            return Err(CliError::BuildFailed {
+                status: "timeout",
+                summary: format_execution(store, &execution),
+            })
+        }
     };
-    match execution.record.status {
-        Status::Success => Ok(summary),
-        status => Err(CliError::BuildFailed {
-            status: status.as_str(),
-            summary,
-        }),
-    }
+    let artifact = record
+        .artifact
+        .as_ref()
+        .map(|id| BlobId::new(id.clone()))
+        .transpose()
+        .map_err(|error| CliError::Build(Box::new(kairo_build::BuildError::Id(error))))?;
+    let body = BuildResultBody::new(
+        object.clone(),
+        snapshot_id,
+        plan.manifest.target.clone(),
+        plan.hash.clone(),
+        outcome,
+        artifact,
+        format!("{}/{}", record.executor.id, record.executor.version),
+        plan.manifest.environment.clone(),
+        true,
+        execution.id.clone(),
+    )
+    .map_err(CliError::BuildResultShape)?;
+    let subject: KairoRef =
+        format!("object:{object}")
+            .parse()
+            .map_err(|source| CliError::BuildSubjectRef {
+                object: object.clone(),
+                source,
+            })?;
+    let unsigned = store
+        .link_to_chain(UnsignedStatement::new(
+            actor_id.clone(),
+            subject,
+            Timestamp::now(),
+            body,
+        ))
+        .map_err(|source| CliError::ReadActorChain {
+            actor: actor_id.clone(),
+            source,
+        })?;
+    let signature_bytes = secret.sign(&unsigned.canonical_bytes());
+    let signature = Signature::new(
+        actor_id.clone(),
+        secret.public_key().key_id().to_string(),
+        "ed25519",
+        signature_bytes.bytes().to_vec(),
+    );
+    let signed = SignedStatement::new(unsigned, signature);
+    let result = store
+        .put_build_result(&signed)
+        .map_err(|source| CliError::WriteBuildResult { source })?;
+    Ok(Built { execution, result })
 }
 
-fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
-    let record = &execution.record;
+fn format_built(store: &FilesystemStore, built: &[Built]) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "execution = {}", execution.id);
-    let _ = writeln!(out, "status = {}", record.status.as_str());
-    let _ = writeln!(out, "plan = {}", record.plan);
-    let _ = writeln!(out, "object = {}", record.object);
-    let _ = writeln!(out, "snapshot = {}", record.snapshot);
-    let _ = writeln!(out, "target = {}", record.target);
-    let _ = writeln!(
-        out,
-        "executor = {}/{} ({})",
-        record.executor.id, record.executor.version, record.executor.isolation
-    );
-    let _ = writeln!(out, "environment = {}", record.environment);
-    let _ = writeln!(out, "host_dependent = yes");
-    if let Some(code) = record.exit_code {
-        let _ = writeln!(out, "exit_code = {code}");
-    }
-    if let Some(artifact) = &record.artifact {
-        let _ = writeln!(out, "artifact = {artifact}");
-    }
-    let _ = writeln!(out, "outputs = {}", record.outputs.len());
-    for output in &record.outputs {
-        let _ = writeln!(
-            out,
-            "  {} -> {} ({} files)",
-            output.name, output.artifact_path, output.files
-        );
-    }
-    if let Some(tree) = &execution.artifact {
-        let _ = writeln!(out, "files = {}", tree.entries.len());
-        for entry in &tree.entries {
+    let _ = writeln!(out, "builds = {}", built.len());
+    for (index, one) in built.iter().enumerate() {
+        if built.len() > 1 {
             let _ = writeln!(
                 out,
-                "  {}{} {}",
-                entry.path,
-                if entry.executable { "*" } else { "" },
-                entry.blob
+                "--- build {} of {}{} ---",
+                index + 1,
+                built.len(),
+                if index + 1 == built.len() {
+                    " (the target)"
+                } else {
+                    " (needed first)"
+                }
             );
         }
+        out.push_str(&format_execution(store, &one.execution));
+        let _ = writeln!(out, "result = {}", one.result);
     }
-    let _ = writeln!(out, "stdout = {}", record.logs.stdout);
-    let _ = writeln!(out, "stderr = {}", record.logs.stderr);
-    for line in &record.diagnostics {
-        let _ = writeln!(out, "diagnostic = {line}");
-    }
-    let _ = writeln!(
-        out,
-        "record = {}",
-        kairo_build::record_path(store, &execution.id).display()
-    );
     out
 }
 
-fn format_execution_json(store: &FilesystemStore, execution: &Execution) -> String {
-    let value = serde_json::json!({
-        "execution": execution.id.to_string(),
-        "record": serde_json::to_value(&execution.record).unwrap_or_default(),
-        "record_path": kairo_build::record_path(store, &execution.id).display().to_string(),
-        "artifact_tree": execution.artifact.as_ref().and_then(|tree| serde_json::to_value(tree).ok()),
-    });
+fn format_built_json(store: &FilesystemStore, built: &[Built]) -> String {
+    let builds: Vec<serde_json::Value> = built
+        .iter()
+        .map(|one| {
+            serde_json::json!({
+                "execution": one.execution.id.to_string(),
+                "result": one.result.to_string(),
+                "record": serde_json::to_value(&one.execution.record).unwrap_or_default(),
+                "record_path": kairo_build::record_path(store, &one.execution.id).display().to_string(),
+                "artifact_tree": one.execution.artifact.as_ref().and_then(|tree| serde_json::to_value(tree).ok()),
+            })
+        })
+        .collect();
     format!(
         "{}\n",
-        serde_json::to_string_pretty(&value).unwrap_or_default()
+        serde_json::to_string_pretty(&serde_json::json!({ "builds": builds })).unwrap_or_default()
     )
 }
 
@@ -413,6 +573,61 @@ fn format_resolution_json(resolution: &Resolution) -> String {
         "{}\n",
         serde_json::to_string_pretty(&value).unwrap_or_default()
     )
+}
+
+fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
+    let record = &execution.record;
+    let mut out = String::new();
+    let _ = writeln!(out, "execution = {}", execution.id);
+    let _ = writeln!(out, "status = {}", record.status.as_str());
+    let _ = writeln!(out, "plan = {}", record.plan);
+    let _ = writeln!(out, "object = {}", record.object);
+    let _ = writeln!(out, "snapshot = {}", record.snapshot);
+    let _ = writeln!(out, "target = {}", record.target);
+    let _ = writeln!(
+        out,
+        "executor = {}/{} ({})",
+        record.executor.id, record.executor.version, record.executor.isolation
+    );
+    let _ = writeln!(out, "environment = {}", record.environment);
+    let _ = writeln!(out, "host_dependent = yes");
+    if let Some(code) = record.exit_code {
+        let _ = writeln!(out, "exit_code = {code}");
+    }
+    if let Some(artifact) = &record.artifact {
+        let _ = writeln!(out, "artifact = {artifact}");
+    }
+    let _ = writeln!(out, "outputs = {}", record.outputs.len());
+    for output in &record.outputs {
+        let _ = writeln!(
+            out,
+            "  {} -> {} ({} files)",
+            output.name, output.artifact_path, output.files
+        );
+    }
+    if let Some(tree) = &execution.artifact {
+        let _ = writeln!(out, "files = {}", tree.entries.len());
+        for entry in &tree.entries {
+            let _ = writeln!(
+                out,
+                "  {}{} {}",
+                entry.path,
+                if entry.executable { "*" } else { "" },
+                entry.blob
+            );
+        }
+    }
+    let _ = writeln!(out, "stdout = {}", record.logs.stdout);
+    let _ = writeln!(out, "stderr = {}", record.logs.stderr);
+    for line in &record.diagnostics {
+        let _ = writeln!(out, "diagnostic = {line}");
+    }
+    let _ = writeln!(
+        out,
+        "record = {}",
+        kairo_build::record_path(store, &execution.id).display()
+    );
+    out
 }
 
 pub(crate) fn run_provider_command(

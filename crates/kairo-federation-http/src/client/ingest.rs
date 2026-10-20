@@ -32,8 +32,9 @@ use kairo_statement::json::{
     ActorAttestationThresholdChangeStatementJson, ActorCapabilityGrantStatementJson,
     ActorCapabilityRevocationStatementJson, ActorEmergencyKeyRevocationStatementJson,
     ActorEmergencyKeyRotationStatementJson, ActorKeyRevocationStatementJson,
-    ActorKeyRotationStatementJson, ActorTrustStatementJson, ObjectBranchStatementJson,
-    ObjectGenesisStatementJson, ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
+    ActorKeyRotationStatementJson, ActorTrustStatementJson, BuildResultStatementJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
+    ObjectVersionTagStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_multi_statement, verify_envelope_statement, ActorResolution, SignatureStatus,
@@ -231,6 +232,11 @@ pub(crate) fn ingest_statement(
         }
         StatementKind::ObjectBranch => {
             single!(ObjectBranchStatementJson, put_object_branch, |signed| {
+                object_section(signed.unsigned().body().object())
+            })
+        }
+        StatementKind::BuildResult => {
+            single!(BuildResultStatementJson, put_build_result, |signed| {
                 object_section(signed.unsigned().body().object())
             })
         }

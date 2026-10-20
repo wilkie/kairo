@@ -27,16 +27,16 @@ use kairo_keystore::Keystore;
 use kairo_statement::json::{
     ActorCapabilityGrantBodyJson, ActorCapabilityGrantStatementJson,
     ActorCapabilityRevocationBodyJson, ActorCapabilityRevocationStatementJson, ActorTrustBodyJson,
-    ActorTrustStatementJson, ObjectBranchBodyJson, ObjectBranchStatementJson,
-    ObjectGenesisStatementJson, ObjectRevisionBodyJson, ObjectRevisionStatementJson,
-    ObjectVersionTagBodyJson, ObjectVersionTagStatementJson,
+    ActorTrustStatementJson, BuildResultStatementJson, ObjectBranchBodyJson,
+    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionBodyJson,
+    ObjectRevisionStatementJson, ObjectVersionTagBodyJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::verify::{
     verify_envelope_statement, ActorResolution, SignatureStatus, VerificationReport,
 };
 use kairo_statement::{
-    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, ObjectBranchBody,
-    ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
+    ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorTrustBody, BuildResultBody,
+    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
     ObjectVersionTagBody, RevisionId, Signature, SignedStatement, StatementBody, StatementKind,
     UnsignedStatement,
 };
@@ -75,6 +75,7 @@ pub const SUPPORTED_WRITE_KINDS: &[&str] = &[
     "ObjectGenesis",
     "ActorCapabilityGrant",
     "ActorCapabilityRevocation",
+    "BuildResult",
 ];
 
 #[utoipa::path(
@@ -257,11 +258,32 @@ async fn dispatch_signed_envelope(
             )?;
             persist_actor_capability_revocation(state, &actor, signed).await
         }
+        "BuildResult" => {
+            let signed = decode_signed_body(body, &kind, BuildResultStatementJson::to_statement)?;
+            persist_build_result(state, signed).await
+        }
         other => Err(ApiError::unsupported_statement_kind(format!(
             "statement kind {other:?} is not accepted by Phase A's current dispatcher; \
              see PHASE_2_DAEMON_WRITES.md for the slice that opens up the remaining kinds",
         ))),
     }
+}
+
+/// A build result is a claim about a snapshot by whoever ran the
+/// plan, a reproducer included, so it needs no object authority
+/// (`DECISIONS.md` §33 sub-decision 8).
+async fn persist_build_result(
+    state: AppState,
+    signed: SignedStatement<BuildResultBody>,
+) -> Result<ApiResult<PutStatementResult>, ApiError> {
+    persist_signed(
+        state,
+        signed,
+        FilesystemStore::put_build_result,
+        "put_build_result",
+        BuildResultStatementJson::from_statement,
+    )
+    .await
 }
 
 /// Session-cookie mode: caller supplied an unsigned body and a

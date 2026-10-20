@@ -12,7 +12,7 @@ use std::fmt;
 use kairo_core::canonical::{
     encode_bytes, encode_i64, encode_list, encode_option, encode_str, encode_u8, CanonicalEncode,
 };
-use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, StatementId, Timestamp};
+use kairo_core::{ActorId, BlobId, KairoRef, ObjectId, SnapshotId, StatementId, Timestamp};
 use kairo_identity::{
     verify_signature as verify_identity_signature, KeyId, PublicKey, SignatureBytes,
     SignatureVerificationError, VerifiedSignature,
@@ -828,6 +828,208 @@ pub enum ObjectVersionTagShapeError {
     RevokeWithoutSupersedes,
 }
 
+/// Canonical BuildResult body v1 encoding is documented at
+/// `schemas/canonical/build-result-v1.md`.
+///
+/// What one build of one target produced (`specs/DECISIONS.md` §33
+/// sub-decision 8, §34 sub-decision 4): the plan it ran
+/// (`resolved_manifest`, the plan hash, which covers the whole input
+/// closure), whether it succeeded, the artifact when it did, and what
+/// ran it. Build results are evidence about a snapshot and never join
+/// its frontier. The signer vouches for having run the plan; any
+/// actor may sign one, including a reproducer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildResultBody {
+    object: ObjectId,
+    snapshot: SnapshotId,
+    target: String,
+    resolved_manifest: BlobId,
+    result: BuildOutcome,
+    artifact: Option<BlobId>,
+    executor: String,
+    environment: String,
+    host_dependent: bool,
+    execution: BlobId,
+}
+
+/// How a build ended. Timeouts and refusals are operational and are
+/// never signed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildOutcome {
+    Success,
+    Failure,
+}
+
+impl BuildOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, BuildResultShapeError> {
+        match value {
+            "success" => Ok(Self::Success),
+            "failure" => Ok(Self::Failure),
+            other => Err(BuildResultShapeError::UnknownOutcome(other.to_owned())),
+        }
+    }
+}
+
+impl BuildResultBody {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        object: ObjectId,
+        snapshot: SnapshotId,
+        target: String,
+        resolved_manifest: BlobId,
+        result: BuildOutcome,
+        artifact: Option<BlobId>,
+        executor: String,
+        environment: String,
+        host_dependent: bool,
+        execution: BlobId,
+    ) -> Result<Self, BuildResultShapeError> {
+        match (result, artifact.is_some()) {
+            (BuildOutcome::Success, false) => {
+                return Err(BuildResultShapeError::SuccessWithoutArtifact)
+            }
+            (BuildOutcome::Failure, true) => {
+                return Err(BuildResultShapeError::FailureWithArtifact)
+            }
+            _ => {}
+        }
+        if target.is_empty() {
+            return Err(BuildResultShapeError::EmptyField("target"));
+        }
+        if executor.is_empty() {
+            return Err(BuildResultShapeError::EmptyField("executor"));
+        }
+        if environment.is_empty() {
+            return Err(BuildResultShapeError::EmptyField("environment"));
+        }
+        Ok(Self {
+            object,
+            snapshot,
+            target,
+            resolved_manifest,
+            result,
+            artifact,
+            executor,
+            environment,
+            host_dependent,
+            execution,
+        })
+    }
+
+    pub fn object(&self) -> &ObjectId {
+        &self.object
+    }
+
+    pub fn snapshot(&self) -> &SnapshotId {
+        &self.snapshot
+    }
+
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// The plan hash (`schemas/canonical/resolved-manifest-v1.md`).
+    pub fn resolved_manifest(&self) -> &BlobId {
+        &self.resolved_manifest
+    }
+
+    pub fn result(&self) -> BuildOutcome {
+        self.result
+    }
+
+    /// The artifact id (`schemas/canonical/artifact-tree-v1.md`),
+    /// present exactly on success.
+    pub fn artifact(&self) -> Option<&BlobId> {
+        self.artifact.as_ref()
+    }
+
+    /// Executor id and version, e.g. `native/1`.
+    pub fn executor(&self) -> &str {
+        &self.executor
+    }
+
+    /// The environment contract an engine provided, or `none`.
+    pub fn environment(&self) -> &str {
+        &self.environment
+    }
+
+    /// Whether a host tool or the host itself took part; such results
+    /// are never substitutable (`DECISIONS.md` §34 sub-decision 10).
+    pub fn host_dependent(&self) -> bool {
+        self.host_dependent
+    }
+
+    /// The signer's execution record id, so the evidence can be
+    /// asked for.
+    pub fn execution(&self) -> &BlobId {
+        &self.execution
+    }
+}
+
+impl StatementBody for BuildResultBody {
+    const TYPE: &'static str = "BuildResult";
+    const VERSION: u8 = 1;
+    const CHAINED: bool = true;
+
+    fn chain_key(&self) -> Option<ChainKey> {
+        Some(ChainKey::Scope(ChainScope::Object(self.object().clone())))
+    }
+}
+
+impl CanonicalEncode for BuildResultBody {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.object.as_str());
+        encode_str(out, self.snapshot.as_str());
+        encode_str(out, &self.target);
+        encode_str(out, self.resolved_manifest.as_str());
+        encode_str(out, self.result.as_str());
+        encode_option(out, self.artifact.as_ref(), |out, artifact| {
+            encode_str(out, artifact.as_str());
+        });
+        encode_str(out, &self.executor);
+        encode_str(out, &self.environment);
+        encode_u8(out, u8::from(self.host_dependent));
+        encode_str(out, self.execution.as_str());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildResultShapeError {
+    SuccessWithoutArtifact,
+    FailureWithArtifact,
+    UnknownOutcome(String),
+    EmptyField(&'static str),
+}
+
+impl fmt::Display for BuildResultShapeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SuccessWithoutArtifact => {
+                f.write_str("a successful build result needs an artifact")
+            }
+            Self::FailureWithArtifact => {
+                f.write_str("a failed build result cannot name an artifact")
+            }
+            Self::UnknownOutcome(value) => {
+                write!(
+                    f,
+                    "unknown build outcome {value:?} (expected success or failure)"
+                )
+            }
+            Self::EmptyField(field) => write!(f, "build result {field} must not be empty"),
+        }
+    }
+}
+
+impl Error for BuildResultShapeError {}
+
 impl fmt::Display for ObjectVersionTagShapeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1110,6 +1312,7 @@ pub enum StatementKind {
     ActorAttestationKeyAdd,
     ActorAttestationKeyRevocation,
     ActorAttestationThresholdChange,
+    BuildResult,
 }
 
 impl StatementKind {
@@ -1129,6 +1332,7 @@ impl StatementKind {
             Self::ActorAttestationKeyAdd => "ActorAttestationKeyAdd",
             Self::ActorAttestationKeyRevocation => "ActorAttestationKeyRevocation",
             Self::ActorAttestationThresholdChange => "ActorAttestationThresholdChange",
+            Self::BuildResult => "BuildResult",
         }
     }
 
@@ -1148,6 +1352,7 @@ impl StatementKind {
             "ActorAttestationKeyAdd" => Ok(Self::ActorAttestationKeyAdd),
             "ActorAttestationKeyRevocation" => Ok(Self::ActorAttestationKeyRevocation),
             "ActorAttestationThresholdChange" => Ok(Self::ActorAttestationThresholdChange),
+            "BuildResult" => Ok(Self::BuildResult),
             other => Err(StatementKindParseError {
                 input: other.to_owned(),
             }),
@@ -2911,6 +3116,115 @@ mod tests {
         Ok(())
     }
 
+    fn unsigned_build_result(
+        target: &str,
+        result: BuildOutcome,
+        artifact: Option<BlobId>,
+        host_dependent: bool,
+    ) -> Result<UnsignedStatement<BuildResultBody>, Box<dyn std::error::Error>> {
+        let body = BuildResultBody::new(
+            object_id()?,
+            SnapshotId::new("zQmPrz1SBNXD1XAPCaWrTtpBbEZHGevtUoWY8ibihamaApZ")?,
+            target.to_owned(),
+            BlobId::new(BLOB_ID)?,
+            result,
+            artifact,
+            "native/1".to_owned(),
+            "none".to_owned(),
+            host_dependent,
+            BlobId::new(BLOB_ID)?,
+        )?;
+        Ok(UnsignedStatement::new(
+            actor_id()?,
+            object_ref()?,
+            timestamp(),
+            body,
+        ))
+    }
+
+    #[test]
+    fn build_result_body_rejects_mismatched_outcome_and_artifact(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert!(matches!(
+            unsigned_build_result("release", BuildOutcome::Success, None, false),
+            Err(error) if error.to_string().contains("needs an artifact")
+        ));
+        assert!(matches!(
+            unsigned_build_result("release", BuildOutcome::Failure, Some(BlobId::new(BLOB_ID)?), false),
+            Err(error) if error.to_string().contains("cannot name an artifact")
+        ));
+        assert!(unsigned_build_result("", BuildOutcome::Failure, None, false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn same_build_result_body_produces_same_statement_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let first = unsigned_build_result("release", BuildOutcome::Failure, None, true)?;
+        let second = unsigned_build_result("release", BuildOutcome::Failure, None, true)?;
+        assert_eq!(first.statement_id(), second.statement_id());
+        assert_eq!(
+            first.body().chain_key(),
+            Some(ChainKey::Scope(ChainScope::Object(object_id()?)))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_result_fields_change_statement_id() -> Result<(), Box<dyn std::error::Error>> {
+        let base = unsigned_build_result("release", BuildOutcome::Failure, None, false)?;
+        let other_target = unsigned_build_result("debug", BuildOutcome::Failure, None, false)?;
+        let host = unsigned_build_result("release", BuildOutcome::Failure, None, true)?;
+        let success = unsigned_build_result(
+            "release",
+            BuildOutcome::Success,
+            Some(BlobId::new(BLOB_ID)?),
+            false,
+        )?;
+        assert_ne!(base.statement_id(), other_target.statement_id());
+        assert_ne!(base.statement_id(), host.statement_id());
+        assert_ne!(base.statement_id(), success.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn build_result_signature_does_not_change_statement_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_build_result("release", BuildOutcome::Failure, None, true)?;
+        let first = SignedStatement::new(unsigned.clone(), signature("k1", vec![1, 2, 3])?);
+        let second = SignedStatement::new(unsigned, signature("k2", vec![4, 5, 6])?);
+        assert_eq!(first.statement_id(), second.statement_id());
+        Ok(())
+    }
+
+    #[test]
+    fn verifies_build_result_ed25519_signature() -> Result<(), Box<dyn std::error::Error>> {
+        let unsigned = unsigned_build_result("release", BuildOutcome::Failure, None, true)?;
+        let signature = ed25519_signature(&unsigned)?;
+        let signed = SignedStatement::new(unsigned, signature);
+        assert_eq!(
+            signed.verify_signature(&public_key()),
+            Ok(VerifiedSignature)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_build_result_signature_after_body_change() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let signed_unsigned = unsigned_build_result("release", BuildOutcome::Failure, None, true)?;
+        let tampered = unsigned_build_result("release", BuildOutcome::Failure, None, false)?;
+        let sig = ed25519_signature(&signed_unsigned)?;
+        let signed = SignedStatement::new(tampered, sig);
+        assert!(matches!(
+            signed.verify_signature(&public_key()),
+            Err(StatementSignatureError::Verification(
+                SignatureVerificationError::InvalidSignature
+            ))
+        ));
+        Ok(())
+    }
+
     fn trusted_actor() -> Result<ActorId, kairo_core::IdError> {
         // A second actor distinct from actor_id() so trusted != truster in tests.
         ActorId::new("zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu")
@@ -3164,6 +3478,7 @@ mod tests {
             StatementKind::ActorAttestationKeyAdd,
             StatementKind::ActorAttestationKeyRevocation,
             StatementKind::ActorAttestationThresholdChange,
+            StatementKind::BuildResult,
         ] {
             assert_eq!(StatementKind::parse(kind.as_str()), Ok(kind));
         }

@@ -209,6 +209,10 @@ pub(crate) enum Command {
         snapshot_ref: String,
         #[arg(long)]
         target: String,
+        /// The actor that signs the `BuildResult`. Required unless
+        /// `--plan-only`.
+        #[arg(long, required_unless_present = "plan_only")]
+        actor: Option<String>,
         #[arg(long)]
         plan_only: bool,
         #[arg(long)]

@@ -148,6 +148,12 @@ pub(crate) enum CliError {
     },
     /// The executor couldn't attempt the build.
     Build(Box<kairo_build::BuildError>),
+    /// `kairo build` without `--plan-only` needs `--actor`.
+    BuildActorRequired,
+    BuildResultShape(kairo_statement::BuildResultShapeError),
+    WriteBuildResult {
+        source: kairo_store::StoreError,
+    },
     /// The build ran and did not succeed; the summary is the output
     /// the user would otherwise have seen.
     BuildFailed {
@@ -652,6 +658,11 @@ impl fmt::Display for CliError {
                 builds.join(", ")
             ),
             Self::Build(error) => write!(f, "cannot build: {error}"),
+            Self::BuildActorRequired => {
+                f.write_str("kairo build needs --actor <id> to sign the BuildResult (or --plan-only)")
+            }
+            Self::BuildResultShape(error) => write!(f, "build result: {error}"),
+            Self::WriteBuildResult { source } => write!(f, "failed to store the build result: {source}"),
             Self::BuildFailed { status, summary } => write!(f, "{summary}build {status}"),
             Self::ProviderUnavailable { object, reason } => {
                 write!(f, "object:{object} can't be considered as a provider: {reason}")
@@ -1141,7 +1152,8 @@ impl Error for CliError {
             | Self::ReadObjectGenesis { source, .. }
             | Self::ListRevisions { source, .. }
             | Self::ListInbox { source }
-            | Self::Follows { source } => Some(source),
+            | Self::Follows { source }
+            | Self::WriteBuildResult { source } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)
@@ -1160,6 +1172,7 @@ impl Error for CliError {
             Self::Fetch(error) | Self::BundleImport(error) => Some(error.as_ref()),
             Self::Resolve(error) => Some(error.as_ref()),
             Self::Build(error) => Some(error.as_ref()),
+            Self::BuildResultShape(error) => Some(error),
             Self::PeerRequest { source, .. } => Some(source.as_ref()),
             Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }
@@ -1198,6 +1211,7 @@ impl Error for CliError {
             | Self::BuildSignerUntrusted { .. }
             | Self::BuildPrerequisites { .. }
             | Self::BuildFailed { .. }
+            | Self::BuildActorRequired
             | Self::ProviderUnavailable { .. }
             | Self::ManifestNotUtf8
             | Self::MissingPublicKey

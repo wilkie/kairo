@@ -26,6 +26,7 @@
 //!
 //! `ActorTrust` never appears: nothing here reads the trust index.
 
+use crate::BuildResultResolver;
 use std::collections::BTreeSet;
 
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
@@ -118,6 +119,14 @@ impl FilesystemStore {
                     )?);
                 }
             }
+        }
+
+        // Build results are evidence about the object's snapshots and
+        // ride with it; their artifacts are a cache and don't
+        // (`DECISIONS.md` §34 sub-decision 8).
+        for head in self.list_build_results(object)? {
+            closure.actors.insert(head.actor);
+            closure.statements.insert(head.statement_id);
         }
 
         if let Some(index) = self.read_capability_by_object_index(object)? {

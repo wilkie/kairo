@@ -17,8 +17,8 @@ use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::ActorResolver;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
 use kairo_statement::json::{
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    BuildResultStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
+    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_statement::SignedStatement;
 use kairo_store::{BlobStore, FilesystemStore, ObjectStore};
@@ -177,6 +177,13 @@ pub fn write_bundle(
         write_file(&statements_dir.join(format!("{statement_id}.json")), &bytes)?;
         statement_id_strings.push(statement_id.to_string());
     }
+    for (statement_id, signed) in &collected.build_results {
+        let json = BuildResultStatementJson::from_statement(signed);
+        let bytes =
+            serde_json::to_vec_pretty(&json).map_err(serde_to_io(statements_dir.clone()))?;
+        write_file(&statements_dir.join(format!("{statement_id}.json")), &bytes)?;
+        statement_id_strings.push(statement_id.to_string());
+    }
 
     // Blobs.
     let mut blob_id_strings = Vec::new();
@@ -230,6 +237,7 @@ struct CollectedStatements {
     revisions: BTreeMap<StatementId, SignedStatement<kairo_statement::ObjectRevisionBody>>,
     branches: BTreeMap<StatementId, SignedStatement<kairo_statement::ObjectBranchBody>>,
     version_tags: BTreeMap<StatementId, SignedStatement<kairo_statement::ObjectVersionTagBody>>,
+    build_results: BTreeMap<StatementId, SignedStatement<kairo_statement::BuildResultBody>>,
 }
 
 impl CollectedStatements {
@@ -237,7 +245,8 @@ impl CollectedStatements {
         let revisions = self.revisions.values().map(|s| s.unsigned().actor());
         let branches = self.branches.values().map(|s| s.unsigned().actor());
         let tags = self.version_tags.values().map(|s| s.unsigned().actor());
-        revisions.chain(branches).chain(tags)
+        let results = self.build_results.values().map(|s| s.unsigned().actor());
+        revisions.chain(branches).chain(tags).chain(results)
     }
 }
 
@@ -255,6 +264,7 @@ fn collect_statements(
         revisions: BTreeMap::new(),
         branches: BTreeMap::new(),
         version_tags: BTreeMap::new(),
+        build_results: BTreeMap::new(),
     };
     let closure = store.object_closure(target).map_err(BundleError::Store)?;
     for id in &closure.statements {
@@ -291,6 +301,12 @@ fn collect_statements(
                     serde_json::from_slice(&bytes).map_err(parse)?;
                 let signed = dto.to_statement().map_err(|e| shape(e.to_string()))?;
                 out.version_tags.insert(signed.statement_id(), signed);
+            }
+            "BuildResult" => {
+                let dto: BuildResultStatementJson =
+                    serde_json::from_slice(&bytes).map_err(parse)?;
+                let signed = dto.to_statement().map_err(|e| shape(e.to_string()))?;
+                out.build_results.insert(signed.statement_id(), signed);
             }
             other => return Err(shape(format!("unexpected {other} among object statements"))),
         }

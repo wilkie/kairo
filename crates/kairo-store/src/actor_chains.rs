@@ -368,6 +368,9 @@ impl FilesystemStore {
             StatementKind::ObjectVersionTag => {
                 verify_envelope_statement(&self.get_object_version_tag(id)?, self).signature
             }
+            StatementKind::BuildResult => {
+                verify_envelope_statement(&self.get_build_result(id)?, self).signature
+            }
             StatementKind::ActorCapabilityGrant => {
                 verify_envelope_statement(&self.get_actor_capability_grant(id)?, self).signature
             }

@@ -1155,11 +1155,13 @@ plan: a host process with a scrubbed environment and no isolation
 (§34 sub-decision 10). It requires `[runtime] allow_local_process =
 true` (else exit 7) and a revision signer this node holds a key for or
 trusts at `general` scope (else exit 7). A plan with builds needed
-first is refused until build results exist. The declared outputs
-become an artifact (`schemas/canonical/artifact-tree-v1.md`), and an
-unsigned execution record is written under `<store>/executions/`. A
-build that runs and fails, or hits `timeout_secs`, is reported with
-its record and exits 1. Signing a `BuildResult` is the next slice.
+first builds them one at a time, re-resolving after each so its
+result pins the next, then builds the target. Each run's declared
+outputs become an artifact (`schemas/canonical/artifact-tree-v1.md`),
+an unsigned execution record is written under `<store>/executions/`,
+and `--actor` signs a `BuildResult` (`schemas/canonical/build-result-v1.md`)
+for success or failure. A build that fails is reported with its record
+and exits 1; a timeout signs nothing.
 
 Builds a snapshot.
 
@@ -1238,7 +1240,11 @@ stdout = <blob id>
 stderr = <blob id>
 diagnostic = <line>               (on failure)
 record = <store>/executions/<record id>.json
+result = <BuildResult statement id>
 ```
+
+Preceded by `builds = N`, and with a `--- build i of N ---` line per
+build when prerequisites were built first.
 
 ### 17.1 `kairo provider`
 

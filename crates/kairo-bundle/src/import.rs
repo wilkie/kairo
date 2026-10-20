@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 use kairo_core::{ActorId, BlobId, ObjectId, StatementId};
 use kairo_identity::json::ActorGenesisJson;
 use kairo_statement::json::{
-    ObjectBranchStatementJson, ObjectGenesisStatementJson, ObjectRevisionStatementJson,
-    ObjectVersionTagStatementJson,
+    BuildResultStatementJson, ObjectBranchStatementJson, ObjectGenesisStatementJson,
+    ObjectRevisionStatementJson, ObjectVersionTagStatementJson,
 };
 use kairo_store::{ActorStore, BlobStore, FilesystemStore, ObjectStore, StatementStore};
 use serde::Deserialize;
@@ -291,6 +291,23 @@ pub fn import_bundle(src: &Path, store: &FilesystemStore) -> Result<ImportSummar
                 fixity_check_statement(&path, &statement_id, &signed.statement_id())?;
                 store
                     .put_object_version_tag(&signed)
+                    .map_err(BundleError::Store)?;
+            }
+            "BuildResult" => {
+                let dto: BuildResultStatementJson =
+                    serde_json::from_slice(&bytes).map_err(|source| BundleError::RecordParse {
+                        path: path.clone(),
+                        source,
+                    })?;
+                let signed = dto
+                    .to_statement()
+                    .map_err(|error| BundleError::StatementShape {
+                        path: path.clone(),
+                        message: error.to_string(),
+                    })?;
+                fixity_check_statement(&path, &statement_id, &signed.statement_id())?;
+                store
+                    .put_build_result(&signed)
                     .map_err(BundleError::Store)?;
             }
             other => {
