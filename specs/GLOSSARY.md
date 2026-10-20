@@ -228,6 +228,18 @@ evidence. Build results never join a snapshot's frontier.
 
 See `DECISIONS.md` §33–§34 and `schemas/canonical/build-result-v1.md`.
 
+## Source Object
+
+A source object archives one external Git repository faithfully. Its
+object id is derived from the repository's canonical URL, so every node
+mirroring it derives the same id; its history is upstream's own commits
+in upstream's format, unmodified, with no `kairo.toml`. Actors sign
+`SourceObservation` statements about it: every ref one fetch saw. A
+**native object** is one born in the archive, with SHA-256 history and
+a `kairo.toml`; it depends on sources pinned by upstream commit.
+
+See `DECISIONS.md` §37.
+
 ## Environment Contract
 
 An environment contract is what an `environment:<system>/<arch>` label

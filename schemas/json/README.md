@@ -20,6 +20,8 @@ Documents:
 - `actor-key-rotation-v1.schema.json`
 - `actor-key-revocation-v1.schema.json`
 - `build-result-v1.schema.json`
+- `source-genesis-v1.schema.json`
+- `source-observation-v1.schema.json`
 
 These JSON schemas describe interchange shape only. Canonical hash and signature
 inputs are defined by the corresponding documents in `schemas/canonical/`.

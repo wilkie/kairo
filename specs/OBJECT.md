@@ -29,6 +29,15 @@ Specific Object states are identified by Snapshot IDs.
 
 ## 2. Object Identity
 
+> There are two kinds of object (`DECISIONS.md` §37). A **native**
+> object, described below, is born in the archive with a signed
+> `ObjectGenesis` and SHA-256 history carrying `kairo.toml`. A
+> **source** object archives an external Git repository: its id is
+> derived from the canonical URL (`schemas/canonical/source-genesis-v1.md`),
+> its history is upstream's commits unmodified, and what actors sign
+> about it are `SourceObservation` statements. The `kairo.toml` rules of
+> §4 apply to native objects only.
+
 An Object has four related identity layers:
 
 - object id - stable identity of the object lineage

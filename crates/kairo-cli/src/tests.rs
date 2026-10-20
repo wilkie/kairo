@@ -9358,3 +9358,40 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
     );
     Ok(())
 }
+
+#[test]
+fn source_id_prints_the_canonical_url_and_the_derived_id() -> Result<(), Box<dyn std::error::Error>>
+{
+    let store_dir = tempfile::TempDir::new()?;
+    let id = |url: &str| {
+        run_in_store(
+            store_dir.path(),
+            Command::Source {
+                command: SourceCommand::Id {
+                    url: url.to_owned(),
+                },
+            },
+        )
+    };
+    let https = id("https://github.com/oriansj/stage0-posix.git")?;
+    let ssh = id("git@github.com:oriansj/stage0-posix")?;
+    assert_eq!(https, ssh);
+    assert_eq!(
+        parse_field(&https, "url = ")?,
+        "https://github.com/oriansj/stage0-posix"
+    );
+    let source = kairo_core::ObjectId::new(parse_field(&https, "source = ")?)?;
+    assert_eq!(
+        source,
+        kairo_statement::SourceGenesis::new(kairo_statement::SourceUrl::parse(
+            "https://github.com/oriansj/stage0-posix"
+        )?)
+        .object_id()
+    );
+    let local = id("file:///home/me/repo");
+    assert!(
+        matches!(&local, Err(CliError::ParseSourceUrl(error)) if error.to_string().contains("local path")),
+        "{local:?}"
+    );
+    Ok(())
+}

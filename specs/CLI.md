@@ -1608,6 +1608,21 @@ Search results must be labeled as unverified until core validation occurs.
 
 ---
 
+### 25.1 `kairo source`
+
+**[step one implemented].** Source objects (`DECISIONS.md` §37):
+external Git repositories archived faithfully, identified by their
+canonical URL.
+
+```text
+kairo source id <url>
+```
+
+Prints the URL's canonical form and the source object id every node
+derives from it (`url = …`, `source = …`). It reads and writes nothing.
+`file` URLs are refused: a local path identifies nothing on another
+node. Fetching and observing a source comes next.
+
 ## 26. `kairo policy`
 
 **[post-v1].** Depends on PolicyService (DAEMON.md §5.4).

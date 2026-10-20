@@ -57,3 +57,5 @@ is explicitly a standalone reference.
 - `resolved-manifest-v1.md` (canonical JSON; derived id is the plan hash)
 - `artifact-tree-v1.md` (canonical JSON; derived id is the artifact id)
 - `build-result-v1.md`
+- `source-genesis-v1.md` (unsigned; derived id is the source's object id)
+- `source-observation-v1.md`

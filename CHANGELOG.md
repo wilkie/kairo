@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **Source objects, step one (`DECISIONS.md` §37).** Source geneses
+  (unsigned, the object id derived from a canonical repository URL) and
+  `SourceObservation` statements (every ref one fetch saw) with
+  canonical and JSON schemas, a `sources/` store namespace, and a
+  per-source observation index. `kairo source id <url>` prints a URL's
+  canonical form and the source id every node derives. Fetching
+  sources is the next step; federation refuses observations until
+  sources federate.
 - **`kairo git fetch` takes the remote's object format
   (`DECISIONS.md` §19).** It reads the remote branch's format too, so a
   new object fetching an existing repository needs no

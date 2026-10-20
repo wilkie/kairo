@@ -2,9 +2,14 @@
 
 mod git_revision;
 pub mod json;
+mod source;
 pub mod verify;
 
 pub use git_revision::{check_revision_ids, GitObjectFormat, GitRevision, GitRevisionError};
+pub use source::{
+    ObservedRef, SourceGenesis, SourceObservationBody, SourceObservationShapeError, SourceUrl,
+    SourceUrlError, SOURCE_GENESIS_DOMAIN,
+};
 
 use std::error::Error;
 use std::fmt;
@@ -1313,6 +1318,7 @@ pub enum StatementKind {
     ActorAttestationKeyRevocation,
     ActorAttestationThresholdChange,
     BuildResult,
+    SourceObservation,
 }
 
 impl StatementKind {
@@ -1333,6 +1339,7 @@ impl StatementKind {
             Self::ActorAttestationKeyRevocation => "ActorAttestationKeyRevocation",
             Self::ActorAttestationThresholdChange => "ActorAttestationThresholdChange",
             Self::BuildResult => "BuildResult",
+            Self::SourceObservation => "SourceObservation",
         }
     }
 
@@ -1353,6 +1360,7 @@ impl StatementKind {
             "ActorAttestationKeyRevocation" => Ok(Self::ActorAttestationKeyRevocation),
             "ActorAttestationThresholdChange" => Ok(Self::ActorAttestationThresholdChange),
             "BuildResult" => Ok(Self::BuildResult),
+            "SourceObservation" => Ok(Self::SourceObservation),
             other => Err(StatementKindParseError {
                 input: other.to_owned(),
             }),
@@ -3479,6 +3487,7 @@ mod tests {
             StatementKind::ActorAttestationKeyRevocation,
             StatementKind::ActorAttestationThresholdChange,
             StatementKind::BuildResult,
+            StatementKind::SourceObservation,
         ] {
             assert_eq!(StatementKind::parse(kind.as_str()), Ok(kind));
         }

@@ -232,12 +232,28 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Source objects: external Git repositories archived faithfully,
+    /// identified by their canonical URL (`specs/DECISIONS.md` §37).
+    Source {
+        #[command(subcommand)]
+        command: SourceCommand,
+    },
     /// What held objects provide (`specs/DECISIONS.md` §33
     /// sub-decision 2): their `[[provides]]` labels at their current
     /// snapshots, read from the Git cache.
     Provider {
         #[command(subcommand)]
         command: ProviderCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SourceCommand {
+    /// Print a repository URL's canonical form and the source object
+    /// id every node derives from it. Reads and writes nothing.
+    Id {
+        /// An `https`, `git`, or `ssh` repository URL.
+        url: String,
     },
 }
 

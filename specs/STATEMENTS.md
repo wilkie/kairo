@@ -713,6 +713,23 @@ The canonical form is documented in:
 schemas/canonical/build-result-v1.md
 ```
 
+### 4.3a SourceObservation Statement
+
+A `SourceObservation` records what one fetch of a source object saw
+(`DECISIONS.md` §37): the canonical URL, and every ref the remote
+advertised under `refs/heads/` and `refs/tags/`, each at its commit as a
+typed revision, strictly ascending by name. Its `source` is the object
+id the URL derives, since source objects are identified by URL, not
+created. Signing it claims the fetch and holding each commit's closure;
+it is an observation, not authorship, and observations never supersede
+each other. Chained in the signer's object chain for the source.
+
+The canonical form is documented in:
+
+```text
+schemas/canonical/source-observation-v1.md
+```
+
 > The following sketches (§4.4–§4.6) predate the PascalCase, `version:
 > 1` convention and are superseded in form by `DECISIONS.md` §33; their
 > types are defined when built.

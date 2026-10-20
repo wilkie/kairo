@@ -17,10 +17,11 @@ use crate::{
     ActorCapabilityGrantBody, ActorCapabilityRevocationBody, ActorEmergencyKeyRevocationBody,
     ActorEmergencyKeyRotationBody, ActorKeyRevocationBody, ActorKeyRotationBody, ActorTrustBody,
     ActorTrustShapeError, BuildOutcome, BuildResultBody, BuildResultShapeError, Capability,
-    CapabilityConstraint, CapabilityScope, CapabilityShapeError, MultiSignedStatement,
+    CapabilityConstraint, CapabilityScope, CapabilityShapeError, GitRevision, MultiSignedStatement,
     MultiSignedStatementError, ObjectBranchBody, ObjectGenesisBody, ObjectKind, ObjectRevisionBody,
-    ObjectVersionTagBody, ObjectVersionTagShapeError, Previous, PreviousError, RevisionId,
-    SemverParseError, SemverVersion, Signature, SignedStatement, StatementKind,
+    ObjectVersionTagBody, ObjectVersionTagShapeError, ObservedRef, Previous, PreviousError,
+    RevisionId, SemverParseError, SemverVersion, Signature, SignedStatement, SourceGenesis,
+    SourceObservationBody, SourceObservationShapeError, SourceUrl, SourceUrlError, StatementKind,
     StatementKindParseError, TrustDecision, TrustDecisionParseError, TrustScope, TrustScopeError,
     UnsignedStatement,
 };
@@ -46,6 +47,9 @@ pub enum StatementJsonError {
     InvalidVersion(SemverParseError),
     InvalidTagShape(ObjectVersionTagShapeError),
     InvalidBuildResultShape(BuildResultShapeError),
+    InvalidSourceUrl(SourceUrlError),
+    InvalidObservationShape(SourceObservationShapeError),
+    InvalidGitRevision(crate::GitRevisionError),
     InvalidSnapshot(kairo_core::IdError),
     InvalidTrustDecision(TrustDecisionParseError),
     InvalidTrustShape(ActorTrustShapeError),
@@ -81,6 +85,9 @@ impl fmt::Display for StatementJsonError {
             Self::InvalidVersion(error) => write!(f, "{error}"),
             Self::InvalidTagShape(error) => write!(f, "{error}"),
             Self::InvalidBuildResultShape(error) => write!(f, "{error}"),
+            Self::InvalidSourceUrl(error) => write!(f, "{error}"),
+            Self::InvalidObservationShape(error) => write!(f, "{error}"),
+            Self::InvalidGitRevision(error) => write!(f, "{error}"),
             Self::InvalidSnapshot(error) => write!(f, "invalid snapshot id: {error}"),
             Self::InvalidTrustDecision(error) => write!(f, "{error}"),
             Self::InvalidTrustShape(error) => write!(f, "{error}"),
@@ -108,6 +115,9 @@ impl Error for StatementJsonError {
             Self::InvalidVersion(error) => Some(error),
             Self::InvalidTagShape(error) => Some(error),
             Self::InvalidBuildResultShape(error) => Some(error),
+            Self::InvalidSourceUrl(error) => Some(error),
+            Self::InvalidObservationShape(error) => Some(error),
+            Self::InvalidGitRevision(error) => Some(error),
             Self::InvalidTrustDecision(error) => Some(error),
             Self::InvalidTrustShape(error) => Some(error),
             Self::InvalidStatementKind(error) => Some(error),
@@ -645,6 +655,168 @@ impl BuildResultBodyJson {
             environment: body.environment().to_owned(),
             host_dependent: body.host_dependent(),
             execution: body.execution().to_string(),
+        }
+    }
+}
+
+/// `schemas/json/source-genesis-v1.schema.json`: a source object's
+/// genesis, stored as `sources/<id>.json`. Its id is re-derived from
+/// the URL on read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SourceGenesisJson {
+    #[serde(rename = "type")]
+    pub genesis_type: String,
+    pub version: u8,
+    /// The canonical URL. A non-canonical spelling is refused, so one
+    /// source has one stored form.
+    pub url: String,
+}
+
+impl SourceGenesisJson {
+    pub fn to_genesis(&self) -> Result<SourceGenesis, StatementJsonError> {
+        ensure_statement_shape(&self.genesis_type, self.version, "SourceGenesis", 1)?;
+        let url = SourceUrl::parse(&self.url).map_err(StatementJsonError::InvalidSourceUrl)?;
+        if url.as_str() != self.url {
+            return Err(StatementJsonError::InvalidSourceUrl(SourceUrlError {
+                input: self.url.clone(),
+                reason: "is not in canonical form",
+            }));
+        }
+        Ok(SourceGenesis::new(url))
+    }
+
+    pub fn from_genesis(genesis: &SourceGenesis) -> Self {
+        Self {
+            genesis_type: "SourceGenesis".to_owned(),
+            version: 1,
+            url: genesis.url().to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SourceObservationStatementJson {
+    #[serde(rename = "type")]
+    pub statement_type: String,
+    pub version: u8,
+    pub actor: String,
+    pub subject: String,
+    pub created_at: String,
+    /// The signer's chain tips, ascending (`specs/DECISIONS.md` §23).
+    pub previous: Vec<String>,
+    pub body: SourceObservationBodyJson,
+    pub signature: SignatureJson,
+}
+
+impl SourceObservationStatementJson {
+    pub fn to_statement(
+        &self,
+    ) -> Result<SignedStatement<SourceObservationBody>, StatementJsonError> {
+        ensure_statement_shape(&self.statement_type, self.version, "SourceObservation", 1)?;
+        let created_at: Timestamp = self
+            .created_at
+            .parse()
+            .map_err(StatementJsonError::InvalidCreatedAt)?;
+        let unsigned = UnsignedStatement::new(
+            ActorId::new(self.actor.clone()).map_err(StatementJsonError::InvalidActor)?,
+            self.subject
+                .parse::<KairoRef>()
+                .map_err(StatementJsonError::InvalidSubject)?,
+            created_at,
+            self.body.to_body()?,
+        )
+        .with_previous(parse_previous(&self.previous)?)
+        .map_err(StatementJsonError::InvalidPrevious)?;
+        Ok(SignedStatement::new(
+            unsigned,
+            self.signature.to_signature()?,
+        ))
+    }
+
+    pub fn from_statement(statement: &SignedStatement<SourceObservationBody>) -> Self {
+        let unsigned = statement.unsigned();
+        Self {
+            statement_type: "SourceObservation".to_owned(),
+            version: 1,
+            actor: unsigned.actor().to_string(),
+            subject: unsigned.subject().to_string(),
+            created_at: unsigned.created_at().to_string(),
+            previous: previous_to_json(unsigned.previous()),
+            body: SourceObservationBodyJson::from_body(unsigned.body()),
+            signature: SignatureJson::from_signature(statement.signature()),
+        }
+    }
+}
+
+/// `schemas/json/source-observation-v1.schema.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SourceObservationBodyJson {
+    pub source: String,
+    pub url: String,
+    pub refs: Vec<ObservedRefJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ObservedRefJson {
+    pub name: String,
+    /// A typed revision, `git:sha1:<oid>` or `git:sha256:<oid>`.
+    pub commit: String,
+}
+
+impl SourceObservationBodyJson {
+    pub fn to_body(&self) -> Result<SourceObservationBody, StatementJsonError> {
+        let url = SourceUrl::parse(&self.url).map_err(StatementJsonError::InvalidSourceUrl)?;
+        if url.as_str() != self.url {
+            return Err(StatementJsonError::InvalidSourceUrl(SourceUrlError {
+                input: self.url.clone(),
+                reason: "is not in canonical form",
+            }));
+        }
+        let mut refs = Vec::with_capacity(self.refs.len());
+        for observed in &self.refs {
+            let commit = GitRevision::parse(&observed.commit)
+                .map_err(StatementJsonError::InvalidGitRevision)?
+                .ok_or_else(|| {
+                    StatementJsonError::InvalidGitRevision(crate::GitRevisionError::MissingFormat {
+                        value: observed.commit.clone(),
+                    })
+                })?;
+            refs.push(
+                ObservedRef::new(observed.name.clone(), commit)
+                    .map_err(StatementJsonError::InvalidObservationShape)?,
+            );
+        }
+        let body = SourceObservationBody::new(url, refs)
+            .map_err(StatementJsonError::InvalidObservationShape)?;
+        // Refs are canonically sorted; the listed order must be it, and
+        // the listed source must be the URL's.
+        let listed: Vec<&str> = self.refs.iter().map(|r| r.name.as_str()).collect();
+        let sorted: Vec<&str> = body.refs().iter().map(ObservedRef::name).collect();
+        if listed != sorted {
+            return Err(StatementJsonError::InvalidObservationShape(
+                SourceObservationShapeError::InvalidRef("refs not in ascending order".to_owned()),
+            ));
+        }
+        if body.source().as_str() != self.source {
+            return Err(StatementJsonError::InvalidObservationShape(
+                SourceObservationShapeError::SourceMismatch,
+            ));
+        }
+        Ok(body)
+    }
+
+    pub fn from_body(body: &SourceObservationBody) -> Self {
+        Self {
+            source: body.source().to_string(),
+            url: body.url().to_string(),
+            refs: body
+                .refs()
+                .iter()
+                .map(|observed| ObservedRefJson {
+                    name: observed.name().to_owned(),
+                    commit: observed.commit().to_string(),
+                })
+                .collect(),
         }
     }
 }
@@ -2513,6 +2685,85 @@ mod tests {
         let round_tripped = dto.to_statement()?;
         assert_eq!(statement.statement_id(), round_tripped.statement_id());
         assert_eq!(statement, round_tripped);
+        Ok(())
+    }
+
+    fn source_observation_json(refs: &str, signature: &str) -> String {
+        let url = "https://example.org/x";
+        let Ok(url_parsed) = SourceUrl::parse(url) else {
+            return String::new();
+        };
+        let source = SourceGenesis::new(url_parsed).object_id();
+        format!(
+            r#"{{
+              "type": "SourceObservation",
+              "version": 1,
+              "actor": "{ACTOR_ID}",
+              "subject": "object:{source}",
+              "created_at": "{CREATED_AT}",
+              "previous": [],
+              "body": {{ "source": "{source}", "url": "{url}", "refs": [{refs}] }},
+              "signature": {{
+                "actor": "{ACTOR_ID}",
+                "key_id": "primary",
+                "algorithm": "example",
+                "bytes": "{signature}"
+              }}
+            }}"#
+        )
+    }
+
+    fn parse_observation(
+        json: &str,
+    ) -> Result<SignedStatement<SourceObservationBody>, Box<dyn std::error::Error>> {
+        let dto: SourceObservationStatementJson = serde_json::from_str(json)?;
+        Ok(dto.to_statement()?)
+    }
+
+    #[test]
+    fn source_observation_round_trips_and_checks_its_shape(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let refs = format!(
+            r#"{{"name":"refs/heads/main","commit":"git:sha1:{a}"}},{{"name":"refs/tags/v1","commit":"git:sha1:{b}"}}"#
+        );
+        let statement = parse_observation(&source_observation_json(&refs, "c2ln"))?;
+        assert_eq!(statement.unsigned().body().refs().len(), 2);
+        let round = SourceObservationStatementJson::from_statement(&statement).to_statement()?;
+        assert_eq!(round, statement);
+
+        let unsorted = format!(
+            r#"{{"name":"refs/tags/v1","commit":"git:sha1:{b}"}},{{"name":"refs/heads/main","commit":"git:sha1:{a}"}}"#
+        );
+        assert!(parse_observation(&source_observation_json(&unsorted, "c2ln")).is_err());
+        let untyped = format!(r#"{{"name":"refs/heads/main","commit":"{a}"}}"#);
+        assert!(parse_observation(&source_observation_json(&untyped, "c2ln")).is_err());
+        let wrong_source = source_observation_json(&refs, "c2ln").replacen(
+            "\"source\": \"",
+            "\"source\": \"zQmTbHEDi1jqyu1WKzmUaT9eJ48nWjMv55GrW88JArfCZUu",
+            1,
+        );
+        assert!(parse_observation(&wrong_source).is_err());
+        let not_canonical = source_observation_json(&refs, "c2ln").replace(
+            "\"url\": \"https://example.org/x\"",
+            "\"url\": \"https://example.org/x.git\"",
+        );
+        assert!(parse_observation(&not_canonical).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn source_genesis_json_requires_the_canonical_url() -> Result<(), Box<dyn std::error::Error>> {
+        let genesis: SourceGenesisJson = serde_json::from_str(
+            r#"{"type":"SourceGenesis","version":1,"url":"https://example.org/x"}"#,
+        )?;
+        let parsed = genesis.to_genesis()?;
+        assert_eq!(SourceGenesisJson::from_genesis(&parsed), genesis);
+        let loose: SourceGenesisJson = serde_json::from_str(
+            r#"{"type":"SourceGenesis","version":1,"url":"https://Example.org/x.git"}"#,
+        )?;
+        assert!(loose.to_genesis().is_err());
         Ok(())
     }
 

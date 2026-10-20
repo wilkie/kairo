@@ -10,5 +10,6 @@ pub(crate) mod daemon;
 pub(crate) mod federation;
 pub(crate) mod git;
 pub(crate) mod manifest;
+pub(crate) mod source;
 pub(crate) mod store;
 pub(crate) mod web;

@@ -371,6 +371,9 @@ impl FilesystemStore {
             StatementKind::BuildResult => {
                 verify_envelope_statement(&self.get_build_result(id)?, self).signature
             }
+            StatementKind::SourceObservation => {
+                verify_envelope_statement(&self.get_source_observation(id)?, self).signature
+            }
             StatementKind::ActorCapabilityGrant => {
                 verify_envelope_statement(&self.get_actor_capability_grant(id)?, self).signature
             }

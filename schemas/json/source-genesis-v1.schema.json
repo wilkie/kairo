@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.kairo.exchange/json/source-genesis-v1.schema.json",
+  "title": "Kairo SourceGenesis v1",
+  "description": "A source object's unsigned genesis: its canonical URL. The object id derives from it (schemas/canonical/source-genesis-v1.md).",
+  "type": "object",
+  "required": ["type", "version", "url"],
+  "properties": {
+    "type": { "const": "SourceGenesis" },
+    "version": { "const": 1 },
+    "url": { "type": "string", "pattern": "^(https|git)://" }
+  },
+  "additionalProperties": false
+}

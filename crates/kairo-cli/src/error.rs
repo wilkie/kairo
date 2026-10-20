@@ -168,6 +168,7 @@ pub(crate) enum CliError {
     ReproduceUnavailable {
         missing: Vec<String>,
     },
+    ParseSourceUrl(kairo_statement::SourceUrlError),
     /// A bundle's execution evidence couldn't be written or read.
     BundleExecutions {
         message: String,
@@ -700,6 +701,7 @@ impl fmt::Display for CliError {
             }
             Self::BuildResultShape(error) => write!(f, "build result: {error}"),
             Self::BundleExecutions { message } => write!(f, "bundle executions: {message}"),
+            Self::ParseSourceUrl(error) => write!(f, "{error}"),
             Self::NotAResultRef { input } => write!(
                 f,
                 "{input:?} is not a build result reference (expected statement:<id>)"
@@ -1226,6 +1228,7 @@ impl Error for CliError {
             Self::Resolve(error) => Some(error.as_ref()),
             Self::Build(error) => Some(error.as_ref()),
             Self::BuildResultShape(error) => Some(error),
+            Self::ParseSourceUrl(error) => Some(error),
             Self::PeerRequest { source, .. } => Some(source.as_ref()),
             Self::LoadConfig(error) => Some(error),
             Self::ParseActorId { source, .. }

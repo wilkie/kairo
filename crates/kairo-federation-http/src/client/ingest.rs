@@ -235,6 +235,11 @@ pub(crate) fn ingest_statement(
                 object_section(signed.unsigned().body().object())
             })
         }
+        // Source objects don't federate yet (`DECISIONS.md` §37); no
+        // object closure lists their observations.
+        StatementKind::SourceObservation => Err(wrong_section(
+            "SourceObservation is not transferred by federation yet",
+        )),
         StatementKind::BuildResult => {
             single!(BuildResultStatementJson, put_build_result, |signed| {
                 object_section(signed.unsigned().body().object())
