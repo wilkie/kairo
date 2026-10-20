@@ -60,24 +60,51 @@ pub(crate) fn format_manifest_inspection(manifest: &ObjectManifest) -> String {
         "dependencies = {}\n",
         manifest.dependencies().len()
     ));
-    for dependency in manifest.dependencies() {
+    push_dependencies(&mut output, manifest.dependencies(), "  ");
+
+    output.push_str(&format!(
+        "build.targets = {}\n",
+        manifest.build_targets().len()
+    ));
+    for target in manifest.build_targets() {
+        output.push_str(&format!("  target {}\n", target.name()));
+        output.push_str(&format!("    command = {:?}\n", target.command()));
+        output.push_str(&format!("    workdir = {}\n", target.workdir()));
+        push_dependencies(&mut output, target.dependencies(), "    ");
+        for built in target.outputs() {
+            output.push_str(&format!(
+                "    output {} ({}) {} -> {}\n",
+                built.name(),
+                built.kind().as_str(),
+                built.path(),
+                built.artifact_path()
+            ));
+        }
+    }
+
+    output
+}
+
+fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration], indent: &str) {
+    for dependency in dependencies {
         match dependency {
             DependencyDeclaration::Provides(dependency) => {
-                output.push_str(&format!("  requires {}\n", dependency.provides()));
+                output.push_str(&format!("{indent}requires {}\n", dependency.provides()));
+                if let Some(version) = dependency.version() {
+                    output.push_str(&format!("{indent}  version = {version}\n"));
+                }
             }
             DependencyDeclaration::Object(dependency) => {
-                output.push_str(&format!("  object {}\n", dependency.object()));
+                output.push_str(&format!("{indent}object {}\n", dependency.object()));
                 match dependency.selector() {
                     ObjectDependencySelector::Version(version) => {
-                        output.push_str(&format!("    version = {version}\n"));
+                        output.push_str(&format!("{indent}  version = {version}\n"));
                     }
                     ObjectDependencySelector::Snapshot(snapshot) => {
-                        output.push_str(&format!("    snapshot = {snapshot}\n"));
+                        output.push_str(&format!("{indent}  snapshot = {snapshot}\n"));
                     }
                 }
             }
         }
     }
-
-    output
 }

@@ -31,7 +31,8 @@ BlobId = z<base58btc(multihash_sha2_256(domain || canonical_manifest_bytes))>
 
 `ObjectManifest` is the normalized form of a revision's `kairo.toml`. It records
 the manifest fields that affect Kairo's interpretation of the revision:
-metadata, content kind, provided capabilities, and dependencies.
+metadata, content kind, provides labels, dependencies, and build targets
+(`specs/DECISIONS.md` §33 sub-decision 1).
 
 The manifest hash is computed from typed, validated manifest data rather than
 raw TOML bytes. Comments, whitespace, formatting, and TOML key order do not
@@ -58,6 +59,22 @@ version = "3.81"
 kind = "object"
 object = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk"
 version = "^4.1.0"
+
+[[build.targets]]
+name = "release"
+command = ["make", "release"]
+workdir = "."
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:make"
+version = ">=4, <5"
+
+[[build.targets.outputs]]
+name = "cli"
+path = "dist/app"
+artifact_path = "bin/app"
+kind = "file"
 ```
 
 ## Canonical Fields
@@ -72,6 +89,10 @@ The top-level manifest is encoded in this exact order:
 | `content` | `option<ContentSection>` |
 | `provides` | `list<ProvideDeclaration>` |
 | `dependencies` | `list<DependencyDeclaration>` |
+| `build` | present only when there is at least one target: `string("build") \|\| list<BuildTarget>` |
+
+Fields added after the first manifests were hashed are encoded only when
+present, so a manifest that doesn't use them keeps its hash.
 
 `KairoManifestSection` is encoded as:
 
@@ -91,7 +112,7 @@ The top-level manifest is encoded in this exact order:
 
 | Variant | Encoding |
 |---|---|
-| `Provides` | `string("provides") || string(provides)` |
+| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given |
 | `Object` | `string("object") || string(object_id) || selector` |
 
 `ObjectDependencySelector` variants:
@@ -100,6 +121,33 @@ The top-level manifest is encoded in this exact order:
 |---|---|
 | `Version` | `string("version") || string(version)` |
 | `Snapshot` | `string("snapshot") || string(snapshot_id)` |
+
+Version requirements (object dependency `version`, provides dependency
+`version`) use Cargo's requirement syntax (`">=4, <5"`, `"^4.1.0"`) and are
+encoded as written.
+
+`BuildTarget` is encoded as:
+
+| Field | Encoding |
+|---|---|
+| `name` | `string`, matching `[a-z][a-z0-9-]*`, unique in the manifest |
+| `command` | `list<string>`, non-empty, first element non-empty |
+| `workdir` | `string`; `"."` when not given |
+| `dependencies` | `list<DependencyDeclaration>` |
+| `outputs` | `list<BuildOutput>`, non-empty |
+
+`BuildOutput` is encoded as:
+
+| Field | Encoding |
+|---|---|
+| `name` | `string`, unique in the target |
+| `path` | `string`, relative to the target's `workdir` |
+| `artifact_path` | `string`, unique in the target |
+| `kind` | `string`: `"file"` or `"directory"` |
+
+`workdir` (other than `"."`), `path`, and `artifact_path` must be
+`/`-separated relative paths with no empty, `.`, or `..` components and no
+backslashes.
 
 ## Ordering
 
@@ -110,6 +158,8 @@ The order of TOML arrays is significant:
 
 - `[[provides]]` order is preserved.
 - `[[dependencies]]` order is preserved.
+- `[[build.targets]]`, each target's `command`, `[[build.targets.dependencies]]`,
+  and `[[build.targets.outputs]]` order is preserved.
 
 ## Excluded Fields
 
@@ -133,7 +183,9 @@ canonical_manifest =
   canonical_kairo_section ||
   option(content, canonical_content_section) ||
   list(provides, canonical_provide_declaration) ||
-  list(dependencies, canonical_dependency_declaration)
+  list(dependencies, canonical_dependency_declaration) ||
+  (if build_targets non-empty:
+     string("build") || list(build_targets, canonical_build_target))
 
 manifest_hash =
   sha2_256_multihash_base58btc(

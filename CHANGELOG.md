@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Build targets in `kairo.toml` (`DECISIONS.md` §33).** Manifest
+  schema 1 accepts `[[build.targets]]` (name, command, workdir,
+  per-target dependencies, declared outputs) and keeps a provides
+  dependency's `version` requirement, which it used to drop. Version
+  requirements are checked against Cargo's syntax. `kairo manifest
+  inspect` shows targets.
+
 - **`git-remote-kairo` (`DECISIONS.md` §31).** With the new
   `git-remote-kairo` binary on `PATH`, `git clone
   kairo://<host>/<object-id>` pulls the object through the Kairo
@@ -159,6 +166,13 @@ rather than per-commit.
   `401 fed_unauthenticated`. No endpoint requires it yet; push will.
 
 ### Changed
+
+- **Manifest version requirements are validated.** A dependency
+  `version` that isn't a Cargo-syntax requirement (e.g. `">=4 <5"`
+  without the comma) is now rejected. Manifest hashes are unchanged
+  for manifests without build targets or provides-dependency
+  versions; those two add new canonical fields
+  (`schemas/canonical/object-manifest-v1.md`).
 
 - **`kairo bundle import` verifies (`DECISIONS.md` §32).** Object
   bundles now go through the same verifier as `kairo fetch`:

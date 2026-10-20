@@ -10,8 +10,8 @@ A **build** is a deterministic transformation:
 
 Builds are:
 
-- declarative (described in `kairo.toml`)
-- executed by planners
+- declarative (described in `kairo.toml`, pinned by the manifest hash)
+- planned by the resolver and run by an executor (`DECISIONS.md` §33)
 - recorded via signed build statements
 - reproducible when inputs are identical
 
@@ -32,11 +32,11 @@ workdir = "."
 
 A build target includes:
 
-- name (stable identifier)
-- command(s) to execute
-- working directory
+- name (stable identifier, `[a-z][a-z0-9-]*`, unique)
+- command: one program and its arguments, run without a shell
+- working directory (relative to the tree root; default `"."`)
 - dependencies
-- outputs
+- outputs (at least one)
 
 ---
 
@@ -49,17 +49,20 @@ Dependencies specify requirements for building.
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "tool:make"
-version = ">=4 <5"
+version = ">=4, <5"
 
 ### 3.2 Object dependencies
 
 [[build.targets.dependencies]]
 kind = "object"
-object = "z6MkObject..."
+object = "zQmObject..."
 version = "^1.0.0"
 
 Rules:
 
+- a target's requirements are the manifest's top-level `[[dependencies]]`
+  plus its own
+- version requirements use Cargo's syntax
 - dependencies express requirements only
 - resolution is performed by the planner
 - exact resolution is recorded in build statements
@@ -96,8 +99,8 @@ kind = "file"
 Fields:
 
 - name: logical identifier
-- path: path in build workspace
-- artifact_path: path inside artifact
+- path: path relative to the target's working directory
+- artifact_path: path inside artifact (unique within the target)
 - kind: file or directory
 
 Outputs define the boundary of the artifact.

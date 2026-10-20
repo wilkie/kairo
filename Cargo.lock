@@ -1864,6 +1864,7 @@ dependencies = [
  "kairo-core",
  "kairo-identity",
  "kairo-statement",
+ "semver",
  "serde",
  "toml",
 ]

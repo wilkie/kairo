@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 kairo-core = { path = "../kairo-core" }
 kairo-statement = { path = "../kairo-statement" }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 

@@ -250,6 +250,7 @@ version = "1.0.0"
 [[dependencies]]
 kind = "provides"
 provides = "lib:zlib:static"
+version = ">=1.3, <2"
 
 [[dependencies]]
 kind = "object"
@@ -267,12 +268,24 @@ Object dependencies MUST specify exactly one selector:
 - `version` for a version requirement resolved by the planner
 - `snapshot` for an exact Object snapshot
 
+A provides dependency may give a `version` requirement. Version requirements
+use Cargo's syntax (`">=4, <5"`, `"^4.1.0"`).
+
 In `kairo.toml`, fields such as `object` and `snapshot` use bare ID payloads
 because the field names provide type context. Standalone references use typed
 forms such as `object:z6MkObject...` or
 `kairo:object:z6MkObject...:snapshot:z6MkSnapshot...`.
 
-### 4.5 Run Targets
+### 4.5 Build Targets
+
+`[[build.targets]]` declares how the object builds (`BUILD.md` §2–§5,
+`DECISIONS.md` §33). Targets are part of the canonical manifest, so the
+manifest hash pins the recipe.
+
+### 4.6 Run Targets
+
+Not yet accepted: a manifest with `[run]` is rejected until run targets are
+implemented.
 
 [[run.targets]]
 name = "main"

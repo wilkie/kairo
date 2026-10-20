@@ -42,6 +42,47 @@ fn inspect_output_includes_manifest_details() {
 }
 
 #[test]
+fn inspect_output_includes_build_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = ObjectManifest::parse_toml(&format!(
+        r#"{MANIFEST}
+        [[build.targets]]
+        name = "release"
+        command = ["make", "release"]
+        workdir = "src"
+
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:make"
+        version = ">=4"
+
+        [[build.targets.outputs]]
+        name = "cli"
+        path = "dist/app"
+        artifact_path = "bin/app"
+        kind = "file"
+        "#
+    ))?;
+    let output = crate::commands::manifest::format_manifest_inspection(&manifest);
+
+    assert!(output.contains("build.targets = 1\n"), "{output}");
+    assert!(output.contains("  target release\n"), "{output}");
+    assert!(
+        output.contains("    command = [\"make\", \"release\"]\n"),
+        "{output}"
+    );
+    assert!(output.contains("    workdir = src\n"), "{output}");
+    assert!(
+        output.contains("    requires tool:make\n      version = >=4\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains("    output cli (file) dist/app -> bin/app\n"),
+        "{output}"
+    );
+    Ok(())
+}
+
+#[test]
 fn parses_manifest_hash_command() {
     let cli = Cli::try_parse_from(["kairo", "manifest", "hash", "custom.toml"]);
 

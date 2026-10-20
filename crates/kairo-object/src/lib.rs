@@ -27,6 +27,7 @@ pub struct ObjectManifest {
     content: Option<ContentSection>,
     provides: Vec<ProvideDeclaration>,
     dependencies: Vec<DependencyDeclaration>,
+    build_targets: Vec<BuildTarget>,
 }
 
 impl ObjectManifest {
@@ -49,6 +50,15 @@ impl ObjectManifest {
 
     pub fn dependencies(&self) -> &[DependencyDeclaration] {
         &self.dependencies
+    }
+
+    /// The `[[build.targets]]` (`specs/DECISIONS.md` §33 sub-decision 1).
+    pub fn build_targets(&self) -> &[BuildTarget] {
+        &self.build_targets
+    }
+
+    pub fn build_target(&self, name: &str) -> Option<&BuildTarget> {
+        self.build_targets.iter().find(|target| target.name == name)
     }
 
     pub fn manifest_hash(&self) -> BlobId {
@@ -449,6 +459,14 @@ impl CanonicalEncode for ObjectManifest {
         encode_list(out, &self.dependencies, |out, dependency| {
             dependency.encode_canonical(out);
         });
+        // Present only when there are targets, so a manifest without
+        // them hashes as it did before build targets existed.
+        if !self.build_targets.is_empty() {
+            encode_str(out, "build");
+            encode_list(out, &self.build_targets, |out, target| {
+                target.encode_canonical(out);
+            });
+        }
     }
 }
 
@@ -563,17 +581,29 @@ impl CanonicalEncode for DependencyDeclaration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvidesDependency {
     provides: String,
+    version: Option<String>,
 }
 
 impl ProvidesDependency {
     pub fn provides(&self) -> &str {
         &self.provides
     }
+
+    /// The version requirement, in Cargo's syntax.
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
 }
 
 impl CanonicalEncode for ProvidesDependency {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, &self.provides);
+        // Tagged rather than an option, so a requirement without a
+        // version hashes as it did before versions were kept.
+        if let Some(version) = &self.version {
+            encode_str(out, "version");
+            encode_str(out, version);
+        }
     }
 }
 
@@ -625,6 +655,112 @@ impl CanonicalEncode for ObjectDependencySelector {
     }
 }
 
+/// One `[[build.targets]]` entry (`specs/BUILD.md` §2,
+/// `specs/DECISIONS.md` §33 sub-decision 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildTarget {
+    name: String,
+    command: Vec<String>,
+    workdir: String,
+    dependencies: Vec<DependencyDeclaration>,
+    outputs: Vec<BuildOutput>,
+}
+
+impl BuildTarget {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The program and its arguments, run without a shell.
+    pub fn command(&self) -> &[String] {
+        &self.command
+    }
+
+    /// Relative to the tree root; `"."` when not given.
+    pub fn workdir(&self) -> &str {
+        &self.workdir
+    }
+
+    /// The target's own requirements, beyond the manifest's top-level
+    /// `[[dependencies]]`.
+    pub fn dependencies(&self) -> &[DependencyDeclaration] {
+        &self.dependencies
+    }
+
+    pub fn outputs(&self) -> &[BuildOutput] {
+        &self.outputs
+    }
+}
+
+impl CanonicalEncode for BuildTarget {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.name);
+        encode_list(out, &self.command, |out, argument| {
+            encode_str(out, argument);
+        });
+        encode_str(out, &self.workdir);
+        encode_list(out, &self.dependencies, |out, dependency| {
+            dependency.encode_canonical(out);
+        });
+        encode_list(out, &self.outputs, |out, output| {
+            output.encode_canonical(out);
+        });
+    }
+}
+
+/// A declared output: `path` in the build workspace, collected to
+/// `artifact_path` in the artifact (`specs/BUILD.md` §5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildOutput {
+    name: String,
+    path: String,
+    artifact_path: String,
+    kind: OutputKind,
+}
+
+impl BuildOutput {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Relative to the target's workdir.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn artifact_path(&self) -> &str {
+        &self.artifact_path
+    }
+
+    pub fn kind(&self) -> OutputKind {
+        self.kind
+    }
+}
+
+impl CanonicalEncode for BuildOutput {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.name);
+        encode_str(out, &self.path);
+        encode_str(out, &self.artifact_path);
+        encode_str(out, self.kind.as_str());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputKind {
+    File,
+    Directory,
+}
+
+impl OutputKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ManifestError {
     Toml(toml::de::Error),
@@ -637,6 +773,30 @@ pub enum ManifestError {
     MissingObjectDependencySelector,
     ConflictingObjectDependencySelectors,
     MissingProvidesDependency,
+    /// A version requirement that isn't in Cargo's syntax.
+    InvalidVersionRequirement {
+        field: &'static str,
+        version: String,
+    },
+    InvalidTargetName(String),
+    DuplicateTarget(String),
+    EmptyCommand(String),
+    /// A workdir, output path, or artifact path that isn't a plain
+    /// relative path inside the tree.
+    UnsafePath {
+        field: &'static str,
+        path: String,
+    },
+    NoOutputs(String),
+    DuplicateOutput {
+        target: String,
+        name: String,
+    },
+    DuplicateArtifactPath {
+        target: String,
+        path: String,
+    },
+    UnknownOutputKind(String),
 }
 
 impl fmt::Display for ManifestError {
@@ -660,6 +820,31 @@ impl fmt::Display for ManifestError {
             Self::MissingProvidesDependency => {
                 f.write_str("provides dependency is missing provides token")
             }
+            Self::InvalidVersionRequirement { field, version } => write!(
+                f,
+                "{field} {version:?} is not a version requirement (Cargo syntax, e.g. \">=4, <5\")"
+            ),
+            Self::InvalidTargetName(name) => {
+                write!(f, "build target name {name:?} must match [a-z][a-z0-9-]*")
+            }
+            Self::DuplicateTarget(name) => write!(f, "build target {name} is declared twice"),
+            Self::EmptyCommand(target) => {
+                write!(f, "build target {target} has an empty command")
+            }
+            Self::UnsafePath { field, path } => write!(
+                f,
+                "{field} {path:?} must be a relative path without '..' or empty components"
+            ),
+            Self::NoOutputs(target) => write!(f, "build target {target} declares no outputs"),
+            Self::DuplicateOutput { target, name } => {
+                write!(f, "build target {target} declares output {name} twice")
+            }
+            Self::DuplicateArtifactPath { target, path } => {
+                write!(f, "build target {target} maps two outputs to {path}")
+            }
+            Self::UnknownOutputKind(kind) => {
+                write!(f, "unknown output kind {kind} (expected file or directory)")
+            }
         }
     }
 }
@@ -675,7 +860,16 @@ impl Error for ManifestError {
             | Self::MissingObjectDependencyObject
             | Self::MissingObjectDependencySelector
             | Self::ConflictingObjectDependencySelectors
-            | Self::MissingProvidesDependency => None,
+            | Self::MissingProvidesDependency
+            | Self::InvalidVersionRequirement { .. }
+            | Self::InvalidTargetName(_)
+            | Self::DuplicateTarget(_)
+            | Self::EmptyCommand(_)
+            | Self::UnsafePath { .. }
+            | Self::NoOutputs(_)
+            | Self::DuplicateOutput { .. }
+            | Self::DuplicateArtifactPath { .. }
+            | Self::UnknownOutputKind(_) => None,
         }
     }
 }
@@ -719,6 +913,7 @@ struct RawObjectManifest {
     provides: Vec<RawProvideDeclaration>,
     #[serde(default)]
     dependencies: Vec<RawDependencyDeclaration>,
+    build: Option<RawBuildSection>,
 }
 
 impl RawObjectManifest {
@@ -736,8 +931,158 @@ impl RawObjectManifest {
                 .into_iter()
                 .map(RawDependencyDeclaration::validate)
                 .collect::<Result<Vec<_>, _>>()?,
+            build_targets: self
+                .build
+                .map(RawBuildSection::validate)
+                .transpose()?
+                .unwrap_or_default(),
         })
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBuildSection {
+    #[serde(default)]
+    targets: Vec<RawBuildTarget>,
+}
+
+impl RawBuildSection {
+    fn validate(self) -> Result<Vec<BuildTarget>, ManifestError> {
+        let mut targets: Vec<BuildTarget> = Vec::with_capacity(self.targets.len());
+        for raw in self.targets {
+            let target = raw.validate()?;
+            if targets.iter().any(|other| other.name == target.name) {
+                return Err(ManifestError::DuplicateTarget(target.name));
+            }
+            targets.push(target);
+        }
+        Ok(targets)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBuildTarget {
+    name: String,
+    command: Vec<String>,
+    workdir: Option<String>,
+    #[serde(default)]
+    dependencies: Vec<RawDependencyDeclaration>,
+    #[serde(default)]
+    outputs: Vec<RawBuildOutput>,
+}
+
+impl RawBuildTarget {
+    fn validate(self) -> Result<BuildTarget, ManifestError> {
+        if !is_target_name(&self.name) {
+            return Err(ManifestError::InvalidTargetName(self.name));
+        }
+        if self.command.first().is_none_or(String::is_empty) {
+            return Err(ManifestError::EmptyCommand(self.name));
+        }
+        let workdir = match self.workdir {
+            None => ".".to_owned(),
+            Some(workdir) if workdir == "." => workdir,
+            Some(workdir) => ensure_relative_path("build.targets.workdir", workdir)?,
+        };
+        let dependencies = self
+            .dependencies
+            .into_iter()
+            .map(RawDependencyDeclaration::validate)
+            .collect::<Result<Vec<_>, _>>()?;
+        if self.outputs.is_empty() {
+            return Err(ManifestError::NoOutputs(self.name));
+        }
+        let mut outputs: Vec<BuildOutput> = Vec::with_capacity(self.outputs.len());
+        for raw in self.outputs {
+            let output = raw.validate()?;
+            if outputs.iter().any(|other| other.name == output.name) {
+                return Err(ManifestError::DuplicateOutput {
+                    target: self.name,
+                    name: output.name,
+                });
+            }
+            if outputs
+                .iter()
+                .any(|other| other.artifact_path == output.artifact_path)
+            {
+                return Err(ManifestError::DuplicateArtifactPath {
+                    target: self.name,
+                    path: output.artifact_path,
+                });
+            }
+            outputs.push(output);
+        }
+        Ok(BuildTarget {
+            name: self.name,
+            command: self.command,
+            workdir,
+            dependencies,
+            outputs,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBuildOutput {
+    name: String,
+    path: String,
+    artifact_path: String,
+    kind: String,
+}
+
+impl RawBuildOutput {
+    fn validate(self) -> Result<BuildOutput, ManifestError> {
+        ensure_non_empty("build.targets.outputs.name", &self.name)?;
+        let kind = match self.kind.as_str() {
+            "file" => OutputKind::File,
+            "directory" => OutputKind::Directory,
+            _ => return Err(ManifestError::UnknownOutputKind(self.kind)),
+        };
+        Ok(BuildOutput {
+            name: self.name,
+            path: ensure_relative_path("build.targets.outputs.path", self.path)?,
+            artifact_path: ensure_relative_path(
+                "build.targets.outputs.artifact_path",
+                self.artifact_path,
+            )?,
+            kind,
+        })
+    }
+}
+
+/// `[a-z][a-z0-9-]*`.
+fn is_target_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|first| first.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// A `/`-separated path of plain names: not absolute, no `.` or `..`,
+/// no empty components, no backslashes.
+fn ensure_relative_path(field: &'static str, path: String) -> Result<String, ManifestError> {
+    let plain = !path.is_empty()
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..");
+    if plain {
+        Ok(path)
+    } else {
+        Err(ManifestError::UnsafePath { field, path })
+    }
+}
+
+fn ensure_version_requirement(field: &'static str, version: &str) -> Result<(), ManifestError> {
+    ensure_non_empty(field, version)?;
+    semver::VersionReq::parse(version).map(drop).map_err(|_| {
+        ManifestError::InvalidVersionRequirement {
+            field,
+            version: version.to_owned(),
+        }
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -830,9 +1175,13 @@ impl RawDependencyDeclaration {
         };
 
         ensure_non_empty("dependencies.provides", &provides)?;
+        if let Some(version) = &self.version {
+            ensure_version_requirement("dependencies.version", version)?;
+        }
 
         Ok(DependencyDeclaration::Provides(ProvidesDependency {
             provides,
+            version: self.version,
         }))
     }
 
@@ -844,7 +1193,7 @@ impl RawDependencyDeclaration {
         let object = ObjectId::new(object).map_err(ManifestError::InvalidObjectId)?;
         let selector = match (self.version, self.snapshot) {
             (Some(version), None) => {
-                ensure_non_empty("dependencies.version", &version)?;
+                ensure_version_requirement("dependencies.version", &version)?;
                 ObjectDependencySelector::Version(version)
             }
             (None, Some(snapshot)) => ObjectDependencySelector::Snapshot(
@@ -1260,6 +1609,300 @@ mod tests {
             kind = "tree"
             "#
         )
+    }
+
+    /// Pinned from before build targets and provides-dependency versions
+    /// existed: a manifest using neither must keep its hash.
+    #[test]
+    fn manifest_without_build_targets_keeps_its_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = ObjectManifest::parse_toml(&format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+            [content]
+            kind = "tree"
+            [[provides]]
+            provides = "tool:make"
+            version = "3.81"
+            [[dependencies]]
+            kind = "provides"
+            provides = "lib:zlib:static"
+            [[dependencies]]
+            kind = "object"
+            object = "{OBJECT_ID}"
+            version = "^4.1.0"
+            "#
+        ))?;
+
+        assert_eq!(
+            manifest.manifest_hash().as_str(),
+            "zQmQow72niX2CSUiMkabe6K3SYRxMnubGytuKYd7TVdfsts"
+        );
+        Ok(())
+    }
+
+    const BUILD_MANIFEST: &str = r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "Example"
+
+        [[build.targets]]
+        name = "release"
+        command = ["make", "release"]
+
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:make"
+        version = ">=4, <5"
+
+        [[build.targets.outputs]]
+        name = "cli"
+        path = "dist/app"
+        artifact_path = "bin/app"
+        kind = "file"
+        "#;
+
+    #[test]
+    fn parses_build_target() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = ObjectManifest::parse_toml(BUILD_MANIFEST)?;
+
+        let target = manifest
+            .build_target("release")
+            .ok_or("no release target")?;
+        assert_eq!(target.command(), ["make", "release"]);
+        assert_eq!(target.workdir(), ".");
+        assert!(matches!(
+            target.dependencies(),
+            [DependencyDeclaration::Provides(dependency)]
+                if dependency.provides() == "tool:make" && dependency.version() == Some(">=4, <5")
+        ));
+        assert!(matches!(
+            target.outputs(),
+            [output] if output.name() == "cli"
+                && output.path() == "dist/app"
+                && output.artifact_path() == "bin/app"
+                && output.kind() == OutputKind::File
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn build_targets_are_pinned_by_the_manifest_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let base = ObjectManifest::parse_toml(BUILD_MANIFEST)?.manifest_hash();
+        let without = ObjectManifest::parse_toml(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+            "#,
+        )?
+        .manifest_hash();
+        assert_ne!(base, without);
+
+        for (from, to) in [
+            (r#"["make", "release"]"#, r#"["make", "all"]"#),
+            (r#"version = ">=4, <5""#, r#"version = ">=4, <6""#),
+            (r#"path = "dist/app""#, r#"path = "dist/app2""#),
+            (r#"kind = "file""#, r#"kind = "directory""#),
+        ] {
+            let changed = ObjectManifest::parse_toml(&BUILD_MANIFEST.replace(from, to))?;
+            assert_ne!(changed.manifest_hash(), base, "{from} -> {to}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn provides_dependency_version_is_kept_and_hashed() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |version: &str| {
+            ObjectManifest::parse_toml(&format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
+
+                [[dependencies]]
+                kind = "provides"
+                provides = "tool:make"
+                {version}
+                "#
+            ))
+        };
+        let unversioned = manifest("")?;
+        let versioned = manifest(r#"version = ">=4""#)?;
+
+        assert!(matches!(
+            versioned.dependencies(),
+            [DependencyDeclaration::Provides(dependency)] if dependency.version() == Some(">=4")
+        ));
+        assert_ne!(unversioned.manifest_hash(), versioned.manifest_hash());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_version_requirements() {
+        for dependency in [
+            r#"kind = "provides"
+            provides = "tool:make"
+            version = "four""#,
+            &format!(
+                r#"kind = "object"
+            object = "{OBJECT_ID}"
+            version = ">=4 <5""#
+            ),
+        ] {
+            let manifest = ObjectManifest::parse_toml(&format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
+
+                [[dependencies]]
+                {dependency}
+                "#
+            ));
+            assert!(
+                matches!(
+                    manifest,
+                    Err(ManifestError::InvalidVersionRequirement { .. })
+                ),
+                "{manifest:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_build_targets() {
+        type Expected = fn(&ManifestError) -> bool;
+        let cases: &[(&str, &str, Expected)] = &[
+            (r#"name = "release""#, r#"name = "Release""#, |e| {
+                matches!(e, ManifestError::InvalidTargetName(_))
+            }),
+            (r#"["make", "release"]"#, "[]", |e| {
+                matches!(e, ManifestError::EmptyCommand(_))
+            }),
+            (r#"["make", "release"]"#, r#"["", "release"]"#, |e| {
+                matches!(e, ManifestError::EmptyCommand(_))
+            }),
+            (r#"path = "dist/app""#, r#"path = "../app""#, |e| {
+                matches!(e, ManifestError::UnsafePath { .. })
+            }),
+            (r#"path = "dist/app""#, r#"path = "/dist/app""#, |e| {
+                matches!(e, ManifestError::UnsafePath { .. })
+            }),
+            (
+                r#"artifact_path = "bin/app""#,
+                r#"artifact_path = "bin//app""#,
+                |e| matches!(e, ManifestError::UnsafePath { .. }),
+            ),
+            (
+                r#"artifact_path = "bin/app""#,
+                r#"artifact_path = "./bin/app""#,
+                |e| matches!(e, ManifestError::UnsafePath { .. }),
+            ),
+            (
+                r#"command = ["make", "release"]"#,
+                r#"command = ["make", "release"]
+                workdir = "src/../.."
+                "#,
+                |e| matches!(e, ManifestError::UnsafePath { .. }),
+            ),
+            (r#"kind = "file""#, r#"kind = "symlink""#, |e| {
+                matches!(e, ManifestError::UnknownOutputKind(_))
+            }),
+            (
+                r#"kind = "file""#,
+                r#"kind = "file"
+                sha256 = "x""#,
+                |e| matches!(e, ManifestError::Toml(_)),
+            ),
+        ];
+        for (from, to, expected) in cases {
+            let manifest = ObjectManifest::parse_toml(&BUILD_MANIFEST.replace(from, to));
+            assert!(
+                matches!(&manifest, Err(error) if expected(error)),
+                "{from} -> {to}: {manifest:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_targets_and_outputs_that_collide() {
+        let output = r#"
+        [[build.targets.outputs]]
+        name = "cli"
+        path = "dist/other"
+        artifact_path = "bin/other"
+        kind = "file"
+        "#;
+        let duplicate_output = format!("{BUILD_MANIFEST}{output}");
+        assert!(matches!(
+            ObjectManifest::parse_toml(&duplicate_output),
+            Err(ManifestError::DuplicateOutput { .. })
+        ));
+
+        let same_path = format!(
+            "{BUILD_MANIFEST}{}",
+            output
+                .replace(r#"name = "cli""#, r#"name = "other""#)
+                .replace("bin/other", "bin/app")
+        );
+        assert!(matches!(
+            ObjectManifest::parse_toml(&same_path),
+            Err(ManifestError::DuplicateArtifactPath { .. })
+        ));
+
+        let target = r#"
+        [[build.targets]]
+        name = "release"
+        command = ["true"]
+        [[build.targets.outputs]]
+        name = "x"
+        path = "x"
+        artifact_path = "x"
+        kind = "file"
+        "#;
+        assert!(matches!(
+            ObjectManifest::parse_toml(&format!("{BUILD_MANIFEST}{target}")),
+            Err(ManifestError::DuplicateTarget(name)) if name == "release"
+        ));
+
+        let no_outputs = r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [[build.targets]]
+            name = "check"
+            command = ["make", "check"]
+            "#;
+        assert!(matches!(
+            ObjectManifest::parse_toml(no_outputs),
+            Err(ManifestError::NoOutputs(name)) if name == "check"
+        ));
+    }
+
+    #[test]
+    fn run_targets_are_still_rejected() {
+        let manifest = ObjectManifest::parse_toml(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "Example"
+
+            [[run.targets]]
+            name = "main"
+            command = ["PROGRAM.EXE"]
+            "#,
+        );
+        assert!(matches!(manifest, Err(ManifestError::Toml(_))));
     }
 
     mod revision_validation {
