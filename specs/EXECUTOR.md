@@ -791,7 +791,11 @@ minimal `/dev`, an empty `/tmp`, the source bound read-write at
 `/kairo/src`, `/kairo/home`, each provider bound read-only at its
 canonical path, a cleared environment, and the command run in the
 workdir. Engines are allowlisted under `[[runtime.engines]]` and probed
-before use. Records name the engine path and version, the kernel
+before use. Under `environment:linux-root/<arch>`
+(`schemas/environment/linux-root-v1.md`, `DECISIONS.md` §38) the source
+is bound read-write at `/` instead, with `/proc`, `/dev`, and `/tmp`
+mounted over it and nothing else, and every dependency placed in the
+tree. Records name the engine path and version, the kernel
 release, and "wall clock not frozen" as known nondeterminism; results
 carry the contract and `host_dependent = false`.
 

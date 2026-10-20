@@ -219,7 +219,7 @@ fn a_content_provider_resolves_and_the_plan_hash_is_stable() -> TestResult {
     assert!(plan.builds_first.is_empty());
     assert!(matches!(
         plan.requirements.as_slice(),
-        [Requirement { requested: Requested::Provides { provides, version: Some(version) }, resolved: Resolved::Content { object, .. } }]
+        [Requirement { requested: Requested::Provides { provides, version: Some(version), .. }, resolved: Resolved::Content { object, .. } }]
             if provides == "lib:zlib:source" && version == ">=1.3, <2" && object == &lib.object_id.to_string()
     ));
 

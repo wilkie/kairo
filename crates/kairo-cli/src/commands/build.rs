@@ -302,8 +302,10 @@ impl RunPolicy {
     /// The host, with the contracts its working engines implement.
     fn host(&self) -> Host {
         let mut host = Host::detect();
+        // Bubblewrap implements both Linux contracts (§35, §38).
         if !self.engines.is_empty() {
             host.engines.push(host.contract());
+            host.engines.push(host.root_contract());
         }
         host
     }

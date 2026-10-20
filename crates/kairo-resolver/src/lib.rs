@@ -166,6 +166,13 @@ impl Host {
     pub fn contract(&self) -> String {
         format!("{ENVIRONMENT_PREFIX}{}/{}", self.system, self.arch)
     }
+
+    /// The contract whose guest root is the build tree
+    /// (`DECISIONS.md` §38 sub-decision 5):
+    /// `environment:<system>-root/<arch>`. Only an engine provides it.
+    pub fn root_contract(&self) -> String {
+        format!("{ENVIRONMENT_PREFIX}{}-root/{}", self.system, self.arch)
+    }
 }
 
 /// `x86_64` is spelled `x86-64` in labels (`DECISIONS.md` §33).
@@ -227,6 +234,13 @@ pub enum Requested {
         provides: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         version: Option<String>,
+        /// Where the provider is copied in the source tree (§38).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        from: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        overlay: bool,
     },
     Object {
         object: String,
@@ -234,6 +248,12 @@ pub enum Requested {
         version: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         snapshot: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        from: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        overlay: bool,
     },
     /// A source object at an exact upstream commit (§37).
     Source {
@@ -244,15 +264,82 @@ pub enum Requested {
         path: Option<String>,
         #[serde(skip_serializing_if = "std::ops::Not::not", default)]
         seed: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        from: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        overlay: bool,
     },
     /// A file source by its hash, placed at `path` (§38).
-    File { sha256: String, path: String },
+    File {
+        sha256: String,
+        path: String,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        overlay: bool,
+    },
+}
+
+/// Where a requirement is placed in the source tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacedAt<'a> {
+    pub path: &'a str,
+    pub from: Option<&'a str>,
+    pub overlay: bool,
+}
+
+impl Requested {
+    /// Where the requirement is placed in the source tree, if it is.
+    pub fn placement(&self) -> Option<PlacedAt<'_>> {
+        match self {
+            Self::Provides {
+                path,
+                from,
+                overlay,
+                ..
+            }
+            | Self::Object {
+                path,
+                from,
+                overlay,
+                ..
+            }
+            | Self::Source {
+                path,
+                from,
+                overlay,
+                ..
+            } => path.as_deref().map(|path| PlacedAt {
+                path,
+                from: from.as_deref(),
+                overlay: *overlay,
+            }),
+            Self::File { path, overlay, .. } => Some(PlacedAt {
+                path,
+                from: None,
+                overlay: *overlay,
+            }),
+        }
+    }
+}
+
+/// A manifest placement's fields as the plan spells them.
+fn placement_fields(
+    placement: Option<&kairo_object::Placement>,
+) -> (Option<String>, Option<String>, bool) {
+    placement.map_or((None, None, false), |placement| {
+        (
+            Some(placement.path().to_owned()),
+            placement.from().map(str::to_owned),
+            placement.overlay(),
+        )
+    })
 }
 
 impl fmt::Display for Requested {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Provides { provides, version } => match version {
+            Self::Provides {
+                provides, version, ..
+            } => match version {
                 Some(version) => write!(f, "{provides} {version}"),
                 None => f.write_str(provides),
             },
@@ -261,6 +348,7 @@ impl fmt::Display for Requested {
                 revision,
                 path,
                 seed,
+                ..
             } => {
                 write!(f, "{source} at {revision}")?;
                 if let Some(path) = path {
@@ -275,12 +363,13 @@ impl fmt::Display for Requested {
                 object,
                 version,
                 snapshot,
+                ..
             } => match (version, snapshot) {
                 (Some(version), _) => write!(f, "object:{object} {version}"),
                 (_, Some(snapshot)) => write!(f, "object:{object}:snapshot:{snapshot}"),
                 (None, None) => write!(f, "object:{object}"),
             },
-            Self::File { sha256, path } => write!(f, "file sha256:{sha256} at {path}"),
+            Self::File { sha256, path, .. } => write!(f, "file sha256:{sha256} at {path}"),
         }
     }
 }
@@ -838,9 +927,13 @@ impl<'a> Resolver<'a> {
         for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
             let (requested, resolved) = match dependency {
                 DependencyDeclaration::Provides(dependency) => {
+                    let (path, from, overlay) = placement_fields(dependency.placement());
                     let requested = Requested::Provides {
                         provides: dependency.provides().to_owned(),
                         version: dependency.version().map(str::to_owned),
+                        path,
+                        from,
+                        overlay,
                     };
                     let resolved = if dependency.provides().starts_with(ENVIRONMENT_PREFIX) {
                         self.resolve_environment(
@@ -873,10 +966,14 @@ impl<'a> Resolver<'a> {
                             (None, Some(snapshot.clone()))
                         }
                     };
+                    let (path, from, overlay) = placement_fields(dependency.placement());
                     let requested = Requested::Object {
                         object: dependency.object().to_string(),
                         version: version.clone(),
                         snapshot: pinned.as_ref().map(ToString::to_string),
+                        path,
+                        from,
+                        overlay,
                     };
                     let resolved = self.resolve_object(
                         object,
@@ -889,11 +986,14 @@ impl<'a> Resolver<'a> {
                     (requested, resolved)
                 }
                 DependencyDeclaration::Source(dependency) => {
+                    let (path, from, overlay) = placement_fields(dependency.placement());
                     let requested = Requested::Source {
                         source: dependency.url().to_string(),
                         revision: dependency.revision().to_string(),
-                        path: dependency.path().map(str::to_owned),
+                        path,
                         seed: dependency.seed(),
+                        from,
+                        overlay,
                     };
                     let resolved =
                         self.resolve_source(object, target_name, &requested, dependency)?;
@@ -903,6 +1003,7 @@ impl<'a> Resolver<'a> {
                     let requested = Requested::File {
                         sha256: dependency.sha256().to_string(),
                         path: dependency.path().to_owned(),
+                        overlay: dependency.overlay(),
                     };
                     let source = dependency.source();
                     if !self

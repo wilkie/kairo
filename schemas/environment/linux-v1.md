@@ -26,7 +26,7 @@ A guest command running under this contract sees exactly:
 | `/kairo/artifact/<artifact id>` | each artifact provider's artifact tree | read-only |
 | `/kairo/content/<snapshot id>` | each content provider's tree | read-only |
 | `/kairo/source/<source id>/<oid>` | each source dependency without a `path`, at its pinned commit | read-only |
-| `/kairo/src/<path>` | each source dependency with a `path`, a fresh copy at its pinned commit; placements may nest | read-write |
+| `/kairo/src/<path>` | each dependency with a `path` (`DECISIONS.md` §37–§38): a source at its pinned commit, a file source's bytes, or a provider's artifact or tree, as a fresh copy, optionally only its `from` subtree and with `overlay` filling in around the tree's own files; placements may nest | read-write |
 | `/kairo/home` | empty | read-write |
 | `/tmp` | empty | read-write |
 | `/proc` | the sandbox's own processes | — |
@@ -50,6 +50,7 @@ And:
     label upper-cased and every other character as `_`
     (`tool:make` → `KAIRO_PROVIDER_TOOL_MAKE`); a source dependency's
     label is `source:<last URL segment>` (`KAIRO_PROVIDER_SOURCE_M2LIBC`);
+    a placed dependency's path is where it was placed;
   - `PATH`: the `bin/` directories of the providers that have one, in
     requirement order.
 

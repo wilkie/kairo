@@ -65,10 +65,14 @@ A requirement is `{"requested": ..., "resolved": ...}`.
 
 | `kind` | Fields |
 |---|---|
-| `provides` | `provides`; `version` when a requirement was given |
-| `object` | `object`; one of `version`, `snapshot` |
+| `provides` | `provides`; `version` when a requirement was given; `path` when placed |
+| `object` | `object`; one of `version`, `snapshot`; `path` when placed |
 | `source` | `source` (the canonical URL), `revision`; `path` when placed; `seed` when `true` |
 | `file` | `sha256`, `path` |
+
+Any placed requirement also has `from` when it places a subtree and
+`overlay: true` when it overlays (`DECISIONS.md` §38 sub-decision 4);
+both are omitted otherwise.
 
 `resolved`, by `kind`:
 

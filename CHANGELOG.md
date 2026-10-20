@@ -18,6 +18,17 @@ rather than per-commit.
 
 ### Added
 
+- **Placement options and the `linux-root` contract (`DECISIONS.md`
+  §38 sub-decisions 4–5).** A dependency's `path` placement can take
+  `from = "<subpath>"` (only that subtree) and `overlay = true` (fill
+  in around the native tree's files, which win), and provides and
+  object dependencies can now be placed too, copying the artifact or
+  tree they resolve to. `environment:linux-root/<arch>`
+  (`schemas/environment/linux-root-v1.md`) runs the guest with the
+  build tree as `/`, `/proc`, `/dev`, and `/tmp` mounted over it, and
+  nothing from `/kairo` or the host; every dependency must be placed.
+  Bubblewrap implements it alongside `linux`.
+
 - **File sources (`DECISIONS.md` §38 sub-decisions 1–3).** A single
   file, a distfile or release tarball, is a source object identified
   by the SHA-256 of its bytes: an unsigned `FileSourceGenesis` holding

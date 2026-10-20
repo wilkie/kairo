@@ -427,13 +427,123 @@ fn placement_target(src: &Path, path: &str) -> Result<PathBuf, BuildError> {
     Ok(src.join(path))
 }
 
-/// A source dependency placed at a path in the source tree.
+/// What a requirement brings into the build.
+enum Placed {
+    Content {
+        object: ObjectId,
+        snapshot: SnapshotId,
+    },
+    Artifact(BlobId),
+    Source {
+        source: ObjectId,
+        revision: GitRevision,
+        url: String,
+    },
+    File(ObjectId),
+}
+
+/// A dependency placed at a path in the source tree.
 struct Placement {
     path: String,
-    source: ObjectId,
-    revision: GitRevision,
-    url: String,
+    from: Option<String>,
+    overlay: bool,
+    what: Placed,
     label: String,
+}
+
+enum PlaceError {
+    /// The tree already fills the path, and the placement isn't an
+    /// overlay.
+    Occupied,
+    Io(BuildError),
+}
+
+/// Move `tree` (a file or directory, staged in the workspace) to
+/// `inside`. Without `overlay`, `inside` must be absent or an empty
+/// directory (a gitlink's hole). With it, the tree fills in around
+/// what is already there, which wins: entries are moved only where
+/// nothing exists, and directories present on both sides are merged;
+/// no symlink in the native tree is ever followed.
+fn place(tree: &Path, inside: &Path, overlay: bool) -> Result<(), PlaceError> {
+    let io = |action: &'static str, path: &Path| {
+        let path = path.to_path_buf();
+        move |source| PlaceError::Io(io_error(action, &path, source))
+    };
+    match inside.symlink_metadata().ok() {
+        None => {}
+        Some(meta)
+            if meta.is_dir()
+                && fs::read_dir(inside)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(false) =>
+        {
+            fs::remove_dir(inside).map_err(io("replacing", inside))?;
+        }
+        Some(_) if !overlay => return Err(PlaceError::Occupied),
+        Some(meta) => {
+            let tree_is_dir = tree
+                .symlink_metadata()
+                .map_err(io("reading", tree))?
+                .is_dir();
+            if meta.is_dir() && tree_is_dir {
+                return merge(tree, inside).map_err(PlaceError::Io);
+            }
+            // The native tree's entry wins.
+            return Ok(());
+        }
+    }
+    if let Some(parent) = inside.parent() {
+        fs::create_dir_all(parent).map_err(io("creating", parent))?;
+    }
+    fs::rename(tree, inside).map_err(io("placing", inside))
+}
+
+/// Move what `from` holds into the real directory `into` wherever
+/// `into` has nothing; recurse where both have a directory.
+fn merge(from: &Path, into: &Path) -> Result<(), BuildError> {
+    let entries = fs::read_dir(from).map_err(|source| io_error("reading", from, source))?;
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error("reading", from, source))?;
+        let dest = into.join(entry.file_name());
+        match dest.symlink_metadata() {
+            Err(_) => fs::rename(entry.path(), &dest)
+                .map_err(|source| io_error("placing", &dest, source))?,
+            Ok(meta) if meta.is_dir() => {
+                let ours = entry
+                    .file_type()
+                    .map_err(|source| io_error("reading", &entry.path(), source))?;
+                if ours.is_dir() {
+                    merge(&entry.path(), &dest)?;
+                }
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Export a held object's tree under `dest`.
+fn export_tree(
+    trees: &dyn TreeSource,
+    object: &ObjectId,
+    snapshot: &SnapshotId,
+    dest: &Path,
+) -> Result<(), BuildError> {
+    let held = trees
+        .export(object, snapshot, dest)
+        .map_err(|source| BuildError::TreeSource {
+            object: object.clone(),
+            snapshot: snapshot.clone(),
+            source,
+        })?;
+    if held {
+        Ok(())
+    } else {
+        Err(BuildError::TreeNotHeld {
+            object: object.clone(),
+            snapshot: snapshot.clone(),
+        })
+    }
 }
 
 fn export_source(
@@ -464,6 +574,11 @@ fn export_source(
 /// Guest paths of the `linux` contract (`schemas/environment/linux-v1.md`).
 const GUEST_SRC: &str = "/kairo/src";
 const GUEST_HOME: &str = "/kairo/home";
+/// The `linux-root` contract's labels
+/// (`schemas/environment/linux-root-v1.md`): the tree is `/`, and
+/// `HOME` is the empty `/tmp`.
+pub const LINUX_ROOT_PREFIX: &str = "environment:linux-root/";
+const ROOTED_HOME: &str = "/tmp";
 
 /// A provider's host directory and where the guest sees it.
 struct Mount {
@@ -504,6 +619,8 @@ pub fn run_plan(
         });
     }
     let isolated = matches!(engine, Engine::Bubblewrap(_));
+    // The tree is the guest's `/` (§38 sub-decision 5).
+    let rooted = isolated && manifest.environment.starts_with(LINUX_ROOT_PREFIX);
     let object = ObjectId::new(manifest.object.clone()).map_err(BuildError::Id)?;
     let snapshot = SnapshotId::new(manifest.snapshot.clone()).map_err(BuildError::Id)?;
 
@@ -553,14 +670,17 @@ pub fn run_plan(
         })?;
 
     // Providers, at paths named by what they are (§35 sub-decision 1),
-    // and the environment they contribute.
+    // or placed in the tree (§37 sub-decision 7, §38 sub-decision 4),
+    // and the environment they contribute. Under `linux-root` the tree
+    // is the guest's `/`, so everything must be placed (§38
+    // sub-decision 5).
+    let guest_src = if rooted { "" } else { GUEST_SRC };
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     let mut mounts: Vec<Mount> = Vec::new();
     let mut path_dirs: Vec<String> = Vec::new();
     let mut host_tool_dirs: Vec<String> = Vec::new();
     let mut host_tools: Vec<String> = Vec::new();
     let mut placements: Vec<Placement> = Vec::new();
-    let mut files: Vec<(String, ObjectId)> = Vec::new();
     for requirement in &manifest.requirements {
         let label = match &requirement.requested {
             kairo_resolver::Requested::Provides { provides, .. } => provides.clone(),
@@ -571,37 +691,24 @@ pub fn run_plan(
             ),
             kairo_resolver::Requested::File { path, .. } => format!("file:{path}"),
         };
-        let mount = match &requirement.resolved {
+        let placed = requirement.requested.placement();
+        let unplaced = |what: String| -> Result<(), BuildError> {
+            if rooted {
+                return Err(BuildError::Environment(format!(
+                    "{what} has no path, and under {} every dependency must be placed",
+                    manifest.environment
+                )));
+            }
+            Ok(())
+        };
+        let what = match &requirement.resolved {
             Resolved::Content {
                 object: provider,
                 snapshot: provider_snapshot,
-            } => {
-                let provider_id = ObjectId::new(provider.clone()).map_err(BuildError::Id)?;
-                let provider_snapshot =
-                    SnapshotId::new(provider_snapshot.clone()).map_err(BuildError::Id)?;
-                let host = deps.join("content").join(provider_snapshot.as_str());
-                if !host.exists() {
-                    fs::create_dir_all(&host)
-                        .map_err(|source| io_error("creating", &host, source))?;
-                    if !trees
-                        .export(&provider_id, &provider_snapshot, &host)
-                        .map_err(|source| BuildError::TreeSource {
-                            object: provider_id.clone(),
-                            snapshot: provider_snapshot.clone(),
-                            source,
-                        })?
-                    {
-                        return Err(BuildError::TreeNotHeld {
-                            object: provider_id,
-                            snapshot: provider_snapshot,
-                        });
-                    }
-                }
-                Mount {
-                    host,
-                    guest: format!("/kairo/content/{provider_snapshot}"),
-                }
-            }
+            } => Placed::Content {
+                object: ObjectId::new(provider.clone()).map_err(BuildError::Id)?,
+                snapshot: SnapshotId::new(provider_snapshot.clone()).map_err(BuildError::Id)?,
+            },
             Resolved::Artifact {
                 object: provider,
                 artifact,
@@ -613,20 +720,25 @@ pub fn run_plan(
                         builds: vec![format!("object:{provider} target {provider_target}")],
                     });
                 };
-                let artifact = BlobId::new(artifact.clone()).map_err(BuildError::Id)?;
-                let host = deps.join("artifact").join(artifact.as_str());
-                if !host.exists() {
-                    fs::create_dir_all(&host)
-                        .map_err(|source| io_error("creating", &host, source))?;
-                    materialize_artifact(store, &artifact, &host)?;
-                }
-                Mount {
-                    host,
-                    guest: format!("/kairo/artifact/{artifact}"),
-                }
+                Placed::Artifact(BlobId::new(artifact.clone()).map_err(BuildError::Id)?)
+            }
+            Resolved::Source {
+                source,
+                url,
+                revision,
+                ..
+            } => Placed::Source {
+                source: ObjectId::new(source.clone()).map_err(BuildError::Id)?,
+                revision: GitRevision::parse(revision).ok().flatten().ok_or_else(|| {
+                    BuildError::Environment(format!("{revision} is not a git: revision"))
+                })?,
+                url: url.clone(),
+            },
+            Resolved::File { source, .. } => {
+                Placed::File(ObjectId::new(source.clone()).map_err(BuildError::Id)?)
             }
             Resolved::HostTool { path, .. } => {
-                if isolated {
+                if isolated || placed.is_some() {
                     return Err(BuildError::EngineMismatch {
                         environment: format!("{} with host tool {path}", manifest.environment),
                     });
@@ -642,52 +754,73 @@ pub fn run_plan(
                 env.insert(provider_var(&label), path.clone());
                 continue;
             }
-            Resolved::Environment { .. } => continue,
-            // Placed once the source placements are in, so a file can
-            // go inside a placed source's tree.
-            Resolved::File { source, path, .. } => {
-                files.push((
-                    path.clone(),
-                    ObjectId::new(source.clone()).map_err(BuildError::Id)?,
-                ));
+            Resolved::Environment { contract, .. } => {
+                if placed.is_some() {
+                    return Err(BuildError::Environment(format!(
+                        "{contract} is an environment and can't be placed"
+                    )));
+                }
                 continue;
             }
-            Resolved::Source {
-                source,
-                url,
-                revision,
-                path,
-                ..
-            } => {
-                let source_id = ObjectId::new(source.clone()).map_err(BuildError::Id)?;
-                let revision = GitRevision::parse(revision).ok().flatten().ok_or_else(|| {
-                    BuildError::Environment(format!("{revision} is not a git: revision"))
-                })?;
-                // Placed in the source tree (§37 sub-decision 7): a
-                // writable copy, made once the loop is done so outer
-                // placements land before the ones nested inside them.
-                if let Some(path) = path {
-                    placements.push(Placement {
-                        path: path.clone(),
-                        source: source_id,
-                        revision,
-                        url: url.clone(),
-                        label,
-                    });
-                    continue;
+        };
+        // Placed in the source tree: a writable copy, made once the loop
+        // is done so outer placements land before the ones nested in
+        // them.
+        if let Some(placed) = placed {
+            placements.push(Placement {
+                path: placed.path.to_owned(),
+                from: placed.from.map(str::to_owned),
+                overlay: placed.overlay,
+                what,
+                label,
+            });
+            continue;
+        }
+        let mount = match what {
+            Placed::Content { object, snapshot } => {
+                unplaced(format!("object:{object}"))?;
+                let host = deps.join("content").join(snapshot.as_str());
+                if !host.exists() {
+                    fs::create_dir_all(&host)
+                        .map_err(|source| io_error("creating", &host, source))?;
+                    export_tree(trees, &object, &snapshot, &host)?;
                 }
+                Mount {
+                    host,
+                    guest: format!("/kairo/content/{snapshot}"),
+                }
+            }
+            Placed::Artifact(artifact) => {
+                unplaced(format!("artifact {artifact}"))?;
+                let host = deps.join("artifact").join(artifact.as_str());
+                if !host.exists() {
+                    fs::create_dir_all(&host)
+                        .map_err(|source| io_error("creating", &host, source))?;
+                    materialize_artifact(store, &artifact, &host)?;
+                }
+                Mount {
+                    host,
+                    guest: format!("/kairo/artifact/{artifact}"),
+                }
+            }
+            Placed::Source {
+                source,
+                revision,
+                url,
+            } => {
+                unplaced(format!("{url} at {revision}"))?;
                 let staged = deps
                     .join("source")
-                    .join(source_id.as_str())
+                    .join(source.as_str())
                     .join(revision.oid());
                 if !staged.exists() {
                     fs::create_dir_all(&staged)
                         .map_err(|source| io_error("creating", &staged, source))?;
-                    export_source(trees, &source_id, &revision, url, &staged)?;
+                    export_source(trees, &source, &revision, &url, &staged)?;
                 }
                 let mount = Mount {
                     host: staged,
-                    guest: format!("/kairo/source/{source_id}/{}", revision.oid()),
+                    guest: format!("/kairo/source/{source}/{}", revision.oid()),
                 };
                 env.insert(provider_var(&label), seen(&mount));
                 if !mounts.iter().any(|existing| existing.guest == mount.guest) {
@@ -695,6 +828,8 @@ pub fn run_plan(
                 }
                 continue;
             }
+            // A file always has a path.
+            Placed::File(_) => continue,
         };
         let bin = format!("{}/bin", seen(&mount));
         if mount.host.join("bin").is_dir() && !path_dirs.contains(&bin) {
@@ -705,60 +840,85 @@ pub fn run_plan(
             mounts.push(mount);
         }
     }
+    // Shallowest first, so a placement nested in another lands in it.
     placements.sort_by_key(|placement| placement.path.split('/').count());
-    for placement in placements {
+    for (index, placement) in placements.into_iter().enumerate() {
         let inside = placement_target(&src, &placement.path)?;
-        // A gitlink leaves a hole in its parent's tree; anything there
-        // already is the snapshot's own content.
-        let occupied = fs::read_dir(&inside)
-            .map(|mut entries| entries.next().is_some())
-            .unwrap_or_else(|_| inside.exists());
-        if occupied {
-            return Err(BuildError::PlacementOccupied {
-                path: placement.path,
-            });
-        }
-        fs::create_dir_all(&inside).map_err(|source| io_error("creating", &inside, source))?;
-        export_source(
-            trees,
-            &placement.source,
-            &placement.revision,
-            &placement.url,
-            &inside,
-        )?;
+        let staging = deps.join("placed").join(index.to_string());
+        fs::create_dir_all(&staging).map_err(|source| io_error("creating", &staging, source))?;
+        let tree = match &placement.what {
+            Placed::File(source) => {
+                let bytes = store.get_file_source_bytes(source).map_err(|error| {
+                    BuildError::FileSource {
+                        path: placement.path.clone(),
+                        reason: error.to_string(),
+                    }
+                })?;
+                let file = staging.join("file");
+                fs::write(&file, bytes).map_err(|source| io_error("writing", &file, source))?;
+                file
+            }
+            Placed::Content { object, snapshot } => {
+                export_tree(trees, object, snapshot, &staging)?;
+                staging.clone()
+            }
+            Placed::Artifact(artifact) => {
+                materialize_artifact(store, artifact, &staging)?;
+                staging.clone()
+            }
+            Placed::Source {
+                source,
+                revision,
+                url,
+            } => {
+                export_source(trees, source, revision, url, &staging)?;
+                staging.clone()
+            }
+        };
+        let tree = match &placement.from {
+            None => tree,
+            Some(from) => {
+                let sub = placement_target(&tree, from)?;
+                if !sub
+                    .symlink_metadata()
+                    .is_ok_and(|meta| meta.file_type().is_dir())
+                {
+                    return Err(BuildError::Environment(format!(
+                        "the dependency placed at {} has no directory {from}",
+                        placement.path
+                    )));
+                }
+                sub
+            }
+        };
+        place(&tree, &inside, placement.overlay).map_err(|error| match error {
+            PlaceError::Occupied => BuildError::PlacementOccupied {
+                path: placement.path.clone(),
+            },
+            PlaceError::Io(error) => error,
+        })?;
         let mount = Mount {
             host: inside,
-            guest: format!("{GUEST_SRC}/{}", placement.path),
+            guest: format!("{guest_src}/{}", placement.path),
         };
-        env.insert(provider_var(&placement.label), seen(&mount));
-    }
-    // File sources (§38 sub-decision 3), each checked against its hash
-    // as it is read.
-    for (path, source) in files {
-        let inside = placement_target(&src, &path)?;
-        if inside.symlink_metadata().is_ok() {
-            return Err(BuildError::PlacementOccupied { path });
+        if matches!(placement.what, Placed::Artifact(_) | Placed::Content { .. }) {
+            let bin = format!("{}/bin", seen(&mount));
+            if mount.host.join("bin").is_dir() && !path_dirs.contains(&bin) {
+                path_dirs.push(bin);
+            }
         }
-        let bytes =
-            store
-                .get_file_source_bytes(&source)
-                .map_err(|error| BuildError::FileSource {
-                    path: path.clone(),
-                    reason: error.to_string(),
-                })?;
-        if let Some(parent) = inside.parent() {
-            fs::create_dir_all(parent).map_err(|source| io_error("creating", parent, source))?;
+        if !matches!(placement.what, Placed::File(_)) {
+            env.insert(provider_var(&placement.label), seen(&mount));
         }
-        fs::write(&inside, bytes).map_err(|source| io_error("writing", &inside, source))?;
     }
     path_dirs.extend(host_tool_dirs);
     let src_mount = Mount {
         host: src.clone(),
-        guest: GUEST_SRC.to_owned(),
+        guest: if rooted { "/" } else { GUEST_SRC }.to_owned(),
     };
     let home_mount = Mount {
         host: home.clone(),
-        guest: GUEST_HOME.to_owned(),
+        guest: if rooted { ROOTED_HOME } else { GUEST_HOME }.to_owned(),
     };
     env.insert("HOME".to_owned(), seen(&home_mount));
     env.insert("LANG".to_owned(), "C".to_owned());
@@ -775,10 +935,10 @@ pub fn run_plan(
     } else {
         src.join(target.workdir())
     };
-    let guest_workdir = if target.workdir() == "." {
-        GUEST_SRC.to_owned()
-    } else {
-        format!("{GUEST_SRC}/{}", target.workdir())
+    let guest_workdir = match (target.workdir(), rooted) {
+        (".", true) => "/".to_owned(),
+        (".", false) => GUEST_SRC.to_owned(),
+        (workdir, _) => format!("{guest_src}/{workdir}"),
     };
     let stdout_path = log.join("stdout");
     let stderr_path = log.join("stderr");
@@ -807,15 +967,26 @@ pub fn run_plan(
                     "--die-with-parent",
                     "--new-session",
                 ])
-                .args(["--hostname", "kairo", "--uid", "1000", "--gid", "1000"])
-                .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
-                .args(["--dir", "/kairo"])
-                .arg("--bind")
-                .arg(&src)
-                .arg(GUEST_SRC)
-                .arg("--bind")
-                .arg(&home)
-                .arg(GUEST_HOME);
+                .args(["--hostname", "kairo", "--uid", "1000", "--gid", "1000"]);
+            if rooted {
+                // The tree first, so the kernel filesystems mount over
+                // it; nothing else from the host.
+                process
+                    .arg("--bind")
+                    .arg(&src)
+                    .arg("/")
+                    .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]);
+            } else {
+                process
+                    .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
+                    .args(["--dir", "/kairo"])
+                    .arg("--bind")
+                    .arg(&src)
+                    .arg(GUEST_SRC)
+                    .arg("--bind")
+                    .arg(&home)
+                    .arg(GUEST_HOME);
+            }
             for mount in &mounts {
                 process.arg("--ro-bind").arg(&mount.host).arg(&mount.guest);
             }

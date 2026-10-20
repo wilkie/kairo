@@ -733,3 +733,220 @@ fn a_probe_of_a_missing_engine_says_why() {
     let error = Bubblewrap::probe(Path::new("/nonexistent/bwrap")).expect_err("no such engine");
     assert!(error.contains("cannot run"), "{error}");
 }
+
+#[test]
+fn placements_take_a_subtree_and_overlay_what_the_tree_holds() -> TestResult {
+    use kairo_store::SourceStore as _;
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let mut world = World::new();
+    world.object(&[
+        (
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "data"
+            name = "upstream"
+            [[provides]]
+            provides = "data:upstream"
+            "#,
+        ),
+        ("sub/a.txt", "upstream a"),
+        ("sub/b.txt", "upstream b"),
+        ("sub/deep/c.txt", "upstream c"),
+        ("top.txt", "not placed"),
+    ]);
+    world.fixture.store.put_file_source(
+        &kairo_statement::FileSourceGenesis::new(kairo_statement::Sha256Digest::parse(abc)?),
+        b"abc",
+    )?;
+    let outputs = r#"
+        [[build.targets.outputs]]
+        name = "vendor"
+        path = "vendor"
+        artifact_path = "vendor"
+        kind = "directory"
+    "#;
+    let app = |world: &mut World, overlay: bool| {
+        let deps = format!(
+            r#"
+            [[dependencies]]
+            kind = "provides"
+            provides = "data:upstream"
+            path = "vendor"
+            from = "sub"
+            overlay = {overlay}
+            [[dependencies]]
+            kind = "file"
+            sha256 = "{abc}"
+            path = "vendor/deep/c.txt"
+            overlay = {overlay}
+            "#
+        );
+        world.object(&[
+            (
+                "kairo.toml",
+                &app_manifest(r#"["sh", "-c", "true"]"#, outputs, &deps),
+            ),
+            // The wrapper's own files, which an overlay keeps.
+            ("vendor/a.txt", "mine"),
+            ("vendor/deep/keep.txt", "mine too"),
+        ])
+    };
+
+    let overlaid = app(&mut world, true);
+    let plan = world.plan(&overlaid.object_id, "release");
+    let execution = world.run(&plan, Duration::from_secs(30))?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?}",
+        execution.record.diagnostics
+    );
+    let tree = execution.artifact.as_ref().expect("artifact");
+    let files: Vec<(String, String)> = tree
+        .entries
+        .iter()
+        .map(|entry| (entry.path.clone(), world.blob_text(&entry.blob)))
+        .collect();
+    let expected = [
+        ("vendor/a.txt", "mine"),
+        ("vendor/b.txt", "upstream b"),
+        // The file lands after the shallower placement, which already
+        // put a c.txt there; an overlay never replaces what exists.
+        ("vendor/deep/c.txt", "upstream c"),
+        ("vendor/deep/keep.txt", "mine too"),
+    ];
+    assert_eq!(
+        files,
+        expected
+            .iter()
+            .map(|(path, text)| ((*path).to_owned(), (*text).to_owned()))
+            .collect::<Vec<_>>()
+    );
+
+    // Without overlay, the wrapper's own vendor/ is in the way.
+    let plain = app(&mut world, false);
+    let plan = world.plan(&plain.object_id, "release");
+    assert!(matches!(
+        world.run(&plan, Duration::from_secs(30)),
+        Err(BuildError::PlacementOccupied { path }) if path == "vendor"
+    ));
+    Ok(())
+}
+
+#[test]
+fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(&[
+        (
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "busybox"
+            [[provides]]
+            provides = "tool:sh"
+            "#,
+        ),
+        ("bin/busybox", "@copy:/usr/bin/busybox"),
+        ("bin/sh", "@link:busybox"),
+    ]);
+    let host = Host::detect();
+    let contract = host.root_contract();
+    let manifest = |placed: bool| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "app"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["/usr/bin/sh", "-c", "mkdir -p /out; {{ ls /; id -u; echo $HOME $KAIRO_SRC $PATH; pwd; test -e /kairo && echo kairo || echo no-kairo; cat /etc/motd; }} > /out/report"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            {}
+            [[build.targets.outputs]]
+            name = "report"
+            path = "out/report"
+            artifact_path = "report"
+            kind = "file"
+            "#,
+            if placed { "path = \"usr\"" } else { "" }
+        )
+    };
+    let app = world.object(&[
+        ("kairo.toml", &manifest(true)),
+        ("etc/motd", "the tree's own /etc"),
+    ]);
+    let mut engine_host = host.clone();
+    engine_host
+        .engines
+        .extend([host.contract(), contract.clone()]);
+    let plan = world.plan_with(&engine_host, &app.object_id, "release");
+    assert_eq!(plan.manifest.environment, contract);
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap.clone()),
+    )?;
+    let record = &execution.record;
+    assert_eq!(
+        record.status,
+        Status::Success,
+        "{:?} {}",
+        record.diagnostics,
+        world.blob_text(&record.logs.stderr)
+    );
+    assert_eq!(record.environment, contract);
+    let tree = execution.artifact.as_ref().expect("artifact");
+    let report = world.blob_text(&tree.entries[0].blob);
+    let lines: Vec<&str> = report.lines().collect();
+    // `/` is the tree: its own files, the placed provider, the kernel
+    // filesystems, and nothing from the host or /kairo.
+    let root: Vec<&str> = lines[..lines.len() - 5].to_vec();
+    assert_eq!(
+        root,
+        ["dev", "etc", "kairo.toml", "out", "proc", "tmp", "usr"],
+        "{report}"
+    );
+    let rest = &lines[lines.len() - 5..];
+    assert_eq!(rest[0], "1000", "{report}");
+    assert_eq!(rest[1], "/tmp / /usr/bin", "{report}");
+    assert_eq!(rest[2], "/", "{report}");
+    assert_eq!(rest[3], "no-kairo", "{report}");
+    assert_eq!(rest[4], "the tree's own /etc", "{report}");
+
+    // An unplaced dependency has nowhere to appear.
+    let unplaced = world.object(&[("kairo.toml", &manifest(false))]);
+    let plan = world.plan_with(&engine_host, &unplaced.object_id, "release");
+    let refused = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1,
+        &Limits {
+            timeout: Duration::from_secs(5),
+        },
+        &Engine::Bubblewrap(bwrap),
+    );
+    assert!(
+        matches!(&refused, Err(BuildError::Environment(message)) if message.contains("must be placed")),
+        "{refused:?}"
+    );
+    Ok(())
+}

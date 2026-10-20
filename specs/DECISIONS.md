@@ -3756,8 +3756,9 @@ Sub-decisions:
 
 2. **Fetching a file source.** `kairo source fetch-file <url> --sha256
    <hex>` downloads the URL with the source transport rules (§37
-   sub-decision 2 as amended: `https` only for files, an initial
-   redirect followed, size and time limits), refuses bytes that don't
+   sub-decision 2 as amended: `https` only for files, or `http` for a
+   loopback host, as federation peers allow; one redirect followed;
+   size and time limits), refuses bytes that don't
    hash to the expected value, stores the blob, and signs a file
    observation. Without `--sha256` it records whatever it got, and the
    output names the hash. Nothing fetched is ever dropped.
@@ -3775,8 +3776,9 @@ Sub-decisions:
      native tree already holds, which take precedence, instead of
      requiring an empty path; so a wrapper can supply its own
      configuration over an upstream tree;
-   - a provides dependency resolved to an artifact may name `path` to
-     copy that artifact there.
+   - a provides or object dependency may name `path` to copy what it
+     resolved to there, an artifact or an object's tree; an environment
+     or host tool can't be placed.
 
 5. **The `linux-root` contract** (`schemas/environment/linux-root-v1.md`,
    label `environment:linux-root/<arch>`): the guest's `/` is the
@@ -3785,7 +3787,7 @@ Sub-decisions:
    Every dependency must be placed, since there is nowhere else for it
    to appear. Everything else matches `linux` v1: no network, hostname
    `kairo`, uid and gid 1000, the same environment variables with
-   `KAIRO_SRC=/`, the clock not frozen. The command runs in `/<workdir>`;
+   `KAIRO_SRC=/` and `HOME=/tmp`, the clock not frozen. The command runs in `/<workdir>`;
    declared outputs are collected from the tree into the store as
    always. It is a separate label because where the guest finds things
    is part of the promise and builds bake those paths into their

@@ -316,6 +316,29 @@ sha256 = "183a40ea47ea49f8a1e3bd1b9d12e676374d64d63bc79e7bc1ae7d673dfdf25d"
 path = "external/distfiles/mes-0.27.1.tar.gz"
 ```
 
+**Placement** (`DECISIONS.md` §38 sub-decision 4). Any dependency that
+brings a tree, a source, a provides or object dependency resolved to an
+artifact or an object's tree, may name `path` to be copied there in the
+source tree, writable, for the build; a file dependency always has one.
+Two options qualify a `path`:
+
+- `from = "<subpath>"` places only that subtree of the dependency
+  (not for files);
+- `overlay = true` fills in around what the native tree already holds
+  at `path`, which wins, instead of requiring the path to be empty.
+
+```toml
+[[dependencies]]
+kind = "provides"
+provides = "tool:kaem"
+path = "AMD64/bin"
+from = "bin"
+```
+
+Placements may nest but not share a path; shallower ones land first.
+Under the `environment:linux-root/<arch>` contract, every dependency
+must be placed.
+
 In `kairo.toml`, fields such as `object` and `snapshot` use bare ID payloads
 because the field names provide type context. Standalone references use typed
 forms such as `object:z6MkObject...` or

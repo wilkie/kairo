@@ -114,10 +114,16 @@ names a build output (an artifact provider).
 
 | Variant | Encoding |
 |---|---|
-| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given |
-| `Object` | `string("object") || string(object_id) || selector` |
-| `Source` | `string("source") \|\| string(canonical url) \|\| string(git revision) \|\| option<string>(path) \|\| u8(seed)` |
-| `File` | `string("file") \|\| string(lowercase hex sha256) \|\| string(path)` |
+| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given, then `placement` when placed |
+| `Object` | `string("object") \|\| string(object_id) \|\| selector`, then `placement` when placed |
+| `Source` | `string("source") \|\| string(canonical url) \|\| string(git revision) \|\| option<string>(path) \|\| u8(seed)`, then `placement options` when placed |
+| `File` | `string("file") \|\| string(lowercase hex sha256) \|\| string(path)`, then `string("overlay")` when it overlays |
+
+`placement` is `string("path") || string(path) || placement options`;
+`placement options` are `string("from") || string(from)` when a subtree
+is placed and `string("overlay")` when it overlays, each present only
+when set, so a dependency without them hashes as it did before they
+existed (`DECISIONS.md` §38 sub-decision 4).
 
 A `Source` dependency (`DECISIONS.md` §37) names a source object by URL,
 hashed in canonical form so its spellings don't change the hash, pinned
@@ -128,8 +134,9 @@ may not overlap. `seed` is `1` when the dependency is a seed.
 
 A `File` dependency (`DECISIONS.md` §38) names a file source by the
 SHA-256 of its bytes and places the file at `path`, a relative file path
-in the source tree. No two placed dependencies, of either kind, share a
-path.
+in the source tree. No two placed dependencies, of any kind, share a
+path; `from` and `overlay` require a `path`, and a file takes no
+`from`.
 
 `ObjectDependencySelector` variants:
 

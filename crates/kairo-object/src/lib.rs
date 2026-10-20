@@ -604,12 +604,60 @@ pub enum DependencyDeclaration {
     File(FileDependency),
 }
 
+/// Where a dependency's tree goes in the source tree (`DECISIONS.md`
+/// §37 sub-decision 7, §38 sub-decision 4): at `path`, optionally only
+/// its `from` subtree, and with `overlay` filling in around what the
+/// native tree already holds there, which wins, instead of requiring
+/// the path to be empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placement {
+    path: String,
+    from: Option<String>,
+    overlay: bool,
+}
+
+impl Placement {
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The subtree of the dependency placed, rather than all of it.
+    pub fn from(&self) -> Option<&str> {
+        self.from.as_deref()
+    }
+
+    pub fn overlay(&self) -> bool {
+        self.overlay
+    }
+
+    /// `from` and `overlay`, tagged and present only when set, so a
+    /// plain placement hashes as it did before they existed.
+    fn encode_options(&self, out: &mut Vec<u8>) {
+        if let Some(from) = &self.from {
+            encode_str(out, "from");
+            encode_str(out, from);
+        }
+        if self.overlay {
+            encode_str(out, "overlay");
+        }
+    }
+
+    /// The whole placement, tagged, for dependency kinds that gained
+    /// placement after their encoding was fixed.
+    fn encode_tagged(&self, out: &mut Vec<u8>) {
+        encode_str(out, "path");
+        encode_str(out, &self.path);
+        self.encode_options(out);
+    }
+}
+
 /// A dependency on a file source: its hash, which is its identity, and
 /// where the file goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDependency {
     sha256: kairo_statement::Sha256Digest,
     path: String,
+    overlay: bool,
 }
 
 impl FileDependency {
@@ -626,12 +674,20 @@ impl FileDependency {
     pub fn path(&self) -> &str {
         &self.path
     }
+
+    /// Whether a file the native tree already holds at `path` wins.
+    pub fn overlay(&self) -> bool {
+        self.overlay
+    }
 }
 
 impl CanonicalEncode for FileDependency {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, &self.sha256.to_string());
         encode_str(out, &self.path);
+        if self.overlay {
+            encode_str(out, "overlay");
+        }
     }
 }
 
@@ -643,7 +699,7 @@ impl CanonicalEncode for FileDependency {
 pub struct SourceDependency {
     url: kairo_statement::SourceUrl,
     revision: kairo_statement::GitRevision,
-    path: Option<String>,
+    placement: Option<Placement>,
     seed: bool,
 }
 
@@ -663,7 +719,11 @@ impl SourceDependency {
 
     /// Where in the source tree it is placed, if anywhere.
     pub fn path(&self) -> Option<&str> {
-        self.path.as_deref()
+        self.placement.as_ref().map(Placement::path)
+    }
+
+    pub fn placement(&self) -> Option<&Placement> {
+        self.placement.as_ref()
     }
 
     pub fn seed(&self) -> bool {
@@ -675,8 +735,13 @@ impl CanonicalEncode for SourceDependency {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, self.url.as_str());
         encode_str(out, &self.revision.to_string());
-        encode_option(out, self.path.as_ref(), |out, path| encode_str(out, path));
+        encode_option(out, self.path().map(str::to_owned).as_ref(), |out, path| {
+            encode_str(out, path);
+        });
         encode_u8(out, u8::from(self.seed));
+        if let Some(placement) = &self.placement {
+            placement.encode_options(out);
+        }
     }
 }
 
@@ -707,9 +772,16 @@ impl CanonicalEncode for DependencyDeclaration {
 pub struct ProvidesDependency {
     provides: String,
     version: Option<String>,
+    placement: Option<Placement>,
 }
 
 impl ProvidesDependency {
+    /// Where the provider's artifact or tree is copied in the source
+    /// tree, if anywhere (§38 sub-decision 4).
+    pub fn placement(&self) -> Option<&Placement> {
+        self.placement.as_ref()
+    }
+
     pub fn provides(&self) -> &str {
         &self.provides
     }
@@ -729,6 +801,9 @@ impl CanonicalEncode for ProvidesDependency {
             encode_str(out, "version");
             encode_str(out, version);
         }
+        if let Some(placement) = &self.placement {
+            placement.encode_tagged(out);
+        }
     }
 }
 
@@ -736,11 +811,22 @@ impl CanonicalEncode for ProvidesDependency {
 pub struct ObjectDependency {
     object: ObjectId,
     selector: ObjectDependencySelector,
+    placement: Option<Placement>,
 }
 
 impl ObjectDependency {
     pub fn new(object: ObjectId, selector: ObjectDependencySelector) -> Self {
-        Self { object, selector }
+        Self {
+            object,
+            selector,
+            placement: None,
+        }
+    }
+
+    /// Where the object's tree is copied in the source tree, if
+    /// anywhere (§38 sub-decision 4).
+    pub fn placement(&self) -> Option<&Placement> {
+        self.placement.as_ref()
     }
 
     pub fn object(&self) -> &ObjectId {
@@ -756,6 +842,9 @@ impl CanonicalEncode for ObjectDependency {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, self.object.as_str());
         self.selector.encode_canonical(out);
+        if let Some(placement) = &self.placement {
+            placement.encode_tagged(out);
+        }
     }
 }
 
@@ -938,6 +1027,8 @@ pub enum ManifestError {
     InvalidSourceDependency(String),
     /// A `kind = "file"` dependency is malformed.
     InvalidFileDependency(String),
+    /// `from` or `overlay` without the `path` they qualify.
+    PlacementWithoutPath,
     /// Two dependencies of one target placed at the same path.
     PlacementConflict {
         target: String,
@@ -997,10 +1088,13 @@ impl fmt::Display for ManifestError {
             ),
             Self::SourceFieldsOnOtherKind(kind) => write!(
                 f,
-                "a {kind} dependency can't take source, revision, path, seed, or sha256 (those are for kind = \"source\" and kind = \"file\")"
+                "a {kind} dependency can't take source, revision, seed, or sha256 (those are for kind = \"source\" and kind = \"file\")"
             ),
             Self::InvalidSourceDependency(message) => write!(f, "source dependency {message}"),
             Self::InvalidFileDependency(message) => write!(f, "file dependency {message}"),
+            Self::PlacementWithoutPath => {
+                f.write_str("a dependency's from and overlay need the path they place at")
+            }
             Self::PlacementConflict { target, path } => write!(
                 f,
                 "build target {target} places two dependencies at {path}"
@@ -1043,6 +1137,7 @@ impl Error for ManifestError {
             | Self::SourceFieldsOnOtherKind(_)
             | Self::InvalidSourceDependency(_)
             | Self::InvalidFileDependency(_)
+            | Self::PlacementWithoutPath
             | Self::PlacementConflict { .. } => None,
         }
     }
@@ -1135,7 +1230,12 @@ impl RawObjectManifest {
                 let path = match dependency {
                     DependencyDeclaration::Source(source) => source.path(),
                     DependencyDeclaration::File(file) => Some(file.path()),
-                    _ => None,
+                    DependencyDeclaration::Provides(provides) => {
+                        provides.placement().map(Placement::path)
+                    }
+                    DependencyDeclaration::Object(object) => {
+                        object.placement().map(Placement::path)
+                    }
                 };
                 let Some(path) = path else { continue };
                 if placed.contains(&path) {
@@ -1388,13 +1488,34 @@ struct RawDependencyDeclaration {
     path: Option<String>,
     seed: Option<bool>,
     sha256: Option<String>,
+    from: Option<String>,
+    overlay: Option<bool>,
 }
 
 impl RawDependencyDeclaration {
+    /// `path`, `from`, and `overlay` as a placement: `from` and
+    /// `overlay` only with a `path`.
+    fn placement(&mut self) -> Result<Option<Placement>, ManifestError> {
+        let from = self
+            .from
+            .take()
+            .map(|from| ensure_relative_path("dependencies.from", from))
+            .transpose()?;
+        let overlay = self.overlay.take().unwrap_or(false);
+        match self.path.take() {
+            Some(path) => Ok(Some(Placement {
+                path: ensure_relative_path("dependencies.path", path)?,
+                from,
+                overlay,
+            })),
+            None if from.is_some() || overlay => Err(ManifestError::PlacementWithoutPath),
+            None => Ok(None),
+        }
+    }
+
     fn validate(self) -> Result<DependencyDeclaration, ManifestError> {
         let source_fields = self.source.is_some()
             || self.revision.is_some()
-            || self.path.is_some()
             || self.seed.is_some()
             || self.sha256.is_some();
         match self.kind.as_str() {
@@ -1417,9 +1538,10 @@ impl RawDependencyDeclaration {
             || self.source.is_some()
             || self.revision.is_some()
             || self.seed.is_some()
+            || self.from.is_some()
         {
             return Err(ManifestError::InvalidFileDependency(
-                "takes sha256 and path only; a file is named by its hash".to_owned(),
+                "takes sha256, path, and overlay only; a file is named by its hash".to_owned(),
             ));
         }
         let sha256 = self.sha256.ok_or_else(|| {
@@ -1435,10 +1557,14 @@ impl RawDependencyDeclaration {
             )
         })?;
         let path = ensure_relative_path("dependencies.path", path)?;
-        Ok(DependencyDeclaration::File(FileDependency { sha256, path }))
+        Ok(DependencyDeclaration::File(FileDependency {
+            sha256,
+            path,
+            overlay: self.overlay.unwrap_or(false),
+        }))
     }
 
-    fn validate_source(self) -> Result<DependencyDeclaration, ManifestError> {
+    fn validate_source(mut self) -> Result<DependencyDeclaration, ManifestError> {
         if self.provides.is_some()
             || self.object.is_some()
             || self.version.is_some()
@@ -1446,11 +1572,12 @@ impl RawDependencyDeclaration {
             || self.sha256.is_some()
         {
             return Err(ManifestError::InvalidSourceDependency(
-                "takes source, revision, path, and seed only; sources are pinned by revision, \
-                 never by version"
+                "takes source, revision, path, from, overlay, and seed only; sources are \
+                 pinned by revision, never by version"
                     .to_owned(),
             ));
         }
+        let placement = self.placement()?;
         let url = self.source.ok_or_else(|| {
             ManifestError::InvalidSourceDependency("needs source, the repository URL".to_owned())
         })?;
@@ -1469,19 +1596,16 @@ impl RawDependencyDeclaration {
                     "revision {revision:?} is not a git: revision"
                 ))
             })?;
-        let path = self
-            .path
-            .map(|path| ensure_relative_path("dependencies.path", path))
-            .transpose()?;
         Ok(DependencyDeclaration::Source(SourceDependency {
             url,
             revision,
-            path,
+            placement,
             seed: self.seed.unwrap_or(false),
         }))
     }
 
-    fn validate_provides(self) -> Result<DependencyDeclaration, ManifestError> {
+    fn validate_provides(mut self) -> Result<DependencyDeclaration, ManifestError> {
+        let placement = self.placement()?;
         let Some(provides) = self.provides else {
             return Err(ManifestError::MissingProvidesDependency);
         };
@@ -1494,10 +1618,12 @@ impl RawDependencyDeclaration {
         Ok(DependencyDeclaration::Provides(ProvidesDependency {
             provides,
             version: self.version,
+            placement,
         }))
     }
 
-    fn validate_object(self) -> Result<DependencyDeclaration, ManifestError> {
+    fn validate_object(mut self) -> Result<DependencyDeclaration, ManifestError> {
+        let placement = self.placement()?;
         let Some(object) = self.object else {
             return Err(ManifestError::MissingObjectDependencyObject);
         };
@@ -1515,9 +1641,11 @@ impl RawDependencyDeclaration {
             (Some(_), Some(_)) => return Err(ManifestError::ConflictingObjectDependencySelectors),
         };
 
-        Ok(DependencyDeclaration::Object(ObjectDependency::new(
-            object, selector,
-        )))
+        Ok(DependencyDeclaration::Object(ObjectDependency {
+            object,
+            selector,
+            placement,
+        }))
     }
 }
 
@@ -2295,7 +2423,7 @@ mod tests {
             ),
             (
                 format!("{base}\nrevision = \"git:sha1:{}\"", "a".repeat(40)),
-                "sha256 and path only",
+                "sha256, path, and overlay only",
             ),
             (base.replace("distfiles/", "../"), "relative path"),
         ] {
@@ -2320,6 +2448,108 @@ mod tests {
             ObjectManifest::parse_toml(&doubled),
             Err(ManifestError::PlacementConflict { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn placements_take_from_and_overlay_and_extend_to_providers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let oid = "a".repeat(40);
+        let manifest = |dependency: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "wrapper"
+                [[build.targets]]
+                name = "amd64"
+                command = ["./run"]
+                [[build.targets.dependencies]]
+                {dependency}
+                [[build.targets.outputs]]
+                name = "out"
+                path = "out"
+                artifact_path = "out"
+                kind = "directory"
+                "#
+            )
+        };
+        let source = format!(
+            "kind = \"source\"\nsource = \"https://example.org/lb\"\nrevision = \"git:sha1:{oid}\"\npath = \"steps\""
+        );
+        let plain = ObjectManifest::parse_toml(&manifest(&source))?;
+        let with =
+            |extra: &str| ObjectManifest::parse_toml(&manifest(&format!("{source}\n{extra}")));
+        let options = with("from = \"steps\"\noverlay = true")?;
+        let DependencyDeclaration::Source(dependency) = &options
+            .build_target("amd64")
+            .ok_or("target")?
+            .dependencies()[0]
+        else {
+            return Err("not a source".into());
+        };
+        let placement = dependency.placement().ok_or("placement")?;
+        assert_eq!(
+            (placement.path(), placement.from(), placement.overlay()),
+            ("steps", Some("steps"), true)
+        );
+        // Each option is hashed; a plain placement hashes as before.
+        let hashes = [
+            plain.manifest_hash(),
+            with("from = \"steps\"")?.manifest_hash(),
+            with("overlay = true")?.manifest_hash(),
+            options.manifest_hash(),
+        ];
+        for (i, a) in hashes.iter().enumerate() {
+            for b in &hashes[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+        assert_eq!(
+            with("overlay = false")?.manifest_hash(),
+            plain.manifest_hash()
+        );
+
+        // A provider's artifact can be placed too.
+        let provides = ObjectManifest::parse_toml(&manifest(
+            "kind = \"provides\"\nprovides = \"tool:kaem\"\npath = \"AMD64\"\nfrom = \"bin\"",
+        ))?;
+        let DependencyDeclaration::Provides(dependency) = &provides
+            .build_target("amd64")
+            .ok_or("target")?
+            .dependencies()[0]
+        else {
+            return Err("not provides".into());
+        };
+        assert_eq!(
+            dependency.placement().map(Placement::from),
+            Some(Some("bin"))
+        );
+        let unplaced =
+            ObjectManifest::parse_toml(&manifest("kind = \"provides\"\nprovides = \"tool:kaem\""))?;
+        assert_ne!(unplaced.manifest_hash(), provides.manifest_hash());
+
+        for (dependency, expected) in [
+            (
+                "kind = \"provides\"\nprovides = \"tool:kaem\"\nfrom = \"bin\"".to_owned(),
+                "need the path",
+            ),
+            (format!("{source}\nfrom = \"../x\""), "relative path"),
+            (
+                format!(
+                    "kind = \"file\"\nsha256 = \"{}\"\npath = \"x\"\nfrom = \"y\"",
+                    "0".repeat(64)
+                ),
+                "sha256, path, and overlay only",
+            ),
+        ] {
+            let result = ObjectManifest::parse_toml(&manifest(&dependency));
+            assert!(
+                matches!(&result, Err(error) if error.to_string().contains(expected)),
+                "{dependency}: {result:?}"
+            );
+        }
         Ok(())
     }
 
