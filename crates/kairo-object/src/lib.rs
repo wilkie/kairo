@@ -596,6 +596,54 @@ impl CanonicalEncode for ProvideDeclaration {
 pub enum DependencyDeclaration {
     Provides(ProvidesDependency),
     Object(ObjectDependency),
+    /// A source object at an exact upstream commit (`DECISIONS.md` §37
+    /// sub-decision 6).
+    Source(SourceDependency),
+}
+
+/// A dependency on a source object, pinned by upstream commit: the
+/// same pin on every node, and changed only by editing it. Optionally
+/// placed at a path inside the source tree (sub-decision 7), and
+/// optionally marked as a seed (sub-decision 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceDependency {
+    url: kairo_statement::SourceUrl,
+    revision: kairo_statement::GitRevision,
+    path: Option<String>,
+    seed: bool,
+}
+
+impl SourceDependency {
+    /// The source's canonical URL; its object id derives from it.
+    pub fn url(&self) -> &kairo_statement::SourceUrl {
+        &self.url
+    }
+
+    pub fn source(&self) -> ObjectId {
+        kairo_statement::SourceGenesis::new(self.url.clone()).object_id()
+    }
+
+    pub fn revision(&self) -> &kairo_statement::GitRevision {
+        &self.revision
+    }
+
+    /// Where in the source tree it is placed, if anywhere.
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    pub fn seed(&self) -> bool {
+        self.seed
+    }
+}
+
+impl CanonicalEncode for SourceDependency {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, self.url.as_str());
+        encode_str(out, &self.revision.to_string());
+        encode_option(out, self.path.as_ref(), |out, path| encode_str(out, path));
+        encode_u8(out, u8::from(self.seed));
+    }
 }
 
 impl CanonicalEncode for DependencyDeclaration {
@@ -607,6 +655,10 @@ impl CanonicalEncode for DependencyDeclaration {
             }
             Self::Object(dependency) => {
                 encode_str(out, "object");
+                dependency.encode_canonical(out);
+            }
+            Self::Source(dependency) => {
+                encode_str(out, "source");
                 dependency.encode_canonical(out);
             }
         }
@@ -842,6 +894,16 @@ pub enum ManifestError {
         target: String,
         output: String,
     },
+    /// `source`, `revision`, `path`, or `seed` on a `provides` or
+    /// `object` dependency.
+    SourceFieldsOnOtherKind(String),
+    InvalidSourceDependency(String),
+    /// Two dependencies of one target placed at the same path, or one
+    /// inside another.
+    PlacementConflict {
+        target: String,
+        path: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -894,6 +956,15 @@ impl fmt::Display for ManifestError {
                 f,
                 "provides {provides} must name both target and output, or neither"
             ),
+            Self::SourceFieldsOnOtherKind(kind) => write!(
+                f,
+                "a {kind} dependency can't take source, revision, path, or seed (those are for kind = \"source\")"
+            ),
+            Self::InvalidSourceDependency(message) => write!(f, "source dependency {message}"),
+            Self::PlacementConflict { target, path } => write!(
+                f,
+                "build target {target} places two dependencies at or inside {path}"
+            ),
             Self::UnknownArtifactProvider {
                 provides,
                 target,
@@ -928,7 +999,10 @@ impl Error for ManifestError {
             | Self::DuplicateArtifactPath { .. }
             | Self::UnknownOutputKind(_)
             | Self::PartialArtifactProvider(_)
-            | Self::UnknownArtifactProvider { .. } => None,
+            | Self::UnknownArtifactProvider { .. }
+            | Self::SourceFieldsOnOtherKind(_)
+            | Self::InvalidSourceDependency(_)
+            | Self::PlacementConflict { .. } => None,
         }
     }
 }
@@ -1007,15 +1081,39 @@ impl RawObjectManifest {
                 }
             }
         }
+        let dependencies = self
+            .dependencies
+            .into_iter()
+            .map(RawDependencyDeclaration::validate)
+            .collect::<Result<Vec<_>, _>>()?;
+        // A target's placed dependencies (its own and the manifest's)
+        // must not overlap.
+        for target in &build_targets {
+            let mut placed: Vec<&str> = Vec::new();
+            for dependency in dependencies.iter().chain(&target.dependencies) {
+                let DependencyDeclaration::Source(source) = dependency else {
+                    continue;
+                };
+                let Some(path) = source.path() else { continue };
+                let overlaps = placed.iter().any(|other| {
+                    other == &path
+                        || path.starts_with(&format!("{other}/"))
+                        || other.starts_with(&format!("{path}/"))
+                });
+                if overlaps {
+                    return Err(ManifestError::PlacementConflict {
+                        target: target.name.clone(),
+                        path: path.to_owned(),
+                    });
+                }
+                placed.push(path);
+            }
+        }
         Ok(ObjectManifest {
             kairo: self.kairo.validate()?,
             content: self.content.map(RawContentSection::validate).transpose()?,
             provides,
-            dependencies: self
-                .dependencies
-                .into_iter()
-                .map(RawDependencyDeclaration::validate)
-                .collect::<Result<Vec<_>, _>>()?,
+            dependencies,
             build_targets,
         })
     }
@@ -1247,15 +1345,69 @@ struct RawDependencyDeclaration {
     object: Option<String>,
     version: Option<String>,
     snapshot: Option<String>,
+    source: Option<String>,
+    revision: Option<String>,
+    path: Option<String>,
+    seed: Option<bool>,
 }
 
 impl RawDependencyDeclaration {
     fn validate(self) -> Result<DependencyDeclaration, ManifestError> {
+        let source_fields = self.source.is_some()
+            || self.revision.is_some()
+            || self.path.is_some()
+            || self.seed.is_some();
         match self.kind.as_str() {
+            "provides" | "object" if source_fields => {
+                Err(ManifestError::SourceFieldsOnOtherKind(self.kind.clone()))
+            }
             "provides" => self.validate_provides(),
             "object" => self.validate_object(),
+            "source" => self.validate_source(),
             kind => Err(ManifestError::UnknownDependencyKind(kind.to_owned())),
         }
+    }
+
+    fn validate_source(self) -> Result<DependencyDeclaration, ManifestError> {
+        if self.provides.is_some()
+            || self.object.is_some()
+            || self.version.is_some()
+            || self.snapshot.is_some()
+        {
+            return Err(ManifestError::InvalidSourceDependency(
+                "takes source, revision, path, and seed only; sources are pinned by revision, \
+                 never by version"
+                    .to_owned(),
+            ));
+        }
+        let url = self.source.ok_or_else(|| {
+            ManifestError::InvalidSourceDependency("needs source, the repository URL".to_owned())
+        })?;
+        let url = kairo_statement::SourceUrl::parse(&url)
+            .map_err(|error| ManifestError::InvalidSourceDependency(error.to_string()))?;
+        let revision = self.revision.ok_or_else(|| {
+            ManifestError::InvalidSourceDependency(
+                "needs revision, the upstream commit (git:sha1:<oid> or git:sha256:<oid>)"
+                    .to_owned(),
+            )
+        })?;
+        let revision = kairo_statement::GitRevision::parse(&revision)
+            .map_err(|error| ManifestError::InvalidSourceDependency(error.to_string()))?
+            .ok_or_else(|| {
+                ManifestError::InvalidSourceDependency(format!(
+                    "revision {revision:?} is not a git: revision"
+                ))
+            })?;
+        let path = self
+            .path
+            .map(|path| ensure_relative_path("dependencies.path", path))
+            .transpose()?;
+        Ok(DependencyDeclaration::Source(SourceDependency {
+            url,
+            revision,
+            path,
+            seed: self.seed.unwrap_or(false),
+        }))
     }
 
     fn validate_provides(self) -> Result<DependencyDeclaration, ManifestError> {
@@ -2018,6 +2170,102 @@ mod tests {
                 "{from} -> {to:?}: {manifest:?}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn parses_source_dependencies_pinned_by_revision() -> Result<(), Box<dyn std::error::Error>> {
+        let oid = "a".repeat(40);
+        let manifest = |extra: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "wrapper"
+                [[build.targets]]
+                name = "amd64"
+                command = ["./run"]
+                [[build.targets.dependencies]]
+                kind = "source"
+                source = "https://GitHub.com/oriansj/M2libc.git"
+                revision = "git:sha1:{oid}"
+                {extra}
+                [[build.targets.outputs]]
+                name = "bin"
+                path = "out"
+                artifact_path = "bin"
+                kind = "directory"
+                "#
+            )
+        };
+        let parsed = ObjectManifest::parse_toml(&manifest("path = \"M2libc\"\nseed = true"))?;
+        let target = parsed.build_target("amd64").ok_or("target")?;
+        let DependencyDeclaration::Source(source) = &target.dependencies()[0] else {
+            return Err("not a source dependency".into());
+        };
+        assert_eq!(source.url().as_str(), "https://github.com/oriansj/M2libc");
+        assert_eq!(source.revision().oid(), oid);
+        assert_eq!(source.path(), Some("M2libc"));
+        assert!(source.seed());
+
+        // The URL is hashed in canonical form: spellings don't matter.
+        let respelled = manifest("path = \"M2libc\"\nseed = true").replace(
+            "https://GitHub.com/oriansj/M2libc.git",
+            "git@github.com:oriansj/M2libc",
+        );
+        assert_eq!(
+            ObjectManifest::parse_toml(&respelled)?.manifest_hash(),
+            parsed.manifest_hash()
+        );
+        // Every field is hashed.
+        for changed in ["path = \"other\"\nseed = true", "path = \"M2libc\"", ""] {
+            assert_ne!(
+                ObjectManifest::parse_toml(&manifest(changed))?.manifest_hash(),
+                parsed.manifest_hash(),
+                "{changed}"
+            );
+        }
+
+        for (extra, expected) in [
+            ("version = \"^1\"", "never by version"),
+            ("path = \"../up\"", "relative path"),
+        ] {
+            let result = ObjectManifest::parse_toml(&manifest(extra));
+            assert!(
+                matches!(&result, Err(error) if error.to_string().contains(expected)),
+                "{extra}: {result:?}"
+            );
+        }
+        let unpinned = manifest("").replace(&format!("revision = \"git:sha1:{oid}\""), "");
+        assert!(matches!(
+            ObjectManifest::parse_toml(&unpinned),
+            Err(error) if error.to_string().contains("needs revision")
+        ));
+        let local = manifest("").replace(
+            "https://GitHub.com/oriansj/M2libc.git",
+            "file:///tmp/M2libc",
+        );
+        assert!(matches!(
+            ObjectManifest::parse_toml(&local),
+            Err(error) if error.to_string().contains("local path")
+        ));
+        let mixed = manifest("").replace("kind = \"source\"", "kind = \"object\"");
+        assert!(matches!(
+            ObjectManifest::parse_toml(&mixed),
+            Err(ManifestError::SourceFieldsOnOtherKind(_))
+        ));
+
+        let overlapping = manifest("path = \"lib\"").replace(
+            "[[build.targets.outputs]]",
+            &format!(
+                "[[build.targets.dependencies]]\nkind = \"source\"\nsource = \"https://example.org/x\"\nrevision = \"git:sha1:{oid}\"\npath = \"lib/inner\"\n[[build.targets.outputs]]"
+            ),
+        );
+        assert!(matches!(
+            ObjectManifest::parse_toml(&overlapping),
+            Err(ManifestError::PlacementConflict { .. })
+        ));
         Ok(())
     }
 

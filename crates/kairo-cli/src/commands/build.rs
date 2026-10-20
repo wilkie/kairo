@@ -166,6 +166,64 @@ impl TreeSource for CacheTrees<'_> {
         repo.export_tree(&commit, dest)
             .map_err(|error| SourceError(error.to_string()))
     }
+
+    fn export_source(
+        &self,
+        source: &ObjectId,
+        revision: &kairo_statement::GitRevision,
+        dest: &Path,
+    ) -> Result<bool, SourceError> {
+        let path = kairo_git::object_repo_path(&self.paths.git_root(), source.as_str())
+            .map_err(|error| SourceError(error.to_string()))?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        kairo_git::open(&path)
+            .and_then(|repo| repo.export_tree(revision, dest))
+            .map_err(|error| SourceError(error.to_string()))
+    }
+}
+
+/// Source objects' commits, from the managed Git cache (§37).
+struct CacheSources<'a> {
+    paths: &'a StorePaths,
+}
+
+impl kairo_resolver::SourceHolder for CacheSources<'_> {
+    fn holds(
+        &self,
+        source: &ObjectId,
+        revision: &kairo_statement::GitRevision,
+    ) -> Result<bool, SourceError> {
+        let path = kairo_git::object_repo_path(&self.paths.git_root(), source.as_str())
+            .map_err(|error| SourceError(error.to_string()))?;
+        if !path.exists() {
+            return Ok(false);
+        }
+        let repo = kairo_git::open(&path).map_err(|error| SourceError(error.to_string()))?;
+        if repo
+            .object_format()
+            .map_err(|error| SourceError(error.to_string()))?
+            != revision.format()
+        {
+            return Ok(false);
+        }
+        repo.find_commit(revision)
+            .map(|commit| commit.is_some())
+            .map_err(|error| SourceError(error.to_string()))
+    }
+}
+
+fn source_seeds(config: &kairo_config::Config) -> Vec<kairo_resolver::SourceSeed> {
+    config
+        .runtime
+        .source_seeds
+        .iter()
+        .map(|seed| kairo_resolver::SourceSeed {
+            source: kairo_statement::SourceGenesis::new(seed.source.clone()).object_id(),
+            revision: seed.revision.clone(),
+        })
+        .collect()
 }
 
 fn host_tools(config: &kairo_config::Config) -> Vec<HostTool> {
@@ -313,9 +371,13 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
         store: &store,
         accepted: local.clone(),
     };
+    let sources = CacheSources { paths };
+    let accepted_sources = source_seeds(&config);
     let resolve = || {
         Resolver::new(&store, &manifests, &artifacts, &host, &tools)
             .with_seeds(&config.runtime.seeds)
+            .with_sources(&sources)
+            .with_source_seeds(&accepted_sources)
             .resolve(&object, &selector, args.target)
             .map_err(|error| CliError::Resolve(Box::new(error)))
     };
@@ -592,6 +654,27 @@ pub(crate) fn run_reproduce(
                             .map(|id| format!(" ({id})"))
                             .unwrap_or_default()
                     ));
+                }
+            }
+            kairo_resolver::Resolved::Source {
+                source,
+                url,
+                revision,
+                ..
+            } => {
+                let held = ObjectId::new(source.clone())
+                    .ok()
+                    .zip(kairo_statement::GitRevision::parse(revision).ok().flatten())
+                    .is_some_and(|(source, revision)| {
+                        kairo_resolver::SourceHolder::holds(
+                            &CacheSources { paths },
+                            &source,
+                            &revision,
+                        )
+                        .unwrap_or(false)
+                    });
+                if !held {
+                    missing.push(format!("{url} at {revision} (kairo source fetch {url})"));
                 }
             }
             kairo_resolver::Resolved::HostTool { path, .. } => {

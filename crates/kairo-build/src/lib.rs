@@ -41,6 +41,7 @@ use std::time::{Duration, Instant};
 use kairo_core::{BlobId, ObjectId, SnapshotId, Timestamp};
 use kairo_object::{ObjectManifest, OutputKind};
 use kairo_resolver::{PlanDocument, Resolved, SourceError};
+use kairo_statement::GitRevision;
 use kairo_store::{BlobStore, FilesystemStore};
 use serde::{Deserialize, Serialize};
 
@@ -100,6 +101,18 @@ pub trait TreeSource {
         snapshot: &SnapshotId,
         dest: &Path,
     ) -> Result<bool, SourceError>;
+
+    /// Write a source object's tree at `revision` under `dest` (which
+    /// exists and is empty), or `Ok(false)` when it isn't held
+    /// (`DECISIONS.md` §37).
+    fn export_source(
+        &self,
+        _source: &ObjectId,
+        _revision: &GitRevision,
+        _dest: &Path,
+    ) -> Result<bool, SourceError> {
+        Ok(false)
+    }
 }
 
 /// What a build may use.
@@ -496,6 +509,10 @@ pub fn run_plan(
         let label = match &requirement.requested {
             kairo_resolver::Requested::Provides { provides, .. } => provides.clone(),
             kairo_resolver::Requested::Object { object, .. } => format!("object:{object}"),
+            kairo_resolver::Requested::Source { source, .. } => format!(
+                "source:{}",
+                source.rsplit('/').next().unwrap_or(source.as_str())
+            ),
         };
         let mount = match &requirement.resolved {
             Resolved::Content {
@@ -569,6 +586,93 @@ pub fn run_plan(
                 continue;
             }
             Resolved::Environment { .. } => continue,
+            Resolved::Source {
+                source,
+                url,
+                revision,
+                path,
+                ..
+            } => {
+                let source_id = ObjectId::new(source.clone()).map_err(BuildError::Id)?;
+                let revision = GitRevision::parse(revision).ok().flatten().ok_or_else(|| {
+                    BuildError::Environment(format!("{revision} is not a git: revision"))
+                })?;
+                let export = |dest: &Path| -> Result<(), BuildError> {
+                    let held =
+                        trees
+                            .export_source(&source_id, &revision, dest)
+                            .map_err(|error| BuildError::SourceTree {
+                                url: url.clone(),
+                                revision: revision.to_string(),
+                                reason: error.to_string(),
+                            })?;
+                    if held {
+                        Ok(())
+                    } else {
+                        Err(BuildError::SourceTree {
+                            url: url.clone(),
+                            revision: revision.to_string(),
+                            reason: "not held (kairo source fetch)".to_owned(),
+                        })
+                    }
+                };
+                let staged = deps
+                    .join("source")
+                    .join(source_id.as_str())
+                    .join(revision.oid());
+                let mount = match path {
+                    // Placed inside the source tree (§37 sub-decision 7):
+                    // bound read-only over an empty directory under an
+                    // engine, copied in for development mode.
+                    Some(path) => {
+                        let inside = src.join(path);
+                        let occupied = fs::read_dir(&inside)
+                            .map(|mut entries| entries.next().is_some())
+                            .unwrap_or_else(|_| inside.exists());
+                        if occupied {
+                            return Err(BuildError::PlacementOccupied { path: path.clone() });
+                        }
+                        fs::create_dir_all(&inside)
+                            .map_err(|source| io_error("creating", &inside, source))?;
+                        if isolated {
+                            if !staged.exists() {
+                                fs::create_dir_all(&staged)
+                                    .map_err(|source| io_error("creating", &staged, source))?;
+                                export(&staged)?;
+                            }
+                            Mount {
+                                host: staged,
+                                guest: format!("{GUEST_SRC}/{path}"),
+                            }
+                        } else {
+                            export(&inside)?;
+                            Mount {
+                                host: inside,
+                                guest: format!("{GUEST_SRC}/{path}"),
+                            }
+                        }
+                    }
+                    None => {
+                        if !staged.exists() {
+                            fs::create_dir_all(&staged)
+                                .map_err(|source| io_error("creating", &staged, source))?;
+                            export(&staged)?;
+                        }
+                        Mount {
+                            host: staged,
+                            guest: format!("/kairo/source/{source_id}/{}", revision.oid()),
+                        }
+                    }
+                };
+                env.insert(provider_var(&label), seen(&mount));
+                // A copied-in placement is part of the source tree
+                // already; anything else is bound.
+                let copied = path.is_some() && !isolated;
+                if !copied && !mounts.iter().any(|existing| existing.guest == mount.guest) {
+                    mounts.push(mount);
+                }
+                continue;
+            }
         };
         let bin = format!("{}/bin", seen(&mount));
         if mount.host.join("bin").is_dir() && !path_dirs.contains(&bin) {
@@ -985,6 +1089,17 @@ pub enum BuildError {
     EngineMismatch {
         environment: String,
     },
+    /// A source dependency's tree couldn't be materialized.
+    SourceTree {
+        url: String,
+        revision: String,
+        reason: String,
+    },
+    /// A source dependency's `path` already holds something in the
+    /// snapshot's tree.
+    PlacementOccupied {
+        path: String,
+    },
     /// A record or blob whose id doesn't match its bytes.
     Fixity {
         what: String,
@@ -1029,6 +1144,15 @@ impl fmt::Display for BuildError {
                 write!(f, "artifact {artifact} has an unsafe path {path:?}")
             }
             Self::Environment(message) => write!(f, "building the environment: {message}"),
+            Self::SourceTree {
+                url,
+                revision,
+                reason,
+            } => write!(f, "source {url} at {revision}: {reason}"),
+            Self::PlacementOccupied { path } => write!(
+                f,
+                "a source dependency is placed at {path}, which the snapshot's tree already fills"
+            ),
             Self::EngineMismatch { environment } => write!(
                 f,
                 "the plan's environment ({environment}) doesn't suit this executor"
@@ -1056,6 +1180,8 @@ impl Error for BuildError {
             | Self::UnsafeArtifactPath { .. }
             | Self::Environment(_)
             | Self::EngineMismatch { .. }
+            | Self::SourceTree { .. }
+            | Self::PlacementOccupied { .. }
             | Self::Fixity { .. } => None,
         }
     }

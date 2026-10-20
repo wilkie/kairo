@@ -9698,3 +9698,181 @@ fn source_fetch_archives_pinned_submodules_recursively() -> Result<(), Box<dyn s
     assert!(!shallow.contains("submodules ="), "{shallow}");
     Ok(())
 }
+
+#[test]
+fn builds_use_sources_pinned_by_revision_placed_in_the_tree(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use kairo_test_support::git::{git, GitDaemon};
+    let usable = !kairo_test_support::git::skip_if_no_git()
+        && std::path::Path::new("/usr/bin/busybox").is_file()
+        && kairo_build::Bubblewrap::probe(std::path::Path::new("/usr/bin/bwrap")).is_ok();
+    assert!(
+        usable || std::env::var_os("KAIRO_REQUIRE_ENGINE").is_none(),
+        "KAIRO_REQUIRE_ENGINE is set but git, bubblewrap or busybox is unavailable"
+    );
+    if !usable {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    let publish =
+        |name: &str, file: &str, text: &str| -> Result<String, Box<dyn std::error::Error>> {
+            let path = daemon.base.path().join(name);
+            std::fs::create_dir_all(&path)?;
+            git(&path, &["init", "-q", "--initial-branch=main"]);
+            std::fs::write(path.join(file), text)?;
+            git(&path, &["add", file]);
+            git(&path, &["commit", "-q", "-m", name]);
+            Ok(git(&path, &["rev-parse", "HEAD"]))
+        };
+    let lib_commit = publish("lib", "lib.h", "/* lib */\n")?;
+    let seeds_commit = publish("seeds", "hello", "seed bytes\n")?;
+
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    for name in ["lib", "seeds"] {
+        run_in_store(
+            store_dir.path(),
+            Command::Source {
+                command: SourceCommand::Fetch {
+                    url: daemon.url(name),
+                    actor: actor.clone(),
+                    object_format: None,
+                    no_recurse_submodules: false,
+                    max_depth: 8,
+                    require_complete: true,
+                },
+            },
+        )?;
+    }
+
+    // busybox as tool:sh, as in the engine test.
+    let busybox_dir = tempfile::TempDir::new()?;
+    std::fs::create_dir(busybox_dir.path().join("bin"))?;
+    std::fs::copy("/usr/bin/busybox", busybox_dir.path().join("bin/busybox"))?;
+    std::os::unix::fs::symlink("busybox", busybox_dir.path().join("bin/sh"))?;
+    std::fs::write(
+        busybox_dir.path().join("kairo.toml"),
+        "[kairo]\nschema = 1\nkind = \"software\"\nname = \"busybox\"\n[[provides]]\nprovides = \"tool:sh\"\n",
+    )?;
+    create_held_dir(store_dir.path(), &actor, busybox_dir.path())?;
+
+    let contract = kairo_resolver::Host::detect().contract();
+    let wrapper = |lib_revision: &str| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "wrapper"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox mkdir -p out; {{ busybox cat vendor/lib/lib.h; busybox cat \"$KAIRO_PROVIDER_SOURCE_SEEDS/hello\"; ( : > vendor/lib/probe ) 2>/dev/null && echo writable || echo read-only; }} > out/report"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.dependencies]]
+            kind = "source"
+            source = "{lib}"
+            revision = "git:sha1:{lib_revision}"
+            path = "vendor/lib"
+            [[build.targets.dependencies]]
+            kind = "source"
+            source = "{seeds}"
+            revision = "git:sha1:{seeds_commit}"
+            seed = true
+            [[build.targets.outputs]]
+            name = "report"
+            path = "out/report"
+            artifact_path = "report"
+            kind = "file"
+            "#,
+            lib = daemon.url("lib"),
+            seeds = daemon.url("seeds"),
+        )
+    };
+    let app = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[("kairo.toml", &wrapper(&lib_commit))],
+    )?;
+    let build = |object: &str| {
+        run_in_store(
+            store_dir.path(),
+            Command::Build {
+                snapshot_ref: format!("object:{object}"),
+                target: "release".to_owned(),
+                actor: Some(actor.clone()),
+                plan_only: false,
+                json: false,
+            },
+        )
+    };
+    let engine = "[[runtime.engines]]\nkind = \"bubblewrap\"\npath = \"/usr/bin/bwrap\"\n";
+    std::fs::write(store_dir.path().join("config.toml"), engine)?;
+
+    // The seed isn't accepted yet.
+    let refused = build(&app);
+    assert!(
+        matches!(&refused, Err(CliError::Resolve(error)) if error.to_string().contains("not an accepted seed")),
+        "{refused:?}"
+    );
+
+    std::fs::write(
+        store_dir.path().join("config.toml"),
+        format!(
+            "{engine}\n[[runtime.seeds]]\nsource = \"{}\"\nrevision = \"git:sha1:{seeds_commit}\"\n",
+            daemon.url("seeds")
+        ),
+    )?;
+    let built = build(&app)?;
+    assert!(built.contains("status = success\n"), "{built}");
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let artifact = kairo_core::BlobId::new(parse_field(&built, "artifact = ")?)?;
+    let tree = kairo_build::load_artifact(&store, &artifact)?;
+    let report = kairo_store::BlobStore::get_blob(
+        &store,
+        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+    )?;
+    assert_eq!(
+        String::from_utf8(report)?,
+        "/* lib */\nseed bytes\nread-only\n"
+    );
+
+    let plan = run_in_store(
+        store_dir.path(),
+        Command::Build {
+            snapshot_ref: format!("object:{app}"),
+            target: "release".to_owned(),
+            actor: None,
+            plan_only: true,
+            json: false,
+        },
+    )?;
+    assert!(
+        plan.contains(&format!(
+            "{} at git:sha1:{lib_commit} in vendor/lib -> {} at git:sha1:{lib_commit} in vendor/lib\n",
+            daemon.url("lib"),
+            daemon.url("lib")
+        )),
+        "{plan}"
+    );
+    assert!(plan.contains("(accepted seed)"), "{plan}");
+
+    // A revision this node never fetched isn't held.
+    let unfetched = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[("kairo.toml", &wrapper(&"2".repeat(40)))],
+    )?;
+    let missing = build(&unfetched);
+    assert!(
+        matches!(&missing, Err(CliError::Resolve(error)) if error.to_string().contains("is not held (kairo source fetch")),
+        "{missing:?}"
+    );
+    Ok(())
+}

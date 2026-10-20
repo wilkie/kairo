@@ -43,9 +43,10 @@ use kairo_core::{BlobId, ObjectId, SnapshotId};
 use kairo_object::{
     DependencyDeclaration, ObjectDependencySelector, ObjectManifest, Snapshot, SnapshotError,
 };
-use kairo_statement::RevisionId;
+use kairo_statement::{GitRevision, RevisionId};
 use kairo_store::{
-    BranchResolver, FilesystemStore, ObjectStore, StatementStore, StoreError, VersionTagResolver,
+    BranchResolver, FilesystemStore, ObjectStore, SourceStore, StatementStore, StoreError,
+    VersionTagResolver,
 };
 use serde::{Deserialize, Serialize};
 
@@ -84,6 +85,30 @@ pub trait ArtifactSource {
         snapshot: &SnapshotId,
         target: &str,
     ) -> Result<Option<BlobId>, SourceError>;
+}
+
+/// Whether this node holds a source's commit (§37): the source object,
+/// and the commit with its closure in the source's Git cache.
+pub trait SourceHolder {
+    fn holds(&self, source: &ObjectId, revision: &GitRevision) -> Result<bool, SourceError>;
+}
+
+/// A [`SourceHolder`] that holds nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSources;
+
+impl SourceHolder for NoSources {
+    fn holds(&self, _source: &ObjectId, _revision: &GitRevision) -> Result<bool, SourceError> {
+        Ok(false)
+    }
+}
+
+/// An accepted seed: a source at an exact upstream commit (§37
+/// sub-decision 8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSeed {
+    pub source: ObjectId,
+    pub revision: GitRevision,
 }
 
 /// An [`ArtifactSource`] that holds nothing: every artifact provider
@@ -213,6 +238,16 @@ pub enum Requested {
         #[serde(skip_serializing_if = "Option::is_none")]
         snapshot: Option<String>,
     },
+    /// A source object at an exact upstream commit (§37).
+    Source {
+        /// The canonical URL.
+        source: String,
+        revision: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        seed: bool,
+    },
 }
 
 impl fmt::Display for Requested {
@@ -222,6 +257,21 @@ impl fmt::Display for Requested {
                 Some(version) => write!(f, "{provides} {version}"),
                 None => f.write_str(provides),
             },
+            Self::Source {
+                source,
+                revision,
+                path,
+                seed,
+            } => {
+                write!(f, "{source} at {revision}")?;
+                if let Some(path) = path {
+                    write!(f, " in {path}")?;
+                }
+                if *seed {
+                    f.write_str(" (seed)")?;
+                }
+                Ok(())
+            }
             Self::Object {
                 object,
                 version,
@@ -261,6 +311,17 @@ pub enum Resolved {
         #[serde(skip_serializing_if = "Option::is_none")]
         version: Option<String>,
         path: String,
+    },
+    /// A source's tree at an upstream commit, placed at `path` in the
+    /// source tree when given.
+    Source {
+        source: String,
+        url: String,
+        revision: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+        seed: bool,
     },
 }
 
@@ -625,6 +686,8 @@ pub struct Resolver<'a> {
     host: &'a Host,
     host_tools: &'a [HostTool],
     seeds: &'a [ObjectId],
+    sources: &'a dyn SourceHolder,
+    source_seeds: &'a [SourceSeed],
 }
 
 impl fmt::Debug for Resolver<'_> {
@@ -651,7 +714,22 @@ impl<'a> Resolver<'a> {
             host,
             host_tools,
             seeds: &[],
+            sources: &NoSources,
+            source_seeds: &[],
         }
+    }
+
+    /// Where source dependencies are checked for.
+    pub fn with_sources(mut self, sources: &'a dyn SourceHolder) -> Self {
+        self.sources = sources;
+        self
+    }
+
+    /// Accept these `(source, revision)` pairs as seeds: the only ones
+    /// a `seed = true` dependency resolves to.
+    pub fn with_source_seeds(mut self, seeds: &'a [SourceSeed]) -> Self {
+        self.source_seeds = seeds;
+        self
     }
 
     /// Accept these objects as seeds: the only ones that satisfy a
@@ -756,7 +834,7 @@ impl<'a> Resolver<'a> {
                             .iter()
                             .any(|contract| contract == dependency.provides())
                 }
-                DependencyDeclaration::Object(_) => false,
+                DependencyDeclaration::Object(_) | DependencyDeclaration::Source(_) => false,
             });
         for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
             let (requested, resolved) = match dependency {
@@ -811,6 +889,17 @@ impl<'a> Resolver<'a> {
                     )?;
                     (requested, resolved)
                 }
+                DependencyDeclaration::Source(dependency) => {
+                    let requested = Requested::Source {
+                        source: dependency.url().to_string(),
+                        revision: dependency.revision().to_string(),
+                        path: dependency.path().map(str::to_owned),
+                        seed: dependency.seed(),
+                    };
+                    let resolved =
+                        self.resolve_source(object, target_name, &requested, dependency)?;
+                    (requested, resolved)
+                }
             };
             match &resolved {
                 Resolved::Environment {
@@ -820,7 +909,7 @@ impl<'a> Resolver<'a> {
                 Resolved::Environment { engine: None, .. } | Resolved::HostTool { .. } => {
                     host_dependent = true;
                 }
-                Resolved::Artifact { .. } | Resolved::Content { .. } => {}
+                Resolved::Artifact { .. } | Resolved::Content { .. } | Resolved::Source { .. } => {}
             }
             requirements.push(Requirement {
                 requested,
@@ -1052,6 +1141,65 @@ impl<'a> Resolver<'a> {
         Ok(resolved)
     }
 
+    fn resolve_source(
+        &self,
+        object: &ObjectId,
+        target: &str,
+        requested: &Requested,
+        dependency: &kairo_object::SourceDependency,
+    ) -> Result<Resolved, ResolveError> {
+        let source = dependency.source();
+        let url = dependency.url();
+        let revision = dependency.revision();
+        let unsatisfied = |reason: String| {
+            ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                object: object.clone(),
+                target: target.to_owned(),
+                requested: requested.clone(),
+                considered: vec![reason],
+            }))
+        };
+        match self.store.get_source(&source) {
+            Ok(_) => {}
+            Err(kairo_store::StoreError::Missing) => {
+                return Err(unsatisfied(format!(
+                    "source {url} is not held (kairo source fetch {url})"
+                )))
+            }
+            Err(error) => return Err(ResolveError::Store(error)),
+        }
+        let held = self
+            .sources
+            .holds(&source, revision)
+            .map_err(|source_error| ResolveError::SourceHolder {
+                source: source.clone(),
+                revision: revision.clone(),
+                error: source_error,
+            })?;
+        if !held {
+            return Err(unsatisfied(format!(
+                "{revision} of {url} is not held (kairo source fetch {url})"
+            )));
+        }
+        if dependency.seed()
+            && !self
+                .source_seeds
+                .iter()
+                .any(|seed| seed.source == source && &seed.revision == revision)
+        {
+            return Err(unsatisfied(format!(
+                "{url} at {revision} is not an accepted seed ([[runtime.seeds]] source and revision)"
+            )));
+        }
+        Ok(Resolved::Source {
+            source: source.to_string(),
+            url: url.to_string(),
+            revision: revision.to_string(),
+            path: dependency.path().map(str::to_owned),
+            seed: dependency.seed(),
+        })
+    }
+
     fn resolve_object(
         &self,
         object: &ObjectId,
@@ -1140,6 +1288,22 @@ pub fn describe_resolved(resolved: &Resolved) -> String {
             Some(engine) => format!("{contract} via engine {engine}"),
             None => format!("{contract} on this host (development mode)"),
         },
+        Resolved::Source {
+            url,
+            revision,
+            path,
+            seed,
+            ..
+        } => {
+            let mut text = format!("{url} at {revision}");
+            if let Some(path) = path {
+                text.push_str(&format!(" in {path}"));
+            }
+            if *seed {
+                text.push_str(" (accepted seed)");
+            }
+            text
+        }
         Resolved::HostTool { path, version, .. } => match version {
             Some(version) => format!("host tool {path} version {version}"),
             None => format!("host tool {path}"),
@@ -1185,6 +1349,11 @@ pub enum ResolveError {
         object: ObjectId,
         target: String,
         source: SourceError,
+    },
+    SourceHolder {
+        source: ObjectId,
+        revision: GitRevision,
+        error: SourceError,
     },
     NoHead {
         object: ObjectId,
@@ -1243,6 +1412,11 @@ impl fmt::Display for ResolveError {
                 f,
                 "looking up the artifact of object:{object} target {target}: {source}"
             ),
+            Self::SourceHolder {
+                source,
+                revision,
+                error,
+            } => write!(f, "checking {revision} of source {source}: {error}"),
             Self::NoHead { object } => {
                 write!(f, "object:{object} has no head branch by its creator")
             }
@@ -1295,6 +1469,7 @@ impl Error for ResolveError {
             Self::ManifestSource { source, .. } | Self::ArtifactSource { source, .. } => {
                 Some(source)
             }
+            Self::SourceHolder { error, .. } => Some(error),
             Self::Encode(error) => Some(error),
             Self::ManifestUnavailable { .. }
             | Self::ManifestMismatch { .. }

@@ -1392,9 +1392,9 @@ Sub-decisions:
    configured. Engine builds need neither `allow_local_process` nor
    signer trust (§35 sub-decision 5); `[[runtime.engines]]` entries (`kind`, absolute `path`)
    allowlist isolation engines, each probed before use (§35
-   sub-decision 2); `[[runtime.seeds]]` entries (`object`, a bare id)
-   list the seed objects that may satisfy `seed:*` labels (§36
-   sub-decision 3).
+   sub-decision 2); `[[runtime.seeds]]` entries name a `source` and a
+   `revision` (§37 sub-decision 8), or, until §36's seed objects are
+   retired, an `object` (a bare id) that may satisfy `seed:*` labels.
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -3626,12 +3626,20 @@ Sub-decisions:
    every node, unlike a snapshot id, which names signed statements
    and differs between observers. There are no version ranges for
    sources: using a newer upstream commit is a conscious edit of the
-   pin, and so a new revision of the native object.
+   pin, and so a new revision of the native object. *Built:* `kind =
+   "source"` with `source` (any spelling; hashed canonical), `revision`,
+   and optional `path` and `seed`; the resolver requires the source and
+   that exact commit to be held, and never re-resolves.
 
 7. **Placement.** A dependency may name a `path` inside the source
    tree (`path = "M2libc"`); the executor materializes it there,
    read-only, instead of at `/kairo/content/<snapshot>` only, so
    upstream layouts that expect sibling repositories build unchanged.
+   *Built for source dependencies:* bound read-only over an empty
+   directory under an engine (the snapshot's tree must not already fill
+   the path), copied in for development mode; without `path`, a source
+   is at `/kairo/source/<source id>/<oid>`. A target's placements may
+   not overlap.
 
 8. **The bootstrap becomes sources plus a native wrapper.**
    stage0-posix, its eleven submodules, and bootstrap-seeds become

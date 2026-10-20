@@ -116,6 +116,14 @@ names a build output (an artifact provider).
 |---|---|
 | `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given |
 | `Object` | `string("object") || string(object_id) || selector` |
+| `Source` | `string("source") \|\| string(canonical url) \|\| string(git revision) \|\| option<string>(path) \|\| u8(seed)` |
+
+A `Source` dependency (`DECISIONS.md` §37) names a source object by URL,
+hashed in canonical form so its spellings don't change the hash, pinned
+to an exact upstream commit (`git:sha1:<oid>` or `git:sha256:<oid>`); it
+takes no version. `path`, when given, places the source's tree at that
+relative path in the source tree; two of a target's placed dependencies
+may not overlap. `seed` is `1` when the dependency is a seed.
 
 `ObjectDependencySelector` variants:
 

@@ -1694,6 +1694,7 @@ name = "kairo-config"
 version = "0.1.0"
 dependencies = [
  "kairo-core",
+ "kairo-statement",
  "serde",
  "toml",
 ]

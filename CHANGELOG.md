@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **Builds depend on sources by revision (`DECISIONS.md` §37
+  sub-decisions 6–8).** A manifest dependency `kind = "source"` names a
+  source by URL (hashed canonical) at an exact upstream `revision`, with
+  optional `path` (placed read-only at that path in the source tree, so
+  upstream layouts build unchanged) and `seed = true`. The resolver
+  requires the exact commit to be held; seeds resolve only to `(source,
+  revision)` pairs listed in `[[runtime.seeds]]`. Without a path, a
+  source is at `/kairo/source/<id>/<oid>` in the contract.
 - **Submodules are archived as their own sources (`DECISIONS.md` §37
   sub-decision 5).** `kairo source fetch` follows the submodules its
   observed commits pin, recursively (`--max-depth`, default 8;

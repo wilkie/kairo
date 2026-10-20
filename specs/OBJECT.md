@@ -292,6 +292,19 @@ Object dependencies MUST specify exactly one selector:
 A provides dependency may give a `version` requirement. Version requirements
 use Cargo's syntax (`">=4, <5"`, `"^4.1.0"`).
 
+A **source** dependency names a source object (`DECISIONS.md` §37) by its
+repository URL, pinned to an exact upstream commit, and never by version:
+using a newer upstream is an edit of the pin.
+
+```toml
+[[dependencies]]
+kind = "source"
+source = "https://github.com/oriansj/M2libc"
+revision = "git:sha1:68a23cfd05d5a355ba7a30c770d684cbe86fcc4e"
+path = "M2libc"   # optional: placed here in the source tree, read-only
+seed = true       # optional: a seed; must be accepted in [[runtime.seeds]]
+```
+
 In `kairo.toml`, fields such as `object` and `snapshot` use bare ID payloads
 because the field names provide type context. Standalone references use typed
 forms such as `object:z6MkObject...` or

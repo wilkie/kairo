@@ -380,6 +380,15 @@ Each row maps an attack to the protocol mechanism that defends it.
 | **Mechanism** | `DECISIONS.md` §33–§35. Development mode (a host process) is off by default, and even when on runs only revisions signed by a keystore actor or one it trusts at `general` scope. Engine builds run under bubblewrap: an empty root with only `/kairo` paths, `/proc`, a minimal `/dev`, and `/tmp`; every namespace unshared, network included; uid 1000; a cleared environment; providers read-only. Engines are allowlisted by path in config and probed before use; none is enabled by default. Outputs are collected only from declared paths inside the source tree, and symbolic links are refused, so a build can't make Kairo read a host file into an artifact. |
 | **Residual risk** | The Linux kernel and bubblewrap are the boundary: a kernel or bubblewrap vulnerability reachable from an unprivileged user namespace escapes it. Builds can consume CPU, memory, and disk up to the wall-clock timeout; there are no other resource limits yet. A malicious build can produce a malicious artifact — isolation protects the host, not the artifact's consumers; reproduction by independent signers is the evidence for those. |
 
+### 5.24 A seed slipped in as ordinary source
+
+| | |
+|---|---|
+| **Adversary** | The author of a native object, or of a source it depends on. |
+| **Attack** | Get a node to execute binaries it never accepted as seeds, by depending on a source that contains them without marking the dependency `seed = true`. |
+| **Mechanism** | `DECISIONS.md` §36–§37. A dependency marked `seed = true` resolves only to a `(source, revision)` pair the operator listed in `[[runtime.seeds]]`; trusting a signer never accepts a seed. The mark is part of the native object's hashed, signed manifest, so it is visible to anyone reviewing the object, and `kairo build --plan-only` shows each source and whether it is an accepted seed. Builds run under the engine, so what executes can't reach the host. |
+| **Residual risk** | Kairo can't tell whether a source contains executable binaries, so the `seed` mark is the native object's own declaration: an unmarked binary runs without seed acceptance. Reviewing native objects' source dependencies, like reviewing their signers, remains the operator's job. |
+
 ## 6. Known gaps and explicit non-goals
 
 These are attacks the v1 protocol **does not defend against**, by

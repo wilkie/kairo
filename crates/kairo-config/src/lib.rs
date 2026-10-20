@@ -68,6 +68,17 @@ pub struct RuntimeConfig {
     /// Seed objects accepted as roots of trust (`DECISIONS.md` §36
     /// sub-decision 3): the only ones that may satisfy `seed:*`.
     pub seeds: Vec<ObjectId>,
+    /// Accepted seeds as `(source, revision)` pairs (`DECISIONS.md` §37
+    /// sub-decision 8): the only ones a `seed = true` dependency
+    /// resolves to.
+    pub source_seeds: Vec<SourceSeedConfig>,
+}
+
+/// One `[[runtime.seeds]]` entry naming a source at a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSeedConfig {
+    pub source: kairo_statement::SourceUrl,
+    pub revision: kairo_statement::GitRevision,
 }
 
 /// One `[[runtime.engines]]` entry.
@@ -99,6 +110,7 @@ impl Default for RuntimeConfig {
             host_tools: Vec::new(),
             engines: Vec::new(),
             seeds: Vec::new(),
+            source_seeds: Vec::new(),
         }
     }
 }
@@ -313,7 +325,9 @@ struct RawRuntime {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawSeed {
-    object: String,
+    object: Option<String>,
+    source: Option<String>,
+    revision: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -702,17 +716,47 @@ fn parse_runtime(
         });
     }
     let mut seeds: Vec<ObjectId> = Vec::new();
+    let mut source_seeds: Vec<SourceSeedConfig> = Vec::new();
     for seed in raw.seeds {
-        let object = ObjectId::new(seed.object.clone()).map_err(|error| {
-            invalid(format!(
-                "runtime.seeds: object {:?} is not a bare object id: {error}",
-                seed.object
-            ))
-        })?;
-        if seeds.contains(&object) {
-            return Err(invalid(format!("runtime.seeds: {object} is listed twice")));
+        match (seed.object, seed.source, seed.revision) {
+            (Some(raw_object), None, None) => {
+                let object = ObjectId::new(raw_object.clone()).map_err(|error| {
+                    invalid(format!(
+                        "runtime.seeds: object {raw_object:?} is not a bare object id: {error}"
+                    ))
+                })?;
+                if seeds.contains(&object) {
+                    return Err(invalid(format!("runtime.seeds: {object} is listed twice")));
+                }
+                seeds.push(object);
+            }
+            (None, Some(raw_source), Some(raw_revision)) => {
+                let source = kairo_statement::SourceUrl::parse(&raw_source)
+                    .map_err(|error| invalid(format!("runtime.seeds: {error}")))?;
+                let revision = kairo_statement::GitRevision::parse(&raw_revision)
+                    .map_err(|error| invalid(format!("runtime.seeds: {error}")))?
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "runtime.seeds: revision {raw_revision:?} is not a git: revision"
+                        ))
+                    })?;
+                let entry = SourceSeedConfig { source, revision };
+                if source_seeds.contains(&entry) {
+                    return Err(invalid(format!(
+                        "runtime.seeds: {} at {} is listed twice",
+                        entry.source, entry.revision
+                    )));
+                }
+                source_seeds.push(entry);
+            }
+            _ => {
+                return Err(invalid(
+                    "runtime.seeds: each entry names a source and a revision \
+                     (or, until §36's seed objects are retired, an object)"
+                        .to_owned(),
+                ))
+            }
         }
-        seeds.push(object);
     }
     Ok(RuntimeConfig {
         allow_local_process: raw
@@ -722,6 +766,7 @@ fn parse_runtime(
         host_tools,
         engines,
         seeds,
+        source_seeds,
     })
 }
 
@@ -1028,6 +1073,23 @@ path = \"/usr/bin/cc\"
             "[[runtime.seeds]]\nobject = \"{OBJECT}\"\n[[runtime.seeds]]\nobject = \"{OBJECT}\"\n"
         ))
         .contains("twice"));
+
+        let pair = parse_ok(
+            "[[runtime.seeds]]\nsource = \"https://GitHub.com/oriansj/bootstrap-seeds.git\"\n\
+             revision = \"git:sha1:cedec6b8066d1db229b6c77d42d120a23c6980ed\"\n",
+        );
+        assert_eq!(
+            pair.runtime.source_seeds[0].source.as_str(),
+            "https://github.com/oriansj/bootstrap-seeds"
+        );
+        assert!(
+            parse_err("[[runtime.seeds]]\nsource = \"https://example.org/x\"\n")
+                .contains("source and a revision")
+        );
+        assert!(parse_err(
+            "[[runtime.seeds]]\nsource = \"https://example.org/x\"\nrevision = \"abc\"\n"
+        )
+        .contains("runtime.seeds"));
     }
 
     #[test]

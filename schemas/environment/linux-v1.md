@@ -25,6 +25,8 @@ A guest command running under this contract sees exactly:
 | `/kairo/src` | the snapshot's tree; the command runs in `/kairo/src/<workdir>`, and declared outputs are collected relative to it | read-write |
 | `/kairo/artifact/<artifact id>` | each artifact provider's artifact tree | read-only |
 | `/kairo/content/<snapshot id>` | each content provider's tree | read-only |
+| `/kairo/source/<source id>/<oid>` | each source dependency without a `path`, at its pinned commit | read-only |
+| `/kairo/src/<path>` | each source dependency with a `path`, bound over an empty directory | read-only |
 | `/kairo/home` | empty | read-write |
 | `/tmp` | empty | read-write |
 | `/proc` | the sandbox's own processes | — |
@@ -46,7 +48,8 @@ And:
   - `KAIRO_SRC=/kairo/src`;
   - `KAIRO_PROVIDER_<LABEL>`: each requirement's provider path, with the
     label upper-cased and every other character as `_`
-    (`tool:make` → `KAIRO_PROVIDER_TOOL_MAKE`);
+    (`tool:make` → `KAIRO_PROVIDER_TOOL_MAKE`); a source dependency's
+    label is `source:<last URL segment>` (`KAIRO_PROVIDER_SOURCE_M2LIBC`);
   - `PATH`: the `bin/` directories of the providers that have one, in
     requirement order.
 

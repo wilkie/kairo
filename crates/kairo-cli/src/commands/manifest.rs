@@ -94,6 +94,19 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                     output.push_str(&format!("{indent}  version = {version}\n"));
                 }
             }
+            DependencyDeclaration::Source(dependency) => {
+                output.push_str(&format!(
+                    "{indent}source {} at {}\n",
+                    dependency.url(),
+                    dependency.revision()
+                ));
+                if let Some(path) = dependency.path() {
+                    output.push_str(&format!("{indent}  path = {path}\n"));
+                }
+                if dependency.seed() {
+                    output.push_str(&format!("{indent}  seed = true\n"));
+                }
+            }
             DependencyDeclaration::Object(dependency) => {
                 output.push_str(&format!("{indent}object {}\n", dependency.object()));
                 match dependency.selector() {

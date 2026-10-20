@@ -67,6 +67,7 @@ A requirement is `{"requested": ..., "resolved": ...}`.
 |---|---|
 | `provides` | `provides`; `version` when a requirement was given |
 | `object` | `object`; one of `version`, `snapshot` |
+| `source` | `source` (the canonical URL), `revision`; `path` when placed; `seed` when `true` |
 
 `resolved`, by `kind`:
 
@@ -76,6 +77,7 @@ A requirement is `{"requested": ..., "resolved": ...}`.
 | `content` | `object`, `snapshot` |
 | `environment` | `contract`, `engine` (the contract label the engine implements, or `null` for the host in development mode) |
 | `host-tool` | `provides`, `path`; `version` when the config states one |
+| `source` | `source` (id), `url`, `revision`; `path` when placed; `seed` when `true` |
 
 A `builds_first` entry is `{"object", "snapshot", "target", "plan"}`,
 where `plan` is that build's own plan hash.
