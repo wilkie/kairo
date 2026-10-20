@@ -3726,3 +3726,106 @@ Affected specs:
 - `FEDERATION.md` — sources as shared objects across nodes.
 - `DECISIONS.md` §20 (unreferenced commits stay local, except
   observed ones), §36 (the bootstrap's layout).
+
+---
+
+## 38. File Sources, the `linux-root` Contract, and live-bootstrap
+
+Decision: the second bootstrap milestone builds the Bootstrappable
+Builds project's **live-bootstrap** from the archive's stage0-posix
+artifact through Mes to tcc-0.9.27, under the engine, with
+live-bootstrap's own scripts and its own published-hash checks running
+unmodified. Three pieces make that possible: **file sources** for the
+tarballs live-bootstrap consumes, a **`linux-root`** contract in which
+the build tree is the guest's root filesystem, and **placement** for
+artifact dependencies too.
+
+Sub-decisions:
+
+1. **File sources are identified by content.** A single file (a
+   distfile, a release tarball) is a source object whose identity is
+   the SHA-256 of its bytes: its genesis holds that hash and nothing
+   else, unsigned, so every node that holds the same bytes derives the
+   same id however it got them. The bytes are a blob in the store.
+   What actors sign are **file observations**: "fetching URL U at time
+   T, I got bytes hashing to H". Several mirror URLs serving one file
+   are several observations of one object, and a URL that later serves
+   other bytes is an observation of a different one. (Git sources stay
+   identified by URL, §37: a repository is a history that changes; a
+   file is its bytes.)
+
+2. **Fetching a file source.** `kairo source fetch-file <url> --sha256
+   <hex>` downloads the URL with the source transport rules (§37
+   sub-decision 2 as amended: `https` only for files, an initial
+   redirect followed, size and time limits), refuses bytes that don't
+   hash to the expected value, stores the blob, and signs a file
+   observation. Without `--sha256` it records whatever it got, and the
+   output names the hash. Nothing fetched is ever dropped.
+
+3. **File dependencies.** A manifest dependency `kind = "file"` names
+   a file source by `sha256` and places it at `path`, a file path in
+   the source tree (`external/distfiles/mes-0.27.1.tar.gz`); it
+   resolves only if the blob is held.
+
+4. **Placement grows two options**, for source and file dependencies
+   alike, and artifact dependencies gain placement:
+   - `from = "<subpath>"` places a subtree of the source rather than
+     all of it;
+   - `overlay = true` lets a placement fill in around files the
+     native tree already holds, which take precedence, instead of
+     requiring an empty path; so a wrapper can supply its own
+     configuration over an upstream tree;
+   - a provides dependency resolved to an artifact may name `path` to
+     copy that artifact there.
+
+5. **The `linux-root` contract** (`schemas/environment/linux-root-v1.md`,
+   label `environment:linux-root/<arch>`): the guest's `/` is the
+   build tree, writable, with `/proc`, the minimal `/dev`, and an
+   empty `/tmp` mounted over it; no `/kairo` paths and no host paths.
+   Every dependency must be placed, since there is nowhere else for it
+   to appear. Everything else matches `linux` v1: no network, hostname
+   `kairo`, uid and gid 1000, the same environment variables with
+   `KAIRO_SRC=/`, the clock not frozen. The command runs in `/<workdir>`;
+   declared outputs are collected from the tree into the store as
+   always. It is a separate label because where the guest finds things
+   is part of the promise and builds bake those paths into their
+   outputs (tcc embeds its prefix), so results under the two contracts
+   must not be confused. The bubblewrap engine implements both.
+
+6. **The live-bootstrap wrapper** (`bootstrap/live-bootstrap/`):
+   - live-bootstrap is a source object at a pinned commit; its `steps/`
+     and the files of its `seed/` are placed where live-bootstrap's own
+     `rootfs.py` puts them (`/steps`, `/`);
+   - each distfile the milestone's steps list is a file source,
+     placed in `/external/distfiles`;
+   - the stage0-posix wrapper's `bin` artifact (§36–§37) is placed at
+     `/AMD64/bin`, since live-bootstrap pins exactly the same
+     stage0-posix commit; this is Kairo's artifact chaining between
+     native objects, replacing live-bootstrap's rerun of stage0;
+   - the wrapper supplies `bootstrap.cfg` and a manifest truncated
+     after `tcc-0.9.27`, over live-bootstrap's (`overlay = true`), and
+     starts from live-bootstrap's `seed/after.kaem`;
+   - its output is the installed `usr/` tree, and its `[[provides]]`
+     include `tool:mes` and `tool:tcc`.
+
+   live-bootstrap's own checks run unmodified: each step verifies its
+   distfiles' hashes and its built packages against the checksums it
+   publishes, so a passing build means the archive's output matches
+   upstream's.
+
+Rationale: live-bootstrap is the canonical path from stage0 to a real
+toolchain, and running it unmodified keeps the strongest evidence
+available, agreement with upstream's published hashes. Identifying
+files by content is the only identity that survives mirrors and
+link rot; giving the guest its tree as `/` is the honest way to run
+software that assumes an FHS root, and naming that as its own contract
+keeps it from being mistaken for the `linux` contract's results.
+
+Affected specs:
+
+- `schemas/canonical/` — file source genesis and observation.
+- `schemas/environment/linux-root-v1.md` (new).
+- `OBJECT.md` §4.4, `object-manifest-v1.md` — `kind = "file"`;
+  `from`, `overlay`, and `path` on artifact dependencies.
+- `CLI.md` — `kairo source fetch-file`.
+- `PHASE_2.md` §7 — the second milestone.
