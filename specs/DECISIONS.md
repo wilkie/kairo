@@ -1388,8 +1388,10 @@ Sub-decisions:
    invalid), and `[[runtime.host.tools]]` entries (`provides`, an
    absolute `path`, optional `version`), the development-mode host
    tools. Host facts
-   (`[runtime.host]`: system, architecture, engines) are detected,
-   never configured.
+   (`[runtime.host]`: system, architecture) are detected, never
+   configured; `[[runtime.engines]]` entries (`kind`, absolute `path`)
+   allowlist isolation engines, each probed before use (§35
+   sub-decision 2).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -3316,3 +3318,107 @@ Affected specs:
   bootstrap).
 - `THREAT_MODEL.md` — the executor and engine entries land with the
   code.
+
+---
+
+## 35. The Bubblewrap Engine and the `linux` Contract
+
+Decision: the first isolation engine (§34 sub-decision 3) is Linux
+namespaces through **bubblewrap**, implementing the contract
+`environment:linux/<arch>` for the host's own architecture. A guest
+sees only `/kairo`, a minimal `/dev`, `/proc`, and an empty `/tmp`:
+no host `/usr`, `/lib`, or `/bin`. Every program a build runs, its
+shell included, comes from an artifact or content provider in the
+store. Results are not host-dependent, so they are the first that can
+count toward substitution and archival policy.
+
+Sub-decisions:
+
+1. **The contract** is documented in
+   `schemas/environment/linux-v1.md`, label `environment:linux/<arch>`
+   (`x86-64`, `aarch64`, ...). It promises:
+
+   - the Linux system-call interface of the running kernel (its
+     release is recorded, not promised);
+   - this filesystem, and nothing else:
+     - `/kairo/src` — the snapshot's tree, writable; the command runs
+       in `/kairo/src/<workdir>` and outputs are collected from there;
+     - `/kairo/artifact/<artifact id>` — each artifact provider,
+       read-only;
+     - `/kairo/content/<snapshot id>` — each content provider's tree,
+       read-only;
+     - `/kairo/home` and `/tmp` — empty and writable;
+     - `/proc`, and `/dev` with only `null`, `zero`, `full`, `random`,
+       `urandom`, `tty`;
+   - no network (a fresh namespace with only loopback), no IPC or
+     process visibility outside the sandbox, hostname `kairo`, uid and
+     gid 1000;
+   - the environment: `HOME=/kairo/home`, `LANG=C`, `TZ=UTC`,
+     `SOURCE_DATE_EPOCH`, `KAIRO_SRC=/kairo/src`,
+     `KAIRO_PROVIDER_<LABEL>` naming each provider's canonical path,
+     and `PATH` made of the providers' `bin/` directories in
+     requirement order.
+
+   The clock is **not** frozen: bubblewrap has no time namespace
+   control, so wall-clock reads are a known source of nondeterminism,
+   recorded as such. Freezing it is a property a later engine may add
+   under a new contract label (§34 sub-decision 1).
+
+   *Amends §34 sub-decision 6:* outputs are collected relative to the
+   workdir under `/kairo/src`, as in development mode; there is no
+   separate `/kairo/out` in contract v1.
+
+2. **Engines are allowlisted in config**, never auto-detected:
+   `[[runtime.engines]]` entries with `kind = "bubblewrap"` and an
+   absolute `path` to `bwrap`. Before offering a contract, Kairo probes
+   each listed engine with a trivial sandbox; one that fails the probe
+   (no user namespaces, a wrong path) is reported and not offered.
+   Nothing is enabled by default.
+
+3. **Selection.** A target that requires `environment:linux/<arch>`
+   resolves to an allowlisted engine implementing it when one passes
+   its probe; failing that, to the host in development mode as today
+   (§33). A target that names no environment runs in development mode
+   only: requiring the contract is how a build asks for isolation.
+
+4. **No host tools under an engine.** Once the plan's environment
+   resolves to an engine, `[[runtime.host.tools]]` are not candidates;
+   a requirement only a host tool could satisfy fails resolution and
+   says so. Host tools remain a development-mode fallback.
+
+5. **Policy.** An engine build does not need `allow_local_process`,
+   and does not require trust in the revision's signer: running code
+   one doesn't vouch for inside an allowlisted sandbox is what the
+   engine is for (EXECUTOR §21 applies to the local process executor
+   only). The residual risk is the kernel and bubblewrap's own attack
+   surface, named in `THREAT_MODEL.md`. Accepting another signer's
+   *results* is unchanged (§33 sub-decision 8).
+
+6. **Records and results.** The executor is `bubblewrap/1`. Its
+   record names the engine path and `bwrap --version`, the kernel
+   release, the isolation claims above, and "wall clock not frozen" as
+   known nondeterminism. Its `BuildResult` carries the contract label
+   as `environment` and `host_dependent = false`.
+
+7. **Workspace.** Kairo still assembles the workspace on the host
+   (`<store>/build/`), then binds its pieces to their canonical paths;
+   mounting strategy stays the engine's own (§34 sub-decision 6), and
+   none of it enters the plan hash.
+
+Rationale: an empty root is the only honest reading of §34's "nothing
+outside the archive takes part"; bubblewrap is small, rootless, and
+widely packaged, and is itself buildable from the archive later. The
+clock is the one promise bubblewrap can't keep, so the contract says
+so instead of implying it.
+
+Affected specs:
+
+- `schemas/environment/linux-v1.md` (new).
+- `ENVIRONMENTS.md` — the first contract.
+- `EXECUTOR.md` — §20 (the bubblewrap executor), §21 (scope of the
+  local-process rules).
+- `SANDBOX.md` — what the engine enforces.
+- `THREAT_MODEL.md` — the engine boundary.
+- `CLI.md` — §17 engine selection and output.
+- `DECISIONS.md` §17 — `[[runtime.engines]]`.
+- `PHASE_2.md` §7.
