@@ -453,7 +453,7 @@ per-(system, architecture) seed.
       frontier and resolved dependencies).
 - [x] Implement an MVP executor (probably native subprocess; container /
       VM executors are larger work).
-- [ ] Add execution-record bundle type (deferred from `specs/PACKAGE.md`
+- [x] Add execution-record bundle type (deferred from `specs/PACKAGE.md`
       §4.4).
 
 **Why it matters:** moves Kairo from "verify history" to "do work" — the

@@ -150,6 +150,22 @@ pub(crate) enum CliError {
     Build(Box<kairo_build::BuildError>),
     /// `kairo build` without `--plan-only` needs `--actor`.
     BuildActorRequired,
+    /// `kairo reproduce` takes `statement:<id>` of a `BuildResult`.
+    NotAResultRef {
+        input: String,
+    },
+    ReadBuildResult {
+        statement: kairo_core::StatementId,
+        source: kairo_store::StoreError,
+    },
+    /// What the cited plan pins isn't all here.
+    ReproduceUnavailable {
+        missing: Vec<String>,
+    },
+    /// A bundle's execution evidence couldn't be written or read.
+    BundleExecutions {
+        message: String,
+    },
     BuildResultShape(kairo_statement::BuildResultShapeError),
     WriteBuildResult {
         source: kairo_store::StoreError,
@@ -662,6 +678,21 @@ impl fmt::Display for CliError {
                 f.write_str("kairo build needs --actor <id> to sign the BuildResult (or --plan-only)")
             }
             Self::BuildResultShape(error) => write!(f, "build result: {error}"),
+            Self::BundleExecutions { message } => write!(f, "bundle executions: {message}"),
+            Self::NotAResultRef { input } => write!(
+                f,
+                "{input:?} is not a build result reference (expected statement:<id>)"
+            ),
+            Self::ReadBuildResult { statement, source } => {
+                write!(f, "failed to read build result {statement}: {source}")
+            }
+            Self::ReproduceUnavailable { missing } => {
+                f.write_str("cannot reproduce: this node lacks what the cited plan pins")?;
+                for line in missing {
+                    write!(f, "\n  missing: {line}")?;
+                }
+                Ok(())
+            }
             Self::WriteBuildResult { source } => write!(f, "failed to store the build result: {source}"),
             Self::BuildFailed { status, summary } => write!(f, "{summary}build {status}"),
             Self::ProviderUnavailable { object, reason } => {
@@ -1153,7 +1184,8 @@ impl Error for CliError {
             | Self::ListRevisions { source, .. }
             | Self::ListInbox { source }
             | Self::Follows { source }
-            | Self::WriteBuildResult { source } => Some(source),
+            | Self::WriteBuildResult { source }
+            | Self::ReadBuildResult { source, .. } => Some(source),
             Self::ReadActiveKey { source, .. } => Some(source),
             Self::ReadBranch(error)
             | Self::ReadVersionTag(error)
@@ -1212,6 +1244,9 @@ impl Error for CliError {
             | Self::BuildPrerequisites { .. }
             | Self::BuildFailed { .. }
             | Self::BuildActorRequired
+            | Self::BundleExecutions { .. }
+            | Self::NotAResultRef { .. }
+            | Self::ReproduceUnavailable { .. }
             | Self::ProviderUnavailable { .. }
             | Self::ManifestNotUtf8
             | Self::MissingPublicKey

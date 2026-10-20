@@ -220,6 +220,7 @@ pub fn write_bundle(
             statements: statement_id_strings,
             blobs: blob_id_strings,
         },
+        executions: Vec::new(),
         git_history: BundleGitHistory {
             included: git_included,
             expected_commits: expected_commits.into_iter().collect(),

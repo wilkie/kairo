@@ -3111,13 +3111,25 @@ Sub-decisions:
    view over successful `BuildResult`s and their resolved manifests,
    defined with discovery step two, not a second statement now.
 
-9. **`kairo reproduce <statement-ref>`** loads the cited
+9. **`kairo reproduce statement:<id>`** loads the cited
    `BuildResult`'s resolved manifest, materializes exactly what it
    pins, re-runs the target under the same policy, and signs its own
    `BuildResult` citing the same manifest. It reports `matches` or
    `differs`, with the two artifact ids. A difference is a finding,
    not an error (exit 0). Strict reproduction mode (EXECUTOR §16.1)
-   is deferred.
+   is deferred. *Amended when built:* it never re-resolves; when the
+   plan's pinned inputs (its blob, prerequisite artifacts, host tools)
+   aren't all here it refuses and lists them.
+
+   Execution evidence travels in object bundles: `kairo bundle export
+   --include-executions` writes, for each of the object's
+   `BuildResult`s whose record this node holds,
+   `executions/<record id>/record.json` and the blobs it names (plan,
+   artifact tree and files, logs) under `blobs/`, and lists the ids in
+   the manifest's `executions`. Import fixity-checks the record and
+   each blob against its own domain. So a second node with only the
+   bundle can reproduce the result. Each record carries a random
+   per-run id, so two runs are two records.
 
 10. **The CLI drives this in-process.** `kairo build` and `kairo
     reproduce` call the resolver and executor directly, as other

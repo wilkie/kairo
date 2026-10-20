@@ -17,6 +17,7 @@ pub(crate) fn run_bundle_command(
             object,
             output,
             include_git,
+            include_executions,
         } => {
             let object_id = ObjectId::new(object.clone())
                 .map_err(|source| CliError::ParseObjectId { object, source })?;
@@ -54,6 +55,11 @@ pub(crate) fn run_bundle_command(
                     .pack_for_object_to(object_id.as_str(), &mut file)
                     .map_err(|source| CliError::GitOperation { source })?;
             }
+            let executions = if include_executions {
+                export_executions(&store, &object_id, &output)?
+            } else {
+                0
+            };
             let mut out = String::new();
             out.push_str("export bundle\n");
             out.push_str(&format!("object = {}\n", object_id));
@@ -72,6 +78,7 @@ pub(crate) fn run_bundle_command(
                 "git_history_included = {}\n",
                 manifest.git_history.included
             ));
+            out.push_str(&format!("executions = {executions}\n"));
             Ok(out)
         }
         BundleCommand::Import {
@@ -109,6 +116,8 @@ pub(crate) fn run_bundle_command(
             out.push_str(&format!("blobs = {}\n", summary.blobs));
             out.push_str(&format!("git_packs = {packs_ingested}\n"));
             out.push_str(&format!("git_refs_pinned = {refs_pinned}\n"));
+            let executions = import_executions(&store, &input, &summary.manifest)?;
+            out.push_str(&format!("executions = {executions}\n"));
             Ok(out)
         }
     }
@@ -248,5 +257,81 @@ fn run_verified_import(input: &std::path::Path, paths: &StorePaths) -> Result<St
         crate::commands::federation::describe_git(&report.git),
         report.incomplete.len()
     ));
+    let manifest = read_manifest(input)?;
+    let executions = import_executions(&store, input, &manifest)?;
+    out.push_str(&format!("executions = {executions}\n"));
     Ok(out)
+}
+
+fn read_manifest(input: &std::path::Path) -> Result<kairo_bundle::BundleManifest, CliError> {
+    let path = input.join(kairo_bundle::MANIFEST_FILENAME);
+    let bytes = std::fs::read(&path).map_err(|source| CliError::BundleExecutions {
+        message: format!("reading {}: {source}", path.display()),
+    })?;
+    serde_json::from_slice(&bytes).map_err(|source| CliError::BundleExecutions {
+        message: format!("parsing {}: {source}", path.display()),
+    })
+}
+
+/// The execution records behind `object`'s `BuildResult`s that this
+/// node holds, written under `<output>/executions/` and listed in the
+/// manifest. Returns how many.
+fn export_executions(
+    store: &kairo_store::FilesystemStore,
+    object: &ObjectId,
+    output: &std::path::Path,
+) -> Result<usize, CliError> {
+    use kairo_store::{BuildResultResolver, StatementStore};
+    let mut ids: Vec<kairo_core::BlobId> = Vec::new();
+    for head in store
+        .list_build_results(object)
+        .map_err(|source| CliError::BundleExecutions {
+            message: source.to_string(),
+        })?
+    {
+        let result = store
+            .get_build_result(&head.statement_id)
+            .map_err(|source| CliError::BundleExecutions {
+                message: source.to_string(),
+            })?;
+        let id = result.unsigned().body().execution().clone();
+        if kairo_build::record_path(store, &id).is_file() && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids.sort();
+    let dir = output.join(kairo_bundle::EXECUTIONS_DIR);
+    for id in &ids {
+        kairo_build::export_execution(store, id, &dir)
+            .map_err(|error| CliError::Build(Box::new(error)))?;
+    }
+    let mut manifest = read_manifest(output)?;
+    manifest.executions = ids.iter().map(ToString::to_string).collect();
+    let bytes =
+        serde_json::to_vec_pretty(&manifest).map_err(|source| CliError::BundleExecutions {
+            message: source.to_string(),
+        })?;
+    let path = output.join(kairo_bundle::MANIFEST_FILENAME);
+    std::fs::write(&path, bytes).map_err(|source| CliError::BundleExecutions {
+        message: format!("writing {}: {source}", path.display()),
+    })?;
+    Ok(ids.len())
+}
+
+/// Store every execution record the manifest lists, fixity-checked.
+fn import_executions(
+    store: &kairo_store::FilesystemStore,
+    input: &std::path::Path,
+    manifest: &kairo_bundle::BundleManifest,
+) -> Result<usize, CliError> {
+    let dir = input.join(kairo_bundle::EXECUTIONS_DIR);
+    for id in &manifest.executions {
+        let id =
+            kairo_core::BlobId::new(id.clone()).map_err(|source| CliError::BundleExecutions {
+                message: format!("execution id {id:?}: {source}"),
+            })?;
+        kairo_build::import_execution(store, &id, &dir)
+            .map_err(|error| CliError::Build(Box::new(error)))?;
+    }
+    Ok(manifest.executions.len())
 }

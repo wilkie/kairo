@@ -767,7 +767,7 @@ kairo sync           [post-v1] depends on Phase 2 §4
 kairo build          [v1, development mode] DECISIONS.md §33–§34
 kairo provider       [v1] DECISIONS.md §33
 kairo run            [post-v1] depends on Phase 2 §7
-kairo reproduce      [post-v1] depends on Phase 2 §7
+kairo reproduce      [v1, development mode] DECISIONS.md §33
 kairo pin            [post-v1] depends on GC design
 kairo unpin          [post-v1] depends on GC design
 kairo list           [post-v1] depends on indexing
@@ -1310,7 +1310,25 @@ If validation is not `valid`, run must not execute.
 
 ## 19. `kairo reproduce`
 
-**[post-v1].** Depends on Phase 2 §7 build/run.
+**[implemented in development mode].** `DECISIONS.md` §33 sub-decision 9.
+
+```text
+kairo reproduce statement:<id> --actor <id> [--json]
+```
+
+Takes the `BuildResult` to reproduce, loads the plan it cites (the
+held `kairo.resolved-manifest.v1` blob, hash-checked), and refuses,
+listing what's missing, unless everything the plan pins is here: no
+builds needed first, every artifact provider's artifact blob, every
+host tool's path. It does not re-resolve. It runs the plan under
+`kairo build`'s policy (`allow_local_process`, a trusted revision
+signer; exit 7 otherwise), signs its own `BuildResult` citing the same
+plan, and prints `reproduction = matches` (same outcome and artifact)
+or `differs`, with the cited and reproduced outcome and artifact, then
+the run's record summary. A difference exits 0; strict mode is
+deferred.
+
+The broader sketch below is the long-term surface.
 
 Reproduces a snapshot.
 

@@ -65,6 +65,10 @@ pub const BUNDLE_SCHEMA: &str = "kairo.bundle.v1";
 /// Filename of the bundle manifest at the bundle root.
 pub const MANIFEST_FILENAME: &str = "manifest.json";
 
+/// Where execution evidence lives in a bundle: `executions/<id>/`
+/// with `record.json` and `blobs/` (`PACKAGE.md` §14).
+pub const EXECUTIONS_DIR: &str = "executions";
+
 /// Subdirectory names within a bundle.
 pub mod dirs {
     pub const ACTORS: &str = "actors";

@@ -48,8 +48,13 @@ strict subset of this spec:
   is independently verifiable on its own bytes; the manifest is an
   inventory, not an authority claim.
 - **Manifest schema** is the §7.1 shape minus the `closure`,
-  `executions`, `provenance`, and `indexes` sections, plus
-  `git_history`. `manifest.schema = "kairo.bundle.v1"` (note: the
+  `provenance`, and `indexes` sections, plus `git_history`. The
+  `executions` section is a list of execution record ids, present only
+  when `--include-executions` carried some: each lives under
+  `executions/<id>/` with `record.json` and `blobs/` (§14), and import
+  fixity-checks the record and every blob against its own domain
+  (`DECISIONS.md` §33 sub-decision 9). `BuildResult` statements about
+  the object are in the bundle's statements either way. `manifest.schema = "kairo.bundle.v1"` (note: the
   field name is intentionally narrower than `kairo.package.v1` —
   bundle is the MVP slice; the full package spec gets its own schema
   string when it lands).

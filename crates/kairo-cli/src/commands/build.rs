@@ -449,6 +449,160 @@ fn build_one(
     Ok(Built { execution, result })
 }
 
+/// `kairo reproduce` (`DECISIONS.md` §33 sub-decision 9).
+pub(crate) fn run_reproduce(
+    result_ref: &str,
+    actor: &str,
+    json: bool,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let cited_id = match result_ref.parse::<KairoRef>() {
+        Ok(KairoRef::Statement(id)) => id,
+        _ => {
+            return Err(CliError::NotAResultRef {
+                input: result_ref.to_owned(),
+            })
+        }
+    };
+    let store = open_store(paths)?;
+    let (config, source) = load_config(paths)?;
+    if !config.runtime.allow_local_process {
+        return Err(CliError::BuildNotAllowed {
+            config: source.path().to_path_buf(),
+        });
+    }
+    let cited = store
+        .get_build_result(&cited_id)
+        .map_err(|source| CliError::ReadBuildResult {
+            statement: cited_id.clone(),
+            source,
+        })?;
+    let body = cited.unsigned().body();
+    let plan_bytes =
+        store
+            .get_blob(body.resolved_manifest())
+            .map_err(|_| CliError::ReproduceUnavailable {
+                missing: vec![format!(
+                    "the plan {} (a bundle exported with --include-executions carries it)",
+                    body.resolved_manifest()
+                )],
+            })?;
+    let plan =
+        PlanDocument::from_bytes(plan_bytes).map_err(|error| CliError::Resolve(Box::new(error)))?;
+    if &plan.hash != body.resolved_manifest() {
+        return Err(CliError::ReproduceUnavailable {
+            missing: vec![format!("a plan matching {}", body.resolved_manifest())],
+        });
+    }
+    // Exactly what the plan pins must be here: no re-resolution.
+    let mut missing: Vec<String> = plan
+        .manifest
+        .builds_first
+        .iter()
+        .map(|build| format!("a build of object:{} target {}", build.object, build.target))
+        .collect();
+    for requirement in &plan.manifest.requirements {
+        match &requirement.resolved {
+            kairo_resolver::Resolved::Artifact {
+                object,
+                target,
+                artifact,
+                ..
+            } => {
+                let held = artifact
+                    .as_ref()
+                    .and_then(|id| BlobId::new(id.clone()).ok())
+                    .is_some_and(|id| store.get_blob(&id).is_ok());
+                if !held {
+                    missing.push(format!(
+                        "the artifact of object:{object} target {target}{}",
+                        artifact
+                            .as_ref()
+                            .map(|id| format!(" ({id})"))
+                            .unwrap_or_default()
+                    ));
+                }
+            }
+            kairo_resolver::Resolved::HostTool { path, .. } => {
+                if !std::path::Path::new(path).is_file() {
+                    missing.push(format!("the host tool {path}"));
+                }
+            }
+            kairo_resolver::Resolved::Content { .. }
+            | kairo_resolver::Resolved::Environment { .. } => {}
+        }
+    }
+    if !missing.is_empty() {
+        return Err(CliError::ReproduceUnavailable { missing });
+    }
+
+    let keystore = open_keystore(paths)?;
+    let local = keystore.list_actors().map_err(CliError::ListKeystore)?;
+    let actor_id =
+        kairo_core::ActorId::new(actor.to_owned()).map_err(|source| CliError::ParseActorId {
+            actor: actor.to_owned(),
+            source,
+        })?;
+    let secret = crate::require_active_signing_key(&store, &keystore, &actor_id)?;
+    let trees = CacheTrees {
+        paths,
+        store: &store,
+    };
+    let limits = Limits {
+        timeout: Duration::from_secs(config.runtime.timeout_secs),
+    };
+    let one = build_one(&store, &trees, &local, &actor_id, &secret, &plan, &limits)?;
+
+    let cited_artifact = body.artifact().map(ToString::to_string);
+    let new_artifact = one.execution.record.artifact.clone();
+    let new_outcome = one.execution.record.status.as_str();
+    let matches = body.result().as_str() == new_outcome && cited_artifact == new_artifact;
+    let verdict = if matches { "matches" } else { "differs" };
+    if json {
+        return Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "reproduction": verdict,
+                "cited": {
+                    "result": cited_id.to_string(),
+                    "signer": cited.unsigned().actor().to_string(),
+                    "outcome": body.result().as_str(),
+                    "artifact": cited_artifact,
+                },
+                "reproduced": {
+                    "result": one.result.to_string(),
+                    "outcome": new_outcome,
+                    "artifact": new_artifact,
+                    "execution": one.execution.id.to_string(),
+                    "record": serde_json::to_value(&one.execution.record).unwrap_or_default(),
+                },
+                "plan": plan.hash.to_string(),
+            }))
+            .unwrap_or_default()
+        ));
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "reproduction = {verdict}");
+    let _ = writeln!(out, "plan = {}", plan.hash);
+    let _ = writeln!(out, "cited_result = {cited_id}");
+    let _ = writeln!(out, "cited_signer = {}", cited.unsigned().actor());
+    let _ = writeln!(out, "cited_outcome = {}", body.result().as_str());
+    let _ = writeln!(
+        out,
+        "cited_artifact = {}",
+        cited_artifact.as_deref().unwrap_or("none")
+    );
+    let _ = writeln!(out, "reproduced_outcome = {new_outcome}");
+    let _ = writeln!(
+        out,
+        "reproduced_artifact = {}",
+        new_artifact.as_deref().unwrap_or("none")
+    );
+    out.push_str(&format_execution(&store, &one.execution));
+    let _ = writeln!(out, "result = {}", one.result);
+    Ok(out)
+}
+
 fn format_built(store: &FilesystemStore, built: &[Built]) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "builds = {}", built.len());

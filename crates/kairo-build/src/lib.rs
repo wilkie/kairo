@@ -188,6 +188,9 @@ fn set_executable(path: &Path, executable: bool) -> Result<(), BuildError> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRecord {
     pub schema: String,
+    /// 16 random bytes, hex: two runs of one plan are two records even
+    /// when everything else about them agrees.
+    pub run: String,
     pub plan: String,
     pub object: String,
     pub snapshot: String,
@@ -540,6 +543,7 @@ pub fn run_plan(
     };
     let record = ExecutionRecord {
         schema: EXECUTION_RECORD_SCHEMA.to_owned(),
+        run: run_id()?,
         plan: plan.hash.to_string(),
         object: manifest.object.clone(),
         snapshot: manifest.snapshot.clone(),
@@ -578,6 +582,15 @@ pub fn run_plan(
         record,
         artifact: artifact.map(|(_, tree)| tree),
     })
+}
+
+fn run_id() -> Result<String, BuildError> {
+    use std::io::Read;
+    let mut bytes = [0u8; 16];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .map_err(|source| io_error("reading", Path::new("/dev/urandom"), source))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// `KAIRO_PROVIDER_<LABEL>`, the label upper-cased with every
@@ -770,6 +783,11 @@ pub enum BuildError {
         path: String,
     },
     Environment(String),
+    /// A record or blob whose id doesn't match its bytes.
+    Fixity {
+        what: String,
+        actual: BlobId,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -809,6 +827,9 @@ impl fmt::Display for BuildError {
                 write!(f, "artifact {artifact} has an unsafe path {path:?}")
             }
             Self::Environment(message) => write!(f, "building the environment: {message}"),
+            Self::Fixity { what, actual } => {
+                write!(f, "{what} doesn't match its contents (they hash to {actual})")
+            }
         }
     }
 }
@@ -827,7 +848,8 @@ impl Error for BuildError {
             | Self::NoTarget { .. }
             | Self::PrerequisitesUnbuilt { .. }
             | Self::UnsafeArtifactPath { .. }
-            | Self::Environment(_) => None,
+            | Self::Environment(_)
+            | Self::Fixity { .. } => None,
         }
     }
 }
@@ -835,3 +857,121 @@ impl Error for BuildError {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests;
+
+// --- execution evidence in bundles ------------------------------------
+
+/// The blobs an execution record names, each with the domain its id is
+/// derived under, so an importer can fixity-check every one.
+fn evidence_blobs(
+    store: &FilesystemStore,
+    record: &ExecutionRecord,
+) -> Result<Vec<(BlobId, &'static [u8])>, BuildError> {
+    let mut blobs = vec![
+        (
+            BlobId::new(record.plan.clone()).map_err(BuildError::Id)?,
+            kairo_resolver::RESOLVED_MANIFEST_DOMAIN,
+        ),
+        (
+            BlobId::new(record.logs.stdout.clone()).map_err(BuildError::Id)?,
+            LOG_BLOB_DOMAIN,
+        ),
+        (
+            BlobId::new(record.logs.stderr.clone()).map_err(BuildError::Id)?,
+            LOG_BLOB_DOMAIN,
+        ),
+    ];
+    if let Some(artifact) = &record.artifact {
+        let artifact = BlobId::new(artifact.clone()).map_err(BuildError::Id)?;
+        let tree = load_artifact(store, &artifact)?;
+        blobs.push((artifact, ARTIFACT_TREE_DOMAIN));
+        for entry in tree.entries {
+            blobs.push((
+                BlobId::new(entry.blob).map_err(BuildError::Id)?,
+                ARTIFACT_BLOB_DOMAIN,
+            ));
+        }
+    }
+    blobs.sort_by(|a, b| a.0.cmp(&b.0));
+    blobs.dedup_by(|a, b| a.0 == b.0);
+    Ok(blobs)
+}
+
+/// Write execution `id`'s evidence under `dir/<id>/`: `record.json`
+/// and every blob it names under `blobs/` (`PACKAGE.md` §14).
+pub fn export_execution(
+    store: &FilesystemStore,
+    id: &BlobId,
+    dir: &Path,
+) -> Result<(), BuildError> {
+    let record_file = record_path(store, id);
+    let bytes =
+        fs::read(&record_file).map_err(|source| io_error("reading", &record_file, source))?;
+    let record: ExecutionRecord = serde_json::from_slice(&bytes).map_err(BuildError::Encode)?;
+    let root = dir.join(id.as_str());
+    let blobs_dir = root.join("blobs");
+    fs::create_dir_all(&blobs_dir).map_err(|source| io_error("creating", &blobs_dir, source))?;
+    let record_out = root.join("record.json");
+    fs::write(&record_out, &bytes).map_err(|source| io_error("writing", &record_out, source))?;
+    for (blob, _) in evidence_blobs(store, &record)? {
+        let data = store.get_blob(&blob).map_err(BuildError::Store)?;
+        let path = blobs_dir.join(blob.as_str());
+        fs::write(&path, data).map_err(|source| io_error("writing", &path, source))?;
+    }
+    Ok(())
+}
+
+/// Read execution `id`'s evidence from `dir/<id>/`, fixity-checking
+/// the record and every blob against its domain, and store it. The
+/// artifact tree is stored before its files are checked, since it
+/// names them.
+pub fn import_execution(
+    store: &FilesystemStore,
+    id: &BlobId,
+    dir: &Path,
+) -> Result<ExecutionRecord, BuildError> {
+    let root = dir.join(id.as_str());
+    let record_file = root.join("record.json");
+    let bytes =
+        fs::read(&record_file).map_err(|source| io_error("reading", &record_file, source))?;
+    let derived = BlobId::from_bytes(EXECUTION_RECORD_DOMAIN, &bytes);
+    if &derived != id {
+        return Err(BuildError::Fixity {
+            what: format!("execution record {id}"),
+            actual: derived,
+        });
+    }
+    let record: ExecutionRecord = serde_json::from_slice(&bytes).map_err(BuildError::Encode)?;
+    if record.schema != EXECUTION_RECORD_SCHEMA {
+        return Err(BuildError::UnsupportedSchema(record.schema));
+    }
+    let read_checked = |blob: &BlobId, domain: &[u8]| -> Result<Vec<u8>, BuildError> {
+        let path = root.join("blobs").join(blob.as_str());
+        let data = fs::read(&path).map_err(|source| io_error("reading", &path, source))?;
+        let derived = BlobId::from_bytes(domain, &data);
+        if &derived != blob {
+            return Err(BuildError::Fixity {
+                what: format!("blob {blob} of execution {id}"),
+                actual: derived,
+            });
+        }
+        Ok(data)
+    };
+    if let Some(artifact) = &record.artifact {
+        let artifact = BlobId::new(artifact.clone()).map_err(BuildError::Id)?;
+        let tree = read_checked(&artifact, ARTIFACT_TREE_DOMAIN)?;
+        ArtifactTree::from_bytes(&tree)?;
+        store
+            .put_blob(&artifact, &tree)
+            .map_err(BuildError::Store)?;
+    }
+    for (blob, domain) in evidence_blobs(store, &record)? {
+        let data = read_checked(&blob, domain)?;
+        store.put_blob(&blob, &data).map_err(BuildError::Store)?;
+    }
+    let path = record_path(store, id);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| io_error("creating", parent, source))?;
+    }
+    fs::write(&path, &bytes).map_err(|source| io_error("writing", &path, source))?;
+    Ok(record)
+}

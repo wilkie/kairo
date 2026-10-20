@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **`kairo reproduce` (`DECISIONS.md` §33 sub-decision 9).** `kairo
+  reproduce statement:<id> --actor <id>` re-runs exactly the plan a
+  `BuildResult` cites, signs its own result, and reports `matches` or
+  `differs`; it refuses, listing them, when the plan's pinned inputs
+  aren't held. `kairo bundle export --include-executions` carries the
+  execution records behind an object's results, with their plans,
+  artifacts and logs, fixity-checked on import, so another node can
+  reproduce from the bundle alone. Execution records gain a random
+  per-run id.
 - **`BuildResult` statements (`DECISIONS.md` §33 sub-decision 8).**
   `kairo build --actor <id>` signs a `BuildResult` for every completed
   build (`schemas/canonical/build-result-v1.md`): object, snapshot,

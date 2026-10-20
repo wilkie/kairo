@@ -29,6 +29,12 @@ pub struct BundleManifest {
     /// MVP always sets `included = false`; future bundles may include a
     /// `git/` subdirectory and flip this flag.
     pub git_history: BundleGitHistory,
+    /// Execution records carried as evidence for the bundle's
+    /// `BuildResult`s, by record id, under `executions/<id>/`
+    /// (`PACKAGE.md` §4.4, §14). Each record and blob is
+    /// fixity-checked on import against its own domain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

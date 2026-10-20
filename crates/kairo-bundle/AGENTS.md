@@ -16,9 +16,13 @@ land in the store undetected — fix the bypass.
 root; every `ObjectRevision` those refs and the genesis's initial
 revision reach along parent links (`specs/DECISIONS.md` §20, as in a
 Git fetch; export reads `FilesystemStore::object_closure` rather than
-walking `statements/`); the `ActorGenesis` of every actor
+walking `statements/`); every `BuildResult` about the root (evidence
+about its snapshots, `DECISIONS.md` §33); the `ActorGenesis` of every actor
 that signed any of those statements; every blob those statements
-reference.
+reference. Optionally, the execution records behind those results
+under `executions/` (`--include-executions`): `kairo-build` writes and
+reads them, fixity-checking each record and blob against its own
+domain, since their blobs aren't manifest blobs.
 
 Actor key events (rotations, revocations, emergency and attestation
 kinds) deliberately stay out. Key knowledge belongs to the actor,

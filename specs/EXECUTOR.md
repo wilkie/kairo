@@ -655,7 +655,7 @@ truth unless incorporated through valid statements.
 
 The implemented record (`kairo.execution-record.v1`, `crates/kairo-build`)
 is a JSON file under `<store>/executions/<id>.json`, its id a `BlobId`
-over its bytes: plan hash, object, snapshot, target, executor id,
+over its bytes: a random per-run id, plan hash, object, snapshot, target, executor id,
 version and isolation claim, environment contract (`none` in
 development mode), `host_dependent`, host system, architecture and the
 host tools used, start and end times, status (`success`, `failure`,

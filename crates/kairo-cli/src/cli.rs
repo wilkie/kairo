@@ -218,6 +218,20 @@ pub(crate) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Re-run the plan a `BuildResult` cites and compare artifacts
+    /// (`specs/DECISIONS.md` §33 sub-decision 9). Runs exactly what the
+    /// held plan pins, under `kairo build`'s policy, signs its own
+    /// `BuildResult` citing the same plan, and reports `matches` or
+    /// `differs`. A difference is a finding, not an error.
+    Reproduce {
+        /// `statement:<id>` of the `BuildResult` to reproduce.
+        result_ref: String,
+        /// The actor that signs the new `BuildResult`.
+        #[arg(long)]
+        actor: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// What held objects provide (`specs/DECISIONS.md` §33
     /// sub-decision 2): their `[[provides]]` labels at their current
     /// snapshots, read from the Git cache.
@@ -884,6 +898,12 @@ pub(crate) enum BundleCommand {
         /// federation/archival packages. See `DECISIONS.md` §9.
         #[arg(long)]
         include_git: bool,
+        /// Carry the execution records behind the object's
+        /// `BuildResult`s, where this node holds them, with the plans,
+        /// artifacts and logs they name, under `<output>/executions/`
+        /// (`specs/PACKAGE.md` §4.4). Each is fixity-checked on import.
+        #[arg(long)]
+        include_executions: bool,
     },
     /// Read a directory bundle and ingest its contents into the local
     /// store through the same verifier as `kairo fetch`

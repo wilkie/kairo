@@ -3203,6 +3203,7 @@ fn end_to_end_bundle_export_then_import() -> Result<(), Box<dyn std::error::Erro
                 object: object_id.clone(),
                 output: bundle_path.clone(),
                 include_git: false,
+                include_executions: false,
             },
         }),
     })?;
@@ -5310,6 +5311,7 @@ kind = "tree"
                 object: object_id.clone(),
                 output: bundle_root.clone(),
                 include_git: false,
+                include_executions: false,
             },
         }),
     })?;
@@ -5703,6 +5705,7 @@ fn kairo_bundle_export_include_git_writes_pack_and_flips_flag(
                 object: object_id.clone(),
                 output: bundle_path.clone(),
                 include_git: true,
+                include_executions: false,
             },
         }),
     })?;
@@ -5847,6 +5850,7 @@ fn kairo_bundle_roundtrip_with_git_packs_verifies_without_cwd_repo(
                 object: object_id.clone(),
                 output: bundle_path.clone(),
                 include_git: true,
+                include_executions: false,
             },
         }),
     })?;
@@ -5956,6 +5960,7 @@ fn kairo_bundle_import_without_git_data_skips_cache_open() -> Result<(), Box<dyn
                 object: object_id.clone(),
                 output: bundle_path.clone(),
                 include_git: false,
+                include_executions: false,
             },
         }),
     })?;
@@ -6003,6 +6008,7 @@ fn kairo_bundle_export_default_leaves_git_history_excluded(
                 object: object_id.clone(),
                 output: bundle_path.clone(),
                 include_git: false,
+                include_executions: false,
             },
         }),
     })?;
@@ -7902,6 +7908,7 @@ fn export_bundle(
                 object: object.to_owned(),
                 output: output.to_path_buf(),
                 include_git: false,
+                include_executions: false,
             },
         },
     )
@@ -8862,6 +8869,214 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
         .len(),
         1,
         "make was not rebuilt"
+    );
+    Ok(())
+}
+
+#[test]
+fn reproduce_reruns_a_cited_plan_here_and_on_another_node() -> Result<(), Box<dyn std::error::Error>>
+{
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let config = "[runtime]\nallow_local_process = true\n\n\
+                  [[runtime.host.tools]]\nprovides = \"tool:sh\"\npath = \"/bin/sh\"\n";
+    let target = |command: &str| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "app"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "{command}"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.outputs]]
+            name = "cli"
+            path = "dist/app"
+            artifact_path = "bin/app"
+            kind = "file"
+            "#
+        )
+    };
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    std::fs::write(store_dir.path().join("config.toml"), config)?;
+    let app = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[(
+            "kairo.toml",
+            &target("mkdir -p dist && echo $SOURCE_DATE_EPOCH > dist/app"),
+        )],
+    )?;
+    let noisy = create_held_tree(
+        store_dir.path(),
+        &actor,
+        &[(
+            "kairo.toml",
+            &target("mkdir -p dist && read x < /proc/sys/kernel/random/uuid && echo $x > dist/app"),
+        )],
+    )?;
+    let build = |object: &str| {
+        run_in_store(
+            store_dir.path(),
+            Command::Build {
+                snapshot_ref: format!("object:{object}"),
+                target: "release".to_owned(),
+                actor: Some(actor.clone()),
+                plan_only: false,
+                json: false,
+            },
+        )
+    };
+    let reproduce = |dir: &std::path::Path, result: &str, by: &str| {
+        run_in_store(
+            dir,
+            Command::Reproduce {
+                result_ref: format!("statement:{result}"),
+                actor: by.to_owned(),
+                json: false,
+            },
+        )
+    };
+
+    // A deterministic build reproduces: same plan, same artifact, and
+    // a second signed result.
+    let built = build(&app)?;
+    let result = parse_field(&built, "result = ")?;
+    let artifact = parse_field(&built, "artifact = ")?;
+    let again = reproduce(store_dir.path(), &result, &actor)?;
+    assert!(again.contains("reproduction = matches\n"), "{again}");
+    assert!(
+        again.contains(&format!("cited_artifact = {artifact}\n")),
+        "{again}"
+    );
+    assert!(
+        again.contains(&format!("reproduced_artifact = {artifact}\n")),
+        "{again}"
+    );
+    let second = parse_field(&again, "result = ")?;
+    assert_ne!(second, result);
+    let store = kairo_store::FilesystemStore::open(store_dir.path())?;
+    let heads = kairo_store::BuildResultResolver::list_build_results(
+        &store,
+        &kairo_core::ObjectId::new(app.clone())?,
+    )?;
+    assert_eq!(heads.len(), 2);
+    assert_eq!(heads[0].resolved_manifest, heads[1].resolved_manifest);
+    assert_eq!(heads[0].artifact, heads[1].artifact);
+
+    // A nondeterministic one differs: a finding, not an error.
+    let noisy_result = parse_field(&build(&noisy)?, "result = ")?;
+    let differs = reproduce(store_dir.path(), &noisy_result, &actor)?;
+    assert!(differs.contains("reproduction = differs\n"), "{differs}");
+
+    let not_a_result = run_in_store(
+        store_dir.path(),
+        Command::Reproduce {
+            result_ref: format!("object:{app}"),
+            actor: actor.clone(),
+            json: false,
+        },
+    );
+    assert!(matches!(not_a_result, Err(CliError::NotAResultRef { .. })));
+
+    // Archival path: a bundle with the Git history and the execution
+    // evidence lets a second node reproduce the result from the bundle
+    // alone, once it trusts the revision's signer.
+    let bundle = tempfile::TempDir::new()?;
+    let bundle_dir = bundle.path().join("app.bundle");
+    let exported = run_in_store(
+        store_dir.path(),
+        Command::Bundle {
+            command: BundleCommand::Export {
+                object: app.clone(),
+                output: bundle_dir.clone(),
+                include_git: true,
+                include_executions: true,
+            },
+        },
+    )?;
+    assert!(exported.contains("executions = 2\n"), "{exported}");
+    assert_eq!(
+        std::fs::read_dir(bundle_dir.join("executions"))?.count(),
+        2,
+        "one directory per execution record"
+    );
+
+    let other_dir = tempfile::TempDir::new()?;
+    let other_actor = create_local_actor(other_dir.path())?;
+    std::fs::write(other_dir.path().join("config.toml"), config)?;
+    let imported = run_in_store(
+        other_dir.path(),
+        Command::Bundle {
+            command: BundleCommand::Import {
+                input: bundle_dir.clone(),
+                unverified: false,
+            },
+        },
+    )?;
+    assert!(imported.contains("verification = verified\n"), "{imported}");
+    assert!(imported.contains("executions = 2\n"), "{imported}");
+    let other_store = kairo_store::FilesystemStore::open(other_dir.path())?;
+    let other_heads = kairo_store::BuildResultResolver::list_build_results(
+        &other_store,
+        &kairo_core::ObjectId::new(app.clone())?,
+    )?;
+    assert_eq!(other_heads.len(), 2, "the results came with the object");
+
+    let untrusted = reproduce(other_dir.path(), &result, &other_actor);
+    assert!(
+        matches!(untrusted, Err(CliError::BuildSignerUntrusted { .. })),
+        "{untrusted:?}"
+    );
+    run_in_store(
+        other_dir.path(),
+        Command::Trust {
+            command: TrustCommand::Grant {
+                by: other_actor.clone(),
+                of: actor.clone(),
+                scope: "general".to_owned(),
+                reason: None,
+            },
+        },
+    )?;
+    let elsewhere = reproduce(other_dir.path(), &result, &other_actor)?;
+    assert!(
+        elsewhere.contains("reproduction = matches\n"),
+        "{elsewhere}"
+    );
+    assert!(
+        elsewhere.contains(&format!("reproduced_artifact = {artifact}\n")),
+        "{elsewhere}"
+    );
+
+    // Tampered evidence is refused on import.
+    let record_dir = std::fs::read_dir(bundle_dir.join("executions"))?
+        .next()
+        .ok_or("an execution")??
+        .path();
+    let record_file = record_dir.join("record.json");
+    let text = std::fs::read_to_string(&record_file)?;
+    std::fs::write(&record_file, text.replace("\"success\"", "\"failure\""))?;
+    let third = tempfile::TempDir::new()?;
+    create_local_actor(third.path())?;
+    let tampered = run_in_store(
+        third.path(),
+        Command::Bundle {
+            command: BundleCommand::Import {
+                input: bundle_dir,
+                unverified: false,
+            },
+        },
+    );
+    assert!(
+        matches!(&tampered, Err(CliError::Build(error)) if error.to_string().contains("doesn't match its contents")),
+        "{tampered:?}"
     );
     Ok(())
 }
