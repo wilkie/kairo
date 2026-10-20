@@ -1392,7 +1392,9 @@ Sub-decisions:
    configured. Engine builds need neither `allow_local_process` nor
    signer trust (§35 sub-decision 5); `[[runtime.engines]]` entries (`kind`, absolute `path`)
    allowlist isolation engines, each probed before use (§35
-   sub-decision 2).
+   sub-decision 2); `[[runtime.seeds]]` entries (`object`, a bare id)
+   list the seed objects that may satisfy `seed:*` labels (§36
+   sub-decision 3).
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -3426,3 +3428,82 @@ Affected specs:
 - `CLI.md` — §17 engine selection and output.
 - `DECISIONS.md` §17 — `[[runtime.engines]]`.
 - `PHASE_2.md` §7.
+
+---
+
+## 36. Bootstrap Import: stage0-posix for AMD64
+
+Decision: the archive's first bootstrap (§34 sub-decision 9) is the
+Bootstrappable Builds project's **stage0-posix**, pinned at
+`Release_1.9.1` (commit `45d90f5955b6907dc6cdea9ebafce558359edcd3`),
+for `environment:linux/x86-64`. It is imported as two objects — a seed
+and the sources that build from it — and built by one target under the
+bubblewrap engine (§35), from 847 bytes of hand-auditable machine code
+to M2-Planet, mescc-tools, and mescc-tools-extra with no host tool
+taking part. Only seeds the operator lists can satisfy a `seed:*`
+label. The next stages (Mes, tcc, gcc, from live-bootstrap) come
+later and depend on this one's artifact.
+
+Sub-decisions:
+
+1. **The seed object** (`bootstrap-seeds`, upstream commit
+   `cedec6b8066d1db229b6c77d42d120a23c6980ed`) holds that repository's
+   tree unchanged, plus a `kairo.toml` declaring the content provider
+   `seed:stage0-posix/amd64`. Its AMD64 roots are `hex0-seed` (229
+   bytes) and `kaem-optional-seed` (618 bytes); their hex sources sit
+   beside them for audit.
+
+2. **The sources object** (`stage0-posix`) holds the upstream tree
+   with its submodules flattened in, except `bootstrap-seeds/`, which
+   is replaced by a symbolic link to the seed's canonical path,
+   `/kairo/content/<seed snapshot id>`, valid inside the contract
+   (§35). It adds `kairo.kaem`, the three lines of upstream's
+   `kaem.amd64`, so the seed `kaem` runs the whole chain, and a
+   `kairo.toml` requiring `environment:linux/x86-64` and
+   `seed:stage0-posix/amd64`, with one target `amd64`:
+
+   - command `["./bootstrap-seeds/POSIX/AMD64/kaem-optional-seed",
+     "./kairo.kaem"]`: phases 0–23, ending in upstream's own
+     `sha256sum -c amd64.answers`, so a build that disagrees with
+     upstream's published hashes fails;
+   - output `AMD64/bin` as the directory `bin`;
+   - `[[provides]]` from that output, version `1.9.1`: `tool:kaem`,
+     `tool:hex2`, `tool:M1`, `tool:blood-elf`, `tool:M2-Planet`,
+     `tool:M2-Mesoplanet`, `tool:get_machine`, and the
+     mescc-tools-extra utilities (`tool:catm`, `tool:cp`, `tool:chmod`,
+     `tool:mkdir`, `tool:rm`, `tool:sha256sum`, `tool:match`,
+     `tool:replace`, `tool:untar`, `tool:ungz`, `tool:unbz2`,
+     `tool:unxz`, `tool:wrap`).
+
+   One target, because upstream's scripts carry state between phases
+   in the tree; splitting it means rewriting their glue, which can
+   come later without changing the objects' identities.
+
+3. **Seed policy, minimal.** `[[runtime.seeds]]` lists accepted seed
+   objects by bare id. A `seed:*` label is satisfiable only by a
+   content provider (no `target`) of a listed object; anything else is
+   passed over and named in the resolution's diagnostics. Seeds are
+   roots of trust alongside signing keys: accepting one is an operator
+   decision, never inferred from trust in its signer.
+
+4. **Packaging.** `bootstrap/stage0-posix/` holds the two `kairo.toml`
+   templates and `import.sh`, which takes a local checkout of the
+   pinned upstream (with submodules), flattens it, commits both trees,
+   and creates and branches both objects through the `kairo` CLI,
+   printing the config lines to accept the seed and allowlist the
+   engine. The test that runs the full chain is `#[ignore]` and needs
+   that checkout (`KAIRO_STAGE0_DIR`), since tests don't use the
+   network; it checks the resulting artifact against
+   `amd64.answers` too.
+
+Rationale: stage0-posix already runs, unmodified, inside §35's empty
+root, so the import exercises the strict model end to end at the cost
+of two small files of glue. Separating the seed makes the one thing a
+node must take on faith explicit, small, and listed.
+
+Affected specs:
+
+- `DECISIONS.md` §17 — `[[runtime.seeds]]`.
+- `PHASE_2.md` §7 — the bootstrap import.
+- `GLOSSARY.md` — Seed (the policy).
+- `CLI.md` §17 — seeds in resolution.
