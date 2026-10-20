@@ -33,6 +33,11 @@ Executor = concrete implementation
 
 A plan declares an environment. The executor chooses how to realize it.
 
+Per `DECISIONS.md` §34, an environment label names an **environment
+contract** (what the guest is promised), and an executor is an
+**isolation engine** that implements it. Guest software never runs on the
+host; the host runs only Kairo and allowlisted engines.
+
 ---
 
 ## 3. Environment Descriptor

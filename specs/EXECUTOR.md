@@ -776,6 +776,10 @@ content unless explicitly approved by policy.
 
 A local process executor may exist for development or trusted workflows.
 
+Per `DECISIONS.md` §33–§34 it is Kairo's **development mode**: it
+implements no environment contract, its results are marked
+`host_dependent`, and they are never substitutable or archival.
+
 It is inherently less isolated.
 
 Requirements:

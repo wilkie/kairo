@@ -1383,10 +1383,12 @@ Sub-decisions:
      `federation:index` trust vouches for hints; required by
      `use_hints`) (§29 sub-decision 5).
 
-   `[runtime]` (§33 sub-decision 4): `allow_local_process` (`false`),
-   `timeout_secs` (3600; zero is invalid), and
-   `[[runtime.host.provides]]` entries (`provides`, optional
-   `version`).
+   `[runtime]` (§33 sub-decision 4, §34): `allow_local_process`
+   (`false`; development mode), `timeout_secs` (3600; zero is
+   invalid), and `[[runtime.host.tools]]` entries (`provides`,
+   optional `version`), the development-mode host tools. Host facts
+   (`[runtime.host]`: system, architecture, engines) are detected,
+   never configured.
 
 4. **Fetch policy.** `kairo fetch` checks policy before any network
    I/O. `--offline` refuses. The peer must be listed under
@@ -2929,12 +2931,16 @@ declares build targets in `kairo.toml` (manifest schema 1, extended
 in place). A resolver
 pins the target's requirements against this node's store and host into
 a hashed resolved manifest. `kairo build --plan-only` stops there.
-Without it, a best-effort native executor runs the target, gated by
-config and by trust in the revision's signer, stores the declared
-outputs as an artifact tree, and keeps an unsigned execution record.
+Without it, a best-effort native executor — §34's development mode —
+runs the target, gated by config and by trust in the revision's
+signer, stores the declared outputs as an artifact tree, and keeps an
+unsigned execution record.
 The acting actor then signs a `BuildResult` statement. `kairo
 reproduce` re-runs a cited result and compares artifacts. Run targets,
-containers, provider chains and signed provides claims come later.
+isolation engines, provider chains and signed provides claims come
+later. *Amended by §34 before the resolver slice:* resolution is a
+closure over artifact providers from the start, the host supplies
+facts rather than labels, and the native executor is development mode.
 
 This resolves the conflicts the specs had among themselves and with
 the code:
@@ -2983,41 +2989,55 @@ Sub-decisions:
    absent, so a manifest without them hashes as it does today.
    `[run]` stays rejected until run targets land.
 
-2. **Local resolution only** (`kairo-resolver`). A provides
-   requirement is satisfied by either:
+2. **Local resolution, as a closure** (`kairo-resolver`; amended by
+   §34 sub-decisions 2 and 5). A provides requirement is satisfied by
+   one of:
 
-   - a **host label**, configured under `[[runtime.host.provides]]`
-     (`provides`, optional `version`);
-   - the `[[provides]]` of an object this node holds, at its current
-     snapshot.
+   - an **artifact provider**: an object this node holds whose
+     `[[provides]]` entry names a `target` and `output`, resolved to
+     that output of a successful `BuildResult` for the object's
+     current snapshot — or, when none is held, scheduled as a build
+     the plan needs first;
+   - a **content provider**: a `[[provides]]` entry with no target,
+     meaning the object's own tree (seeds, data, source libraries);
+   - an **environment contract**: `environment:*` labels resolve to a
+     contract the host has an allowlisted engine for, or in
+     development mode to `none`;
+   - a **development-mode host tool**, configured under
+     `[[runtime.host.tools]]` (`provides`, optional `version`), which
+     marks the result host-dependent.
 
    An object requirement is satisfied by the pinned snapshot, or by
    the newest held version tag that meets its `version`. Labels match
-   exactly. Ties are broken deterministically, host labels before
-   objects and then by object id; the losers are listed in the plan's
-   output. Anything unsatisfied fails resolution and names the
-   requirement. No signed provides claims, provider chains or hosting
-   rules yet.
+   exactly. Ties are broken deterministically — artifact providers
+   before content providers before host tools, then by object id —
+   and the losers are listed in the plan's output. Resolution recurses
+   into each provider's own target, producing a DAG; a cycle or an
+   unsatisfied requirement fails resolution and names it. No signed
+   provides claims, provider chains or hosting rules yet.
 
 3. **The resolved manifest** is the canonical JSON document
    `kairo.resolved-manifest.v1`. It holds:
 
-   - the object, snapshot and target;
+   - the object, snapshot, target, and environment contract (`none`
+     in development mode);
    - each requirement as requested;
-   - what resolved it: `host` with its label and version, or `object`
-     with object and snapshot.
+   - what resolved it: `artifact` (object, snapshot, target, output,
+     and the artifact id when held), `content` (object, snapshot),
+     or `host-tool` (label, version);
+   - the plans of the builds it needs first, by plan hash, in order.
 
-   It is stored as a blob, and its `BlobId` is the plan hash.
-   `kairo build --plan-only` prints it and writes nothing else.
-   Object dependencies are materialized as their source trees,
-   read-only. Using a dependency's *artifact* needs a build result to
-   point at and comes later.
+   It is stored as a blob, and its `BlobId` is the plan hash, which
+   therefore covers the whole closure and excludes the engine (§34
+   sub-decision 4). `kairo build --plan-only` prints it and writes
+   nothing else. Content providers are materialized as their trees,
+   read-only; artifact providers as their artifact trees.
 
 4. **Policy.** `[runtime]` joins the config (§17):
 
-   - `allow_local_process` (default `false`);
+   - `allow_local_process` (default `false`): development mode;
    - `timeout_secs` (3600; zero is invalid);
-   - `[[runtime.host.provides]]`.
+   - `[[runtime.host.tools]]`: development-mode host tools.
 
    A build is refused, exit 7 (policy denied), unless
    `allow_local_process` is on. It is also refused unless the
@@ -3026,17 +3046,20 @@ Sub-decisions:
    §21's "clearly display host access risk" is met by the build output
    naming the executor `native (unsandboxed)`.
 
-5. **Best-effort native executor** (`kairo-build`). It runs the
-   command with no shell in a fresh temporary directory that holds a
-   copy of the snapshot's tree; dependencies are materialized beside
-   it under `deps/<object>`. The environment is scrubbed to `PATH`,
-   `HOME` (the temp dir), `LANG=C`, `SOURCE_DATE_EPOCH` (the
-   revision's timestamp), and `KAIRO_*` variables naming the
-   workspace and each dependency path. The wall-clock limit kills the
-   process group. Only declared outputs are collected; a missing one
-   fails the build (EXECUTOR §14.1). Paths are confined to the
-   workspace (EXECUTOR §10.3). There is no network or filesystem
-   isolation, and the record says so.
+5. **Best-effort native executor** (`kairo-build`), §34's
+   development mode. It runs the command with no shell in a fresh
+   temporary directory that holds a copy of the snapshot's tree;
+   providers are materialized beside it under `deps/<object>`. The
+   environment is scrubbed to `HOME` (the temp dir), `LANG=C`,
+   `SOURCE_DATE_EPOCH` (the revision's timestamp), `KAIRO_*`
+   variables naming the workspace and each provider path, and a
+   `PATH` made of the artifact providers' `bin/` directories followed
+   by the directories of the declared host tools — never the host's
+   own `PATH`. The wall-clock limit kills the process group. Only
+   declared outputs are collected; a missing one fails the build
+   (EXECUTOR §14.1). Paths are confined to the workspace (EXECUTOR
+   §10.3). There is no network or filesystem isolation and no
+   canonical mount path, and the record says so.
 
 6. **Artifacts are blob trees**, not Git trees and not objects (BUILD
    §12). Each output file is stored as a blob. The canonical JSON
@@ -3060,7 +3083,10 @@ Sub-decisions:
    - `result` (`success` or `failure`);
    - `artifact` (`BlobId`, present on success only);
    - `executor` (e.g. `native/1`);
-   - `environment` (`BlobId` of the host section of the record).
+   - `environment` (the contract label, or `none`);
+   - `host_dependent` (`true` whenever the executor implements no
+     contract or a host tool was used; such results are never
+     substitutable, §34 sub-decision 10).
 
    It is indexed by object but never enters the frontier. Timeouts and
    policy refusals sign nothing: they are operational errors, not
@@ -3108,3 +3134,156 @@ Affected specs:
 - `PROJECT_LAYOUT.md` — `kairo-resolver`, `kairo-build` first;
   `kairo-planner`/`kairo-provider` when chains land.
 - `PHASE_2.md` §7–§8.
+
+---
+
+## 34. Strict Build Model: Environment Contracts, Isolation Engines, and the Bootstrap
+
+Decision: the end state of build and run is that **guest software never
+runs on the host**. The host runs only trusted code: Kairo itself and
+a small, well-known set of isolation engines. Everything a build
+consumes — compilers, build tools, libraries, data, shells — is an
+artifact of an object in the store, and the chain of artifacts bottoms
+out at a per-(system, architecture) seed of auditable machine code.
+§33's native executor and host tools are a development mode on the
+way there, never a provider of any environment. This entry fixes the
+model; §33 is amended below to fit it from the first resolver slice.
+
+Sub-decisions:
+
+1. **Three layers.**
+
+   - An **environment contract** is what a label like
+     `environment:linux/x86-64` promises the guest: a (system,
+     architecture) pair, a kernel ABI, the canonical filesystem layout
+     (sub-decision 6), no network, a fixed uid, a fixed clock, and a
+     defined environment-variable set. Each contract is a document
+     under `schemas/environment/`. A change that could alter build
+     output is a new label, never a revision of an existing one.
+   - An **isolation engine** is host-side code that implements a
+     contract: Linux namespaces (bubblewrap), an OCI runtime
+     (Docker, Podman, Apptainer), a microVM with a minimal kernel, an
+     emulator. Engines are **executor adapters** in EXECUTOR.md's
+     terms. Which engines a host has is a host fact.
+   - **Native execution** is reserved for Kairo and for engines. No
+     guest command, build or run, ever runs natively in the strict
+     model.
+
+   Builds depend on contracts, never on engines. A chain reads
+   `environment:msdos/x86` ← DOSBox artifact, which requires
+   `environment:linux/x86-64` ← *some engine on this host*. The host
+   never provides a contract directly.
+
+2. **The host provides facts, not software.** `[runtime.host]` is
+   detected, not declared: system, architecture, kernel, and the
+   engines found. The host's `PATH` never enters a build. Host tools
+   exist only as §33's development-mode escape hatch, and a result
+   that used one is marked and can never satisfy an archival policy.
+
+3. **Engines are the trusted part.** The host has to trust whatever
+   runs directly on it, and in this model that is Kairo and the
+   engines, so the set of engines is deliberately small and
+   well-known, and each must strongly assert isolation: filesystem,
+   network, process, and time. Every engine adapter names the contract
+   it implements, its own version, and its isolation claims, and each
+   `ExecutionRecord` names the engine used. Policy allowlists engines
+   (`[runtime.engines]`). An engine that is itself an archive artifact
+   (bubblewrap, a minimal kernel) may run natively only when
+   allowlisted by object id and backed by reproduction evidence; that
+   is how the host dependency shrinks over time without ever running
+   unknown software natively.
+
+   Order of engines: Linux namespaces (bubblewrap) first, as the
+   smallest and archive-buildable; a microVM with an archive-built
+   kernel second, as the strict and bootstrap target; OCI runtimes as
+   a parallel adapter for hosts that already have one.
+
+4. **Artifacts are portable across engines.** A `BuildResult` cites
+   the contract label and the plan hash; only the `ExecutionRecord`
+   cites the engine. The plan hash excludes the engine and its
+   mounting strategy, so an artifact built under any engine that
+   implements a contract is a valid input to a build under any other.
+   Equivalence of engines is a claim made by trusted adapter code and
+   checked empirically: one plan reproduced under two engines yielding
+   the same artifact id is evidence for both the artifact and the
+   engines; a disagreement is a recorded finding that names both
+   engines, so it points at a nondeterministic build or a leaky
+   engine.
+
+5. **Plans are closures.** The resolver produces a DAG: every
+   requirement resolves to a provider artifact `(object, snapshot,
+   target, output)` backed by a `BuildResult`, or to an object's own
+   content (seeds, data), recursively. The plan hash covers the whole
+   closure. A plan whose artifacts aren't all held is still a plan:
+   the builds it needs first are listed, in order.
+
+6. **Canonical paths; engine-chosen mounting.** Inside a contract,
+   each artifact closure appears read-only at `/kairo/artifact/<id>`,
+   the source at `/kairo/src`, outputs under `/kairo/out`, so anything
+   that embeds a build path sees the same one everywhere. How an
+   engine realizes that — bind mounts, assembled layers, per-artifact
+   read-only images cached by artifact id and attached to a VM, or a
+   copy — is the engine's choice, named in the record and absent from
+   the plan hash.
+
+7. **Substitution is trust policy.** A node accepts an artifact it
+   didn't build when `k` actors it trusts at the `build` scope have
+   signed `BuildResult`s agreeing on the artifact id for the same plan
+   hash; policy may also require engine diversity among them. This
+   rides on federation discovery (§16, step two). Nothing is
+   substituted silently: the record of a substituted input names the
+   results relied on.
+
+8. **Durable content is sources, seeds, manifests, and statements.**
+   Artifacts are a cache that any node can re-derive from the plan.
+   An archive guarantees the former; the latter is kept for
+   convenience and as evidence.
+
+9. **The bootstrap is a goal of the archive.** Each (system,
+   architecture) pair has a **seed**: an object whose provided binary
+   is its own content (a few hundred bytes of hand-auditable machine
+   code, stage0's `hex0`). A seed has no `BuildResult`; it is a root
+   of trust alongside signing keys. Policy lists the seeds a node
+   accepts, and seeds accrue independent audit attestations from other
+   actors. Every later stage is an ordinary object whose build target
+   depends on the previous stage's outputs. The first bootstrap import
+   is the existing chain from the Bootstrappable Builds project
+   (`stage0-posix` → `M2-Planet` → Mes → tcc → an early gcc → a
+   modern toolchain), archived as objects rather than reinvented. The
+   strict target runs that chain under the microVM engine with a
+   minimal builder kernel, so no host kernel is in the guest's trusted
+   base; cross-architecture bootstraps through an emulator engine come
+   after.
+
+10. **Development mode is marked.** §33's native executor implements
+    no contract. Its results carry `environment = "none"` and a
+    `host_dependent` flag, are never substitutable, and never satisfy
+    an archival policy. It exists so builds can be exercised before
+    the first engine lands and for local iteration afterwards.
+
+Rationale: an archive's claim is "this can be rebuilt from what the
+archive holds," which is only true when nothing outside the archive
+takes part in a build except a CPU, an isolation boundary, and Kairo.
+Making engines the only natively-run code concentrates the trust
+decision where it can be audited, and makes the set of such code
+small by construction. Keying artifacts on contracts rather than
+engines is what lets independent nodes with different engines confirm
+each other's results, which is the evidence an archive of software
+needs most.
+
+Affected specs:
+
+- `DECISIONS.md` §33 — amended (see its sub-decisions 2–5 and 8).
+- `ENVIRONMENTS.md` — §2 (contract vs engine), §3–§5 (descriptor
+  becomes the contract document; executors match on contract).
+- `EXECUTOR.md` — §1–§4 (engines as adapters), §10–§11 (canonical
+  paths), §21 (local process executor is development mode).
+- `PLANNER.md` — §9–§12 (provider chains end at an engine, not the
+  host), §16 (host facts).
+- `SANDBOX.md` — isolation claims per engine.
+- `POLICY.md` — engine allowlist, accepted seeds, substitution.
+- `GLOSSARY.md` — environment contract, isolation engine, seed.
+- `PHASE_2.md` §7–§8 and the roadmap after Phase 2 (engines,
+  bootstrap).
+- `THREAT_MODEL.md` — the executor and engine entries land with the
+  code.

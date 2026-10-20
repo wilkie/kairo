@@ -178,8 +178,8 @@ capability. Capabilities make cross-actor authority claims (e.g.
 them, every authority claim is bounded by the actor that signed it.
 
 Not to be confused with **runtime sandbox capability** (filesystem,
-network, GPU access granted to an executing artifact). That is an
-unrelated concept; see `SANDBOX.md`.
+network, GPU access granted to an executing artifact), see `SANDBOX.md`,
+nor with a **provides label** (below).
 
 See `CAPABILITIES.md`.
 
@@ -199,13 +199,53 @@ or federation-backed implementation.
 
 See `CORE_LIBRARY.md` and `STORE.md`.
 
+## Provides Label
+
+A provides label is what an Object declares under `[[provides]]` and what
+a dependency requires through `kind = "provides"`: `kind:specifier(:detail)*`,
+such as `tool:make`, `lib:zlib:static`, or `environment:linux/x86-64`.
+Labels are claims, matched exactly by the resolver.
+
+See `DECISIONS.md` §33.
+
 ## Provider Object
 
-A `Provider Object` is an Object that declares it can provide a capability,
-tool, library, runtime, operating system, architecture, emulator, browser
-environment, container, or virtual machine environment.
+A `Provider Object` is an Object that declares it can provide a tool,
+library, runtime, data, or environment under a provides label — as an
+artifact of one of its build targets, or as its own content (a seed, a
+dataset).
 
-See `PLANNER.md` and `ENVIRONMENTS.md`.
+See `PLANNER.md`, `ENVIRONMENTS.md`, and `DECISIONS.md` §33–§34.
+
+## Environment Contract
+
+An environment contract is what an `environment:<system>/<arch>` label
+promises a guest: the kernel ABI, the canonical filesystem layout
+(`/kairo/artifact/<id>`, `/kairo/src`, `/kairo/out`), no network, a fixed
+uid and clock, and a defined environment-variable set. Builds depend on
+contracts, never on the engine that implemented one.
+
+See `DECISIONS.md` §34.
+
+## Isolation Engine
+
+An isolation engine is host-side trusted code that implements an
+environment contract: Linux namespaces, an OCI runtime, a microVM, an
+emulator. Engines are the only software besides Kairo that runs on the
+host; which ones a host has is a host fact, and policy allowlists them.
+Artifacts built under any engine implementing a contract are
+interchangeable.
+
+See `DECISIONS.md` §34.
+
+## Seed
+
+A seed is the root of a bootstrap chain for one (system, architecture)
+pair: an Object whose provided binary is its own content, auditable by
+hand, with no `BuildResult`. Seeds are roots of trust alongside signing
+keys; policy lists which a node accepts.
+
+See `DECISIONS.md` §34.
 
 ## Daemon
 

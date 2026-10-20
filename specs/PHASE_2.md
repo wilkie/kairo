@@ -439,7 +439,11 @@ is the spec-first pass plus a minimum executable.
 Decided in `DECISIONS.md` §33: build targets in manifest schema 1,
 local resolution into a hashed resolved manifest, `kairo build
 --plan-only`, a config- and trust-gated native executor, a signed
-`BuildResult`, and `kairo reproduce`.
+`BuildResult`, and `kairo reproduce`. `DECISIONS.md` §34 sets the end
+state it builds toward: guest software runs only inside allowlisted
+isolation engines that implement environment contracts, plans are
+closures over artifact providers, and the toolchain bootstraps from a
+per-(system, architecture) seed.
 
 - [x] Reconcile the four specs with each other and with what's been
       implemented since they were written.
