@@ -1,8 +1,10 @@
-# The live-bootstrap bootstrap for x86, through its first musl toolchain
+# The live-bootstrap bootstrap for x86, through perl 5.6.2
 # (specs/DECISIONS.md §38): a native object that runs live-bootstrap's
 # own scripts, unmodified, from the archive's stage0-posix x86 artifact
 # through Mes and tcc to make, the core utilities, and bash, then under
-# bash to tcc and musl rebuilt against each other, grep, sed, and bzip2. Every input is pinned: live-bootstrap
+# bash to a tcc and musl toolchain, m4, flex, bison, diffutils, newer
+# coreutils, gawk, and perl, built up through four older perls that are
+# then uninstalled. Every input is pinned: live-bootstrap
 # and M2libc as source objects by commit, each distfile as a file source
 # by its SHA-256, and stage0-posix as the artifact its wrapper builds.
 # Each step checks its distfiles and what it built against the
@@ -12,7 +14,7 @@
 schema = 1
 kind = "software"
 name = "live-bootstrap-x86"
-summary = "live-bootstrap b1ceced7 for x86 through its first musl toolchain: Mes, tcc, make, coreutils, bash, then tcc on musl."
+summary = "live-bootstrap b1ceced7 for x86 through perl 5.6.2: Mes, tcc, bash, a musl toolchain, flex, bison, and perl."
 
 # The guest's / is this tree; live-bootstrap assumes it owns it.
 [[dependencies]]
@@ -129,6 +131,71 @@ kind = "file"
 sha256 = "a32032bab36208509466654df12f507600dfe0313feebbcd218c32a70bf72a16"
 path = "external/distfiles/grep-2.4.tar.gz"
 
+[[dependencies]]
+kind = "file"
+sha256 = "a88f3ddaa7c89cf4c34284385be41ca85e9135369c333fdfa232f3bf48223213"
+path = "external/distfiles/m4-1.4.7.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "9f233d8b78e4351fe9dd2d50d83958a0e5af36f54e9818521458a08e058691ba"
+path = "external/distfiles/heirloom-devtools-070527.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "68aa10c473b6010ffad680cada09fc4eec6b3cc6e415cc2339e5fc2385ccc142"
+path = "external/distfiles/d160f0247ba1611aa59d28f027d6292ba24abb50.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995"
+path = "external/distfiles/flex-2.6.4.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "27159ac5ebf736dffd5636fd2cd625767c9e437de65baa63cb0de83570bd820d"
+path = "external/distfiles/bison-3.4.1.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "d5f2489c4056a31528e3ada4adacc23d498532b0af1a980f2f76158162b139d6"
+path = "external/distfiles/diffutils-2.7.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "8b05bba1b2726a164e444c314e3f359604b58216be704bed8f2e028449cc6204"
+path = "external/distfiles/coreutils-6.10.tar.lzma"
+
+[[dependencies]]
+kind = "file"
+sha256 = "5cc35def1ff4375a8b9a98c2ff79e95e80987d24f0d42fdbb7b7039b3ddb3fb0"
+path = "external/distfiles/gawk-3.0.4.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "1ae43c8d2983404b9eec61c96e3ffa27e7b07e08215c95c015a4ab0095373ef3"
+path = "external/distfiles/perl-5.000.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "9fa29beb2fc4a3c373829fc051830796de301f32a719d0b52a400d1719bbd7b1"
+path = "external/distfiles/perl-5.003.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "1184478b298978b164a383ed5661e3a117c48ab97d6d0ab7ef614cdbe918b9eb"
+path = "external/distfiles/perl5.004_05.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "93f41cd87ab8ee83391cfa39a63b076adeb7c3501d2efa31b98d0ef037122bd1"
+path = "external/distfiles/perl5.005_03.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "a5e66f6ebf701b0567f569f57cae82abf5ce57af70a2b45ae71323b61f49134e"
+path = "external/distfiles/perl-5.6.2.tar.gz"
+
 [[build.targets]]
 name = "x86"
 # Each step ends in upstream's own `sha256sum -c` of what it built.
@@ -198,7 +265,7 @@ output = "usr"
 
 [[provides]]
 provides = "tool:coreutils"
-version = "5.0"
+version = "6.10"
 target = "x86"
 output = "usr"
 
@@ -223,5 +290,41 @@ output = "usr"
 [[provides]]
 provides = "lib:musl"
 version = "1.1.24"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:m4"
+version = "1.4.7"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:flex"
+version = "2.6.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:bison"
+version = "3.4.1"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:diff"
+version = "2.7"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:gawk"
+version = "3.0.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:perl"
+version = "5.6.2"
 target = "x86"
 output = "usr"

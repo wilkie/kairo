@@ -18,6 +18,11 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap through perl 5.6.2 (`DECISIONS.md` §38 sub-decision
+  13).** The x86 wrapper continues through m4, flex, bison, diffutils,
+  coreutils 6.10, gawk, and the perl chain, with live-bootstrap's own
+  `uninstall:` steps; all 25 packages match `SHA256SUMS.pkgs`.
+
 - **live-bootstrap through its first musl toolchain (`DECISIONS.md` §38
   sub-decision 12).** After bash 2.05b the wrapper runs live-bootstrap's
   first bash-run steps: tcc and musl 1.1.24 rebuilt against each other,

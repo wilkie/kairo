@@ -3907,6 +3907,21 @@ Sub-decisions:
     the packages, kept as the artifact's `repo` output, are
     byte-for-byte upstream's.
 
+13. **Then through perl 5.6.2.** *Added when built:* on through m4,
+    heirloom-devtools, both flex builds, three bison builds, diffutils,
+    coreutils 5.0 again and 6.10, gawk, and the perl chain 5.000,
+    5.003, 5.004_05, 5.005_03, 5.6.2, stopping after the manifest's
+    second `uninstall:`, of the four older perls. `uninstall:` is
+    live-bootstrap's own: a `helpers.sh` function, run in the guest,
+    that removes an earlier package's files from `/` (keeping any a
+    later step overwrote). Kairo provides nothing for it; the artifact
+    is what is left, and the removed tools' packages stay in `repo`.
+    Thirteen more distfiles are pinned; heirloom-devtools' is fetched
+    over `https` from SourceForge, since upstream lists it over
+    `http` and its mirrors serve other bytes. All 25 packages match
+    `SHA256SUMS.pkgs`. The build needs more than the default hour, so
+    the end-to-end test raises `runtime.timeout_secs`.
+
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence
 available, agreement with upstream's published hashes. Identifying

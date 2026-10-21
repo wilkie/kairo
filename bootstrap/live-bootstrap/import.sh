@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive live-bootstrap and its distfiles, and make the native object
-# that runs it through its first musl toolchain for x86 (specs/DECISIONS.md §38).
+# that runs it through perl 5.6.2 for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
 #   import.sh <actor id> [kairo args...]
@@ -60,6 +60,32 @@ DISTFILES=(
      https://musl.libc.org/releases/musl-1.1.24.tar.gz"
     "a32032bab36208509466654df12f507600dfe0313feebbcd218c32a70bf72a16 grep-2.4.tar.gz
      https://mirrors.kernel.org/gnu/grep/grep-2.4.tar.gz"
+    "a88f3ddaa7c89cf4c34284385be41ca85e9135369c333fdfa232f3bf48223213 m4-1.4.7.tar.bz2
+     https://mirrors.kernel.org/gnu/m4/m4-1.4.7.tar.bz2"
+    "9f233d8b78e4351fe9dd2d50d83958a0e5af36f54e9818521458a08e058691ba heirloom-devtools-070527.tar.bz2
+     https://downloads.sourceforge.net/project/heirloom/heirloom-devtools/070527/heirloom-devtools-070527.tar.bz2"
+    "68aa10c473b6010ffad680cada09fc4eec6b3cc6e415cc2339e5fc2385ccc142 d160f0247ba1611aa59d28f027d6292ba24abb50.tar.gz
+     https://github.com/westes/flex/archive/d160f0247ba1611aa59d28f027d6292ba24abb50.tar.gz"
+    "e87aae032bf07c26f85ac0ed3250998c37621d95f8bd748b31f15b33c45ee995 flex-2.6.4.tar.gz
+     https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz"
+    "27159ac5ebf736dffd5636fd2cd625767c9e437de65baa63cb0de83570bd820d bison-3.4.1.tar.xz
+     https://mirrors.kernel.org/gnu/bison/bison-3.4.1.tar.xz"
+    "d5f2489c4056a31528e3ada4adacc23d498532b0af1a980f2f76158162b139d6 diffutils-2.7.tar.gz
+     https://mirrors.kernel.org/gnu/diffutils/diffutils-2.7.tar.gz"
+    "8b05bba1b2726a164e444c314e3f359604b58216be704bed8f2e028449cc6204 coreutils-6.10.tar.lzma
+     https://mirrors.kernel.org/gnu/coreutils/coreutils-6.10.tar.lzma"
+    "5cc35def1ff4375a8b9a98c2ff79e95e80987d24f0d42fdbb7b7039b3ddb3fb0 gawk-3.0.4.tar.gz
+     https://mirrors.kernel.org/gnu/gawk/gawk-3.0.4.tar.gz"
+    "1ae43c8d2983404b9eec61c96e3ffa27e7b07e08215c95c015a4ab0095373ef3 perl-5.000.tar.gz
+     https://github.com/Perl/perl5/archive/perl-5.000.tar.gz"
+    "9fa29beb2fc4a3c373829fc051830796de301f32a719d0b52a400d1719bbd7b1 perl-5.003.tar.gz
+     https://github.com/Perl/perl5/archive/perl-5.003.tar.gz"
+    "1184478b298978b164a383ed5661e3a117c48ab97d6d0ab7ef614cdbe918b9eb perl5.004_05.tar.gz
+     https://www.cpan.org/src/5.0/perl5.004_05.tar.gz"
+    "93f41cd87ab8ee83391cfa39a63b076adeb7c3501d2efa31b98d0ef037122bd1 perl5.005_03.tar.gz
+     https://www.cpan.org/src/5.0/perl5.005_03.tar.gz"
+    "a5e66f6ebf701b0567f569f57cae82abf5ce57af70a2b45ae71323b61f49134e perl-5.6.2.tar.gz
+     https://www.cpan.org/src/5.0/perl-5.6.2.tar.gz"
 )
 
 if [ $# -lt 1 ]; then
@@ -111,7 +137,7 @@ cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through the first musl toolchain"
+git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through perl 5.6.2"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)

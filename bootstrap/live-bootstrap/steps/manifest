@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # live-bootstrap's steps/manifest at b1ceced7, truncated after the
-# second bzip2-1.0.8, the end of the first musl toolchain, for Kairo's
-# bootstrap (specs/DECISIONS.md §38). The lines kept are upstream's,
-# verbatim; see its manifest for the syntax and the full list.
+# uninstall of the perls before 5.6.2, for Kairo's bootstrap
+# (specs/DECISIONS.md §38). The lines kept are upstream's, verbatim;
+# see its manifest for the syntax and the full list.
 
 build: checksum-transcriber-1.0
 build: simple-patch-1.0
@@ -44,3 +44,21 @@ build: grep-2.4
 build: musl-1.1.24
 build: sed-4.0.9
 build: bzip2-1.0.8
+build: m4-1.4.7
+build: heirloom-devtools-070527
+build: flex-2.5.11
+build: flex-2.6.4
+uninstall: heirloom-devtools-070527
+build: bison-3.4.1
+build: bison-3.4.1
+build: bison-3.4.1
+build: diffutils-2.7
+build: coreutils-5.0
+build: coreutils-6.10
+build: gawk-3.0.4
+build: perl-5.000
+build: perl-5.003
+build: perl5.004-05
+build: perl5.005-03
+build: perl-5.6.2
+uninstall: perl-5.000 perl-5.003 perl5.004-05 perl5.005-03
