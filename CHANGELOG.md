@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap through bash-2.05b (`DECISIONS.md` §38 sub-decision
+  11).** The x86 wrapper now runs every step live-bootstrap builds with
+  kaem: after tcc, make, patch, gzip, tar, sed, bzip2, coreutils, yacc,
+  and bash 2.05b, each passing upstream's checksums, with nine more
+  distfiles pinned. It provides `tool:make`, `tool:bash`, and the rest.
+
 - **Pushes carry sources (`DECISIONS.md` §38 sub-decision 10).** A Git
   or file source can be pushed like any object, and pushing a native
   object also carries the sources its revisions pin (a Git source at

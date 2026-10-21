@@ -3811,7 +3811,8 @@ Sub-decisions:
      this is Kairo's artifact chaining between native objects,
      replacing live-bootstrap's rerun of stage0;
    - the wrapper supplies `bootstrap.cfg` and a manifest truncated
-     after `tcc-0.9.27`, over live-bootstrap's (`overlay = true`), and
+     after the milestone's last step (sub-decision 11), over
+     live-bootstrap's (`overlay = true`), and
      starts from live-bootstrap's `seed/after.kaem`;
    - its output is the installed `usr/` tree, and its `[[provides]]`
      include `tool:mes` and `tool:tcc`.
@@ -3879,6 +3880,17 @@ Sub-decisions:
     - Wire format: the plan request, the plan, and the closure bundle
       manifest gain the optional `sources` fields; a receiver that
       predates them refuses a request or bundle that uses them.
+
+11. **The milestone extends through bash-2.05b.** *Added when built:*
+    after tcc-0.9.27 the wrapper runs every remaining step
+    live-bootstrap builds with kaem (make 3.82, patch 2.5.9, gzip
+    1.2.4, tar 1.12, sed 4.0.9, bzip2 1.0.8, coreutils 5.0, oyacc 6.6,
+    bash 2.05b), with its `improve: reconfigure` step, nine more
+    distfiles pinned as file sources, and the manifest truncated after
+    `build: bash-2.05b`, the lines kept verbatim. Every step's
+    upstream checksums pass under uid 1000; nothing before bash needs
+    root. The bash-run steps that follow (`setup_repo`, `merged_usr`,
+    `populate_device_nodes`, ...) are the next milestone.
 
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence

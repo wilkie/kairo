@@ -3,11 +3,28 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # live-bootstrap's steps/manifest at b1ceced7, truncated after
-# tcc-0.9.27 for Kairo's second bootstrap milestone (specs/DECISIONS.md
-# §38). The syntax is upstream's; see its manifest for the full list.
+# bash-2.05b, the last step built with kaem, for Kairo's bootstrap
+# (specs/DECISIONS.md §38). The lines kept are upstream's, verbatim;
+# see its manifest for the syntax and the full list.
 
 build: checksum-transcriber-1.0
 build: simple-patch-1.0
 build: mes-0.27.1
 build: tcc-0.9.26
 build: tcc-0.9.27
+define: BUILD_FIWIX = ( KERNEL_BOOTSTRAP == True || BUILD_KERNELS == True )
+build: fiwix-1.5.0-lb1 ( BUILD_FIWIX == True )
+build: lwext4-1.0.0-lb1 ( BUILD_FIWIX == True )
+build: kexec-fiwix-1.0 ( BUILD_FIWIX == True )
+jump: fiwix ( KERNEL_BOOTSTRAP == True )
+improve: reconfigure ( CONFIGURATOR != True )
+define: JOBS = 1 ( KERNEL_BOOTSTRAP == True )
+build: make-3.82
+build: patch-2.5.9
+build: gzip-1.2.4
+build: tar-1.12
+build: sed-4.0.9
+build: bzip2-1.0.8
+build: coreutils-5.0
+build: oyacc-6.6
+build: bash-2.05b

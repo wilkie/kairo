@@ -1,7 +1,8 @@
-# The live-bootstrap bootstrap for x86, through tcc-0.9.27
+# The live-bootstrap bootstrap for x86, through bash-2.05b
 # (specs/DECISIONS.md §38): a native object that runs live-bootstrap's
 # own scripts, unmodified, from the archive's stage0-posix x86 artifact
-# to Mes and tcc under the engine. Every input is pinned: live-bootstrap
+# through Mes and tcc to make, the core utilities, and bash, every step
+# built with kaem, under the engine. Every input is pinned: live-bootstrap
 # and M2libc as source objects by commit, each distfile as a file source
 # by its SHA-256, and stage0-posix as the artifact its wrapper builds.
 # Each step checks its distfiles and what it built against the
@@ -11,7 +12,7 @@
 schema = 1
 kind = "software"
 name = "live-bootstrap-x86"
-summary = "live-bootstrap b1ceced7 for x86 through tcc-0.9.27: Mes, then tcc, from stage0-posix."
+summary = "live-bootstrap b1ceced7 for x86 through bash-2.05b: Mes, tcc, make, coreutils, and bash from stage0-posix."
 
 # The guest's / is this tree; live-bootstrap assumes it owns it.
 [[dependencies]]
@@ -73,6 +74,51 @@ kind = "file"
 sha256 = "de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c"
 path = "external/distfiles/tcc-0.9.27.tar.bz2"
 
+[[dependencies]]
+kind = "file"
+sha256 = "e2c1a73f179c40c71e2fe8abf8a8a0688b8499538512984da4a76958d0402966"
+path = "external/distfiles/make-3.82.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ecb5c6469d732bcf01d6ec1afe9e64f1668caba5bfdb103c28d7f537ba3cdb8a"
+path = "external/distfiles/patch-2.5.9.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "1ca41818a23c9c59ef1d5e1d00c0d5eaa2285d931c0fb059637d7c0cc02ad967"
+path = "external/distfiles/gzip-1.2.4.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "c6c37e888b136ccefab903c51149f4b7bd659d69d4aea21245f61053a57aa60a"
+path = "external/distfiles/tar-1.12.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "c365874794187f8444e5d22998cd5888ffa47f36def4b77517a808dec27c0600"
+path = "external/distfiles/sed-4.0.9.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+path = "external/distfiles/bzip2-1.0.8.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "c25b36b8af6e0ad2a875daf4d6196bd0df28a62be7dd252e5f99a4d5d7288d95"
+path = "external/distfiles/coreutils-5.0.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "eb0866e740b79bd3a23e0ca47885eb3148aab18d77a4bedba96e979d8b4ebfe1"
+path = "external/distfiles/oyacc-6.6.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ba03d412998cc54bd0b0f2d6c32100967d3137098affdc2d32e6e7c11b163fe4"
+path = "external/distfiles/bash-2.05b.tar.gz"
+
 [[build.targets]]
 name = "x86"
 # Each step ends in upstream's own `sha256sum -c` of what it built.
@@ -93,5 +139,59 @@ output = "usr"
 [[provides]]
 provides = "tool:tcc"
 version = "0.9.27"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:make"
+version = "3.82"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:patch"
+version = "2.5.9"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:gzip"
+version = "1.2.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:tar"
+version = "1.12"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:sed"
+version = "4.0.9"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:bzip2"
+version = "1.0.8"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:coreutils"
+version = "5.0"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:yacc"
+version = "6.6"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:bash"
+version = "2.05b"
 target = "x86"
 output = "usr"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive live-bootstrap and its distfiles, and make the native object
-# that runs it through tcc-0.9.27 for x86 (specs/DECISIONS.md §38).
+# that runs it through bash-2.05b for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
 #   import.sh <actor id> [kairo args...]
@@ -38,6 +38,24 @@ DISTFILES=(
      https://lilypond.org/janneke/tcc/tcc-0.9.26-1147-gee75a10c.tar.gz"
     "de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c tcc-0.9.27.tar.bz2
      https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27.tar.bz2"
+    "e2c1a73f179c40c71e2fe8abf8a8a0688b8499538512984da4a76958d0402966 make-3.82.tar.bz2
+     https://mirrors.kernel.org/gnu/make/make-3.82.tar.bz2"
+    "ecb5c6469d732bcf01d6ec1afe9e64f1668caba5bfdb103c28d7f537ba3cdb8a patch-2.5.9.tar.gz
+     https://mirrors.kernel.org/gnu/patch/patch-2.5.9.tar.gz"
+    "1ca41818a23c9c59ef1d5e1d00c0d5eaa2285d931c0fb059637d7c0cc02ad967 gzip-1.2.4.tar.gz
+     https://mirrors.kernel.org/gnu/gzip/gzip-1.2.4.tar.gz"
+    "c6c37e888b136ccefab903c51149f4b7bd659d69d4aea21245f61053a57aa60a tar-1.12.tar.gz
+     https://mirrors.kernel.org/gnu/tar/tar-1.12.tar.gz"
+    "c365874794187f8444e5d22998cd5888ffa47f36def4b77517a808dec27c0600 sed-4.0.9.tar.gz
+     https://mirrors.kernel.org/gnu/sed/sed-4.0.9.tar.gz"
+    "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269 bzip2-1.0.8.tar.gz
+     https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+    "c25b36b8af6e0ad2a875daf4d6196bd0df28a62be7dd252e5f99a4d5d7288d95 coreutils-5.0.tar.bz2
+     https://mirrors.kernel.org/gnu/coreutils/coreutils-5.0.tar.bz2"
+    "eb0866e740b79bd3a23e0ca47885eb3148aab18d77a4bedba96e979d8b4ebfe1 oyacc-6.6.tar.gz
+     https://github.com/ibara/yacc/releases/download/oyacc-6.6/oyacc-6.6.tar.gz"
+    "ba03d412998cc54bd0b0f2d6c32100967d3137098affdc2d32e6e7c11b163fe4 bash-2.05b.tar.gz
+     https://mirrors.kernel.org/gnu/bash/bash-2.05b.tar.gz"
 )
 
 if [ $# -lt 1 ]; then
@@ -89,7 +107,7 @@ cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through tcc-0.9.27"
+git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through bash-2.05b"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)
