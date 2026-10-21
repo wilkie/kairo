@@ -48,7 +48,7 @@ sorted by `path` (byte order).
 | 1 | `schema` | `"kairo.artifact-tree.v1"` |
 | 2 | `entries` | list of entries |
 
-An entry:
+An entry is a file or a symbolic link (`DECISIONS.md` §39). A file:
 
 | # | Field | Value |
 |---|---|---|
@@ -56,8 +56,30 @@ An entry:
 | 2 | `blob` | the file's `BlobId` under the domain `kairo.artifact.blob.v1` |
 | 3 | `executable` | whether the file had an executable bit |
 
-Empty directories and symbolic links are not represented: an output
-containing a symbolic link fails the build.
+A link:
+
+| # | Field | Value |
+|---|---|---|
+| 1 | `path` | as for a file |
+| 2 | `link` | the link's target, as written |
+
+A tree without links encodes exactly as before links existed.
+
+Shape rules, checked when a build collects its outputs and whenever a
+tree is loaded:
+
+- paths are safe relative paths, strictly ascending;
+- a link's target is non-empty, relative (no leading `/`), without NUL
+  or empty segments, and, resolved lexically from the directory
+  holding the link, never climbs above the artifact's root (`..` within
+  it is fine); it may dangle;
+- no entry's path lies under a link's path, so materializing a tree
+  never writes through one.
+
+Collecting an output records links without following them; a
+directory output that is itself a link fails the build, as does a link
+whose target breaks these rules. Materializing creates each link as a
+link. Empty directories are not represented.
 
 ## Example
 

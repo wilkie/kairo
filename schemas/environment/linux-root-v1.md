@@ -45,12 +45,19 @@ must be placed**, since there is nowhere else for it to appear; a plan
 with an unplaced source, artifact, or content dependency is refused
 before it runs.
 
-And, as `linux` v1:
+And, as `linux` v1 except for identity:
 
 - **Kernel**: the Linux system-call interface of the running kernel.
 - **Network**: a fresh network namespace with only loopback.
 - **Processes and IPC**: fresh PID, IPC, UTS, and cgroup namespaces.
-- **Identity**: hostname `kairo`; uid and gid 1000.
+- **Identity**: hostname `kairo`; uid and gid **0**, with every
+  capability, inside the guest's own user namespace (`DECISIONS.md`
+  §39 sub-decision 4). On the host the guest is still the user who runs
+  Kairo. So files can be chown'd to 0, checks for root pass, and tmpfs
+  or proc can be mounted inside the guest's own mount namespace; device
+  nodes can't be created (`mknod` of a device fails), no id but 0 can
+  own a file, and there is no `/sys`. Software needing those belongs to
+  a contract a VM engine implements.
 - **Environment**, and nothing else:
   - `HOME=/tmp`, `LANG=C`, `TZ=UTC`;
   - `SOURCE_DATE_EPOCH`: the revision's `created_at`, in epoch seconds;

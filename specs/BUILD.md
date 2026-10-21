@@ -103,7 +103,10 @@ Fields:
 - artifact_path: path inside artifact (unique within the target)
 - kind: file or directory
 
-Outputs define the boundary of the artifact.
+Outputs define the boundary of the artifact. Symbolic links inside an
+output are kept as links, never followed, if their targets are relative
+and stay inside the artifact; a `file` output may itself be a link
+(`DECISIONS.md` §39, `schemas/canonical/artifact-tree-v1.md`).
 
 ---
 

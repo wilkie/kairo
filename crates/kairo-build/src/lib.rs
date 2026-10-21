@@ -81,7 +81,8 @@ fn executor_info(engine: &Engine, rooted: bool) -> ExecutorInfo {
             version: BUBBLEWRAP_EXECUTOR_VERSION,
             isolation: if rooted {
                 "linux namespaces (bubblewrap): the build tree as /, with /proc, /dev and /tmp \
-                 over it; no network; hostname kairo; uid and gid 1000"
+                 over it; no network; hostname kairo; uid and gid 0 with every capability \
+                 inside its own namespaces"
             } else {
                 "linux namespaces (bubblewrap): only /kairo, /proc, /dev and /tmp visible; \
                  no network; hostname kairo; uid and gid 1000"
@@ -138,21 +139,128 @@ pub struct ArtifactTree {
     pub entries: Vec<ArtifactEntry>,
 }
 
+/// One entry of an artifact: a file, or a symbolic link
+/// (`DECISIONS.md` §39).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactEntry {
+#[serde(untagged)]
+pub enum ArtifactEntry {
+    File(FileEntry),
+    Link(LinkEntry),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileEntry {
     /// `/`-separated, relative.
     pub path: String,
     pub blob: String,
     pub executable: bool,
 }
 
+/// A symbolic link: its target, relative and confined to the artifact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkEntry {
+    pub path: String,
+    pub link: String,
+}
+
+impl ArtifactEntry {
+    pub fn path(&self) -> &str {
+        match self {
+            Self::File(file) => &file.path,
+            Self::Link(link) => &link.path,
+        }
+    }
+
+    /// The file's blob; `None` for a link.
+    pub fn blob(&self) -> Option<&str> {
+        match self {
+            Self::File(file) => Some(&file.blob),
+            Self::Link(_) => None,
+        }
+    }
+
+    /// The link's target; `None` for a file.
+    pub fn link(&self) -> Option<&str> {
+        match self {
+            Self::File(_) => None,
+            Self::Link(link) => Some(&link.link),
+        }
+    }
+
+    pub fn executable(&self) -> bool {
+        matches!(self, Self::File(file) if file.executable)
+    }
+}
+
+/// Why a link target isn't allowed (`DECISIONS.md` §39 sub-decision 2),
+/// or `None` if it is: non-empty, relative, without NUL or empty
+/// segments, and never climbing above the artifact's root when
+/// resolved lexically from the directory holding `path`.
+pub fn link_target_problem(path: &str, target: &str) -> Option<&'static str> {
+    if target.is_empty() {
+        return Some("is empty");
+    }
+    if target.starts_with('/') {
+        return Some("is absolute");
+    }
+    if target.contains('\0') {
+        return Some("contains NUL");
+    }
+    let mut depth = path.split('/').count().saturating_sub(1);
+    for part in target.split('/') {
+        match part {
+            "" => return Some("has an empty segment"),
+            "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(up) => depth = up,
+                None => return Some("climbs above the artifact"),
+            },
+            _ => depth += 1,
+        }
+    }
+    None
+}
+
 impl ArtifactTree {
     fn new(mut entries: Vec<ArtifactEntry>) -> Self {
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        entries.sort_by(|a, b| a.path().cmp(b.path()));
         Self {
             schema: ARTIFACT_TREE_SCHEMA.to_owned(),
             entries,
         }
+    }
+
+    /// The shape rules a tree must keep (`DECISIONS.md` §39): safe,
+    /// unique paths in order; links' targets confined; and no entry
+    /// under a link, so nothing is ever written through one.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut links: Vec<&str> = Vec::new();
+        let mut previous: Option<&str> = None;
+        for entry in &self.entries {
+            let path = entry.path();
+            if safe_join(Path::new(""), path).is_none() {
+                return Err(format!("{path:?} is not a safe relative path"));
+            }
+            if previous.is_some_and(|previous| previous >= path) {
+                return Err(format!("{path:?} is out of order or repeated"));
+            }
+            previous = Some(path);
+            if let Some(link) = links.iter().find(|link| {
+                path.strip_prefix(**link)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            }) {
+                return Err(format!("{path:?} lies under the link {link:?}"));
+            }
+            if let Some(target) = entry.link() {
+                if let Some(problem) = link_target_problem(path, target) {
+                    return Err(format!("link {path:?} -> {target:?} {problem}"));
+                }
+                links.push(path);
+            }
+        }
+        Ok(())
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>, serde_json::Error> {
@@ -168,6 +276,7 @@ impl ArtifactTree {
         if tree.schema != ARTIFACT_TREE_SCHEMA {
             return Err(BuildError::UnsupportedSchema(tree.schema));
         }
+        tree.validate().map_err(BuildError::BadArtifact)?;
         Ok(tree)
     }
 }
@@ -181,7 +290,9 @@ pub fn load_artifact(
     ArtifactTree::from_bytes(&bytes)
 }
 
-/// Write a held artifact's files under `dest`, which exists.
+/// Write a held artifact's files and links under `dest`, which exists
+/// and is empty. The tree was validated on load, so no entry lies under
+/// a link and nothing here is written through one.
 pub fn materialize_artifact(
     store: &FilesystemStore,
     artifact: &BlobId,
@@ -189,20 +300,26 @@ pub fn materialize_artifact(
 ) -> Result<ArtifactTree, BuildError> {
     let tree = load_artifact(store, artifact)?;
     for entry in &tree.entries {
-        let path = safe_join(dest, &entry.path).ok_or_else(|| BuildError::UnsafeArtifactPath {
+        let unsafe_path = || BuildError::UnsafeArtifactPath {
             artifact: artifact.clone(),
-            path: entry.path.clone(),
-        })?;
+            path: entry.path().to_owned(),
+        };
+        let path = safe_join(dest, entry.path()).ok_or_else(unsafe_path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|source| io_error("creating", parent, source))?;
         }
-        let blob = BlobId::new(entry.blob.clone()).map_err(|_| BuildError::UnsafeArtifactPath {
-            artifact: artifact.clone(),
-            path: entry.path.clone(),
-        })?;
-        let bytes = store.get_blob(&blob).map_err(BuildError::Store)?;
-        fs::write(&path, bytes).map_err(|source| io_error("writing", &path, source))?;
-        set_executable(&path, entry.executable)?;
+        match entry {
+            ArtifactEntry::File(file) => {
+                let blob = BlobId::new(file.blob.clone()).map_err(|_| unsafe_path())?;
+                let bytes = store.get_blob(&blob).map_err(BuildError::Store)?;
+                fs::write(&path, bytes).map_err(|source| io_error("writing", &path, source))?;
+                set_executable(&path, file.executable)?;
+            }
+            ArtifactEntry::Link(link) => {
+                std::os::unix::fs::symlink(&link.link, &path)
+                    .map_err(|source| io_error("linking", &path, source))?;
+            }
+        }
     }
     Ok(tree)
 }
@@ -1029,7 +1146,14 @@ pub fn run_plan(
                     "--die-with-parent",
                     "--new-session",
                 ])
-                .args(["--hostname", "kairo", "--uid", "1000", "--gid", "1000"]);
+                .args(["--hostname", "kairo"]);
+            if rooted {
+                // Root inside its own namespaces, still the invoking
+                // user on the host (`DECISIONS.md` §39 sub-decision 4).
+                process.args(["--uid", "0", "--gid", "0", "--cap-add", "ALL"]);
+            } else {
+                process.args(["--uid", "1000", "--gid", "1000"]);
+            }
             if rooted {
                 // The tree first, so the kernel filesystems mount over
                 // it; nothing else from the host.
@@ -1132,6 +1256,14 @@ pub fn run_plan(
             }
         }
     }
+    // The outputs together must make a well-formed tree: no two at one
+    // path, and nothing under a link (`DECISIONS.md` §39).
+    if status == Status::Success {
+        if let Err(reason) = ArtifactTree::new(entries.clone()).validate() {
+            diagnostics.push(format!("outputs: {reason}"));
+            status = Status::Failure;
+        }
+    }
     let artifact = if status == Status::Success {
         let tree = ArtifactTree::new(entries);
         let bytes = tree.to_bytes().map_err(BuildError::Encode)?;
@@ -1232,10 +1364,15 @@ fn collect_output(
     let metadata = fs::symlink_metadata(path)
         .map_err(|_| format!("declared path {} was not produced", path.display()))?;
     if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "{} is a symbolic link; outputs must be files or directories",
-            path.display()
-        ));
+        // A file output may be a link, recorded as one; a directory
+        // output must be a directory.
+        if kind == OutputKind::Directory {
+            return Err(format!(
+                "{} is a symbolic link; a directory output must be a directory",
+                path.display()
+            ));
+        }
+        return Ok(vec![link_entry(path, artifact_path)?]);
     }
     let actual = path.canonicalize().map_err(|error| error.to_string())?;
     if !actual.starts_with(&root) {
@@ -1279,11 +1416,10 @@ fn walk_dir(
         let child_path = child.path();
         let metadata = child.metadata().map_err(|error| error.to_string())?;
         let child_artifact = format!("{artifact_path}/{name}");
+        // Recorded, never followed (`DECISIONS.md` §39).
         if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "{} is a symbolic link; outputs must be files or directories",
-                child_path.display()
-            ));
+            entries.push(link_entry(&child_path, &child_artifact)?);
+            continue;
         }
         let actual = child_path
             .canonicalize()
@@ -1308,6 +1444,26 @@ fn walk_dir(
     Ok(())
 }
 
+/// A link entry for the symbolic link at `path`, its target checked.
+fn link_entry(path: &Path, artifact_path: &str) -> Result<ArtifactEntry, String> {
+    let target = fs::read_link(path)
+        .map_err(|error| format!("reading the link {}: {error}", path.display()))?;
+    let target = target
+        .into_os_string()
+        .into_string()
+        .map_err(|target| format!("{} links to {target:?}, which is not UTF-8", path.display()))?;
+    if let Some(problem) = link_target_problem(artifact_path, &target) {
+        return Err(format!(
+            "{} links to {target:?}, which {problem}; links must stay inside the artifact",
+            path.display()
+        ));
+    }
+    Ok(ArtifactEntry::Link(LinkEntry {
+        path: artifact_path.to_owned(),
+        link: target,
+    }))
+}
+
 fn store_file(
     store: &FilesystemStore,
     path: &Path,
@@ -1325,11 +1481,11 @@ fn store_file(
     store
         .put_blob(&blob, &bytes)
         .map_err(|error| format!("storing {}: {error}", path.display()))?;
-    Ok(ArtifactEntry {
+    Ok(ArtifactEntry::File(FileEntry {
         path: artifact_path.to_owned(),
         blob: blob.to_string(),
         executable,
-    })
+    }))
 }
 
 fn store_log(store: &FilesystemStore, path: &Path) -> Result<BlobId, BuildError> {
@@ -1385,6 +1541,9 @@ pub enum BuildError {
         artifact: BlobId,
         path: String,
     },
+    /// An artifact tree that breaks its shape rules (`DECISIONS.md`
+    /// §39): a link escaping it, or an entry under a link.
+    BadArtifact(String),
     Environment(String),
     /// The engine doesn't suit the plan's environment.
     EngineMismatch {
@@ -1446,6 +1605,7 @@ impl fmt::Display for BuildError {
                 "the plan needs builds first, whose results aren't held: {}",
                 builds.join(", ")
             ),
+            Self::BadArtifact(reason) => write!(f, "artifact tree: {reason}"),
             Self::UnsafeArtifactPath { artifact, path } => {
                 write!(f, "artifact {artifact} has an unsafe path {path:?}")
             }
@@ -1487,6 +1647,7 @@ impl Error for BuildError {
             | Self::NoTarget { .. }
             | Self::PrerequisitesUnbuilt { .. }
             | Self::UnsafeArtifactPath { .. }
+            | Self::BadArtifact(_)
             | Self::Environment(_)
             | Self::EngineMismatch { .. }
             | Self::SourceTree { .. }
@@ -1527,9 +1688,9 @@ fn evidence_blobs(
         let artifact = BlobId::new(artifact.clone()).map_err(BuildError::Id)?;
         let tree = load_artifact(store, &artifact)?;
         blobs.push((artifact, ARTIFACT_TREE_DOMAIN));
-        for entry in tree.entries {
+        for blob in tree.entries.iter().filter_map(ArtifactEntry::blob) {
             blobs.push((
-                BlobId::new(entry.blob).map_err(BuildError::Id)?,
+                BlobId::new(blob).map_err(BuildError::Id)?,
                 ARTIFACT_BLOB_DOMAIN,
             ));
         }

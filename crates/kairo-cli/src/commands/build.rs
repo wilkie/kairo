@@ -943,13 +943,18 @@ fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
     if let Some(tree) = &execution.artifact {
         let _ = writeln!(out, "files = {}", tree.entries.len());
         for entry in &tree.entries {
-            let _ = writeln!(
-                out,
-                "  {}{} {}",
-                entry.path,
-                if entry.executable { "*" } else { "" },
-                entry.blob
-            );
+            let _ = match entry {
+                kairo_build::ArtifactEntry::File(file) => writeln!(
+                    out,
+                    "  {}{} {}",
+                    file.path,
+                    if file.executable { "*" } else { "" },
+                    file.blob
+                ),
+                kairo_build::ArtifactEntry::Link(link) => {
+                    writeln!(out, "  {} -> {}", link.path, link.link)
+                }
+            };
         }
     }
     let _ = writeln!(out, "stdout = {}", record.logs.stdout);

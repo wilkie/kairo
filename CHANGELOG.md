@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **Symbolic links in artifacts (`DECISIONS.md` §39).** Outputs keep
+  symbolic links as link entries (`{ path, link }`) instead of failing
+  the build, when the target is relative and stays inside the artifact;
+  absolute and escaping targets, and entries under a link, are refused.
+  Links are recorded without being followed and materialized as links.
+  Artifacts without links keep their ids. `kairo build` lists a link as
+  `<path> -> <target>`.
+- **Root in `linux-root` (`DECISIONS.md` §39).** The guest runs as uid
+  and gid 0 with every capability inside its own namespaces, still
+  unprivileged on the host: chown to 0 and mounts work, `mknod` of
+  devices doesn't. The `linux` contract keeps uid 1000.
+
 - **live-bootstrap through bash-2.05b (`DECISIONS.md` §38 sub-decision
   11).** The x86 wrapper now runs every step live-bootstrap builds with
   kaem: after tcc, make, patch, gzip, tar, sed, bzip2, coreutils, yacc,

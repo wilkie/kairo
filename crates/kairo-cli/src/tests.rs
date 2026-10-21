@@ -8594,12 +8594,12 @@ fn build_runs_the_target_in_development_mode_and_records_it(
     let tree = kairo_build::load_artifact(&store, &kairo_core::BlobId::new(artifact)?)?;
     let app_bytes = kairo_store::BlobStore::get_blob(
         &store,
-        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+        &kairo_core::BlobId::new(tree.entries[0].blob().expect("a file").to_owned())?,
     )?;
     assert!(String::from_utf8(app_bytes)?.starts_with("built at 1"));
     let header = kairo_store::BlobStore::get_blob(
         &store,
-        &kairo_core::BlobId::new(tree.entries[1].blob.clone())?,
+        &kairo_core::BlobId::new(tree.entries[1].blob().expect("a file").to_owned())?,
     )?;
     assert_eq!(header, b"/* zlib */\n");
     let _ = zlib;
@@ -8870,7 +8870,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
     let tree = kairo_build::load_artifact(&store, &artifact)?;
     let bytes = kairo_store::BlobStore::get_blob(
         &store,
-        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+        &kairo_core::BlobId::new(tree.entries[0].blob().expect("a file").to_owned())?,
     )?;
     assert_eq!(bytes, b"made with make\n");
 
@@ -9303,7 +9303,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
     )?;
     let output = kairo_store::BlobStore::get_blob(
         &store,
-        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+        &kairo_core::BlobId::new(tree.entries[0].blob().expect("a file").to_owned())?,
     )?;
     assert_eq!(output, b"no-usr\n1000\n");
 
@@ -9841,7 +9841,7 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
     let tree = kairo_build::load_artifact(&store, &artifact)?;
     let report = kairo_store::BlobStore::get_blob(
         &store,
-        &kairo_core::BlobId::new(tree.entries[0].blob.clone())?,
+        &kairo_core::BlobId::new(tree.entries[0].blob().expect("a file").to_owned())?,
     )?;
     // Placed sources are fresh writable copies, nested ones inside
     // their parents (§37 sub-decision 7, as amended).

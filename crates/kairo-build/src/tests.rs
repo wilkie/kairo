@@ -260,7 +260,7 @@ fn a_build_collects_outputs_into_an_artifact_tree() -> TestResult {
     assert_eq!(record.outputs[1].files, 3);
 
     let tree = execution.artifact.as_ref().expect("artifact");
-    let paths: Vec<&str> = tree.entries.iter().map(|e| e.path.as_str()).collect();
+    let paths: Vec<&str> = tree.entries.iter().map(|e| e.path()).collect();
     assert_eq!(
         paths,
         [
@@ -270,11 +270,17 @@ fn a_build_collects_outputs_into_an_artifact_tree() -> TestResult {
             "share/nested/epoch"
         ]
     );
-    assert!(tree.entries[0].executable);
-    assert!(!tree.entries[2].executable);
-    assert_eq!(world.blob_text(&tree.entries[2].blob), "hello");
-    assert_eq!(world.blob_text(&tree.entries[3].blob), "1700000000\n");
-    let env = world.blob_text(&tree.entries[1].blob);
+    assert!(tree.entries[0].executable());
+    assert!(!tree.entries[2].executable());
+    assert_eq!(
+        world.blob_text(tree.entries[2].blob().expect("a file")),
+        "hello"
+    );
+    assert_eq!(
+        world.blob_text(tree.entries[3].blob().expect("a file")),
+        "1700000000\n"
+    );
+    let env = world.blob_text(tree.entries[1].blob().expect("a file"));
     assert!(env.contains("LANG=C\n"), "{env}");
     assert!(env.contains("HOME="), "{env}");
     assert!(env.contains("KAIRO_PROVIDER_LIB_GREETING_SOURCE="), "{env}");
@@ -368,25 +374,144 @@ fn a_nonzero_exit_or_missing_output_is_a_failure_record() -> TestResult {
 }
 
 #[test]
-fn symlinked_outputs_are_refused() -> TestResult {
+fn outputs_record_links_that_stay_inside_and_refuse_the_rest() -> TestResult {
     let mut world = World::new();
-    let escaping = world.object(&[(
+    // A link to a file, one to a directory, and one dangling; the
+    // file output is itself a link.
+    let linked = world.object(&[(
         "kairo.toml",
         &app_manifest(
-            r#"["sh", "-c", "mkdir -p out/share && ln -s /etc/passwd out/app"]"#,
+            r#"["sh", "-c", "mkdir -p out/share/dir && echo hi > out/share/dir/a.txt && ln -s dir/a.txt out/share/a && ln -s dir out/share/d && ln -s ../lib/libz.so.1 out/share/gone && echo x > out/real && ln -s real out/app"]"#,
             FILE_AND_DIR_OUTPUTS,
             "",
         ),
     )]);
-    let plan = world.plan(&escaping.object_id, "release");
+    let plan = world.plan(&linked.object_id, "release");
     let execution = world.run(&plan, Duration::from_secs(30))?;
-    assert_eq!(execution.record.status, Status::Failure);
-    assert!(
-        execution.record.diagnostics[0].contains("symbolic link"),
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
         "{:?}",
         execution.record.diagnostics
     );
+    let tree = execution.artifact.as_ref().expect("artifact");
+    let links: Vec<(&str, &str)> = tree
+        .entries
+        .iter()
+        .filter_map(|entry| Some((entry.path(), entry.link()?)))
+        .collect();
+    assert_eq!(
+        links,
+        [
+            ("bin/app", "real"),
+            ("share/a", "dir/a.txt"),
+            ("share/d", "dir"),
+            ("share/gone", "../lib/libz.so.1")
+        ]
+    );
+    // Links aren't followed: the directory's file appears once.
+    assert_eq!(
+        tree.entries
+            .iter()
+            .filter(|entry| entry.path().ends_with("a.txt"))
+            .count(),
+        1
+    );
+    // Materialized, they are links again.
+    let artifact = BlobId::new(execution.record.artifact.clone().expect("artifact id"))?;
+    let out = tempfile::TempDir::new()?;
+    materialize_artifact(&world.fixture.store, &artifact, out.path())?;
+    assert_eq!(fs::read_link(out.path().join("share/d"))?, Path::new("dir"));
+    assert_eq!(fs::read_to_string(out.path().join("share/a"))?, "hi\n");
+    assert!(out
+        .path()
+        .join("share/gone")
+        .symlink_metadata()?
+        .is_symlink());
+
+    // Absolute and escaping targets fail the build, naming the link;
+    // so does a directory output that is a link.
+    for (command, expected) in [
+        (
+            "mkdir -p out/share && ln -s /etc/passwd out/app",
+            "is absolute",
+        ),
+        (
+            "mkdir -p out/share && echo x > out/app && ln -s ../../../x out/share/up",
+            "climbs above",
+        ),
+        (
+            "mkdir -p elsewhere out && echo x > out/app && ln -s ../elsewhere out/share",
+            "directory output",
+        ),
+    ] {
+        let object = world.object(&[(
+            "kairo.toml",
+            &app_manifest(
+                &format!(r#"["sh", "-c", "{command}"]"#),
+                FILE_AND_DIR_OUTPUTS,
+                "",
+            ),
+        )]);
+        let plan = world.plan(&object.object_id, "release");
+        let execution = world.run(&plan, Duration::from_secs(30))?;
+        assert_eq!(execution.record.status, Status::Failure, "{command}");
+        assert!(
+            execution
+                .record
+                .diagnostics
+                .iter()
+                .any(|line| line.contains(expected)),
+            "{command}: {:?}",
+            execution.record.diagnostics
+        );
+    }
     Ok(())
+}
+
+#[test]
+fn artifact_trees_refuse_links_that_escape_or_hold_entries() {
+    let tree = |entries: &str| {
+        ArtifactTree::from_bytes(
+            format!(r#"{{"schema":"kairo.artifact-tree.v1","entries":[{entries}]}}"#).as_bytes(),
+        )
+    };
+    let blob = BlobId::from_sha256_digest([1; 32]);
+    let file = |path: &str| format!(r#"{{"path":"{path}","blob":"{blob}","executable":false}}"#);
+    let link = |path: &str, target: &str| format!(r#"{{"path":"{path}","link":"{target}"}}"#);
+    assert!(tree(&format!("{},{}", link("a/b", "../c"), file("c"))).is_ok());
+    for (entries, expected) in [
+        (
+            format!("{},{}", link("a", "x"), file("a/passwd")),
+            "lies under the link",
+        ),
+        (link("a", "/etc"), "is absolute"),
+        (link("a/b", "../../c"), "climbs above"),
+        (link("a", ""), "is empty"),
+        (format!("{},{}", file("b"), file("a")), "out of order"),
+        (
+            format!(r#"{{"path":"a","link":"b","blob":"{blob}"}}"#),
+            "did not match",
+        ),
+    ] {
+        let result = tree(&entries);
+        assert!(
+            matches!(&result, Err(error) if error.to_string().contains(expected)),
+            "{entries}: {result:?}"
+        );
+    }
+    // A tree of files encodes as it did before links existed.
+    let files = ArtifactTree::new(vec![ArtifactEntry::File(FileEntry {
+        path: "bin/app".to_owned(),
+        blob: blob.to_string(),
+        executable: true,
+    })]);
+    assert_eq!(
+        String::from_utf8(files.to_bytes().expect("bytes")).expect("utf8"),
+        format!(
+            r#"{{"schema":"kairo.artifact-tree.v1","entries":[{{"path":"bin/app","blob":"{blob}","executable":true}}]}}"#
+        )
+    );
 }
 
 #[test]
@@ -454,7 +579,10 @@ fn file_sources_are_placed_in_the_tree_by_hash() -> TestResult {
         execution.record.diagnostics
     );
     let tree = execution.artifact.as_ref().expect("artifact");
-    assert_eq!(world.blob_text(&tree.entries[0].blob), "abc");
+    assert_eq!(
+        world.blob_text(tree.entries[0].blob().expect("a file")),
+        "abc"
+    );
 
     // A tree whose own symlink would carry the placement elsewhere is
     // refused, as is one that already holds the path.
@@ -700,7 +828,7 @@ fn the_bubblewrap_engine_runs_in_an_empty_root_with_providers_only() -> TestResu
     assert!(!record.host.kernel.is_empty());
 
     let tree = execution.artifact.as_ref().expect("artifact");
-    let report = world.blob_text(&tree.entries[0].blob);
+    let report = world.blob_text(tree.entries[0].blob().expect("a file"));
     let lines: Vec<&str> = report.lines().collect();
     assert_eq!(lines[0], "no-usr", "{report}");
     assert_eq!(lines[1], "1000", "{report}");
@@ -825,7 +953,12 @@ fn placements_take_a_subtree_and_overlay_what_the_tree_holds() -> TestResult {
     let files: Vec<(String, String)> = tree
         .entries
         .iter()
-        .map(|entry| (entry.path.clone(), world.blob_text(&entry.blob)))
+        .map(|entry| {
+            (
+                entry.path().to_owned(),
+                world.blob_text(entry.blob().expect("a file")),
+            )
+        })
         .collect();
     let expected = [
         ("vendor/a.txt", "mine"),
@@ -888,7 +1021,7 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
             provides = "{contract}"
             [[build.targets]]
             name = "release"
-            command = ["/usr/bin/sh", "-c", "mkdir -p /out; {{ ls /; id -u; echo $HOME $KAIRO_SRC $PATH; pwd; test -e /kairo && echo kairo || echo no-kairo; cat /etc/motd; }} > /out/report"]
+            command = ["/usr/bin/sh", "-c", "mkdir -p /out; {{ ls /; id -u; echo $HOME $KAIRO_SRC $PATH; pwd; test -e /kairo && echo kairo || echo no-kairo; cat /etc/motd; echo; touch /tmp/f && chown 0:0 /tmp/f && echo chown-ok; mkdir /tmp/m && mount -t tmpfs tmpfs /tmp/m && echo mount-ok; mknod /tmp/null c 1 3 2>/dev/null || echo no-mknod; }} > /out/report"]
             [[build.targets.dependencies]]
             kind = "provides"
             provides = "tool:sh"
@@ -937,18 +1070,21 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
         record.executor.isolation
     );
     let tree = execution.artifact.as_ref().expect("artifact");
-    let report = world.blob_text(&tree.entries[0].blob);
+    let report = world.blob_text(tree.entries[0].blob().expect("a file"));
     let lines: Vec<&str> = report.lines().collect();
     // `/` is the tree: its own files, the placed provider, the kernel
     // filesystems, and nothing from the host or /kairo.
-    let root: Vec<&str> = lines[..lines.len() - 5].to_vec();
+    let root: Vec<&str> = lines[..lines.len() - 8].to_vec();
     assert_eq!(
         root,
         ["dev", "etc", "kairo.toml", "out", "proc", "tmp", "usr"],
         "{report}"
     );
-    let rest = &lines[lines.len() - 5..];
-    assert_eq!(rest[0], "1000", "{report}");
+    let rest = &lines[lines.len() - 8..];
+    // Root inside its namespaces: chown to 0 and mounts work, device
+    // nodes don't (`DECISIONS.md` §39 sub-decision 4).
+    assert_eq!(rest[0], "0", "{report}");
+    assert_eq!(&rest[5..], ["chown-ok", "mount-ok", "no-mknod"], "{report}");
     assert_eq!(rest[1], "/tmp / /usr/bin", "{report}");
     assert_eq!(rest[2], "/", "{report}");
     assert_eq!(rest[3], "no-kairo", "{report}");
