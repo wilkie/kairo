@@ -1,10 +1,9 @@
-# The live-bootstrap bootstrap for x86, through perl 5.6.2
+# The live-bootstrap bootstrap for x86, through its first gcc
 # (specs/DECISIONS.md §38): a native object that runs live-bootstrap's
 # own scripts, unmodified, from the archive's stage0-posix x86 artifact
 # through Mes and tcc to make, the core utilities, and bash, then under
-# bash to a tcc and musl toolchain, m4, flex, bison, diffutils, newer
-# coreutils, gawk, and perl, built up through four older perls that are
-# then uninstalled. Every input is pinned: live-bootstrap
+# bash to a tcc and musl toolchain, flex, bison, perl, the autotools,
+# binutils, and gcc 4.0.4. Every input is pinned: live-bootstrap
 # and M2libc as source objects by commit, each distfile as a file source
 # by its SHA-256, and stage0-posix as the artifact its wrapper builds.
 # Each step checks its distfiles and what it built against the
@@ -14,7 +13,7 @@
 schema = 1
 kind = "software"
 name = "live-bootstrap-x86"
-summary = "live-bootstrap b1ceced7 for x86 through perl 5.6.2: Mes, tcc, bash, a musl toolchain, flex, bison, and perl."
+summary = "live-bootstrap b1ceced7 for x86 through gcc 4.0.4: Mes, tcc, bash, musl, perl, the autotools, binutils, and gcc."
 
 # The guest's / is this tree; live-bootstrap assumes it owns it.
 [[dependencies]]
@@ -196,6 +195,116 @@ kind = "file"
 sha256 = "a5e66f6ebf701b0567f569f57cae82abf5ce57af70a2b45ae71323b61f49134e"
 path = "external/distfiles/perl-5.6.2.tar.gz"
 
+[[dependencies]]
+kind = "file"
+sha256 = "4681bcbb9c9298c506f6405a7deb62c54fc3b339d3239a8f36a5df83daaec94f"
+path = "external/distfiles/autoconf-2.52.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "6b217a064c6d06603d50a3ad05129aef9435367810c10894210b8dad965d2306"
+path = "external/distfiles/autoconf-2.53.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "a74aea954f36c7beeb6cc47b96a408c3e04e7ad635f614e65250dbcd8ec0bd28"
+path = "external/distfiles/autoconf-2.54.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "f757158a04889b265203eecd8ca92568e2a67c3b9062fa6bff7a0a6efd2244ac"
+path = "external/distfiles/autoconf-2.55.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e1035aa2c21fae2a934d1ab56c774ce9d22717881dab8a1a5b16d294fb793489"
+path = "external/distfiles/autoconf-2.57.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "f0cde70a8f135098a6a3e85869f2e1cc3f141beea766fa3d6636e086cd8b90a7"
+path = "external/distfiles/autoconf-2.59.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "93a2ceab963618b021db153f0c881a2de82455c1dc7422be436fcd5c554085a1"
+path = "external/distfiles/autoconf-2.61.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "32d977213320b8ae76c71175305301197f2b0e04e72d70694bc3d3e2ae6c7248"
+path = "external/distfiles/autoconf-2.64.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "64ebcec9f8ac5b2487125a86a7760d2591ac9e1d3dbd59489633f9de62a57684"
+path = "external/distfiles/autoconf-2.69.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e98ab43bb839c31696a4202e5b6ff388b391659ef2387cf9365019fad17e1adc"
+path = "external/distfiles/automake-1.10.3.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "4f46d1f9380c8a3506280750f630e9fc915cb1a435b724be56b499d016368718"
+path = "external/distfiles/automake-1.11.2.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "af6ba39142220687c500f79b4aa2f181d9b24e4f8d8ec497cea4ba26c64bedaf"
+path = "external/distfiles/automake-1.15.1.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ff2bf7656c4d1c6fdda3b8bebb21f09153a736bcba169aaf65eab25fa113bf3a"
+path = "external/distfiles/automake-1.16.3.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "0dbafacaf21e135cab35d357a14bdcd981d2f2d00e1387801be8091a31b7bb81"
+path = "external/distfiles/automake-1.6.3.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "2dddc3b51506e702647ccc6757e15c05323fa67245d2d53e81ed36a832f9be42"
+path = "external/distfiles/automake-1.7.8.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "6633ee1202375e3c8798a92e1b7f46894f78d541aeea7f49654503fdc0b28835"
+path = "external/distfiles/automake-1.7.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "84c93aaa3c3651a9e7474b721b0e6788318592509e7de604bafe4ea8049dc410"
+path = "external/distfiles/automake-1.8.5.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "8eccaa98e1863d10e4a5f861d8e2ec349a23e88cb12ad10f6b6f79022ad2bb8d"
+path = "external/distfiles/automake-1.9.6.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "6e46b8aeae2f727a36f0bd9505e405768a72218f1796f0d09757d45209871ae6"
+path = "external/distfiles/binutils-2.30.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e9bf58c761a4f988311aef6b41f12fd5c7e51d09477468fb73826aecc1be32e7"
+path = "external/distfiles/gcc-core-4.0.4.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "a4adadf76b496a6bc50795702253ecfcb6f0d159b68038f31a5362009340bca2"
+path = "external/distfiles/help2man-1.36.4.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "d81839fa4d566dbef7c286fdca9b430d3530983fff6d389fac0f08baf27e4c3a"
+path = "external/distfiles/libtool-2.2.4.tar.lzma"
+
 [[build.targets]]
 name = "x86"
 # Each step ends in upstream's own `sha256sum -c` of what it built.
@@ -326,5 +435,41 @@ output = "usr"
 [[provides]]
 provides = "tool:perl"
 version = "5.6.2"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:autoconf"
+version = "2.69"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:automake"
+version = "1.15.1"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:libtool"
+version = "2.2.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:help2man"
+version = "1.36.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:binutils"
+version = "2.30"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:gcc"
+version = "4.0.4"
 target = "x86"
 output = "usr"

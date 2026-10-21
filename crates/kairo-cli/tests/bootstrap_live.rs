@@ -1,4 +1,4 @@
-//! live-bootstrap through perl 5.6.2 for x86, end to end
+//! live-bootstrap through its first gcc for x86, end to end
 //! (`specs/DECISIONS.md` §38): the stage0-posix wrapper is imported and
 //! its x86 target built; `bootstrap/live-bootstrap/import.sh` archives
 //! live-bootstrap and its distfiles and creates the wrapper; `kairo
@@ -109,7 +109,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 #[test]
 #[ignore = "needs the network, bubblewrap on a kernel that runs i386, and several minutes"]
-fn live_bootstrap_builds_through_perl_from_the_stage0_artifact_under_the_engine() {
+fn live_bootstrap_builds_gcc_from_the_stage0_artifact_under_the_engine() {
     let store_dir = tempfile::TempDir::new().expect("tempdir");
     let store = store_dir.path();
     let actor = field(
@@ -219,7 +219,7 @@ fn live_bootstrap_builds_through_perl_from_the_stage0_artifact_under_the_engine(
             Some((path, parts.next()?))
         })
         .collect();
-    assert_eq!(packages.len(), 25, "{built}");
+    assert_eq!(packages.len(), 49, "{built}");
     for (package, blob) in packages {
         let digest = sums
             .lines()

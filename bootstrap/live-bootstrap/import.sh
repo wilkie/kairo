@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive live-bootstrap and its distfiles, and make the native object
-# that runs it through perl 5.6.2 for x86 (specs/DECISIONS.md §38).
+# that runs it through its first gcc for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
 #   import.sh <actor id> [kairo args...]
@@ -86,6 +86,50 @@ DISTFILES=(
      https://www.cpan.org/src/5.0/perl5.005_03.tar.gz"
     "a5e66f6ebf701b0567f569f57cae82abf5ce57af70a2b45ae71323b61f49134e perl-5.6.2.tar.gz
      https://www.cpan.org/src/5.0/perl-5.6.2.tar.gz"
+    "4681bcbb9c9298c506f6405a7deb62c54fc3b339d3239a8f36a5df83daaec94f autoconf-2.52.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.52.tar.bz2"
+    "6b217a064c6d06603d50a3ad05129aef9435367810c10894210b8dad965d2306 autoconf-2.53.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.53.tar.bz2"
+    "a74aea954f36c7beeb6cc47b96a408c3e04e7ad635f614e65250dbcd8ec0bd28 autoconf-2.54.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.54.tar.bz2"
+    "f757158a04889b265203eecd8ca92568e2a67c3b9062fa6bff7a0a6efd2244ac autoconf-2.55.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.55.tar.bz2"
+    "e1035aa2c21fae2a934d1ab56c774ce9d22717881dab8a1a5b16d294fb793489 autoconf-2.57.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.57.tar.bz2"
+    "f0cde70a8f135098a6a3e85869f2e1cc3f141beea766fa3d6636e086cd8b90a7 autoconf-2.59.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.59.tar.bz2"
+    "93a2ceab963618b021db153f0c881a2de82455c1dc7422be436fcd5c554085a1 autoconf-2.61.tar.bz2
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.61.tar.bz2"
+    "32d977213320b8ae76c71175305301197f2b0e04e72d70694bc3d3e2ae6c7248 autoconf-2.64.tar.xz
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.64.tar.xz"
+    "64ebcec9f8ac5b2487125a86a7760d2591ac9e1d3dbd59489633f9de62a57684 autoconf-2.69.tar.xz
+     https://mirrors.kernel.org/gnu/autoconf/autoconf-2.69.tar.xz"
+    "e98ab43bb839c31696a4202e5b6ff388b391659ef2387cf9365019fad17e1adc automake-1.10.3.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.10.3.tar.bz2"
+    "4f46d1f9380c8a3506280750f630e9fc915cb1a435b724be56b499d016368718 automake-1.11.2.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.11.2.tar.bz2"
+    "af6ba39142220687c500f79b4aa2f181d9b24e4f8d8ec497cea4ba26c64bedaf automake-1.15.1.tar.xz
+     https://mirrors.kernel.org/gnu/automake/automake-1.15.1.tar.xz"
+    "ff2bf7656c4d1c6fdda3b8bebb21f09153a736bcba169aaf65eab25fa113bf3a automake-1.16.3.tar.xz
+     https://mirrors.kernel.org/gnu/automake/automake-1.16.3.tar.xz"
+    "0dbafacaf21e135cab35d357a14bdcd981d2f2d00e1387801be8091a31b7bb81 automake-1.6.3.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.6.3.tar.bz2"
+    "2dddc3b51506e702647ccc6757e15c05323fa67245d2d53e81ed36a832f9be42 automake-1.7.8.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.7.8.tar.bz2"
+    "6633ee1202375e3c8798a92e1b7f46894f78d541aeea7f49654503fdc0b28835 automake-1.7.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.7.tar.bz2"
+    "84c93aaa3c3651a9e7474b721b0e6788318592509e7de604bafe4ea8049dc410 automake-1.8.5.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.8.5.tar.bz2"
+    "8eccaa98e1863d10e4a5f861d8e2ec349a23e88cb12ad10f6b6f79022ad2bb8d automake-1.9.6.tar.bz2
+     https://mirrors.kernel.org/gnu/automake/automake-1.9.6.tar.bz2"
+    "6e46b8aeae2f727a36f0bd9505e405768a72218f1796f0d09757d45209871ae6 binutils-2.30.tar.xz
+     https://mirrors.kernel.org/gnu/binutils/binutils-2.30.tar.xz"
+    "e9bf58c761a4f988311aef6b41f12fd5c7e51d09477468fb73826aecc1be32e7 gcc-core-4.0.4.tar.bz2
+     https://mirrors.kernel.org/gnu/gcc/gcc-4.0.4/gcc-core-4.0.4.tar.bz2"
+    "a4adadf76b496a6bc50795702253ecfcb6f0d159b68038f31a5362009340bca2 help2man-1.36.4.tar.gz
+     https://mirrors.kernel.org/gnu/help2man/help2man-1.36.4.tar.gz"
+    "d81839fa4d566dbef7c286fdca9b430d3530983fff6d389fac0f08baf27e4c3a libtool-2.2.4.tar.lzma
+     https://mirrors.kernel.org/gnu/libtool/libtool-2.2.4.tar.lzma"
 )
 
 if [ $# -lt 1 ]; then
@@ -113,8 +157,17 @@ for entry in "${DISTFILES[@]}"; do
     read -r -a words <<<"$(tr '\n' ' ' <<<"$entry")"
     sha256=${words[0]}
     name=${words[1]}
-    fetched=no
+    urls=("${words[@]:2}")
+    # GNU's own server serves every file kernel.org's GNU mirror does.
     for url in "${words[@]:2}"; do
+        case "$url" in
+        https://mirrors.kernel.org/gnu/*)
+            urls+=("https://ftp.gnu.org/gnu/${url#https://mirrors.kernel.org/gnu/}")
+            ;;
+        esac
+    done
+    fetched=no
+    for url in "${urls[@]}"; do
         if kairo source fetch-file "$url" --sha256 "$sha256" --actor "$ACTOR" >&2; then
             fetched=yes
             break
@@ -137,7 +190,7 @@ cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through perl 5.6.2"
+git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through gcc 4.0.4"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)

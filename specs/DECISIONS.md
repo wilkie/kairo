@@ -3922,6 +3922,17 @@ Sub-decisions:
     `SHA256SUMS.pkgs`. The build needs more than the default hour, so
     the end-to-end test raises `runtime.timeout_secs`.
 
+14. **Then through the first gcc.** *Added when built:* on through
+    the autotools chain (nine autoconfs from 2.52 to 2.69, eight
+    automakes from 1.6.3 to 1.15.1, help2man, libtool 2.2.4), binutils
+    2.30, musl and tcc rebuilt once more, `populate_device_nodes`
+    again, and gcc 4.0.4, the first GCC built from the seeds, stopping
+    after its first build. Twenty-two more distfiles are pinned; for
+    any listed on kernel.org's GNU mirror, `import.sh` also tries
+    `ftp.gnu.org`, since one slow or unreachable mirror shouldn't stop
+    an import. All 49 packages match `SHA256SUMS.pkgs`, gcc's
+    included.
+
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence
 available, agreement with upstream's published hashes. Identifying

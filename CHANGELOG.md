@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap through its first gcc (`DECISIONS.md` §38
+  sub-decision 14).** The x86 wrapper continues through the autotools
+  chain, binutils 2.30, and gcc 4.0.4; all 49 packages match
+  `SHA256SUMS.pkgs`. `import.sh` falls back to `ftp.gnu.org` for files
+  on kernel.org's GNU mirror.
+
 - **live-bootstrap through perl 5.6.2 (`DECISIONS.md` §38 sub-decision
   13).** The x86 wrapper continues through m4, flex, bison, diffutils,
   coreutils 6.10, gawk, and the perl chain, with live-bootstrap's own
