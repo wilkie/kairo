@@ -3908,3 +3908,81 @@ Affected specs:
   `from`, `overlay`, and `path` on artifact dependencies.
 - `CLI.md` — `kairo source fetch-file`.
 - `PHASE_2.md` §7 — the second milestone.
+
+---
+
+## 39. Symbolic Links in Artifacts, and Root in `linux-root`
+
+Decision: artifacts can hold **symbolic links**, under rules that keep
+them inside the artifact and keep every write from following one; and
+the `linux-root` contract's guest runs as **root inside its own
+namespaces**. Both come from the first bash-run steps of live-bootstrap
+(§38 sub-decision 11), but neither is specific to it: most software
+installs symlinks, and software that assumes it owns `/` assumes it is
+root there.
+
+Sub-decisions:
+
+1. **A link entry.** An `artifact-tree-v1` entry is either a file, as
+   before (`path`, `blob`, `executable`), or a link: `{ "path": ...,
+   "link": "<target>" }`, fields in that order, sorted with the files
+   by `path`. A tree without links encodes exactly as before, so no
+   existing artifact id changes.
+
+2. **Targets stay inside the artifact.** A link's target is a
+   non-empty relative path (no leading `/`, no NUL) that, resolved
+   lexically from the link's own directory, never climbs above the
+   artifact's root; `..` is allowed within that. It may dangle: the
+   file it names may come from another artifact placed beside it. An
+   absolute target, or one that escapes, fails the build with the link
+   named, rather than being rewritten. Absolute links can be revisited
+   when a step needs one.
+
+3. **Nothing is written through a link.** No entry's path may lie
+   under a link entry's path; a tree that has one is refused, on
+   collection and on load. Collecting an output records a link and
+   never follows it. Materializing an artifact and placing a
+   dependency create links as links, after checking no part of the
+   destination path is one (§38 sub-decision 4's rule, now applied to
+   links an artifact brings). So a link can't make Kairo write outside
+   a build directory or an artifact's destination.
+
+4. **Root in `linux-root`.** Under `environment:linux-root/<arch>` the
+   guest runs as uid 0 and gid 0 with every capability, in its own
+   user, mount, PID, IPC, UTS, network, and cgroup namespaces. On the
+   host it is still the unprivileged user who runs Kairo. What that
+   gives, and what it doesn't:
+   - files can be chown'd to 0, and checks for root pass;
+   - tmpfs, proc, and the like can be mounted inside the guest's own
+     mount namespace;
+   - device nodes can't be created (the kernel refuses `mknod` of
+     devices in a user namespace), and files can't be owned by any id
+     but 0;
+   - the minimal `/dev`, `/proc`, and empty `/tmp` are as before; there
+     is still no `/sys`.
+
+   Software that needs real device nodes, other ids, `/sys`, or a
+   kernel of its own belongs on a future microVM engine under its own
+   contract. The `linux` contract keeps uid 1000.
+
+5. **An amendment, not a new label.** §34 sub-decision 1 makes a
+   change that could alter output a new contract label. `linux-root`
+   v1 is amended in place instead, because nothing built under it has
+   left this repository: it was defined in §38 and none of its results
+   are published. Once a contract's results are shared, this rule
+   applies to it in full.
+
+Rationale: symlinks are ordinary output, and refusing them blocks most
+real installs; confining their targets lexically and never writing
+through one keeps the guarantee that a build or a placement touches
+only its own directory. Root inside a user namespace is free on the
+host and is what software that owns `/` expects; the cases it can't
+cover (devices, many ids, sysfs) are exactly the ones a VM engine
+covers, so they wait for it rather than being half-emulated.
+
+Affected specs:
+
+- `schemas/canonical/artifact-tree-v1.md` — link entries.
+- `schemas/environment/linux-root-v1.md` — identity and capabilities.
+- `BUILD.md`, `EXECUTOR.md` — outputs may contain links.
+- `DECISIONS.md` §33 sub-decision 6 (artifacts), §38 sub-decision 5.
