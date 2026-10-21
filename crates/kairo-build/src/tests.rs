@@ -381,7 +381,7 @@ fn outputs_record_links_that_stay_inside_and_refuse_the_rest() -> TestResult {
     let linked = world.object(&[(
         "kairo.toml",
         &app_manifest(
-            r#"["sh", "-c", "mkdir -p out/share/dir && echo hi > out/share/dir/a.txt && ln -s dir/a.txt out/share/a && ln -s dir out/share/d && ln -s ../lib/libz.so.1 out/share/gone && echo x > out/real && ln -s real out/app"]"#,
+            r#"["sh", "-c", "mkdir -p out/share/dir && echo hi > out/share/dir/a.txt && ln -s dir/a.txt out/share/a && ln -s dir out/share/d && ln -s ../lib/libz.so.1 out/share/gone && ln -s /usr/bin/bzip2 out/share/bunzip2 && echo x > out/real && ln -s real out/app"]"#,
             FILE_AND_DIR_OUTPUTS,
             "",
         ),
@@ -405,6 +405,7 @@ fn outputs_record_links_that_stay_inside_and_refuse_the_rest() -> TestResult {
         [
             ("bin/app", "real"),
             ("share/a", "dir/a.txt"),
+            ("share/bunzip2", "/usr/bin/bzip2"),
             ("share/d", "dir"),
             ("share/gone", "../lib/libz.so.1")
         ]
@@ -428,14 +429,16 @@ fn outputs_record_links_that_stay_inside_and_refuse_the_rest() -> TestResult {
         .join("share/gone")
         .symlink_metadata()?
         .is_symlink());
+    assert_eq!(
+        fs::read_link(out.path().join("share/bunzip2"))?,
+        Path::new("/usr/bin/bzip2")
+    );
 
-    // Absolute and escaping targets fail the build, naming the link;
-    // so does a directory output that is a link.
+    // Escaping relative targets fail the build, naming the link; so
+    // does a directory output that is a link. An absolute target is the
+    // guest's path, kept as written.
     for (command, expected) in [
-        (
-            "mkdir -p out/share && ln -s /etc/passwd out/app",
-            "is absolute",
-        ),
+        ("mkdir -p out/share && ln -s / out/app", "is only /"),
         (
             "mkdir -p out/share && echo x > out/app && ln -s ../../../x out/share/up",
             "climbs above",
@@ -480,12 +483,13 @@ fn artifact_trees_refuse_links_that_escape_or_hold_entries() {
     let file = |path: &str| format!(r#"{{"path":"{path}","blob":"{blob}","executable":false}}"#);
     let link = |path: &str, target: &str| format!(r#"{{"path":"{path}","link":"{target}"}}"#);
     assert!(tree(&format!("{},{}", link("a/b", "../c"), file("c"))).is_ok());
+    assert!(tree(&link("a", "/etc/passwd")).is_ok());
     for (entries, expected) in [
         (
             format!("{},{}", link("a", "x"), file("a/passwd")),
             "lies under the link",
         ),
-        (link("a", "/etc"), "is absolute"),
+        (link("a", "/"), "is only /"),
         (link("a/b", "../../c"), "climbs above"),
         (link("a", ""), "is empty"),
         (format!("{},{}", file("b"), file("a")), "out of order"),

@@ -1,13 +1,18 @@
-# live-bootstrap through bash-2.05b (x86)
+# live-bootstrap through its first musl toolchain (x86)
 
 The archive's second bootstrap milestone (`specs/DECISIONS.md` §38):
 [live-bootstrap](https://github.com/fosslinux/live-bootstrap) at
 `b1ceced7`, run **unmodified** from the archive's stage0-posix x86
 artifact (`bootstrap/stage0-posix/`) through Mes 0.27.1 and tcc 0.9.27
-to make, patch, gzip, tar, sed, bzip2, coreutils, yacc, and bash 2.05b:
-every step live-bootstrap builds with kaem, its minimal shell, before
-it switches to bash. All of it runs under the bubblewrap engine, with no
-host tool taking part.
+to make, patch, gzip, tar, sed, bzip2, coreutils, yacc, and bash 2.05b
+(every step live-bootstrap builds with kaem, its minimal shell), then
+under bash to tcc and musl 1.1.24 rebuilt against each other, grep, and
+sed and bzip2 rebuilt on musl. All of it runs under the bubblewrap
+engine, as root inside its namespaces, with no host tool taking part.
+
+From bash on, each step also packages what it installed and checks the
+package against live-bootstrap's `SHA256SUMS.pkgs`; the artifact keeps
+those packages as its `repo` output, byte-for-byte upstream's.
 
 Every step checks its distfiles and what it built against the checksums
 live-bootstrap publishes (`sha256sum -c`), so a successful build agrees
@@ -30,14 +35,14 @@ guest's root, and every input is placed in it where live-bootstrap's own
 | `/seed` → `/` | live-bootstrap's `seed/` files; `start.kaem` copies them to `/`, as `rootfs.py` does | source object, by commit |
 | `/M2libc` | stage0-posix's M2libc, where `seed.kaem`'s `M2LIBC_PATH` points | source object, by commit |
 | `/x86/bin` | stage0-posix 1.9.1's x86 tools, the artifact its wrapper builds; this replaces live-bootstrap's rerun of stage0 | artifact, via `tool:kaem` |
-| `/external/distfiles` | the thirteen distfiles the steps unpack | file sources, by SHA-256 |
+| `/external/distfiles` | the fifteen distfiles the steps unpack | file sources, by SHA-256 |
 
 | File | What it is |
 |---|---|
-| `kairo.toml` | The pins and placements above; one target, `x86`, whose output is the installed `usr/` tree, providing `tool:mes`, `tool:tcc`, `tool:make`, `tool:bash`, and the rest. |
+| `kairo.toml` | The pins and placements above; one target, `x86`, whose outputs are the installed `usr/` tree, providing `tool:mes`, `tool:tcc`, `tool:make`, `tool:bash`, `lib:musl`, and the rest, and the checked packages in `repo/`. |
 | `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: sets its variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. |
 | `steps/bootstrap.cfg` | What `rootfs.py --arch x86 --bwrap --external-sources` writes. |
-| `steps/manifest` | live-bootstrap's manifest, truncated after `bash-2.05b`, the last step built with kaem. |
+| `steps/manifest` | live-bootstrap's manifest, truncated after the second `bzip2-1.0.8`, the end of the first musl toolchain. |
 | `import.sh` | Archives live-bootstrap and the distfiles, and creates the wrapper. |
 
 ## Running it

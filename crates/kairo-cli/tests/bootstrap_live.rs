@@ -1,12 +1,12 @@
-//! live-bootstrap through bash-2.05b for x86, end to end
+//! live-bootstrap through its first musl toolchain for x86, end to end
 //! (`specs/DECISIONS.md` §38): the stage0-posix wrapper is imported and
 //! its x86 target built; `bootstrap/live-bootstrap/import.sh` archives
 //! live-bootstrap and its distfiles and creates the wrapper; `kairo
 //! build` runs live-bootstrap's own scripts under
 //! `environment:linux-root/x86`, each step checking what it built
-//! against upstream's checksums; the installed tcc and bash match the
-//! checksums upstream publishes, read from the archived source; and
-//! `kairo reproduce` matches.
+//! against upstream's checksums; the installed bash, and every package
+//! the bash-run steps made, match the checksums upstream publishes,
+//! read from the archived source; and `kairo reproduce` matches.
 //!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
@@ -109,7 +109,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 #[test]
 #[ignore = "needs the network, bubblewrap on a kernel that runs i386, and several minutes"]
-fn live_bootstrap_builds_bash_from_the_stage0_artifact_under_the_engine() {
+fn live_bootstrap_builds_a_musl_toolchain_from_the_stage0_artifact_under_the_engine() {
     let store_dir = tempfile::TempDir::new().expect("tempdir");
     let store = store_dir.path();
     let actor = field(
@@ -169,10 +169,10 @@ fn live_bootstrap_builds_bash_from_the_stage0_artifact_under_the_engine() {
         kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, LIVE_BOOTSTRAP_COMMIT)
             .expect("revision");
     let blob_store = kairo_store::FilesystemStore::open(store).expect("store");
-    for checksums in [
-        "steps/tcc-0.9.27/tcc-0.9.27.checksums",
-        "steps/bash-2.05b/bash-2.05b.checksums",
-    ] {
+    // The kaem-built bash, which nothing later replaces; the kaem-built
+    // tcc is replaced by the musl one, whose packages are checked below
+    // (each step checked its own outputs as it ran).
+    for checksums in ["steps/bash-2.05b/bash-2.05b.checksums"] {
         let listed = String::from_utf8(
             repo.read_blob_at_path(&commit, checksums)
                 .expect("read")
@@ -196,6 +196,39 @@ fn live_bootstrap_builds_bash_from_the_stage0_artifact_under_the_engine() {
             .expect("blob");
             assert_eq!(sha256(&bytes), digest, "{path}");
         }
+    }
+
+    // Every package the bash-run steps made is the one upstream's
+    // SHA256SUMS.pkgs names.
+    let sums = String::from_utf8(
+        repo.read_blob_at_path(&commit, "steps/SHA256SUMS.pkgs")
+            .expect("read")
+            .expect("SHA256SUMS.pkgs in the commit"),
+    )
+    .expect("utf8");
+    let packages: Vec<(&str, &str)> = built
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let path = parts.next()?.strip_prefix("repo/")?;
+            Some((path, parts.next()?))
+        })
+        .collect();
+    assert_eq!(packages.len(), 9, "{built}");
+    for (package, blob) in packages {
+        let digest = sums
+            .lines()
+            .find_map(|line| {
+                let (digest, name) = line.split_once("  ")?;
+                (name == package).then_some(digest)
+            })
+            .unwrap_or_else(|| panic!("{package} isn't in SHA256SUMS.pkgs"));
+        let bytes = kairo_store::BlobStore::get_blob(
+            &blob_store,
+            &kairo_core::BlobId::new(blob).expect("blob id"),
+        )
+        .expect("blob");
+        assert_eq!(sha256(&bytes), digest, "{package}");
     }
 
     // Another run of the same plan gives the same artifact.

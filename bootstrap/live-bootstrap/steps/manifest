@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# live-bootstrap's steps/manifest at b1ceced7, truncated after
-# bash-2.05b, the last step built with kaem, for Kairo's bootstrap
-# (specs/DECISIONS.md §38). The lines kept are upstream's, verbatim;
-# see its manifest for the syntax and the full list.
+# live-bootstrap's steps/manifest at b1ceced7, truncated after the
+# second bzip2-1.0.8, the end of the first musl toolchain, for Kairo's
+# bootstrap (specs/DECISIONS.md §38). The lines kept are upstream's,
+# verbatim; see its manifest for the syntax and the full list.
 
 build: checksum-transcriber-1.0
 build: simple-patch-1.0
@@ -28,3 +28,19 @@ build: bzip2-1.0.8
 build: coreutils-5.0
 build: oyacc-6.6
 build: bash-2.05b
+improve: setup_repo
+improve: update_env
+improve: merged_usr
+improve: populate_device_nodes
+define: CONSOLES = ( INTERACTIVE == True && CHROOT == False )
+improve: open_console ( CONSOLES == True )
+build: tcc-0.9.27
+improve: musl_target
+build: musl-1.1.24
+build: tcc-0.9.27
+build: musl-1.1.24
+build: tcc-0.9.27
+build: grep-2.4
+build: musl-1.1.24
+build: sed-4.0.9
+build: bzip2-1.0.8

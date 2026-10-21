@@ -451,7 +451,8 @@ bootstrap: stage0-posix 1.9.1 for AMD64, from 847 bytes of seed to
 M2-Planet and mescc-tools under the engine, matching upstream's answers
 (`DECISIONS.md` §36, `bootstrap/stage0-posix/`). The second milestone
 (`DECISIONS.md` §38) runs live-bootstrap unmodified for x86 from the
-stage0-posix x86 artifact through Mes and tcc to bash-2.05b, under a
+stage0-posix x86 artifact through Mes, tcc, and bash to a tcc and musl
+toolchain, under a
 `linux-root` contract whose guest root is the build tree, with
 distfiles archived as file sources (`bootstrap/live-bootstrap/`). After
 it come gcc and the microVM engine.

@@ -195,18 +195,24 @@ impl ArtifactEntry {
 }
 
 /// Why a link target isn't allowed (`DECISIONS.md` §39 sub-decision 2),
-/// or `None` if it is: non-empty, relative, without NUL or empty
-/// segments, and never climbing above the artifact's root when
-/// resolved lexically from the directory holding `path`.
+/// or `None` if it is. An absolute target names a path in the guest's
+/// filesystem and is kept as written; Kairo never follows a link, so it
+/// only needs to be more than `/`. A relative target names a path in the
+/// artifact: without empty segments, and never climbing above the
+/// artifact's root when resolved lexically from the directory holding
+/// `path`.
 pub fn link_target_problem(path: &str, target: &str) -> Option<&'static str> {
     if target.is_empty() {
         return Some("is empty");
     }
-    if target.starts_with('/') {
-        return Some("is absolute");
-    }
     if target.contains('\0') {
         return Some("contains NUL");
+    }
+    if let Some(absolute) = target.strip_prefix('/') {
+        return absolute
+            .trim_start_matches('/')
+            .is_empty()
+            .then_some("is only /");
     }
     let mut depth = path.split('/').count().saturating_sub(1);
     for part in target.split('/') {

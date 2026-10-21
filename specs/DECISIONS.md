@@ -3892,6 +3892,21 @@ Sub-decisions:
     root. The bash-run steps that follow (`setup_repo`, `merged_usr`,
     `populate_device_nodes`, ...) are the next milestone.
 
+12. **Then through the first musl toolchain.** *Added when built:*
+    the wrapper runs on into live-bootstrap's bash-run steps: its
+    `setup_repo`, `update_env`, `merged_usr`, and
+    `populate_device_nodes` improvements, then tcc and musl 1.1.24
+    rebuilt against each other three times, grep 2.4, and sed and
+    bzip2 rebuilt on musl, stopping after the second `bzip2-1.0.8`.
+    It needs §39: `merged_usr` makes `usr/sbin -> bin`, the installs
+    make absolute links such as `bunzip2 -> /usr/bin/bzip2`, and the
+    guest runs as root. `populate_device_nodes` creates nothing: the
+    contract's `/dev` already has every node it checks for. Each of
+    these steps also packages what it installed and checks the package
+    against live-bootstrap's `SHA256SUMS.pkgs`; every one matches, so
+    the packages, kept as the artifact's `repo` output, are
+    byte-for-byte upstream's.
+
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence
 available, agreement with upstream's published hashes. Identifying
@@ -3929,14 +3944,21 @@ Sub-decisions:
    by `path`. A tree without links encodes exactly as before, so no
    existing artifact id changes.
 
-2. **Targets stay inside the artifact.** A link's target is a
-   non-empty relative path (no leading `/`, no NUL) that, resolved
-   lexically from the link's own directory, never climbs above the
-   artifact's root; `..` is allowed within that. It may dangle: the
-   file it names may come from another artifact placed beside it. An
-   absolute target, or one that escapes, fails the build with the link
-   named, rather than being rewritten. Absolute links can be revisited
-   when a step needs one.
+2. **Relative targets stay inside the artifact; absolute targets are
+   the guest's.** A relative target (no NUL, no empty segment) names a
+   path in the artifact: resolved lexically from the link's own
+   directory, it never climbs above the artifact's root (`..` within
+   it is fine), and one that escapes fails the build with the link
+   named. An absolute target names a path in the filesystem of
+   whatever guest uses the artifact and is kept exactly as written:
+   under `linux-root` it resolves in the build tree, under `linux` it
+   may dangle. It is never rewritten. Any target may dangle; the file
+   it names may come from another artifact placed beside it. *Amended
+   when built:* the first draft refused absolute targets, but upstream
+   build systems make them routinely (bzip2's `bunzip2 ->
+   /usr/bin/bzip2`, binutils' triplet links), and Kairo never follows
+   a link of either kind (sub-decision 3), so recording them costs no
+   safety.
 
 3. **Nothing is written through a link.** No entry's path may lie
    under a link entry's path; a tree that has one is refused, on

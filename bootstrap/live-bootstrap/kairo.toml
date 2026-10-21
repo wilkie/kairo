@@ -1,8 +1,8 @@
-# The live-bootstrap bootstrap for x86, through bash-2.05b
+# The live-bootstrap bootstrap for x86, through its first musl toolchain
 # (specs/DECISIONS.md §38): a native object that runs live-bootstrap's
 # own scripts, unmodified, from the archive's stage0-posix x86 artifact
-# through Mes and tcc to make, the core utilities, and bash, every step
-# built with kaem, under the engine. Every input is pinned: live-bootstrap
+# through Mes and tcc to make, the core utilities, and bash, then under
+# bash to tcc and musl rebuilt against each other, grep, sed, and bzip2. Every input is pinned: live-bootstrap
 # and M2libc as source objects by commit, each distfile as a file source
 # by its SHA-256, and stage0-posix as the artifact its wrapper builds.
 # Each step checks its distfiles and what it built against the
@@ -12,7 +12,7 @@
 schema = 1
 kind = "software"
 name = "live-bootstrap-x86"
-summary = "live-bootstrap b1ceced7 for x86 through bash-2.05b: Mes, tcc, make, coreutils, and bash from stage0-posix."
+summary = "live-bootstrap b1ceced7 for x86 through its first musl toolchain: Mes, tcc, make, coreutils, bash, then tcc on musl."
 
 # The guest's / is this tree; live-bootstrap assumes it owns it.
 [[dependencies]]
@@ -119,6 +119,16 @@ kind = "file"
 sha256 = "ba03d412998cc54bd0b0f2d6c32100967d3137098affdc2d32e6e7c11b163fe4"
 path = "external/distfiles/bash-2.05b.tar.gz"
 
+[[dependencies]]
+kind = "file"
+sha256 = "1370c9a812b2cf2a7d92802510cca0058cc37e66a7bedd70051f0a34015022a3"
+path = "external/distfiles/musl-1.1.24.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "a32032bab36208509466654df12f507600dfe0313feebbcd218c32a70bf72a16"
+path = "external/distfiles/grep-2.4.tar.gz"
+
 [[build.targets]]
 name = "x86"
 # Each step ends in upstream's own `sha256sum -c` of what it built.
@@ -128,6 +138,14 @@ command = ["/x86/bin/kaem", "--verbose", "--strict", "--file", "/start.kaem"]
 name = "usr"
 path = "usr"
 artifact_path = "usr"
+kind = "directory"
+
+# The packages the bash-run steps made, each checked against
+# live-bootstrap's SHA256SUMS.pkgs.
+[[build.targets.outputs]]
+name = "repo"
+path = "external/repo"
+artifact_path = "repo"
 kind = "directory"
 
 [[provides]]
@@ -193,5 +211,17 @@ output = "usr"
 [[provides]]
 provides = "tool:bash"
 version = "2.05b"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:grep"
+version = "2.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "lib:musl"
+version = "1.1.24"
 target = "x86"
 output = "usr"

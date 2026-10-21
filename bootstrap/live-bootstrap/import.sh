@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive live-bootstrap and its distfiles, and make the native object
-# that runs it through bash-2.05b for x86 (specs/DECISIONS.md §38).
+# that runs it through its first musl toolchain for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
 #   import.sh <actor id> [kairo args...]
@@ -56,6 +56,10 @@ DISTFILES=(
      https://github.com/ibara/yacc/releases/download/oyacc-6.6/oyacc-6.6.tar.gz"
     "ba03d412998cc54bd0b0f2d6c32100967d3137098affdc2d32e6e7c11b163fe4 bash-2.05b.tar.gz
      https://mirrors.kernel.org/gnu/bash/bash-2.05b.tar.gz"
+    "1370c9a812b2cf2a7d92802510cca0058cc37e66a7bedd70051f0a34015022a3 musl-1.1.24.tar.gz
+     https://musl.libc.org/releases/musl-1.1.24.tar.gz"
+    "a32032bab36208509466654df12f507600dfe0313feebbcd218c32a70bf72a16 grep-2.4.tar.gz
+     https://mirrors.kernel.org/gnu/grep/grep-2.4.tar.gz"
 )
 
 if [ $# -lt 1 ]; then
@@ -107,7 +111,7 @@ cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through bash-2.05b"
+git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through the first musl toolchain"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)

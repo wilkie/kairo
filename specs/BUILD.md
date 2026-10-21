@@ -104,8 +104,9 @@ Fields:
 - kind: file or directory
 
 Outputs define the boundary of the artifact. Symbolic links inside an
-output are kept as links, never followed, if their targets are relative
-and stay inside the artifact; a `file` output may itself be a link
+output are kept as links, never followed: a relative target must stay
+inside the artifact, and an absolute one is kept as the guest's path; a
+`file` output may itself be a link
 (`DECISIONS.md` §39, `schemas/canonical/artifact-tree-v1.md`).
 
 ---

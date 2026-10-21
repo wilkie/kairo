@@ -18,10 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap through its first musl toolchain (`DECISIONS.md` §38
+  sub-decision 12).** After bash 2.05b the wrapper runs live-bootstrap's
+  first bash-run steps: tcc and musl 1.1.24 rebuilt against each other,
+  grep, sed, and bzip2, every package matching `SHA256SUMS.pkgs`. The
+  artifact gains a `repo` output of those packages, and `lib:musl` and
+  `tool:grep` provides.
+
 - **Symbolic links in artifacts (`DECISIONS.md` §39).** Outputs keep
   symbolic links as link entries (`{ path, link }`) instead of failing
-  the build, when the target is relative and stays inside the artifact;
-  absolute and escaping targets, and entries under a link, are refused.
+  the build. A relative target must stay inside the artifact; an
+  absolute one is the guest's path, kept as written; escaping relative
+  targets and entries under a link are refused.
   Links are recorded without being followed and materialized as links.
   Artifacts without links keep their ids. `kairo build` lists a link as
   `<path> -> <target>`.
