@@ -4127,3 +4127,141 @@ Affected specs:
 
 - `schemas/canonical/source-observation-v1.md` — `via`.
 - `CLI.md` §25.1 — `--mirror`.
+
+---
+
+## 41. One Linux Contract, Package Roots, Child Objects, and Overlay Provisioning
+
+Decision: there is **one Linux environment contract**, in which the
+guest is root in its own namespaces and `/` is an overlay of its
+dependencies; a build's artifact is what it stages under
+**`/kairo/package`**, with an **install root** saying where it lands
+for the objects that use it; one build can define **child objects**,
+first-class objects whose ids derive from their parent's, each with its
+own artifact; and dependencies are **provisioned by overlay** wherever
+the engine can, by copying otherwise. This replaces §38 sub-decision 5's
+separate `linux-root` contract and the "build tree as `/`" layout, and
+generalizes how artifacts are mounted (§35).
+
+Sub-decisions:
+
+1. **One contract.** `environment:linux/<arch>`
+   (`schemas/environment/linux-v1.md`) is amended to the following, and
+   the `linux-root` label is retired; nothing built under either has
+   been published (§39 sub-decision 5). The guest runs as uid and gid 0
+   with every capability inside its own namespaces (§39 sub-decision
+   4), and sees:
+
+   | Guest path | Contents | Access |
+   |---|---|---|
+   | `/` | an overlay: each dependency's artifact at its install root (sub-decision 3), earlier-listed dependencies winning where two provide the same path, over a writable layer for this build | read-write |
+   | `/kairo/src` | the snapshot's tree, with relative placements in it; the command runs in `/kairo/src/<workdir>` | read-write |
+   | `/kairo/package` | empty; the build stages its artifact here (sub-decision 2) | read-write |
+   | `/kairo/artifact/<id>` | each dependency whose artifact declares no install root | read-only |
+   | `/proc`, `/dev`, `/tmp`, `/sys` | as now: the sandbox's processes, the minimal devices, an empty `/tmp`, an empty read-only `/sys` (§39 sub-decision 6) | — |
+
+   Placements with an absolute `path` land at that guest path, in the
+   writable layer; relative ones land in `/kairo/src`, as before.
+   Everything else in the contract (no network, hostname `kairo`, the
+   environment variables, the clock not frozen) is unchanged.
+
+2. **The artifact is `/kairo/package`.** A build stages its artifact
+   under `/kairo/package`, laid out as it wants to be installed (bash at
+   `/kairo/package/usr/bin/bash`); the tree there after the command
+   exits is the artifact. A target's `[[build.targets.outputs]]` still
+   work: each copies a path from the working directory into the package
+   at its `artifact_path`, after the command, so existing manifests keep
+   their meaning. Nothing outside `/kairo/package` is ever collected:
+   not the provisioned dependencies, not `/kairo/artifact`, not the
+   rest of the writable layer. A build that installs into `/` itself,
+   as live-bootstrap does, copies what it means to ship into
+   `/kairo/package` at the end.
+
+3. **Install roots.** A target declares where its artifact lands in the
+   environments of the objects that use it:
+
+   ```toml
+   [build.targets.artifact]
+   root = "."        # a subdirectory of /kairo/package; the default
+   install = "/"     # an absolute guest path; the default
+   ```
+
+   `install = "/"` means the artifact's `usr/bin/bash` is `/usr/bin/bash`
+   for a consumer. `install = false` keeps the artifact out of the
+   overlay, at `/kairo/artifact/<id>`, for tools that are only invoked
+   by path. A consumer's own `path` placement (§38 sub-decision 4)
+   still overrides where it lands.
+
+4. **Child objects.** One build can define several objects, as Occam
+   did:
+
+   ```toml
+   [[build.targets.children]]
+   name = "bash"
+   root = "bash-5.2.15"      # under /kairo/package
+   install = "/"
+   [[build.targets.children.provides]]
+   provides = "tool:bash"
+   version = "5.2.15"
+   ```
+
+   - **Identity.** A child's genesis is `(parent object id, target,
+     name)`, unsigned, and its id derives from it under its own domain,
+     as a source's derives from its URL (§37 sub-decision 1). The
+     parent's signed manifest declares it, so the parent's signer
+     vouches for it.
+   - **History.** A child exists at every parent revision whose
+     manifest declares it; it has no history or branches of its own.
+     Software that should evolve on its own deserves its own object.
+   - **Artifact.** A child's artifact is the part of its parent's
+     artifact under its `root`, re-rooted there, with its own
+     content-addressed artifact id; its build result is its parent's.
+   - **Like any object.** A child can be depended on by id or by its
+     provides labels, searched, followed, and pulled; it carries its
+     own install root, provides, and runtime dependencies. Its relation
+     to a dedicated object for the same software is the label's: both
+     may provide `tool:bash`, and policy chooses.
+
+5. **Provisioning by overlay.** The engine assembles the guest's `/`
+   as an overlay: each dependency's artifact is materialized once on
+   the host, cached by artifact id and shared read-only across builds,
+   and stacked at its install root in dependency order; the build's
+   writable layer is on host disk, with overlayfs's work directory in
+   the same mount. bubblewrap before 0.10 has no overlay options, so
+   the engine mounts it from a small helper that runs first inside the
+   sandbox, as root in its namespaces. Where an overlay isn't possible,
+   the engine copies the dependencies into place in the same order,
+   and the guest sees the same tree. Deletions a build makes in the
+   overlay (whiteouts) never reach an artifact: artifacts only hold
+   what is staged under `/kairo/package`.
+
+6. **live-bootstrap.** Its wrapper places live-bootstrap's steps and
+   seed files at their absolute paths (`/steps`, `/`) and its distfiles
+   at `/external/distfiles`, runs as now, and at the end extracts each
+   package in `/external/repo` into `/kairo/package/<package>/`; each
+   package is a child object rooted there, installed at `/`, providing
+   the tools it holds. So a later object can depend on exactly
+   live-bootstrap's bash, or gcc and its toolchain, at their real
+   paths. The kaem-built steps, which make no packages, stay part of
+   the parent.
+
+Rationale: a contract per filesystem layout multiplies labels for one
+idea; root in the guest's namespaces costs the host nothing, and an
+overlay root lets every build see its dependencies where they expect
+to be without copying them. Staging the artifact apart from the
+environment keeps an artifact to what was built, never what was
+provisioned. Child objects let one build yield many pieces of
+software, each with an identity and metadata of its own, so that
+consumers take what they need rather than the whole build.
+
+Affected specs:
+
+- `schemas/environment/linux-v1.md` — the amended contract;
+  `linux-root-v1.md` retired.
+- `schemas/canonical/object-manifest-v1.md` — `[build.targets.artifact]`
+  and `[[build.targets.children]]`.
+- New `schemas/canonical/child-genesis-v1.md`.
+- `BUILD.md`, `EXECUTOR.md`, `ENVIRONMENTS.md` — package roots,
+  install roots, overlay provisioning.
+- `OBJECT.md` — child objects.
+- `DECISIONS.md` §35, §38 sub-decisions 5–6, §39 sub-decision 4.
