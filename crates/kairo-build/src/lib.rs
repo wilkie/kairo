@@ -198,9 +198,9 @@ impl ArtifactEntry {
 /// or `None` if it is. An absolute target names a path in the guest's
 /// filesystem and is kept as written; Kairo never follows a link, so it
 /// only needs to be more than `/`. A relative target names a path in the
-/// artifact: without empty segments, and never climbing above the
-/// artifact's root when resolved lexically from the directory holding
-/// `path`.
+/// artifact, never climbing above the artifact's root when resolved
+/// lexically from the directory holding `path`; empty segments (from a
+/// trailing `/` or `//`) mean nothing, as in POSIX path resolution.
 pub fn link_target_problem(path: &str, target: &str) -> Option<&'static str> {
     if target.is_empty() {
         return Some("is empty");
@@ -217,8 +217,7 @@ pub fn link_target_problem(path: &str, target: &str) -> Option<&'static str> {
     let mut depth = path.split('/').count().saturating_sub(1);
     for part in target.split('/') {
         match part {
-            "" => return Some("has an empty segment"),
-            "." => {}
+            "" | "." => {}
             ".." => match depth.checked_sub(1) {
                 Some(up) => depth = up,
                 None => return Some("climbs above the artifact"),

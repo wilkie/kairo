@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# live-bootstrap's steps/manifest at b1ceced7, truncated after the
-# first gcc-4.0.4, for Kairo's bootstrap (specs/DECISIONS.md §38). The
-# lines kept are upstream's, verbatim; see its manifest for the syntax
-# and the full list.
+# live-bootstrap's steps/manifest at b1ceced7, truncated before
+# `jump: break`, the end of upstream's own CI pass 1, for Kairo's
+# bootstrap (specs/DECISIONS.md §38). The lines kept are upstream's,
+# verbatim; see its manifest for the syntax and the full list.
 
 build: checksum-transcriber-1.0
 build: simple-patch-1.0
@@ -87,3 +87,20 @@ build: musl-1.1.24
 build: tcc-0.9.27
 improve: populate_device_nodes
 build: gcc-4.0.4
+build: findutils-4.2.33
+build: musl-1.2.5
+build: linux-headers-4.14.341-openela
+build: gcc-4.0.4
+build: util-linux-2.19.1
+build: e2fsprogs-1.45.7
+build: dhcpcd-10.0.1
+build: kbd-1.15
+build: make-3.82
+build: ed-1.4
+build: bc-1.08.1
+define: BUILD_LINUX = ( CHROOT == False || BUILD_KERNELS == True )
+build: kexec-linux-1.0.0 ( BUILD_LINUX == True )
+build: kexec-tools-2.0.22 ( BUILD_LINUX == True )
+improve: clean_sources
+improve: clean_artifacts
+build: linux-4.14.341-openela ( BUILD_LINUX == True )

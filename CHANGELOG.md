@@ -25,6 +25,13 @@ rather than per-commit.
   The stage0-posix import names GitHub's mirror of mescc-tools, for
   when Savannah is unreachable.
 
+- **live-bootstrap through its CI pass 1 (`DECISIONS.md` §38
+  sub-decision 15).** The x86 wrapper continues through musl 1.2.5,
+  the Linux headers, gcc 4.0.4's second build, util-linux, e2fsprogs,
+  and the base tools upstream's first CI pass ends with; all 60
+  packages match `SHA256SUMS.pkgs`. Relative link targets may now have
+  empty segments (a trailing `/`), which are ignored.
+
 - **live-bootstrap through its first gcc (`DECISIONS.md` §38
   sub-decision 14).** The x86 wrapper continues through the autotools
   chain, binutils 2.30, and gcc 4.0.4; all 49 packages match

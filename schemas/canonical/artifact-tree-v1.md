@@ -69,10 +69,10 @@ Shape rules, checked when a build collects its outputs and whenever a
 tree is loaded:
 
 - paths are safe relative paths, strictly ascending;
-- a link's target is non-empty and without NUL. A relative target has
-  no empty segments and, resolved lexically from the directory holding
-  the link, never climbs above the artifact's root (`..` within it is
-  fine). An absolute target (more than `/`) names a path in the guest's
+- a link's target is non-empty and without NUL. A relative target,
+  resolved lexically from the directory holding the link, never climbs
+  above the artifact's root (`..` within it is fine; empty segments,
+  from a trailing `/` or `//`, are ignored). An absolute target (more than `/`) names a path in the guest's
   filesystem and is kept as written. Either may dangle;
 - no entry's path lies under a link's path, so materializing a tree
   never writes through one.

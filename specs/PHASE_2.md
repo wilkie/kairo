@@ -452,7 +452,8 @@ M2-Planet and mescc-tools under the engine, matching upstream's answers
 (`DECISIONS.md` §36, `bootstrap/stage0-posix/`). The second milestone
 (`DECISIONS.md` §38) runs live-bootstrap unmodified for x86 from the
 stage0-posix x86 artifact through Mes, tcc, bash, a tcc and musl
-toolchain, perl, the autotools, and binutils to gcc 4.0.4, under a
+toolchain, perl, the autotools, binutils, and gcc 4.0.4 to the end of
+upstream's own CI pass 1, under a
 `linux-root` contract whose guest root is the build tree, with
 distfiles archived as file sources (`bootstrap/live-bootstrap/`). After
 it come gcc and the microVM engine.

@@ -1,4 +1,4 @@
-//! live-bootstrap through its first gcc for x86, end to end
+//! live-bootstrap through upstream's CI pass 1 for x86, end to end
 //! (`specs/DECISIONS.md` §38): the stage0-posix wrapper is imported and
 //! its x86 target built; `bootstrap/live-bootstrap/import.sh` archives
 //! live-bootstrap and its distfiles and creates the wrapper; `kairo
@@ -77,6 +77,45 @@ fn field<'a>(text: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {name} in:\n{text}"))
 }
 
+/// `kairo build <wrapper> --target x86`; on failure, panics with the
+/// end of the guest's stderr, read from the store, since the summary
+/// alone doesn't say which step failed.
+fn build(store: &Path, wrapper: &str, actor: &str) -> String {
+    let output = Command::new(KAIRO)
+        .arg("--store")
+        .arg(store)
+        .args(["build", wrapper, "--target", "x86", "--actor", actor])
+        .output()
+        .expect("run kairo");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() {
+        return stdout;
+    }
+    let guest = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("stderr = "))
+        .and_then(|blob| kairo_core::BlobId::new(blob).ok())
+        .and_then(|blob| {
+            let store = kairo_store::FilesystemStore::open(store).ok()?;
+            kairo_store::BlobStore::get_blob(&store, &blob).ok()
+        })
+        .map(|bytes| {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let lines: Vec<&str> = text.lines().collect();
+            lines[lines.len().saturating_sub(80)..].join("\n")
+        })
+        .unwrap_or_default();
+    let summary: String = stdout
+        .lines()
+        .filter(|line| !line.starts_with("  usr/") && !line.starts_with("  repo/"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    panic!(
+        "kairo build {wrapper} failed:\n{summary}\n{}\n--- guest stderr, last lines ---\n{guest}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Run a wrapper's `import.sh`; its stdout.
 fn import(store: &Path, actor: &str, wrapper: &str) -> String {
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -109,7 +148,7 @@ fn sha256(bytes: &[u8]) -> String {
 
 #[test]
 #[ignore = "needs the network, bubblewrap on a kernel that runs i386, and several minutes"]
-fn live_bootstrap_builds_gcc_from_the_stage0_artifact_under_the_engine() {
+fn live_bootstrap_builds_its_ci_pass_1_from_the_stage0_artifact_under_the_engine() {
     let store_dir = tempfile::TempDir::new().expect("tempdir");
     let store = store_dir.path();
     let actor = field(
@@ -130,10 +169,14 @@ fn live_bootstrap_builds_gcc_from_the_stage0_artifact_under_the_engine() {
     // stage0-posix's x86 tools, this build's input.
     let stage0 = import(store, &actor, "stage0-posix");
     let config = &stage0[stage0.find("[[runtime.seeds]]").expect("config lines")..];
-    // The full chain runs longer than the default hour.
+    // The full chain runs longer than the default hour, and the Linux
+    // tarball can take longer than the default half hour to download.
     std::fs::write(
         store.join("config.toml"),
-        format!("[runtime]\ntimeout_secs = 14400\n\n{config}"),
+        format!(
+            "[runtime]\ntimeout_secs = 14400\n\n\
+             [federation.limits]\nfile_timeout_secs = 7200\n\n{config}"
+        ),
     )
     .expect("config");
     let stage0_wrapper = format!("object:{}", field(&stage0, "wrapper"));
@@ -152,10 +195,7 @@ fn live_bootstrap_builds_gcc_from_the_stage0_artifact_under_the_engine() {
 
     let imported = import(store, &actor, "live-bootstrap");
     let wrapper = format!("object:{}", field(&imported, "wrapper"));
-    let built = kairo(
-        store,
-        &["build", &wrapper, "--target", "x86", "--actor", &actor],
-    );
+    let built = build(store, &wrapper, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     assert_eq!(field(&built, "environment"), "environment:linux-root/x86");
     assert_eq!(field(&built, "host_dependent"), "no");
@@ -219,7 +259,7 @@ fn live_bootstrap_builds_gcc_from_the_stage0_artifact_under_the_engine() {
             Some((path, parts.next()?))
         })
         .collect();
-    assert_eq!(packages.len(), 49, "{built}");
+    assert_eq!(packages.len(), 60, "{built}");
     for (package, blob) in packages {
         let digest = sums
             .lines()

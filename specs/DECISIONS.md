@@ -3933,6 +3933,23 @@ Sub-decisions:
     an import. All 49 packages match `SHA256SUMS.pkgs`, gcc's
     included.
 
+15. **Then through upstream's CI pass 1.** *Added when built:* on
+    through findutils, musl 1.2.5, the Linux 4.14 headers, gcc 4.0.4's
+    second build, util-linux, e2fsprogs, dhcpcd, kbd, make, ed, and bc,
+    with live-bootstrap's `clean_sources` and `clean_artifacts`
+    improvements, stopping before `jump: break ( INTERNAL_CI == pass1
+    )`, where upstream's own CI ends its first pass. The kernel steps
+    are skipped by the `bootstrap.cfg` conditions (`CHROOT=True`).
+    Seventeen more distfiles are pinned. One, `gnulib-8e128e.tar.gz`,
+    has no upstream URL: live-bootstrap's `mirror.sh` makes it with
+    `git archive` from gnulib's Git history, and the archive pins the
+    copy archive.org serves, which hashes as published. util-linux
+    installs `libblkid.so -> ../../usr/lib/i686-unknown-linux-musl/`,
+    with a trailing `/`, so §39 sub-decision 2 now ignores empty
+    segments in relative targets. All 60 packages match
+    `SHA256SUMS.pkgs`. The end-to-end test raises `file_timeout_secs`
+    for the 100 MB Linux tarball.
+
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence
 available, agreement with upstream's published hashes. Identifying
@@ -3971,11 +3988,12 @@ Sub-decisions:
    existing artifact id changes.
 
 2. **Relative targets stay inside the artifact; absolute targets are
-   the guest's.** A relative target (no NUL, no empty segment) names a
-   path in the artifact: resolved lexically from the link's own
-   directory, it never climbs above the artifact's root (`..` within
-   it is fine), and one that escapes fails the build with the link
-   named. An absolute target names a path in the filesystem of
+   the guest's.** A relative target (no NUL) names a path in the
+   artifact: resolved lexically from the link's own directory, it
+   never climbs above the artifact's root (`..` within it is fine;
+   empty segments, from a trailing `/` or `//`, mean nothing, as in
+   POSIX path resolution), and one that escapes fails the build with
+   the link named. An absolute target names a path in the filesystem of
    whatever guest uses the artifact and is kept exactly as written:
    under `linux-root` it resolves in the build tree, under `linux` it
    may dangle. It is never rewritten. Any target may dangle; the file

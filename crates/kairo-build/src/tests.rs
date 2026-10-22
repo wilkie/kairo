@@ -484,6 +484,9 @@ fn artifact_trees_refuse_links_that_escape_or_hold_entries() {
     let link = |path: &str, target: &str| format!(r#"{{"path":"{path}","link":"{target}"}}"#);
     assert!(tree(&format!("{},{}", link("a/b", "../c"), file("c"))).is_ok());
     assert!(tree(&link("a", "/etc/passwd")).is_ok());
+    // A trailing slash or a doubled one, as util-linux installs.
+    assert!(tree(&link("usr/lib/x/libblkid.so", "../../usr/lib/x/")).is_ok());
+    assert!(tree(&link("a/b", "c//d")).is_ok());
     for (entries, expected) in [
         (
             format!("{},{}", link("a", "x"), file("a/passwd")),

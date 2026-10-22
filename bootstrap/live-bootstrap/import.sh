@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive live-bootstrap and its distfiles, and make the native object
-# that runs it through its first gcc for x86 (specs/DECISIONS.md §38).
+# that runs it through upstream's CI pass 1 for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
 #   import.sh <actor id> [kairo args...]
@@ -130,6 +130,40 @@ DISTFILES=(
      https://mirrors.kernel.org/gnu/help2man/help2man-1.36.4.tar.gz"
     "d81839fa4d566dbef7c286fdca9b430d3530983fff6d389fac0f08baf27e4c3a libtool-2.2.4.tar.lzma
      https://mirrors.kernel.org/gnu/libtool/libtool-2.2.4.tar.lzma"
+    "813cd9405aceec5cfecbe96400d01e90ddad7b512d3034487176ce5258ab0f78 findutils-4.2.33.tar.gz
+     https://mirrors.kernel.org/gnu/findutils/findutils-4.2.33.tar.gz"
+    "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4 musl-1.2.5.tar.gz
+     https://musl.libc.org/releases/musl-1.2.5.tar.gz"
+    "0820fdb7971c6974338081c11fbf2dc869870501e7bdcac4d0ed58ba1f57b61c linux-4.14.336.tar.xz
+     https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.14.336.tar.xz"
+    "d12e0f1be0257eadca6a2653acfb4792571c9f7189ed642873363f9b6797bb51 util-linux-2.19.1.tar.xz
+     https://mirrors.kernel.org/pub/linux/utils/util-linux/v2.19/util-linux-2.19.1.tar.xz"
+    "62d49c86d9d4becf305093edd65464484dc9ea41c6ff9ae4f536e4a341b171a2 e2fsprogs-1.45.7.tar.xz
+     https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.45.7/e2fsprogs-1.45.7.tar.xz"
+    "64f117a4749dd4a1b6c54277f63f6cf1e0eb45d290cbedaf777fbe71b8880885 CaseFolding.txt
+     https://www.unicode.org/Public/11.0.0/ucd/CaseFolding.txt"
+    "eb115a5de9a32c9ad447d6ea1cddcadb53d47f6cbc2521f3fe0bebb040c39866 DerivedAge.txt
+     https://www.unicode.org/Public/11.0.0/ucd/DerivedAge.txt"
+    "11c8bd81ecbede4d67c7b5b693a471647d5401956707c639ae053b836cc7f5da DerivedCombiningClass.txt
+     https://www.unicode.org/Public/11.0.0/ucd/extracted/DerivedCombiningClass.txt"
+    "3406825d64564bf2a37031c36a3e0f99d708aa17595b81f8b539d0f3d1a3923f DerivedCoreProperties.txt
+     https://www.unicode.org/Public/11.0.0/ucd/DerivedCoreProperties.txt"
+    "c9ffe32e616fa085246644c2351c525788fac363872491185dab7d5ce69fefa9 NormalizationCorrections.txt
+     https://www.unicode.org/Public/11.0.0/ucd/NormalizationCorrections.txt"
+    "0fdfc17093dd5482f8089cb11dcd936abdba34c4c9c324e5b8a4e5d8f943f6d3 NormalizationTest.txt
+     https://www.unicode.org/Public/11.0.0/ucd/NormalizationTest.txt"
+    "4997a3196eb79b4d0d6b8384560f6aeb46a062693f0abd5ba736abbff7976099 UnicodeData.txt
+     https://www.unicode.org/Public/11.0.0/ucd/UnicodeData.txt"
+    "2bd3480bc93e6bff530872b8bc80cbcaa821449f7bf6aaf202fa12fb8c2e6f55 v10.0.1.tar.gz
+     https://github.com/NetworkConfiguration/dhcpcd/archive/refs/tags/v10.0.1.tar.gz"
+    "92f59ecaa85fe2746ef1830ac01eef84c394a413f7c7326b8d0a5c819e87502f kbd-1.15.tar.xz
+     https://mirrors.edge.kernel.org/pub/linux/utils/kbd/kbd-1.15.tar.xz"
+    "db36da85ee1a9d8bafb4b041bd4c8c11becba0c43ec446353b67045de1634fda ed-1.4.tar.gz
+     https://mirrors.kernel.org/gnu/ed/ed-1.4.tar.gz"
+    "515430115b3334c636317503460a0950dff79940aa3259ce2c1aa67c2881d023 bc-1.08.1.tar.xz
+     https://mirrors.kernel.org/gnu/bc/bc-1.08.1.tar.xz"
+    "0cfbf866bc39c31f25fa0e56af1e56c5e5c92fc1e5d51242ebafef7ea211f3d5 gnulib-8e128e.tar.gz
+     https://archive.org/download/live-bootstrap-sources/gnulib-8e128e.tar.gz"
 )
 
 if [ $# -lt 1 ]; then
@@ -190,7 +224,7 @@ cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through gcc 4.0.4"
+git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through CI pass 1"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)
