@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Mirrors for source fetches (`DECISIONS.md` §40).** `kairo source
+  fetch --mirror <source url>=<mirror url>` fetches a source, or any of
+  its submodules, through the mirror when its own URL fails, filing it
+  under its own source id; the observation records `via` the mirror.
+  The stage0-posix import names GitHub's mirror of mescc-tools, for
+  when Savannah is unreachable.
+
 - **live-bootstrap through its first gcc (`DECISIONS.md` §38
   sub-decision 14).** The x86 wrapper continues through the autotools
   chain, binutils 2.30, and gcc 4.0.4; all 49 packages match

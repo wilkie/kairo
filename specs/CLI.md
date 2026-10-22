@@ -1623,6 +1623,7 @@ SHA-256 of their bytes.
 kairo source id <url|sha256>
 kairo source fetch <url> --actor <id> [--object-format <sha1|sha256>]
                    [--no-recurse-submodules] [--max-depth <n>] [--require-complete]
+                   [--mirror <source url>=<mirror url>]...
 kairo source fetch-file <url> --actor <id> [--sha256 <hex>]
 kairo source show <url|sha256|object:id> [--json]
 kairo source pull <url|sha256> [--from <peer>] [--allow-peer] [--json]
@@ -1670,6 +1671,14 @@ complete = yes | no
 
 `--require-complete` makes `complete = no` an error (exit 1), after
 archiving everything it could.
+
+`--mirror <source url>=<mirror url>` (repeatable) names a mirror for a
+source, the top one or any submodule: when fetching that source from
+its own URL fails, it is fetched through the mirror instead, filed
+under its own source id, and its observation records `via` the mirror
+(`DECISIONS.md` §40). The output shows `via = <mirror>` for the top
+source and `, via <mirror>` in a submodule's `observed:` line, and
+`kairo source show` shows the newest observation's `via`.
 
 `fetch-file` downloads one file and archives it as a file source:
 `https` only (`http` for a loopback host), at most one redirect, to a

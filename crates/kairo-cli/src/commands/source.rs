@@ -43,6 +43,7 @@ pub(crate) fn run_source_command(
             no_recurse_submodules,
             max_depth,
             require_complete,
+            mirrors,
         } => run_fetch(
             paths,
             &url,
@@ -51,6 +52,7 @@ pub(crate) fn run_source_command(
             !no_recurse_submodules,
             max_depth,
             require_complete,
+            &mirrors,
         ),
         SourceCommand::FetchFile { url, sha256, actor } => {
             run_fetch_file(paths, &url, sha256.as_deref(), &actor)
@@ -98,6 +100,16 @@ struct Fetcher<'a> {
     actor: kairo_core::ActorId,
     secret: kairo_identity::SecretSigningKey,
     limits: FetchLimits,
+    /// Mirrors to fetch a source through when its own URL fails
+    /// (`DECISIONS.md` §40).
+    mirrors: std::collections::BTreeMap<SourceUrl, SourceUrl>,
+}
+
+/// What one fetch from one URL brought.
+struct Fetched {
+    refs: Vec<(String, kairo_git::GitRevision)>,
+    pinned: Vec<kairo_git::GitRevision>,
+    missing: Vec<(kairo_git::GitRevision, String)>,
 }
 
 /// One source observed in this run.
@@ -127,12 +139,66 @@ impl Fetcher<'_> {
             .put_source(&SourceGenesis::new(url.clone()))
             .map_err(|source| CliError::Sources { source })?;
 
+        // From the source's own URL, or failing that through its mirror,
+        // which the observation then names.
+        let (fetched, via) = match self.fetch_from(&source, url.as_str(), flag, required) {
+            Ok(fetched) => (fetched, None),
+            Err(error) => match self.mirrors.get(url) {
+                None => return Err(error),
+                Some(mirror) => {
+                    eprintln!("{url}: {error}; fetching through the mirror {mirror}");
+                    let fetched = self.fetch_from(&source, mirror.as_str(), flag, required)?;
+                    (fetched, Some(mirror.clone()))
+                }
+            },
+        };
+        let Fetched {
+            refs,
+            pinned,
+            missing,
+        } = fetched;
+
+        let observed = refs
+            .iter()
+            .map(|(name, target)| ObservedRef::new(name.clone(), target.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| CliError::ObservationShape(error.to_string()))?;
+        let previous = latest_refs(self.store, &source)?;
+        let mut body = SourceObservationBody::new(url.clone(), observed)
+            .and_then(|body| body.with_pinned(pinned))
+            .map_err(|error| CliError::ObservationShape(error.to_string()))?;
+        if let Some(via) = via {
+            body = body.with_via(via);
+        }
+        let statement = sign(self.store, &self.actor, &self.secret, &source, body.clone())?;
+        let observation = self
+            .store
+            .put_source_observation(&statement)
+            .map_err(|source| CliError::Sources { source })?;
+        Ok(Observed {
+            url: url.clone(),
+            source,
+            observation,
+            body,
+            previous,
+            missing,
+        })
+    }
+
+    /// Fetch `source`'s refs from `fetch_url`, then any of `required`
+    /// its refs don't reach, by id, into its cache repo.
+    fn fetch_from(
+        &self,
+        source: &ObjectId,
+        fetch_url: &str,
+        flag: Option<GitObjectFormat>,
+        required: &[kairo_git::GitRevision],
+    ) -> Result<Fetched, CliError> {
         // The format: the flag, the source's cache repo, the remote,
         // and the commits a parent pins must agree where present (§19
         // sub-decision 7).
         let repo = self.cache.repo_format(source.as_str()).map_err(git_error)?;
-        let remote = GitCache::source_format(url.as_str()).map_err(git_error)?;
-        let fetch_url = url.as_str();
+        let remote = GitCache::source_format(fetch_url).map_err(git_error)?;
         let pinned_format = required.first().map(kairo_git::GitRevision::format);
         let mut chosen: Option<(&str, GitObjectFormat)> = None;
         for (what, format) in [
@@ -203,26 +269,9 @@ impl Fetcher<'_> {
             }
         }
 
-        let observed = refs
-            .iter()
-            .map(|(name, target)| ObservedRef::new(name.clone(), target.clone()))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| CliError::ObservationShape(error.to_string()))?;
-        let previous = latest_refs(self.store, &source)?;
-        let body = SourceObservationBody::new(url.clone(), observed)
-            .and_then(|body| body.with_pinned(pinned))
-            .map_err(|error| CliError::ObservationShape(error.to_string()))?;
-        let statement = sign(self.store, &self.actor, &self.secret, &source, body.clone())?;
-        let observation = self
-            .store
-            .put_source_observation(&statement)
-            .map_err(|source| CliError::Sources { source })?;
-        Ok(Observed {
-            url: url.clone(),
-            source,
-            observation,
-            body,
-            previous,
+        Ok(Fetched {
+            refs,
+            pinned,
             missing,
         })
     }
@@ -280,8 +329,22 @@ fn run_fetch(
     recurse: bool,
     max_depth: u32,
     require_complete: bool,
+    mirrors: &[String],
 ) -> Result<String, CliError> {
     let url = SourceUrl::parse(url).map_err(CliError::ParseSourceUrl)?;
+    let mirrors = mirrors
+        .iter()
+        .map(|pair| {
+            let (source, mirror) = pair.split_once('=').ok_or_else(|| {
+                CliError::ParseFileSource(format!(
+                    "--mirror {pair:?} is not <source url>=<mirror url>"
+                ))
+            })?;
+            let source = SourceUrl::parse(source).map_err(CliError::ParseSourceUrl)?;
+            let mirror = SourceUrl::parse(mirror).map_err(CliError::ParseSourceUrl)?;
+            Ok((source, mirror))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, CliError>>()?;
     let actor_id =
         kairo_core::ActorId::new(actor.to_owned()).map_err(|source| CliError::ParseActorId {
             actor: actor.to_owned(),
@@ -310,6 +373,7 @@ fn run_fetch(
             max_bytes: limits.max_git_bytes,
             timeout: limits.git_timeout,
         },
+        mirrors,
     };
 
     let top = fetcher.observe(&url, flag, &[])?;
@@ -325,6 +389,9 @@ fn run_fetch(
             .map_or("none (no refs)".to_owned(), |format| format.to_string())
     );
     let _ = writeln!(out, "refs = {}", top.body.refs().len());
+    if let Some(via) = top.body.via() {
+        let _ = writeln!(out, "via = {via}");
+    }
     push_changes(&mut out, &top);
     if !recurse {
         return Ok(out);
@@ -410,11 +477,16 @@ fn run_fetch(
                 }
             };
             observed_lines.push(format!(
-                "  {} = {} (refs {}, pinned {})",
+                "  {} = {} (refs {}, pinned {}{})",
                 observed.url,
                 observed.observation,
                 observed.body.refs().len(),
-                observed.body.pinned().len()
+                observed.body.pinned().len(),
+                observed
+                    .body
+                    .via()
+                    .map(|via| format!(", via {via}"))
+                    .unwrap_or_default()
             ));
             for (commit, reason) in &observed.missing {
                 incomplete += 1;
@@ -703,6 +775,7 @@ fn run_show(paths: &StorePaths, source: &str, json: bool) -> Result<String, CliE
                 "observer": head.actor.to_string(),
                 "observed_at": head.created_at.to_string(),
             })).collect::<Vec<_>>(),
+            "via": newest.as_ref().and_then(|statement| statement.unsigned().body().via().map(ToString::to_string)),
             "refs": newest.as_ref().map(|statement| statement.unsigned().body().refs().iter().map(|observed| {
                 serde_json::json!({ "name": observed.name(), "target": observed.target().to_string() })
             }).collect::<Vec<_>>()),
@@ -724,6 +797,9 @@ fn run_show(paths: &StorePaths, source: &str, json: bool) -> Result<String, CliE
         );
     }
     if let Some(statement) = newest {
+        if let Some(via) = statement.unsigned().body().via() {
+            let _ = writeln!(out, "via = {via} (newest observation)");
+        }
         let refs = statement.unsigned().body().refs();
         let _ = writeln!(out, "refs = {} (newest observation)", refs.len());
         for observed in refs {

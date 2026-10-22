@@ -9,7 +9,9 @@
 #    archives stage0-posix as a source object, and with it, recursively,
 #    every submodule its commits pin (the seeds, M2-Planet, M2libc,
 #    mescc-tools, ...), each as its own source, under its real upstream
-#    URL. This needs the network.
+#    URL. This needs the network. If Savannah can't be reached,
+#    mescc-tools is fetched through its GitHub mirror instead, and its
+#    observation says so.
 # 2. The native wrapper -- this directory's kairo.toml and
 #    kairo-<arch>.kaem, which pin every source the AMD64 and x86 chains
 #    use at its Release_1.9.1 commit -- is committed as SHA-256 history
@@ -25,6 +27,11 @@ shopt -s inherit_errexit
 
 STAGE0_URL=https://github.com/oriansj/stage0-posix
 SEEDS_URL=https://github.com/oriansj/bootstrap-seeds
+# Savannah is sometimes unreachable; the maintainer's GitHub mirror
+# holds the same history (specs/DECISIONS.md §40).
+MIRRORS=(
+    --mirror https://git.savannah.nongnu.org/git/mescc-tools=https://github.com/oriansj/mescc-tools
+)
 SEEDS_REVISION=git:sha1:cedec6b8066d1db229b6c77d42d120a23c6980ed
 
 if [ $# -lt 1 ]; then
@@ -45,7 +52,7 @@ fail() {
 }
 
 # 1. The sources, recursively. Incomplete submodule archiving fails here.
-kairo source fetch "$STAGE0_URL" --actor "$ACTOR" --require-complete >&2
+kairo source fetch "$STAGE0_URL" --actor "$ACTOR" --require-complete "${MIRRORS[@]}" >&2
 
 # 2. The native wrapper: SHA-256 history, born in the archive. Fixed
 # author and dates, so importing again gives the same revision.

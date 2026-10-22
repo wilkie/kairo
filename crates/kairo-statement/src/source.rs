@@ -270,6 +270,7 @@ pub struct SourceObservationBody {
     url: SourceUrl,
     refs: Vec<ObservedRef>,
     pinned: Vec<GitRevision>,
+    via: Option<SourceUrl>,
 }
 
 impl SourceObservationBody {
@@ -294,7 +295,20 @@ impl SourceObservationBody {
             url,
             refs,
             pinned: Vec::new(),
+            via: None,
         })
+    }
+
+    /// Record that the fetch went through a mirror rather than `url`
+    /// itself (`DECISIONS.md` §40): the refs are what `via` advertised.
+    pub fn with_via(mut self, via: SourceUrl) -> Self {
+        self.via = Some(via);
+        self
+    }
+
+    /// The mirror the fetch went through, if not `url` itself.
+    pub fn via(&self) -> Option<&SourceUrl> {
+        self.via.as_ref()
     }
 
     /// Add the commits fetched by id because another source's commit
@@ -374,6 +388,11 @@ impl CanonicalEncode for SourceObservationBody {
             encode_list(out, &self.pinned, |out, commit| {
                 encode_str(out, &commit.to_string());
             });
+        }
+        // Likewise for a fetch through a mirror.
+        if let Some(via) = &self.via {
+            encode_str(out, "via");
+            encode_str(out, via.as_str());
         }
     }
 }
@@ -566,6 +585,19 @@ mod tests {
             .and_then(|body| body.with_pinned(vec![sha256]))
             .expect("only pinned");
         assert_eq!(only_pinned.format(), Some(GitObjectFormat::Sha256));
+    }
+
+    #[test]
+    fn a_fetch_through_a_mirror_says_so() {
+        let url = SourceUrl::parse("https://git.savannah.nongnu.org/git/mescc-tools").expect("url");
+        let mirror = SourceUrl::parse("https://github.com/oriansj/mescc-tools").expect("url");
+        let plain = SourceObservationBody::new(url.clone(), Vec::new()).expect("body");
+        let through = plain.clone().with_via(mirror.clone());
+        // Still the canonical source, with the mirror named.
+        assert_eq!(through.source(), plain.source());
+        assert_eq!(through.via(), Some(&mirror));
+        assert_ne!(through.canonical_bytes(), plain.canonical_bytes());
+        assert!(plain.via().is_none());
     }
 
     #[test]

@@ -77,6 +77,7 @@ body. **Actor chain** (`specs/DECISIONS.md` §23): the signer's
 | `url` | `string`: the canonical URL fetched |
 | `refs` | `list<ref>`, strictly ascending by name |
 | `pinned` | present only when non-empty: `string("pinned") \|\| list<string>`, typed revisions ascending by id |
+| `via` | present only for a fetch through a mirror: `string("via") \|\| string(canonical mirror url)` |
 
 `pinned` lists commits fetched by id because another source's commit
 pins them as a submodule while this source's refs no longer reach them
@@ -85,6 +86,11 @@ like any ref's target, in the refs' format.
 
 `ref` is `string(name) || string(target)`: `name` is `refs/heads/<x>` or
 `refs/tags/<x>`; `target` is `git:sha1:<oid>` or `git:sha256:<oid>`.
+
+`via` names a mirror the observer fetched through because `url` itself
+failed (`DECISIONS.md` §40). The source is still `url`'s, and the refs
+are what the mirror advertised; pinned commits are the same commits
+wherever they came from, since their ids are their content's hash.
 
 Shape rules: `source` must be the URL's id; names unique and ascending;
 every target in one object format, since a repository has one. Other
@@ -98,7 +104,8 @@ canonical_body =
   string(source) ||
   string(url) ||
   list(refs, string(name) || string(target)) ||
-  (if pinned non-empty: string("pinned") || list(pinned, string))
+  (if pinned non-empty: string("pinned") || list(pinned, string)) ||
+  (if via: string("via") || string(via))
 ```
 
 ## Test Vectors

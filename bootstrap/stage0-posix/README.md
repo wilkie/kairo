@@ -29,7 +29,9 @@ bootstrap/stage0-posix/import.sh <your actor id>
 
 runs `kairo source fetch https://github.com/oriansj/stage0-posix
 --require-complete`, which archives stage0-posix and, recursively, every
-submodule commit it pins (this needs the network), then commits the
+submodule commit it pins (this needs the network; if Savannah is
+unreachable, mescc-tools comes from its GitHub mirror, and its
+observation names the mirror), then commits the
 wrapper with fixed author and dates (so a re-import gives the same
 revision) and prints its id and the config lines to add:
 

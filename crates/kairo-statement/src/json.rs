@@ -770,6 +770,9 @@ pub struct SourceObservationBodyJson {
     /// Commits fetched by id because a parent source pins them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned: Vec<String>,
+    /// The mirror the fetch went through, when not `url` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -817,9 +820,19 @@ impl SourceObservationBodyJson {
                     })?,
             );
         }
-        let body = SourceObservationBody::new(url, refs)
+        let mut body = SourceObservationBody::new(url, refs)
             .and_then(|body| body.with_pinned(pinned))
             .map_err(StatementJsonError::InvalidObservationShape)?;
+        if let Some(via) = &self.via {
+            let parsed = SourceUrl::parse(via).map_err(StatementJsonError::InvalidSourceUrl)?;
+            if parsed.as_str() != via {
+                return Err(StatementJsonError::InvalidSourceUrl(SourceUrlError {
+                    input: via.clone(),
+                    reason: "is not in canonical form",
+                }));
+            }
+            body = body.with_via(parsed);
+        }
         let listed_pinned: Vec<String> = self.pinned.clone();
         let sorted_pinned: Vec<String> = body.pinned().iter().map(ToString::to_string).collect();
         if listed_pinned != sorted_pinned {
@@ -859,6 +872,7 @@ impl SourceObservationBodyJson {
                 })
                 .collect(),
             pinned: body.pinned().iter().map(ToString::to_string).collect(),
+            via: body.via().map(ToString::to_string),
         }
     }
 }

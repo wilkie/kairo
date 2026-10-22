@@ -4034,3 +4034,51 @@ Affected specs:
 - `schemas/environment/linux-root-v1.md` — identity and capabilities.
 - `BUILD.md`, `EXECUTOR.md` — outputs may contain links.
 - `DECISIONS.md` §33 sub-decision 6 (artifacts), §38 sub-decision 5.
+
+---
+
+## 40. Mirrors for Source Fetches
+
+Decision: `kairo source fetch` can fall back to a **mirror** of a
+source, a different URL believed to serve the same repository, when
+the source's own URL can't be fetched; what it fetches is still filed
+under the source's own id, and its observation says where it came
+from.
+
+Sub-decisions:
+
+1. **Fallback only.** A mirror is tried only after fetching from the
+   source's own URL fails, for the top source or any submodule; a
+   fetch that works isn't redirected. The whole fetch of that source
+   (its refs and its pinned commits) then goes through the mirror.
+
+2. **Identity is unchanged.** The source is the one its canonical URL
+   names (§37 sub-decision 1); a mirror never becomes a source of its
+   own by being fetched through. Git objects are named by the hash of
+   their content, so a pinned commit fetched from a mirror is exactly
+   the commit the parent's gitlink names, or the fetch of it fails.
+
+3. **The observation names the mirror.** `SourceObservation` gains an
+   optional `via` (`schemas/canonical/source-observation-v1.md`),
+   present only for a fetch through a mirror, so its claim is
+   "fetching this source through that mirror, I saw these refs". A
+   mirror may lag its upstream, so its refs are evidence about the
+   mirror; nobody is told they are upstream's. Observations without
+   `via` encode as before.
+
+4. **Mirrors are named explicitly.** `--mirror <source url>=<mirror
+   url>`, repeatable, both canonicalized as source URLs; nothing is
+   guessed. The stage0-posix import names the maintainer's GitHub
+   mirror of mescc-tools, whose Savannah home was unreachable during
+   the work on §38.
+
+Rationale: a source archive shouldn't depend on one host being up,
+and content addressing makes a mirror's commits as good as the
+original's. What a mirror can't vouch for is the original's refs, so
+the observation says which host it read them from rather than letting
+a mirror stand in for upstream silently.
+
+Affected specs:
+
+- `schemas/canonical/source-observation-v1.md` — `via`.
+- `CLI.md` §25.1 — `--mirror`.

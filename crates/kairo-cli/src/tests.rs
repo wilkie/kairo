@@ -9429,6 +9429,7 @@ fn source_fetch_observes_every_ref_and_keeps_what_upstream_drops(
                     no_recurse_submodules: false,
                     max_depth: 8,
                     require_complete: false,
+                    mirrors: Vec::new(),
                 },
             },
         )
@@ -9608,6 +9609,7 @@ fn source_fetch_archives_pinned_submodules_recursively() -> Result<(), Box<dyn s
                     no_recurse_submodules: false,
                     max_depth: 8,
                     require_complete,
+                    mirrors: Vec::new(),
                 },
             },
         )
@@ -9692,6 +9694,7 @@ fn source_fetch_archives_pinned_submodules_recursively() -> Result<(), Box<dyn s
                 no_recurse_submodules: true,
                 max_depth: 8,
                 require_complete: true,
+                mirrors: Vec::new(),
             },
         },
     )?;
@@ -9742,6 +9745,7 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
                     no_recurse_submodules: false,
                     max_depth: 8,
                     require_complete: true,
+                    mirrors: Vec::new(),
                 },
             },
         )?;
@@ -9919,6 +9923,7 @@ fn a_published_source_is_pulled_under_the_same_id() -> Result<(), Box<dyn std::e
                 no_recurse_submodules: false,
                 max_depth: 8,
                 require_complete: true,
+                mirrors: Vec::new(),
             },
         },
     )?;
@@ -10040,6 +10045,7 @@ fn pulling_a_native_object_brings_the_sources_it_pins() -> Result<(), Box<dyn st
                 no_recurse_submodules: false,
                 max_depth: 8,
                 require_complete: true,
+                mirrors: Vec::new(),
             },
         },
     )?;
@@ -10497,6 +10503,7 @@ fn a_pushed_wrapper_carries_the_sources_it_pins() -> Result<(), Box<dyn std::err
                     no_recurse_submodules: false,
                     max_depth: 8,
                     require_complete: true,
+                    mirrors: Vec::new(),
                 },
             },
         )?,
@@ -10709,6 +10716,108 @@ fn a_pushed_wrapper_carries_the_sources_it_pins() -> Result<(), Box<dyn std::err
     assert_eq!(
         store.get_file_source_bytes(&kairo_core::ObjectId::new(lone)?)?,
         b"xyz"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_source_whose_url_fails_is_fetched_through_its_mirror() -> Result<(), Box<dyn std::error::Error>>
+{
+    use kairo_test_support::git::{git, GitDaemon};
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let Some(daemon) = GitDaemon::start() else {
+        return Ok(());
+    };
+    let init = |name: &str| -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let path = daemon.base.path().join(name);
+        std::fs::create_dir(&path)?;
+        git(&path, &["init", "-q", "--initial-branch=main"]);
+        Ok(path)
+    };
+    // lib's own home is unreachable; the daemon serves a mirror of it.
+    let lib = init("lib")?;
+    std::fs::write(lib.join("lib.h"), "/* lib */\n")?;
+    git(&lib, &["add", "lib.h"]);
+    git(&lib, &["commit", "-q", "-m", "lib"]);
+    let lib_commit = git(&lib, &["rev-parse", "HEAD"]);
+    let home = "git://127.0.0.1:1/lib";
+    let top = init("top")?;
+    std::fs::write(
+        top.join(".gitmodules"),
+        format!("[submodule \"lib\"]\n\tpath = lib\n\turl = {home}\n"),
+    )?;
+    git(&top, &["add", ".gitmodules"]);
+    git(
+        &top,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{lib_commit},lib"),
+        ],
+    );
+    git(&top, &["commit", "-q", "-m", "top"]);
+
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let fetch = |mirrors: Vec<String>| {
+        run_in_store(
+            store_dir.path(),
+            Command::Source {
+                command: SourceCommand::Fetch {
+                    url: daemon.url("top"),
+                    actor: actor.clone(),
+                    object_format: None,
+                    no_recurse_submodules: false,
+                    max_depth: 8,
+                    require_complete: true,
+                    mirrors,
+                },
+            },
+        )
+    };
+    // Without the mirror, lib can't be archived.
+    assert!(matches!(
+        fetch(Vec::new()),
+        Err(CliError::SourceIncomplete { .. })
+    ));
+    let mirror = daemon.url("lib");
+    let fetched = fetch(vec![format!("{home}={mirror}")])?;
+    assert!(fetched.contains("complete = yes"), "{fetched}");
+    assert!(fetched.contains(&format!(", via {mirror})")), "{fetched}");
+
+    // Filed under lib's own source, with the mirror named.
+    let lib_source =
+        kairo_statement::SourceGenesis::new(kairo_statement::SourceUrl::parse(home)?).object_id();
+    let shown = run_in(
+        store_dir.path(),
+        Command::Source {
+            command: SourceCommand::Show {
+                source: home.to_owned(),
+                json: false,
+            },
+        },
+    )?;
+    assert!(
+        shown.contains(&format!("source = {lib_source}\n")),
+        "{shown}"
+    );
+    assert!(
+        shown.contains(&format!("via = {mirror} (newest observation)\n")),
+        "{shown}"
+    );
+    let cache = kairo_git::GitCache::open(store_dir.path().join("git"))?;
+    assert!(cache.has_commit(
+        lib_source.as_str(),
+        &kairo_git::GitRevision::new(kairo_git::GitObjectFormat::Sha1, &lib_commit)?
+    )?);
+
+    let bad = fetch(vec!["no-equals-sign".to_owned()]);
+    assert!(
+        matches!(&bad, Err(CliError::ParseFileSource(message)) if message.contains("<source url>=<mirror url>")),
+        "{bad:?}"
     );
     Ok(())
 }

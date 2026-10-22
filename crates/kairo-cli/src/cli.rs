@@ -283,6 +283,12 @@ pub(crate) enum SourceCommand {
         /// commit couldn't be archived.
         #[arg(long)]
         require_complete: bool,
+        /// `<source url>=<mirror url>`: when fetching that source (this
+        /// one or a submodule) from its own URL fails, fetch it through
+        /// the mirror instead; its observation names the mirror
+        /// (`specs/DECISIONS.md` §40). Repeatable.
+        #[arg(long = "mirror", value_name = "SOURCE=MIRROR")]
+        mirrors: Vec<String>,
     },
     /// Download one file (a distfile, a release tarball) and archive it
     /// as a file source identified by its SHA-256 (`specs/DECISIONS.md`

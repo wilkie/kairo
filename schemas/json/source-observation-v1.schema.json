@@ -39,7 +39,8 @@
           "type": "array",
           "description": "Commits fetched by id because a parent source pins them; omitted when empty.",
           "items": { "type": "string", "pattern": "^git:(sha1:[0-9a-f]{40}|sha256:[0-9a-f]{64})$" }
-        }
+        },
+        "via": { "type": "string", "pattern": "^(https|git)://", "description": "The mirror the fetch went through, in canonical form, when not url itself; omitted otherwise." }
       },
       "additionalProperties": false
     },
