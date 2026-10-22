@@ -39,6 +39,7 @@ A guest command running under this contract sees exactly:
 | `/tmp` | empty, mounted over the tree's own | read-write |
 | `/proc` | the sandbox's own processes, mounted over the tree's own | — |
 | `/dev` | bubblewrap's minimal set (as in `linux-v1.md`), mounted over the tree's own | — |
+| `/sys` | empty, mounted over the tree's own (`DECISIONS.md` §39 sub-decision 6) | read-only |
 
 Nothing else: no `/kairo` paths and no host paths. **Every dependency
 must be placed**, since there is nowhere else for it to appear; a plan
@@ -56,8 +57,8 @@ And, as `linux` v1 except for identity:
   Kairo. So files can be chown'd to 0, checks for root pass, and tmpfs
   or proc can be mounted inside the guest's own mount namespace; device
   nodes can't be created (`mknod` of a device fails), no id but 0 can
-  own a file, and there is no `/sys`. Software needing those belongs to
-  a contract a VM engine implements.
+  own a file, and `/sys` is empty. Software needing those belongs to a
+  contract a VM engine implements.
 - **Environment**, and nothing else:
   - `HOME=/tmp`, `LANG=C`, `TZ=UTC`;
   - `SOURCE_DATE_EPOCH`: the revision's `created_at`, in epoch seconds;
@@ -68,14 +69,18 @@ And, as `linux` v1 except for identity:
   - `PATH`: the `bin/` directories of the placed artifacts and trees
     that have one, in placement order.
 
-The mount points `/proc`, `/dev`, and `/tmp` are created in the tree if
-it lacks them, and remain there, empty, after the run.
+The mount points `/proc`, `/dev`, `/tmp`, and `/sys` are created in the
+tree if it lacks them, and remain there, empty, after the run.
 
 ## Not promised
 
 - **The clock is not frozen**, as in `linux` v1.
 - Resource limits beyond the wall-clock timeout.
-- Anything about the host beyond the kernel interface.
+- Anything about the host beyond the kernel interface. In particular, a
+  guest that mounts sysfs (or another kernel filesystem) itself, which
+  root in its namespaces can, sees what the host kernel shows; the
+  contract's empty `/sys` only keeps scripts that mount what isn't
+  mounted from doing so.
 
 ## Equivalence
 

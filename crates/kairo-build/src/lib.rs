@@ -80,9 +80,9 @@ fn executor_info(engine: &Engine, rooted: bool) -> ExecutorInfo {
             id: BUBBLEWRAP_EXECUTOR_ID.to_owned(),
             version: BUBBLEWRAP_EXECUTOR_VERSION,
             isolation: if rooted {
-                "linux namespaces (bubblewrap): the build tree as /, with /proc, /dev and /tmp \
-                 over it; no network; hostname kairo; uid and gid 0 with every capability \
-                 inside its own namespaces"
+                "linux namespaces (bubblewrap): the build tree as /, with /proc, /dev, /tmp and \
+                 an empty read-only /sys over it; no network; hostname kairo; uid and gid 0 with \
+                 every capability inside its own namespaces"
             } else {
                 "linux namespaces (bubblewrap): only /kairo, /proc, /dev and /tmp visible; \
                  no network; hostname kairo; uid and gid 1000"
@@ -1161,12 +1161,16 @@ pub fn run_plan(
             }
             if rooted {
                 // The tree first, so the kernel filesystems mount over
-                // it; nothing else from the host.
+                // it; nothing else from the host. `/sys` is empty and
+                // read-only, so scripts that mount what isn't mounted
+                // don't mount the host's sysfs (`DECISIONS.md` §39
+                // sub-decision 6).
                 process
                     .arg("--bind")
                     .arg(&src)
                     .arg("/")
-                    .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]);
+                    .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
+                    .args(["--tmpfs", "/sys", "--remount-ro", "/sys"]);
             } else {
                 process
                     .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])

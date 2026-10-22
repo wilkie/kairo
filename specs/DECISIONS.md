@@ -4040,8 +4040,8 @@ Sub-decisions:
    - device nodes can't be created (the kernel refuses `mknod` of
      devices in a user namespace), and files can't be owned by any id
      but 0;
-   - the minimal `/dev`, `/proc`, and empty `/tmp` are as before; there
-     is still no `/sys`.
+   - the minimal `/dev`, `/proc`, and empty `/tmp` are as before, and
+     `/sys` is empty (sub-decision 6).
 
    Software that needs real device nodes, other ids, `/sys`, or a
    kernel of its own belongs on a future microVM engine under its own
@@ -4053,6 +4053,17 @@ Sub-decisions:
    left this repository: it was defined in §38 and none of its results
    are published. Once a contract's results are shared, this rule
    applies to it in full.
+
+6. **An empty, read-only `/sys` under `linux-root`.** *Added when
+   built:* live-bootstrap's `finalize_fhs` mounts whatever `mount`
+   doesn't list, and the only thing `linux-root` lacked was `/sys`, so
+   a guest that is root in its namespaces mounted the host kernel's
+   sysfs and could read the host's devices and CPUs. The contract now
+   mounts an empty, read-only tmpfs at `/sys`, which `mount` lists, so
+   such scripts leave it alone and see nothing of the host. A guest
+   that mounts sysfs elsewhere on purpose still can; the contract says
+   so under what it doesn't promise. Like sub-decision 4, an amendment
+   to v1 while nothing built under it is published.
 
 Rationale: symlinks are ordinary output, and refusing them blocks most
 real installs; confining their targets lexically and never writing

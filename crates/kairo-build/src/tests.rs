@@ -1028,7 +1028,7 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
             provides = "{contract}"
             [[build.targets]]
             name = "release"
-            command = ["/usr/bin/sh", "-c", "mkdir -p /out; {{ ls /; id -u; echo $HOME $KAIRO_SRC $PATH; pwd; test -e /kairo && echo kairo || echo no-kairo; cat /etc/motd; echo; touch /tmp/f && chown 0:0 /tmp/f && echo chown-ok; mkdir /tmp/m && mount -t tmpfs tmpfs /tmp/m && echo mount-ok; mknod /tmp/null c 1 3 2>/dev/null || echo no-mknod; }} > /out/report"]
+            command = ["/usr/bin/sh", "-c", "mkdir -p /out; {{ ls /; id -u; echo $HOME $KAIRO_SRC $PATH; pwd; test -e /kairo && echo kairo || echo no-kairo; cat /etc/motd; echo; touch /tmp/f && chown 0:0 /tmp/f && echo chown-ok; mkdir /tmp/m && mount -t tmpfs tmpfs /tmp/m && echo mount-ok; mknod /tmp/null c 1 3 2>/dev/null || echo no-mknod; ls -A /sys | wc -l; touch /sys/x 2>/dev/null || echo sys-ro; grep -c ' /sys ' /proc/mounts; }} > /out/report"]
             [[build.targets.dependencies]]
             kind = "provides"
             provides = "tool:sh"
@@ -1072,7 +1072,10 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
     );
     assert_eq!(record.environment, contract);
     assert!(
-        record.executor.isolation.contains("the build tree as /"),
+        record
+            .executor
+            .isolation
+            .contains("an empty read-only /sys"),
         "{}",
         record.executor.isolation
     );
@@ -1081,17 +1084,33 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
     let lines: Vec<&str> = report.lines().collect();
     // `/` is the tree: its own files, the placed provider, the kernel
     // filesystems, and nothing from the host or /kairo.
-    let root: Vec<&str> = lines[..lines.len() - 8].to_vec();
+    let root: Vec<&str> = lines[..lines.len() - 11].to_vec();
     assert_eq!(
         root,
-        ["dev", "etc", "kairo.toml", "out", "proc", "tmp", "usr"],
+        [
+            "dev",
+            "etc",
+            "kairo.toml",
+            "out",
+            "proc",
+            "sys",
+            "tmp",
+            "usr"
+        ],
         "{report}"
     );
-    let rest = &lines[lines.len() - 8..];
+    let rest = &lines[lines.len() - 11..];
     // Root inside its namespaces: chown to 0 and mounts work, device
     // nodes don't (`DECISIONS.md` §39 sub-decision 4).
     assert_eq!(rest[0], "0", "{report}");
-    assert_eq!(&rest[5..], ["chown-ok", "mount-ok", "no-mknod"], "{report}");
+    assert_eq!(
+        &rest[5..8],
+        ["chown-ok", "mount-ok", "no-mknod"],
+        "{report}"
+    );
+    // An empty, read-only /sys that mount lists (`DECISIONS.md` §39
+    // sub-decision 6).
+    assert_eq!(&rest[8..], ["0", "sys-ro", "1"], "{report}");
     assert_eq!(rest[1], "/tmp / /usr/bin", "{report}");
     assert_eq!(rest[2], "/", "{report}");
     assert_eq!(rest[3], "no-kairo", "{report}");

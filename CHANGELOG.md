@@ -18,6 +18,10 @@ rather than per-commit.
 
 ### Added
 
+- **An empty, read-only `/sys` under `linux-root` (`DECISIONS.md` §39
+  sub-decision 6).** Scripts that mount what isn't mounted, such as
+  live-bootstrap's `finalize_fhs`, no longer mount the host's sysfs.
+
 - **live-bootstrap into its CI pass 2 (`DECISIONS.md` §38
   sub-decision 16).** The x86 wrapper continues through
   `finalize_fhs`, bash 5.2, curl, xz, tar 1.34, coreutils 9.4, gmp,
