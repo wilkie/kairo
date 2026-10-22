@@ -18,6 +18,11 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap into its CI pass 2 (`DECISIONS.md` §38
+  sub-decision 16).** The x86 wrapper continues through
+  `finalize_fhs`, bash 5.2, curl, xz, tar 1.34, coreutils 9.4, gmp,
+  mpfr, mpc, and zlib; all 77 packages match `SHA256SUMS.pkgs`.
+
 - **Mirrors for source fetches (`DECISIONS.md` §40).** `kairo source
   fetch --mirror <source url>=<mirror url>` fetches a source, or any of
   its submodules, through the mirror when its own URL fails, filing it

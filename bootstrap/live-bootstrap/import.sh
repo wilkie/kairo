@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive live-bootstrap and its distfiles, and make the native object
-# that runs it through upstream's CI pass 1 for x86 (specs/DECISIONS.md §38).
+# that runs it into upstream's CI pass 2 for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
 #   import.sh <actor id> [kairo args...]
@@ -164,6 +164,88 @@ DISTFILES=(
      https://mirrors.kernel.org/gnu/bc/bc-1.08.1.tar.xz"
     "0cfbf866bc39c31f25fa0e56af1e56c5e5c92fc1e5d51242ebafef7ea211f3d5 gnulib-8e128e.tar.gz
      https://archive.org/download/live-bootstrap-sources/gnulib-8e128e.tar.gz"
+    "e8a6eb9d28ddcba8ffef3fa211653239e9bf239aba6a01a6b7cfc7ceaec69cbd autoconf-archive-2021.02.19.tar.xz
+     https://mirrors.kernel.org/gnu/autoconf-archive/autoconf-archive-2021.02.19.tar.xz"
+    "13720965b5f4fc3a0d4b61dd37e7565c741da9a5be24edc2ae00182fc1b3588c bash-5.2.15.tar.gz
+     https://mirrors.kernel.org/gnu/bash/bash-5.2.15.tar.gz"
+    "b10d7e9e354be72aee4e4911cf19dd27b5c527d4e7200857365b5fcdeea0dffb bison-2.3.tar.bz2
+     https://mirrors.kernel.org/gnu/bison/bison-2.3.tar.bz2"
+    "0190f28cb155fedd22bf8558c3e8705eed9eacfb7ae29e7508d025a68eb90899 gnulib-b28236b.tar.gz
+     https://archive.org/download/live-bootstrap-sources/gnulib-b28236b.tar.gz"
+    "8fb56810310253300b3d6f84e68dc97eb2d74e1f4f78e05776831d9d82e4f2d7 coreutils-9.4.tar.xz
+     https://archive.org/download/live-bootstrap-sources/coreutils-9.4.tar.xz"
+    "b8aa1ac1b18c67f081486069e6a7a5564f20431c2313a94c20a46dcfb904be2a gnulib-bb5bb43.tar.gz
+     https://archive.org/download/live-bootstrap-sources/gnulib-bb5bb43.tar.gz"
+    "806e9aed65037197f1ec85e12be6e8cd870fc5608b4de0fffd990f689f376a73 UnicodeData-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/UnicodeData.txt"
+    "e05c0a2811d113dae4abd832884199a3ea8d187ee1b872d8240a788a96540bfd PropList-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/PropList.txt"
+    "d367290bc0867e6b484c68370530bdd1a08b6b32404601b8c7accaf83e05628d DerivedCoreProperties-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/DerivedCoreProperties.txt"
+    "29071dba22c72c27783a73016afb8ffaeb025866740791f9c2d0b55cc45a3470 emoji-data-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/emoji/emoji-data.txt"
+    "eb840f36e0a7446293578c684a54c6d83d249abde7bdd4dfa89794af1d7fe9e9 ArabicShaping-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/ArabicShaping.txt"
+    "cca85d830f46aece2e7c1459ef1249993dca8f2e46d51e869255be140d7ea4b0 Scripts-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/Scripts.txt"
+    "529dc5d0f6386d52f2f56e004bbfab48ce2d587eea9d38ba546c4052491bd820 Blocks-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/Blocks.txt"
+    "909eef4adbeddbdddcd9487c856fe8cdbb8912aa8eb315ed7885b6ef65f4dc4c PropList-3.0.1.txt
+     https://www.unicode.org/Public/3.0-Update1/PropList-3.0.1.txt"
+    "743e7bc435c04ab1a8459710b1c3cad56eedced5b806b4659b6e69b85d0adf2a EastAsianWidth-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/EastAsianWidth.txt"
+    "012bca868e2c4e59a5a10a7546baf0c6fb1b2ef458c277f054915c8a49d292bf LineBreak-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/LineBreak.txt"
+    "5188a56e91593467c2e912601ebc78750e6adc9b04541b8c5becb5441e388ce2 WordBreakProperty-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/auxiliary/WordBreakProperty.txt"
+    "5a0f8748575432f8ff95e1dd5bfaa27bda1a844809e17d6939ee912bba6568a1 GraphemeBreakProperty-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/auxiliary/GraphemeBreakProperty.txt"
+    "3b019c0a33c3140cbc920c078f4f9af2680ba4f71869c8d4de5190667c70b6a3 CompositionExclusions-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/CompositionExclusions.txt"
+    "78b29c64b5840d25c11a9f31b665ee551b8a499eca6c70d770fcad7dd710f494 SpecialCasing-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/SpecialCasing.txt"
+    "cdd49e55eae3bbf1f0a3f6580c974a0263cb86a6a08daa10fbf705b4808a56f7 CaseFolding-15.0.0.txt
+     https://www.unicode.org/Public/15.0.0/ucd/CaseFolding.txt"
+    "955f6e729ad6b3566260e8fef68620e76ba3c31acf0a18524416a185acf77992 curl-8.17.0.tar.xz
+     https://curl.se/download/curl-8.17.0.tar.xz"
+    "baec69069ff58b7cdbe0103ffc16f29d4857428c29efcdf685c574d8300fd838 e6f147b7a5f2ec2dc862dc9d30b3734b9555a1ea.tar.gz
+     https://github.com/westes/flex/archive/e6f147b7a5f2ec2dc862dc9d30b3734b9555a1ea.tar.gz"
+    "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2 gmp-6.2.1.tar.xz
+     https://mirrors.kernel.org/gnu/gmp/gmp-6.2.1.tar.xz"
+    "4f7f217f057ce655ff22559ad221a0fd8ef84ad1fc5fcb6990cecc333aa1635d libtool-2.4.7.tar.xz
+     https://mirrors.kernel.org/gnu/libtool/libtool-2.4.7.tar.xz"
+    "719b399fe09a8f6ca14ba8c4a9a60ce9f93f4892effb50961ef3d8cd1a33ff65 gnulib-a521820.tar.gz
+     https://archive.org/download/live-bootstrap-sources/gnulib-a521820.tar.gz"
+    "e40b8f018c1da64edd1cc9a6fce5fa63b2e707e404e20cad91fbae337c98a5b7 make-4.2.1.tar.gz
+     https://mirrors.kernel.org/gnu/make/make-4.2.1.tar.gz"
+    "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459 mpc-1.2.1.tar.gz
+     https://mirrors.kernel.org/gnu/mpc/mpc-1.2.1.tar.gz"
+    "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f mpfr-4.1.0.tar.xz
+     https://mirrors.kernel.org/gnu/mpfr/mpfr-4.1.0.tar.xz"
+    "6fc69c01688c9458a57eb9a1664c9aba372ccda420a02bf4429fe610e7e7d591 pkg-config-0.29.2.tar.gz
+     https://pkgconfig.freedesktop.org/releases/pkg-config-0.29.2.tar.gz"
+    "8b2cd18247527aa08ec320c3352b6a01b95d63199f20b3b593ea5d5217bdd170 UnicodeData-6.2.0.txt
+     https://www.unicode.org/Public/6.2.0/ucd/UnicodeData.txt"
+    "5e2eb009b078569e7954789b2d7b5c026b0b40be6fb9400c6e1ecc7d13f4a13f LineBreak-6.2.0.txt
+     https://www.unicode.org/Public/6.2.0/ucd/LineBreak.txt"
+    "707209a69d7f760e3cc461ce26d789f83d6fb694336c83b14652cd44413aa334 SpecialCasing-6.2.0.txt
+     https://www.unicode.org/Public/6.2.0/ucd/SpecialCasing.txt"
+    "5cbd9afdddd91fee53871c9b36a34899b0a5bcdf4569ca1a3c98cae3ec3d6333 CaseFolding-6.2.0.txt
+     https://www.unicode.org/Public/6.2.0/ucd/CaseFolding.txt"
+    "3b3f5051bd74e21df7f2b1b264ead48be626cdeefb061c04ce7280a2358efff9 CompositionExclusions-6.2.0.txt
+     https://www.unicode.org/Public/6.2.0/ucd/CompositionExclusions.txt"
+    "4cdeb69b6bfead1c170a81b544e7488549575493715ab632bd7492bc92c4823e Scripts-6.2.0.txt
+     https://www.unicode.org/Public/6.2.0/ucd/Scripts.txt"
+    "63bebd26879c5e1eea4352f0d03c991f966aeb3ddeb3c7445c902568d5411d28 tar-1.34.tar.xz
+     https://mirrors.kernel.org/gnu/tar/tar-1.34.tar.xz"
+    "df807e694deea2dcba0c43af318394f3e3fcd52658c3b71b61dad0ce0c0cfb77 gnulib-30820c.tar.gz
+     https://archive.org/download/live-bootstrap-sources/gnulib-30820c.tar.gz"
+    "176d510c30d80a23b8050bbc048f2ecaacb823ae48b6821727ed6591f0df9200 xz-5.6.4.tar.bz2
+     https://github.com/tukaani-project/xz/releases/download/v5.6.4/xz-5.6.4.tar.bz2"
+    "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 zlib-1.3.1.tar.gz
+     https://zlib.net/fossils/zlib-1.3.1.tar.gz"
+    "3751c7fba8dbc831cb8d7cc8aff21035459b8ce5155ef8b0880a27d028475f3b file-5.44.tar.gz
+     https://astron.com/pub/file/file-5.44.tar.gz"
 )
 
 if [ $# -lt 1 ]; then
@@ -224,7 +306,7 @@ cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
 git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 through CI pass 1"
+git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 to zlib in CI pass 2"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
 WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)

@@ -3950,6 +3950,22 @@ Sub-decisions:
     `SHA256SUMS.pkgs`. The end-to-end test raises `file_timeout_secs`
     for the 100 MB Linux tarball.
 
+16. **Then into CI pass 2, through zlib.** *Added when built:* on
+    through `finalize_job_count`, `finalize_fhs`, musl 1.2.5 again,
+    curl, bash 5.2.15, xz, file, libtool 2.4.7, tar 1.34, coreutils
+    9.4, pkg-config, make 4.2.1, gmp, autoconf-archive, mpfr, mpc, flex
+    2.5.33, bison 2.3, and zlib, stopping before the perl chain.
+    `finalize_fhs` creates `/etc` and the rest of the FHS skeleton and
+    mounts what `mount` doesn't list; under `linux-root` that is only
+    `/sys`, which the guest, as root in its namespaces, can mount
+    itself. Forty-one more distfiles are pinned. Most of upstream's URLs
+    are plain `http`; their `https` forms serve the same bytes, except
+    that `file-5.44` is fetched from `astron.com` (its listed
+    `ftp.astron.com` serves other bytes over `https`), and four gnulib
+    snapshots and coreutils 9.4's generated tarball are archive.org's
+    copies, which hash as published. All 77 packages match
+    `SHA256SUMS.pkgs`.
+
 Rationale: live-bootstrap is the canonical path from stage0 to a real
 toolchain, and running it unmodified keeps the strongest evidence
 available, agreement with upstream's published hashes. Identifying

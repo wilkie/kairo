@@ -1,10 +1,11 @@
-# The live-bootstrap bootstrap for x86, through upstream's CI pass 1
+# The live-bootstrap bootstrap for x86, into upstream's CI pass 2
 # (specs/DECISIONS.md §38): a native object that runs live-bootstrap's
 # own scripts, unmodified, from the archive's stage0-posix x86 artifact
 # through Mes and tcc to make, the core utilities, and bash, then under
 # bash to a tcc and musl toolchain, flex, bison, perl, the autotools,
-# binutils, gcc 4.0.4 twice, musl 1.2.5, the Linux headers, and the base
-# system tools upstream's first CI pass ends with. Every input is pinned: live-bootstrap
+# binutils, gcc 4.0.4, musl 1.2.5, the base system tools upstream's
+# first CI pass ends with, and on to bash 5.2, curl, xz, tar 1.34,
+# coreutils 9.4, gmp, mpfr, mpc, and zlib. Every input is pinned: live-bootstrap
 # and M2libc as source objects by commit, each distfile as a file source
 # by its SHA-256, and stage0-posix as the artifact its wrapper builds.
 # Each step checks its distfiles and what it built against the
@@ -14,7 +15,7 @@
 schema = 1
 kind = "software"
 name = "live-bootstrap-x86"
-summary = "live-bootstrap b1ceced7 for x86 through its CI pass 1: Mes, tcc, bash, perl, the autotools, binutils, gcc, musl 1.2.5."
+summary = "live-bootstrap b1ceced7 for x86 to zlib in its CI pass 2: Mes, tcc, gcc 4.0.4, musl 1.2.5, bash 5.2, gmp, mpfr, mpc."
 
 # The guest's / is this tree; live-bootstrap assumes it owns it.
 [[dependencies]]
@@ -391,6 +392,211 @@ kind = "file"
 sha256 = "0cfbf866bc39c31f25fa0e56af1e56c5e5c92fc1e5d51242ebafef7ea211f3d5"
 path = "external/distfiles/gnulib-8e128e.tar.gz"
 
+[[dependencies]]
+kind = "file"
+sha256 = "e8a6eb9d28ddcba8ffef3fa211653239e9bf239aba6a01a6b7cfc7ceaec69cbd"
+path = "external/distfiles/autoconf-archive-2021.02.19.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "13720965b5f4fc3a0d4b61dd37e7565c741da9a5be24edc2ae00182fc1b3588c"
+path = "external/distfiles/bash-5.2.15.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "b10d7e9e354be72aee4e4911cf19dd27b5c527d4e7200857365b5fcdeea0dffb"
+path = "external/distfiles/bison-2.3.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "0190f28cb155fedd22bf8558c3e8705eed9eacfb7ae29e7508d025a68eb90899"
+path = "external/distfiles/gnulib-b28236b.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "8fb56810310253300b3d6f84e68dc97eb2d74e1f4f78e05776831d9d82e4f2d7"
+path = "external/distfiles/coreutils-9.4.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "b8aa1ac1b18c67f081486069e6a7a5564f20431c2313a94c20a46dcfb904be2a"
+path = "external/distfiles/gnulib-bb5bb43.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "806e9aed65037197f1ec85e12be6e8cd870fc5608b4de0fffd990f689f376a73"
+path = "external/distfiles/UnicodeData-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e05c0a2811d113dae4abd832884199a3ea8d187ee1b872d8240a788a96540bfd"
+path = "external/distfiles/PropList-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "d367290bc0867e6b484c68370530bdd1a08b6b32404601b8c7accaf83e05628d"
+path = "external/distfiles/DerivedCoreProperties-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "29071dba22c72c27783a73016afb8ffaeb025866740791f9c2d0b55cc45a3470"
+path = "external/distfiles/emoji-data-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "eb840f36e0a7446293578c684a54c6d83d249abde7bdd4dfa89794af1d7fe9e9"
+path = "external/distfiles/ArabicShaping-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "cca85d830f46aece2e7c1459ef1249993dca8f2e46d51e869255be140d7ea4b0"
+path = "external/distfiles/Scripts-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "529dc5d0f6386d52f2f56e004bbfab48ce2d587eea9d38ba546c4052491bd820"
+path = "external/distfiles/Blocks-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "909eef4adbeddbdddcd9487c856fe8cdbb8912aa8eb315ed7885b6ef65f4dc4c"
+path = "external/distfiles/PropList-3.0.1.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "743e7bc435c04ab1a8459710b1c3cad56eedced5b806b4659b6e69b85d0adf2a"
+path = "external/distfiles/EastAsianWidth-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "012bca868e2c4e59a5a10a7546baf0c6fb1b2ef458c277f054915c8a49d292bf"
+path = "external/distfiles/LineBreak-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "5188a56e91593467c2e912601ebc78750e6adc9b04541b8c5becb5441e388ce2"
+path = "external/distfiles/WordBreakProperty-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "5a0f8748575432f8ff95e1dd5bfaa27bda1a844809e17d6939ee912bba6568a1"
+path = "external/distfiles/GraphemeBreakProperty-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "3b019c0a33c3140cbc920c078f4f9af2680ba4f71869c8d4de5190667c70b6a3"
+path = "external/distfiles/CompositionExclusions-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "78b29c64b5840d25c11a9f31b665ee551b8a499eca6c70d770fcad7dd710f494"
+path = "external/distfiles/SpecialCasing-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "cdd49e55eae3bbf1f0a3f6580c974a0263cb86a6a08daa10fbf705b4808a56f7"
+path = "external/distfiles/CaseFolding-15.0.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "955f6e729ad6b3566260e8fef68620e76ba3c31acf0a18524416a185acf77992"
+path = "external/distfiles/curl-8.17.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "baec69069ff58b7cdbe0103ffc16f29d4857428c29efcdf685c574d8300fd838"
+path = "external/distfiles/e6f147b7a5f2ec2dc862dc9d30b3734b9555a1ea.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2"
+path = "external/distfiles/gmp-6.2.1.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "4f7f217f057ce655ff22559ad221a0fd8ef84ad1fc5fcb6990cecc333aa1635d"
+path = "external/distfiles/libtool-2.4.7.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "719b399fe09a8f6ca14ba8c4a9a60ce9f93f4892effb50961ef3d8cd1a33ff65"
+path = "external/distfiles/gnulib-a521820.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e40b8f018c1da64edd1cc9a6fce5fa63b2e707e404e20cad91fbae337c98a5b7"
+path = "external/distfiles/make-4.2.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
+path = "external/distfiles/mpc-1.2.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f"
+path = "external/distfiles/mpfr-4.1.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "6fc69c01688c9458a57eb9a1664c9aba372ccda420a02bf4429fe610e7e7d591"
+path = "external/distfiles/pkg-config-0.29.2.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "8b2cd18247527aa08ec320c3352b6a01b95d63199f20b3b593ea5d5217bdd170"
+path = "external/distfiles/UnicodeData-6.2.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "5e2eb009b078569e7954789b2d7b5c026b0b40be6fb9400c6e1ecc7d13f4a13f"
+path = "external/distfiles/LineBreak-6.2.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "707209a69d7f760e3cc461ce26d789f83d6fb694336c83b14652cd44413aa334"
+path = "external/distfiles/SpecialCasing-6.2.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "5cbd9afdddd91fee53871c9b36a34899b0a5bcdf4569ca1a3c98cae3ec3d6333"
+path = "external/distfiles/CaseFolding-6.2.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "3b3f5051bd74e21df7f2b1b264ead48be626cdeefb061c04ce7280a2358efff9"
+path = "external/distfiles/CompositionExclusions-6.2.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "4cdeb69b6bfead1c170a81b544e7488549575493715ab632bd7492bc92c4823e"
+path = "external/distfiles/Scripts-6.2.0.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "63bebd26879c5e1eea4352f0d03c991f966aeb3ddeb3c7445c902568d5411d28"
+path = "external/distfiles/tar-1.34.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "df807e694deea2dcba0c43af318394f3e3fcd52658c3b71b61dad0ce0c0cfb77"
+path = "external/distfiles/gnulib-30820c.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "176d510c30d80a23b8050bbc048f2ecaacb823ae48b6821727ed6591f0df9200"
+path = "external/distfiles/xz-5.6.4.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+path = "external/distfiles/zlib-1.3.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "3751c7fba8dbc831cb8d7cc8aff21035459b8ce5155ef8b0880a27d028475f3b"
+path = "external/distfiles/file-5.44.tar.gz"
+
 [[build.targets]]
 name = "x86"
 # Each step ends in upstream's own `sha256sum -c` of what it built.
@@ -424,7 +630,7 @@ output = "usr"
 
 [[provides]]
 provides = "tool:make"
-version = "3.82"
+version = "4.2.1"
 target = "x86"
 output = "usr"
 
@@ -442,7 +648,7 @@ output = "usr"
 
 [[provides]]
 provides = "tool:tar"
-version = "1.12"
+version = "1.34"
 target = "x86"
 output = "usr"
 
@@ -460,7 +666,7 @@ output = "usr"
 
 [[provides]]
 provides = "tool:coreutils"
-version = "6.10"
+version = "9.4"
 target = "x86"
 output = "usr"
 
@@ -472,7 +678,7 @@ output = "usr"
 
 [[provides]]
 provides = "tool:bash"
-version = "2.05b"
+version = "5.2.15"
 target = "x86"
 output = "usr"
 
@@ -496,13 +702,13 @@ output = "usr"
 
 [[provides]]
 provides = "tool:flex"
-version = "2.6.4"
+version = "2.5.33"
 target = "x86"
 output = "usr"
 
 [[provides]]
 provides = "tool:bison"
-version = "3.4.1"
+version = "2.3"
 target = "x86"
 output = "usr"
 
@@ -538,7 +744,7 @@ output = "usr"
 
 [[provides]]
 provides = "tool:libtool"
-version = "2.2.4"
+version = "2.4.7"
 target = "x86"
 output = "usr"
 
@@ -587,5 +793,53 @@ output = "usr"
 [[provides]]
 provides = "tool:bc"
 version = "1.08.1"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:curl"
+version = "8.17.0"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:xz"
+version = "5.6.4"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:file"
+version = "5.44"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "tool:pkg-config"
+version = "0.29.2"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "lib:gmp"
+version = "6.2.1"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "lib:mpfr"
+version = "4.1.0"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "lib:mpc"
+version = "1.2.1"
+target = "x86"
+output = "usr"
+
+[[provides]]
+provides = "lib:zlib"
+version = "1.3.1"
 target = "x86"
 output = "usr"

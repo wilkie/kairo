@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# live-bootstrap's steps/manifest at b1ceced7, truncated before
-# `jump: break`, the end of upstream's own CI pass 1, for Kairo's
-# bootstrap (specs/DECISIONS.md §38). The lines kept are upstream's,
-# verbatim; see its manifest for the syntax and the full list.
+# live-bootstrap's steps/manifest at b1ceced7, truncated after
+# zlib-1.3.1, before the perl chain of upstream's CI pass 2, for
+# Kairo's bootstrap (specs/DECISIONS.md §38). The lines kept are
+# upstream's, verbatim; see its manifest for the syntax and the full
+# list.
 
 build: checksum-transcriber-1.0
 build: simple-patch-1.0
@@ -104,3 +105,30 @@ build: kexec-tools-2.0.22 ( BUILD_LINUX == True )
 improve: clean_sources
 improve: clean_artifacts
 build: linux-4.14.341-openela ( BUILD_LINUX == True )
+jump: break ( INTERNAL_CI == pass1 )
+improve: populate_device_nodes
+jump: linux ( CHROOT == False )
+jump: move_disk ( KERNEL_BOOTSTRAP == True )
+improve: finalize_job_count
+improve: finalize_fhs
+improve: open_console ( CONSOLES == True )
+improve: swap ( SWAP_SIZE != 0 )
+build: musl-1.2.5
+build: curl-8.17.0
+improve: get_network ( CHROOT == False )
+build: bash-5.2.15
+improve: open_console ( CONSOLES == True )
+build: xz-5.6.4
+build: file-5.44
+build: libtool-2.4.7
+build: tar-1.34
+build: coreutils-9.4
+build: pkg-config-0.29.2
+build: make-4.2.1
+build: gmp-6.2.1
+build: autoconf-archive-2021.02.19
+build: mpfr-4.1.0
+build: mpc-1.2.1
+build: flex-2.5.33
+build: bison-2.3
+build: zlib-1.3.1
