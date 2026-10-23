@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Label kinds, tags, and child summaries (`DECISIONS.md` §42).** A
+  provides label's kind must be `tool`, `lib`, `doc`, `data`, or
+  `environment`, checked wherever a manifest declares or requires one,
+  so a misspelt kind fails at parse time. `[kairo]` takes `tags`, and
+  each `[[build.targets.children]]` entry `summary` and `tags`, for
+  search; manifests without them keep their hashes.
+
 - **Child objects (`DECISIONS.md` §41 sub-decision 4, slice 2a).** A
   build target declares `[[build.targets.children]]`, each a `name`, a
   `root` in its artifact, an install root, and provides labels. A

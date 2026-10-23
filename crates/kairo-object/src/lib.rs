@@ -78,6 +78,8 @@ pub struct ChildDeclaration {
     root: String,
     install: Option<String>,
     provides: Vec<ChildProvide>,
+    summary: Option<String>,
+    tags: Vec<String>,
 }
 
 impl ChildDeclaration {
@@ -98,6 +100,15 @@ impl ChildDeclaration {
     pub fn provides(&self) -> &[ChildProvide] {
         &self.provides
     }
+
+    /// The child's own description, for search (`DECISIONS.md` §42).
+    pub fn summary(&self) -> Option<&str> {
+        self.summary.as_deref()
+    }
+
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
 }
 
 impl CanonicalEncode for ChildDeclaration {
@@ -113,6 +124,14 @@ impl CanonicalEncode for ChildDeclaration {
                 encode_str(out, version);
             });
         });
+        if let Some(summary) = &self.summary {
+            encode_str(out, "summary");
+            encode_str(out, summary);
+        }
+        if !self.tags.is_empty() {
+            encode_str(out, "tags");
+            encode_list(out, &self.tags, |out, tag| encode_str(out, tag));
+        }
     }
 }
 
@@ -593,6 +612,7 @@ pub struct KairoManifestSection {
     kind: String,
     name: String,
     summary: Option<String>,
+    tags: Vec<String>,
 }
 
 impl KairoManifestSection {
@@ -615,6 +635,11 @@ impl KairoManifestSection {
     pub fn summary(&self) -> Option<&str> {
         self.summary.as_deref()
     }
+
+    /// Keywords for search (`DECISIONS.md` §42).
+    pub fn tags(&self) -> &[String] {
+        &self.tags
+    }
 }
 
 impl CanonicalEncode for KairoManifestSection {
@@ -628,6 +653,10 @@ impl CanonicalEncode for KairoManifestSection {
         encode_option(out, self.summary.as_ref(), |out, summary| {
             encode_str(out, summary);
         });
+        if !self.tags.is_empty() {
+            encode_str(out, "tags");
+            encode_list(out, &self.tags, |out, tag| encode_str(out, tag));
+        }
     }
 }
 
@@ -1191,6 +1220,17 @@ pub enum ManifestError {
         target: String,
         reason: String,
     },
+    /// A provides label whose kind isn't registered, or with no
+    /// specifier (`DECISIONS.md` §42).
+    InvalidLabel {
+        field: &'static str,
+        label: String,
+    },
+    /// A tag outside the tag alphabet, or repeated.
+    InvalidTag {
+        field: &'static str,
+        tag: String,
+    },
     /// Two dependencies of one target placed at the same path.
     PlacementConflict {
         target: String,
@@ -1256,6 +1296,15 @@ impl fmt::Display for ManifestError {
             Self::InvalidChild { target, reason } => {
                 write!(f, "build target {target}'s child: {reason}")
             }
+            Self::InvalidLabel { field, label } => write!(
+                f,
+                "{field} {label:?} is not a provides label: its kind must be one of {}, followed by a specifier",
+                LABEL_KINDS.join(", ")
+            ),
+            Self::InvalidTag { field, tag } => write!(
+                f,
+                "{field} {tag:?} is not a tag, or is repeated: lowercase letters, digits, and . + -"
+            ),
             Self::PlacementWithoutPath => {
                 f.write_str("a dependency's from and overlay need the path they place at")
             }
@@ -1302,6 +1351,8 @@ impl Error for ManifestError {
             | Self::InvalidFileDependency(_)
             | Self::PlacementWithoutPath
             | Self::InvalidChild { .. }
+            | Self::InvalidLabel { .. }
+            | Self::InvalidTag { .. }
             | Self::PlacementConflict { .. } => None,
         }
     }
@@ -1466,6 +1517,9 @@ struct RawChildDeclaration {
     install: Option<RawInstall>,
     #[serde(default)]
     provides: Vec<RawChildProvide>,
+    summary: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1608,9 +1662,10 @@ impl RawBuildTarget {
             }
             let root = ensure_relative_path("build.targets.children.root", raw.root)?;
             let install = validate_install("build.targets.children.install", raw.install)?;
+            ensure_tags("build.targets.children.tags", &raw.tags)?;
             let mut provides = Vec::with_capacity(raw.provides.len());
             for provide in raw.provides {
-                ensure_non_empty(
+                ensure_label(
                     "build.targets.children.provides.provides",
                     &provide.provides,
                 )?;
@@ -1624,6 +1679,8 @@ impl RawBuildTarget {
                 root,
                 install,
                 provides,
+                summary: raw.summary,
+                tags: raw.tags,
             });
         }
         Ok(BuildTarget {
@@ -1708,6 +1765,8 @@ struct RawKairoSection {
     kind: String,
     name: String,
     summary: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 impl RawKairoSection {
@@ -1718,6 +1777,7 @@ impl RawKairoSection {
 
         ensure_non_empty("kairo.kind", &self.kind)?;
         ensure_non_empty("kairo.name", &self.name)?;
+        ensure_tags("kairo.tags", &self.tags)?;
 
         Ok(KairoManifestSection {
             schema: self.schema,
@@ -1729,6 +1789,7 @@ impl RawKairoSection {
             kind: self.kind,
             name: self.name,
             summary: self.summary,
+            tags: self.tags,
         })
     }
 }
@@ -1758,7 +1819,7 @@ struct RawProvideDeclaration {
 
 impl RawProvideDeclaration {
     fn validate(self) -> Result<ProvideDeclaration, ManifestError> {
-        ensure_non_empty("provides.provides", &self.provides)?;
+        ensure_label("provides.provides", &self.provides)?;
         let artifact = match (self.target, self.output) {
             (None, None) => None,
             (Some(target), Some(output)) if !output.is_empty() => {
@@ -1915,7 +1976,7 @@ impl RawDependencyDeclaration {
             return Err(ManifestError::MissingProvidesDependency);
         };
 
-        ensure_non_empty("dependencies.provides", &provides)?;
+        ensure_label("dependencies.provides", &provides)?;
         if let Some(version) = &self.version {
             ensure_version_requirement("dependencies.version", version)?;
         }
@@ -1952,6 +2013,44 @@ impl RawDependencyDeclaration {
             placement,
         }))
     }
+}
+
+/// The registered kinds of provides label (`DECISIONS.md` §42).
+pub const LABEL_KINDS: [&str; 5] = ["tool", "lib", "doc", "data", "environment"];
+
+/// A provides label: a registered kind, `:`, and a non-empty specifier.
+fn ensure_label(field: &'static str, label: &str) -> Result<(), ManifestError> {
+    match label.split_once(':') {
+        Some((kind, rest))
+            if LABEL_KINDS.contains(&kind)
+                && rest.split(':').next().is_some_and(|s| !s.is_empty()) =>
+        {
+            Ok(())
+        }
+        _ => Err(ManifestError::InvalidLabel {
+            field,
+            label: label.to_owned(),
+        }),
+    }
+}
+
+/// Tags: lowercase letters, digits, and `.`, `+`, `-`, starting with a
+/// letter or digit, none repeated; kept in order.
+fn ensure_tags(field: &'static str, tags: &[String]) -> Result<(), ManifestError> {
+    for (index, tag) in tags.iter().enumerate() {
+        let mut chars = tag.chars();
+        let spelled = chars
+            .next()
+            .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".+-".contains(c));
+        if !spelled || tags[..index].contains(tag) {
+            return Err(ManifestError::InvalidTag {
+                field,
+                tag: tag.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn ensure_non_empty(field: &'static str, value: &str) -> Result<(), ManifestError> {
@@ -2709,6 +2808,8 @@ mod tests {
             name = "bash-5.2"
             root = "bash-5.2"
             provides = [{ provides = "tool:bash", version = "5.2" }]
+            summary = "GNU Bourne-Again shell."
+            tags = ["shell", "gnu"]
             [[build.targets.children]]
             name = "seed"
             root = "seed/files"
@@ -2731,6 +2832,9 @@ mod tests {
             (seed.root(), seed.install(), seed.provides().len()),
             ("seed/files", None, 0)
         );
+        assert_eq!(bash.summary(), Some("GNU Bourne-Again shell."));
+        assert_eq!(bash.tags(), ["shell", "gnu"]);
+        assert_eq!((seed.summary(), seed.tags().len()), (None, 0));
         // Children are part of what the manifest hash covers.
         assert_ne!(
             parsed.manifest_hash(),
@@ -2760,6 +2864,77 @@ mod tests {
                     Err(ManifestError::UnsafePath { .. })
                 ),
                 "{children}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn labels_have_a_registered_kind_and_tags_a_plain_spelling(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |kairo: &str, rest: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
+                {kairo}
+                {rest}
+                "#
+            )
+        };
+        for label in [
+            "tool:bash",
+            "lib:zlib:headers",
+            "doc:bash:man",
+            "data:exe:mz",
+            "environment:linux/x86",
+        ] {
+            let provides = format!("[[provides]]\nprovides = \"{label}\"");
+            ObjectManifest::parse_toml(&manifest("", &provides))?;
+        }
+        for (field, rest) in [
+            ("provides.provides", "[[provides]]\nprovides = \"libs:zlib\""),
+            ("provides.provides", "[[provides]]\nprovides = \"tool:\""),
+            ("provides.provides", "[[provides]]\nprovides = \"bash\""),
+            ("dependencies.provides", "[[dependencies]]\nkind = \"provides\"\nprovides = \"bin:bash\""),
+            (
+                "build.targets.children.provides.provides",
+                "[[build.targets]]\nname = \"release\"\ncommand = [\"make\"]\n[[build.targets.children]]\nname = \"a\"\nroot = \"a\"\nprovides = [{ provides = \"a\" }]",
+            ),
+        ] {
+            assert!(
+                matches!(
+                    ObjectManifest::parse_toml(&manifest("", rest)),
+                    Err(ManifestError::InvalidLabel { field: f, .. }) if f == field
+                ),
+                "{rest}"
+            );
+        }
+
+        let plain = ObjectManifest::parse_toml(&manifest("", ""))?;
+        assert!(plain.kairo().tags().is_empty());
+        let tagged = ObjectManifest::parse_toml(&manifest("tags = [\"shell\", \"gnu\"]", ""))?;
+        assert_eq!(tagged.kairo().tags(), ["shell", "gnu"]);
+        assert_ne!(tagged.manifest_hash(), plain.manifest_hash());
+        assert_eq!(
+            ObjectManifest::parse_toml(&manifest("tags = []", ""))?.manifest_hash(),
+            plain.manifest_hash()
+        );
+        for tags in [
+            "[\"Shell\"]",
+            "[\"a b\"]",
+            "[\"\"]",
+            "[\"-x\"]",
+            "[\"a\", \"a\"]",
+        ] {
+            assert!(
+                matches!(
+                    ObjectManifest::parse_toml(&manifest(&format!("tags = {tags}"), "")),
+                    Err(ManifestError::InvalidTag { .. })
+                ),
+                "{tags}"
             );
         }
         Ok(())
