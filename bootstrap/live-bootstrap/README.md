@@ -19,7 +19,18 @@ namespaces, with no host tool taking part.
 
 From bash on, each step also packages what it installed and checks the
 package against live-bootstrap's `SHA256SUMS.pkgs`; the artifact keeps
-those packages as its `repo` output, byte-for-byte upstream's.
+those packages in `repo/`, byte-for-byte upstream's, and each one
+extracted under `<package>/`, the root of a **child object**
+(`specs/DECISIONS.md` §41 sub-decision 6). A consumer that needs only
+live-bootstrap's bash depends on `tool:bash` and gets the bash package,
+installed at `/usr/bin/bash`, not the whole system; one that needs its
+compiler takes `tool:gcc`, `tool:binutils`, and `lib:musl` side by side.
+The last revision of each package provides its name's label with its
+version (`tool:autoconf` 2.52 through 2.69 are nine children); earlier
+revisions that later steps rebuilt, such as `tcc-0.9.27_0` through
+`_2`, are children reachable by id only. What only the kaem-run steps
+built, which make no packages (Mes, patch, gzip), the parent provides
+as before.
 
 Every step checks its distfiles and what it built against the checksums
 live-bootstrap publishes (`sha256sum -c`), so a successful build agrees
@@ -46,8 +57,10 @@ puts it, and the wrapper's own files are in `/kairo/src`:
 
 | File | What it is |
 |---|---|
-| `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, providing `tool:mes`, `tool:tcc`, `tool:make`, `tool:bash`, `lib:musl`, and the rest, and the checked packages in `repo/`. |
-| `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: puts the wrapper's step files over upstream's, sets `kaem.run`'s variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. At the end it copies `/usr` and `/external/repo` into `/kairo/package`, the artifact. |
+| `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, the checked packages in `repo/`, and each package extracted as a child, 77 in all, providing `tool:bash`, `tool:gcc`, `lib:musl`, and the rest; the parent itself provides `tool:mes`, `tool:patch`, and `tool:gzip`. |
+| `children.py` | Writes the `[[build.targets.children]]` entries from the package names a build lists, when the milestone moves. |
+| `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: puts the wrapper's step files over upstream's, sets `kaem.run`'s variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. At the end it runs `package.sh`. |
+| `package.sh` | Run under the bash the build made: copies `/usr` and `/external/repo` into `/kairo/package`, the artifact, and extracts each package into `/kairo/package/<package>/`. |
 | `steps/bootstrap.cfg` | What `rootfs.py --arch x86 --bwrap --external-sources` writes. |
 | `steps/manifest` | live-bootstrap's manifest, truncated after `zlib-1.3.1`, before the perl chain of upstream's CI pass 2. |
 | `import.sh` | Archives live-bootstrap and the distfiles, and creates the wrapper. |

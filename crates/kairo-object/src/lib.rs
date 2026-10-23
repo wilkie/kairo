@@ -2941,6 +2941,19 @@ mod tests {
     }
 
     #[test]
+    fn the_bootstrap_wrappers_manifests_parse() -> Result<(), Box<dyn std::error::Error>> {
+        ObjectManifest::parse_toml(include_str!("../../../bootstrap/stage0-posix/kairo.toml"))?;
+        let live = ObjectManifest::parse_toml(include_str!(
+            "../../../bootstrap/live-bootstrap/kairo.toml"
+        ))?;
+        let children = live.build_target("x86").ok_or("x86 target")?.children();
+        assert_eq!(children.len(), 77);
+        assert!(children.iter().any(|child| child.name() == "bash-5.2.15_0"
+            && child.provides().iter().any(|p| p.provides() == "tool:bash")));
+        Ok(())
+    }
+
+    #[test]
     fn a_child_id_derives_from_its_parent_target_and_name() {
         let parent = ObjectId::from_bytes(b"test", b"parent");
         let other = ObjectId::from_bytes(b"test", b"other");

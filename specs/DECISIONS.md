@@ -4266,6 +4266,16 @@ Sub-decisions:
    live-bootstrap's bash, or gcc and its toolchain, at their real
    paths. The kaem-built steps, which make no packages, stay part of
    the parent.
+   - **Which children carry labels.** live-bootstrap rebuilds some
+     packages (`tcc-0.9.27_0` through `_3`, `musl-1.1.24_0` through
+     `_3`), and two revisions of one version would be two offers no
+     version requirement tells apart. So only the last revision of each
+     package name and version provides its label, with the version;
+     earlier revisions are children reachable by id. Different versions
+     of one tool (autoconf 2.52 to 2.69, perl 5.000 to 5.6.2) each
+     provide it, as live-bootstrap's own later steps use particular
+     ones. The labels the parent provided for packaged tools move to
+     the children, so the parent and a child never offer the same one.
 
 Rationale: a contract per filesystem layout multiplies labels for one
 idea; root in the guest's namespaces costs the host nothing, and an

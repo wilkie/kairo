@@ -27,7 +27,6 @@ cd /seed
 /x86/bin/cp seed.kaem /seed.kaem
 cd /
 /x86/bin/kaem --verbose --strict --file ./after.kaem
-# What the build ships: the installed /usr, and the checked packages
-# (specs/DECISIONS.md §41 sub-decision 2), copied with the bash and
-# coreutils it built.
-/usr/bin/bash -c "PATH=/usr/bin && cp -a /usr /kairo/package/usr && cp -a /external/repo /kairo/package/repo"
+# What the build ships: the installed /usr, the checked packages, and
+# each package extracted for its child object (package.sh).
+/usr/bin/bash /kairo/src/package.sh

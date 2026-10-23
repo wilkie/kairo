@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap's packages as child objects (`DECISIONS.md` §41
+  sub-decision 6, slice 4).** The wrapper extracts each of its 77
+  packages into `/kairo/package/<package>/`, and each is a child
+  installed at `/`; the last revision of each package provides its
+  label and version (`tool:bash` 5.2.15, `tool:gcc` 4.0.4, `lib:musl`
+  1.2.5, ...), moved from the parent, which keeps only what the
+  kaem-run steps built. `children.py` writes the entries.
+
 - **Overlay provisioning (`DECISIONS.md` §41 sub-decision 5, slice 3).**
   Where bubblewrap has `--overlay-src` (0.11 and later), each
   installed dependency is a read-only layer cached under

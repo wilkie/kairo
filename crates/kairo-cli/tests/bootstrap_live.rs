@@ -251,6 +251,33 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         assert_eq!(sha256(&bytes), digest, "{package}");
     }
 
+    // Each package is a child object, its artifact the package's own
+    // files (DECISIONS.md §41 sub-decision 6): bash's is bash alone.
+    assert_eq!(field(&built, "children"), "77", "{built}");
+    let bash = built
+        .lines()
+        .find_map(|line| {
+            let rest = line.strip_prefix("  bash-5.2.15_0 object:")?;
+            rest.split_once(" (artifact ")
+                .map(|(_, artifact)| artifact.trim_end_matches(')').to_owned())
+        })
+        .unwrap_or_else(|| panic!("no bash child in:\n{built}"));
+    let tree: serde_json::Value = serde_json::from_slice(
+        &kairo_store::BlobStore::get_blob(
+            &blob_store,
+            &kairo_core::BlobId::new(bash).expect("blob id"),
+        )
+        .expect("the bash child's artifact"),
+    )
+    .expect("an artifact tree");
+    let paths: Vec<&str> = tree["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect();
+    assert_eq!(paths, ["usr/bin/bash", "usr/bin/sh"]);
+
     // Another run of the same plan gives the same artifact.
     let result = field(&built, "result").to_owned();
     let reproduced = kairo(

@@ -12,7 +12,7 @@
 #    source with `kairo source fetch-file`, from the first of its
 #    upstream mirrors that serves the bytes live-bootstrap's checksum
 #    names.
-# 3. The native wrapper -- this directory's kairo.toml, start.kaem, and
+# 3. The native wrapper -- this directory's kairo.toml, start.kaem, package.sh, and
 #    steps/ (bootstrap.cfg and the truncated manifest) -- is committed as
 #    SHA-256 history and created as an object.
 #
@@ -301,11 +301,11 @@ export GIT_AUTHOR_NAME=kairo-bootstrap GIT_AUTHOR_EMAIL=bootstrap@kairo.invalid
 export GIT_COMMITTER_NAME=kairo-bootstrap GIT_COMMITTER_EMAIL=bootstrap@kairo.invalid
 export GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
 mkdir "$WORK/steps"
-cp "$HERE/kairo.toml" "$HERE/start.kaem" "$WORK/"
+cp "$HERE/kairo.toml" "$HERE/start.kaem" "$HERE/package.sh" "$WORK/"
 cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
 git -C "$WORK" init -q --initial-branch=main --object-format=sha256
 git -C "$WORK" config commit.gpgsign false
-git -C "$WORK" add kairo.toml start.kaem steps/bootstrap.cfg steps/manifest
+git -C "$WORK" add kairo.toml start.kaem package.sh steps/bootstrap.cfg steps/manifest
 git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 to zlib in CI pass 2"
 OID=$(git -C "$WORK" rev-parse HEAD)
 
