@@ -33,7 +33,10 @@ submodule commit it pins (this needs the network; if Savannah is
 unreachable, mescc-tools comes from its GitHub mirror, and its
 observation names the mirror), then commits the
 wrapper with fixed author and dates (so a re-import gives the same
-revision) and prints its id and the config lines to add:
+revision) and prints its id and the config lines to add. With
+`--wrapper <wrapper id>` after the actor id, it commits onto that
+existing wrapper object instead, as its next revision, and adds nothing
+if the wrapper is unchanged:
 
 ```toml
 [[runtime.seeds]]   # after auditing POSIX/{AMD64,x86}/*-seed against their .hex0 sources

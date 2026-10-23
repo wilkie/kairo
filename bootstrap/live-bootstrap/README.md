@@ -85,6 +85,13 @@ and, since it takes longer than the default hour on slower machines, a
 larger `[runtime] timeout_secs`; on a slow connection the 100 MB Linux
 tarball also needs a larger `[federation.limits] file_timeout_secs`.
 
+To update a wrapper you already imported, after changing this
+directory, pass its id: `import.sh <your actor id> --wrapper <wrapper
+id>` commits the new files on top of the object's history and signs
+its next revision, so one object goes on offering the wrapper's labels
+instead of a second one offering the same labels beside it; an
+unchanged wrapper adds nothing.
+
 The full flow is the ignored test
 `crates/kairo-cli/tests/bootstrap_live.rs`, which needs the network:
 

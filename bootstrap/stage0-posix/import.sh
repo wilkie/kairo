@@ -3,7 +3,7 @@
 # (specs/DECISIONS.md §36, §37).
 #
 # Usage:
-#   import.sh <actor id> [kairo args...]
+#   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
 # 1. `kairo source fetch https://github.com/oriansj/stage0-posix`
 #    archives stage0-posix as a source object, and with it, recursively,
@@ -15,7 +15,8 @@
 # 2. The native wrapper -- this directory's kairo.toml and
 #    kairo-<arch>.kaem, which pin every source the AMD64 and x86 chains
 #    use at its Release_1.9.1 commit -- is committed as SHA-256 history
-#    and created as an object.
+#    and created as an object, or, with --wrapper, committed on top of
+#    that existing wrapper object's history as its next revision.
 #
 # Extra arguments go before the command in every `kairo` call, e.g.
 # `--store <path>`. KAIRO names the kairo binary (default: kairo on
@@ -34,13 +35,6 @@ MIRRORS=(
 )
 SEEDS_REVISION=git:sha1:cedec6b8066d1db229b6c77d42d120a23c6980ed
 
-if [ $# -lt 1 ]; then
-    echo "usage: $0 <actor id> [kairo args...]" >&2
-    exit 2
-fi
-ACTOR=$1
-shift
-KAIRO_ARGS=("$@")
 KAIRO=${KAIRO:-kairo}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -50,32 +44,19 @@ fail() {
     echo "import.sh: $*" >&2
     exit 1
 }
+# shellcheck source=../wrapper.sh
+. "$HERE/../wrapper.sh"
+parse_import_args "$@"
 
 # 1. The sources, recursively. Incomplete submodule archiving fails here.
 kairo source fetch "$STAGE0_URL" --actor "$ACTOR" --require-complete "${MIRRORS[@]}" >&2
 
-# 2. The native wrapper: SHA-256 history, born in the archive. Fixed
-# author and dates, so importing again gives the same revision.
+# 2. The native wrapper: SHA-256 history, born in the archive
+# (../wrapper.sh).
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-export GIT_AUTHOR_NAME=kairo-bootstrap GIT_AUTHOR_EMAIL=bootstrap@kairo.invalid
-export GIT_COMMITTER_NAME=kairo-bootstrap GIT_COMMITTER_EMAIL=bootstrap@kairo.invalid
-export GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
 cp "$HERE/kairo.toml" "$HERE/kairo-amd64.kaem" "$HERE/kairo-x86.kaem" "$WORK/"
-git -C "$WORK" init -q --initial-branch=main --object-format=sha256
-git -C "$WORK" config commit.gpgsign false
-git -C "$WORK" add kairo.toml kairo-amd64.kaem kairo-x86.kaem
-git -C "$WORK" commit -q -m "stage0-posix 1.9.1 AMD64 and x86 bootstrap"
-OID=$(git -C "$WORK" rev-parse HEAD)
-
-WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)
-[ -n "$WRAPPER" ] || fail "object create printed no id"
-kairo git fetch --object "$WRAPPER" --remote "file://$WORK" --branch main \
-    --object-format sha256 >/dev/null
-STATEMENT=$(kairo revision create --actor "$ACTOR" --object "$WRAPPER" \
-    --revision "git:sha256:$OID" --manifest "$WORK/kairo.toml" | field statement)
-[ -n "$STATEMENT" ] || fail "revision create printed no statement"
-kairo branch set --actor "$ACTOR" --object "$WRAPPER" --revision "$STATEMENT" >/dev/null
+commit_wrapper "stage0-posix 1.9.1 AMD64 and x86 bootstrap" kairo.toml kairo-amd64.kaem kairo-x86.kaem
 
 cat <<OUT
 wrapper = $WRAPPER

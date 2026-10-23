@@ -3,7 +3,7 @@
 # that runs it into upstream's CI pass 2 for x86 (specs/DECISIONS.md §38).
 #
 # Usage:
-#   import.sh <actor id> [kairo args...]
+#   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
 # 1. `kairo source fetch https://github.com/fosslinux/live-bootstrap`
 #    archives live-bootstrap as a source object, with the submodules it
@@ -14,7 +14,9 @@
 #    names.
 # 3. The native wrapper -- this directory's kairo.toml, start.kaem, package.sh, and
 #    steps/ (bootstrap.cfg and the truncated manifest) -- is committed as
-#    SHA-256 history and created as an object.
+#    SHA-256 history and created as an object, or, with --wrapper,
+#    committed on top of that existing wrapper object's history as its
+#    next revision.
 #
 # The stage0-posix wrapper (bootstrap/stage0-posix/import.sh) must be
 # imported and its x86 target built first: its artifact is this
@@ -248,13 +250,6 @@ DISTFILES=(
      https://astron.com/pub/file/file-5.44.tar.gz"
 )
 
-if [ $# -lt 1 ]; then
-    echo "usage: $0 <actor id> [kairo args...]" >&2
-    exit 2
-fi
-ACTOR=$1
-shift
-KAIRO_ARGS=("$@")
 KAIRO=${KAIRO:-kairo}
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -264,6 +259,9 @@ fail() {
     echo "import.sh: $*" >&2
     exit 1
 }
+# shellcheck source=../wrapper.sh
+. "$HERE/../wrapper.sh"
+parse_import_args "$@"
 
 # 1. live-bootstrap, and the submodules it pins.
 kairo source fetch "$LIVE_BOOTSTRAP_URL" --actor "$ACTOR" --require-complete >&2
@@ -293,30 +291,13 @@ for entry in "${DISTFILES[@]}"; do
     [ "$fetched" = yes ] || fail "no mirror served $name ($sha256)"
 done
 
-# 3. The native wrapper, with fixed author and dates, so importing again
-# gives the same revision.
+# 3. The native wrapper (../wrapper.sh).
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-export GIT_AUTHOR_NAME=kairo-bootstrap GIT_AUTHOR_EMAIL=bootstrap@kairo.invalid
-export GIT_COMMITTER_NAME=kairo-bootstrap GIT_COMMITTER_EMAIL=bootstrap@kairo.invalid
-export GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z
 mkdir "$WORK/steps"
 cp "$HERE/kairo.toml" "$HERE/start.kaem" "$HERE/package.sh" "$WORK/"
 cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
-git -C "$WORK" init -q --initial-branch=main --object-format=sha256
-git -C "$WORK" config commit.gpgsign false
-git -C "$WORK" add kairo.toml start.kaem package.sh steps/bootstrap.cfg steps/manifest
-git -C "$WORK" commit -q -m "live-bootstrap b1ceced7 x86 to zlib in CI pass 2"
-OID=$(git -C "$WORK" rev-parse HEAD)
-
-WRAPPER=$(kairo object create --actor "$ACTOR" --kind software | field object)
-[ -n "$WRAPPER" ] || fail "object create printed no id"
-kairo git fetch --object "$WRAPPER" --remote "file://$WORK" --branch main \
-    --object-format sha256 >/dev/null
-STATEMENT=$(kairo revision create --actor "$ACTOR" --object "$WRAPPER" \
-    --revision "git:sha256:$OID" --manifest "$WORK/kairo.toml" | field statement)
-[ -n "$STATEMENT" ] || fail "revision create printed no statement"
-kairo branch set --actor "$ACTOR" --object "$WRAPPER" --revision "$STATEMENT" >/dev/null
+commit_wrapper "live-bootstrap b1ceced7 x86 to zlib in CI pass 2" kairo.toml start.kaem package.sh steps/bootstrap.cfg steps/manifest
 
 cat <<OUT
 wrapper = $WRAPPER

@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Re-importing a bootstrap wrapper extends it.** The stage0-posix and
+  live-bootstrap `import.sh` take `--wrapper <object id>`: the new
+  commit's parent is that object's current one and its revision names
+  it, so a changed wrapper becomes the existing object's next revision
+  instead of a second object offering the same labels; an unchanged
+  one adds nothing. Both share `bootstrap/wrapper.sh`.
+
 - **The highest version by default (`DECISIONS.md` §43).** Among the
   offers that satisfy a requirement the resolver takes the highest
   version, preferring those that satisfy every requirement the target
