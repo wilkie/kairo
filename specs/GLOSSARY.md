@@ -204,9 +204,11 @@ See `CORE_LIBRARY.md` and `STORE.md`.
 A provides label is what an Object declares under `[[provides]]` and what
 a dependency requires through `kind = "provides"`: `kind:specifier(:detail)*`,
 such as `tool:make`, `lib:zlib:static`, or `environment:linux/x86-64`.
-Labels are claims, matched exactly by the resolver.
+Labels are claims, matched exactly by the resolver. The kind says what
+role the provider plays and is one of `tool`, `lib`, `doc`, `data`, and
+`environment`; any other is refused.
 
-See `DECISIONS.md` §33.
+See `DECISIONS.md` §33 and §42.
 
 ## Provider Object
 

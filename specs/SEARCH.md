@@ -69,8 +69,10 @@ Recommended searchable fields:
 
 ```text
 object.name
-object.description
+object.summary
 object.tags
+object.provides     # each provides label
+child.name, child.summary, child.tags, child.provides
 actor.id
 artifact.type
 artifact.name
@@ -79,6 +81,11 @@ build/run metadata
 ```
 
 Implementations may extend fields but must not assume uniform availability.
+
+Summaries and tags come from `[kairo]` and from each
+`[[build.targets.children]]` entry (`DECISIONS.md` §42). A child object
+is indexed as a result of its own; it doesn't take its parent's summary
+or tags.
 
 ---
 
@@ -98,7 +105,13 @@ Examples:
 tag:game
 actor:john
 env:dosbox
+provides:tool:bash
+provides:doc:*
 ```
+
+`provides:<label>` matches a label exactly; `provides:<kind>:*` matches
+every label of that kind, so a search can ask for libraries, programs,
+or documentation (`DECISIONS.md` §42).
 
 Query parsing must be tolerant of unknown filters.
 
@@ -115,6 +128,8 @@ Each result must include:
   "name": "Example",
   "description": "...",
   "tags": [],
+  "provides": [],
+  "parent": null,
   "source": "local",
   "validation": "unverified",
   "locality": "local"

@@ -103,6 +103,16 @@ present, so a manifest that doesn't use them keeps its hash.
 | `kind` | `string` |
 | `name` | `string` |
 | `summary` | `option<string>` |
+| `tags` | present only when there is at least one: `string("tags") \|\| list<string>` |
+
+A tag is lowercase letters, digits, and `.`, `+`, `-`, starting with a
+letter or digit; a list holds no repeats and keeps its order
+(`DECISIONS.md` §42).
+
+Every provides label, in `[[provides]]`, a child's `provides`, or a
+`kind = "provides"` dependency, is `kind:specifier(:detail)*` with a
+non-empty specifier and `kind` one of `tool`, `lib`, `doc`, `data`, and
+`environment`; any other kind is refused (`DECISIONS.md` §42).
 
 `ContentSection`: `string(kind)`.
 
@@ -176,6 +186,8 @@ defaults spelled out, encodes as it did before they existed.
 | `root` | `string`, a relative path in the target's artifact |
 | `install` | `option<string>`: an absolute guest path, `/` when not given, or none for `install = false` |
 | `provides` | `list<string(provides) \|\| option<string>(version)>` |
+| `summary` | present only when given: `string("summary") \|\| string(summary)` |
+| `tags` | present only when there is at least one: `string("tags") \|\| list<string>` |
 
 ```toml
 [[build.targets.children]]

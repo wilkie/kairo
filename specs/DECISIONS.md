@@ -4266,3 +4266,101 @@ Affected specs:
   install roots, overlay provisioning.
 - `OBJECT.md` — child objects.
 - `DECISIONS.md` §35, §38 sub-decisions 5–6, §39 sub-decision 4.
+
+---
+
+## 42. Label Kinds, and Summaries and Tags for Search
+
+Decision: what a piece of software **gives** a consumer is said by the
+**kind** of each provides label it declares (`tool:`, `lib:`, `doc:`,
+`data:`, `environment:`), from a registered set; what it **is**, for
+people looking for it, is said by an optional `summary` and `tags`,
+on native objects and on child objects alike. The resolver reads only
+labels; search reads both. This settles how a child is typed (§41
+sub-decision 4) and gives `SEARCH.md`'s `object.tags` a field to come
+from.
+
+Sub-decisions:
+
+1. **Role belongs to labels, not to objects.** One package often holds
+   several kinds of thing (a library, its headers, its manual), so a
+   single type per object or per child would be wrong as often as
+   right. Each label carries its own role, and a child (or object)
+   providing `lib:zlib`, `lib:zlib:headers`, and `doc:zlib` is all
+   three. A build that does stage roles apart can declare a child per
+   role (`zlib`, `zlib-dev`, `zlib-doc`, with different roots); the
+   labels say the same thing either way. `[kairo] kind` (`software`,
+   `tree`) is unchanged: it says what kind of object this is, a
+   different question, and children have none.
+
+2. **Registered label kinds.** A provides label is
+   `kind:specifier(:detail)*` (§33), and `kind` is one of:
+
+   | Kind | Provides | Details by convention |
+   |---|---|---|
+   | `tool` | programs a build or user runs | — |
+   | `lib` | libraries to compile or link against | `static`, `shared`, `headers`, `source` |
+   | `doc` | documentation | `man`, `info`, `html` |
+   | `data` | files programs read: datasets, game data, programs for an emulator | the format, as `data:exe:mz` already does |
+   | `environment` | an environment contract (§34) | `<os>/<arch>` as the specifier |
+
+   A manifest whose `[[provides]]`, child `provides`, or `kind =
+   "provides"` dependency names any other kind is refused, so a
+   misspelt `libs:zlib` fails at parse time instead of never
+   resolving. The specifier must be non-empty; specifiers and details
+   are otherwise free and matched exactly, as before. A new kind is
+   added by a decision, not by use. Every label in the repository
+   today is already one of these kinds.
+
+3. **`summary` and `tags`.** `[kairo]` gains `tags`, and each
+   `[[build.targets.children]]` entry gains `summary` and `tags`
+   (`[kairo]` already has `summary`):
+
+   ```toml
+   [kairo]
+   schema = 1
+   kind = "software"
+   name = "live-bootstrap"
+   summary = "A full bootstrap from a few hundred bytes of seed."
+   tags = ["bootstrap", "toolchain"]
+
+   [[build.targets.children]]
+   name = "bash-5.2.15"
+   root = "bash-5.2.15"
+   summary = "GNU Bourne-Again shell."
+   tags = ["shell"]
+   provides = [{ provides = "tool:bash", version = "5.2.15" }]
+   ```
+
+   A tag is lowercase letters, digits, and `.`, `+`, `-`, starting with
+   a letter or digit; a list holds no repeats and keeps its order.
+   They are part of the manifest hash (so the signer vouches for them)
+   and encoded only when present, so a manifest without them keeps its
+   hash. The resolver ignores them.
+
+4. **No inheritance.** A child doesn't take its parent's summary or
+   tags: a description of live-bootstrap is wrong for its bash. Search
+   shows a child with its parent, which is context enough.
+
+5. **Search.** The local index covers each object's and each child's
+   name, summary, tags, and provides labels; a child is a result of
+   its own, carrying its parent's id. Queries add `tag:<tag>`,
+   `provides:<label>` (exact), and `provides:<kind>:*` (every label of
+   that kind), so `provides:doc:*` finds documentation and
+   `provides:lib:* tag:compression` finds compression libraries.
+   Results stay candidates, never claims of validity (`SEARCH.md` §2).
+
+Rationale: the resolver already treats labels as the contract between
+a consumer and a provider, so they are where the role must live;
+registering their kinds turns a convention into something a manifest
+can be checked against. Descriptions and keywords help people, not the
+resolver, and are kept out of resolution so that editing a summary
+never changes what a build gets.
+
+Affected specs:
+
+- `GLOSSARY.md` — provides label kinds.
+- `schemas/canonical/object-manifest-v1.md` — `[kairo] tags`; child
+  `summary` and `tags`; label kind validation.
+- `OBJECT.md` §2.5, §4.1 — tags and summaries.
+- `SEARCH.md` §4–§6 — indexed fields, filters, child results.

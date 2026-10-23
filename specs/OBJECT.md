@@ -180,8 +180,10 @@ supplied or non-Git revision scheme).
 One build can make several pieces of software (`DECISIONS.md` §41
 sub-decision 4). A build target names each as a child under
 `[[build.targets.children]]` (`schemas/canonical/object-manifest-v1.md`):
-a `name`, a `root` in the target's artifact, an install root, and the
-labels it provides.
+a `name`, a `root` in the target's artifact, an install root, the
+labels it provides, and an optional `summary` and `tags` of its own
+(`DECISIONS.md` §42). A child's role (program, library, documentation)
+is the kind of each label it provides, not a type of the child.
 
 - **Identity.** A child's id derives from `(parent object id, target,
   name)` (`schemas/canonical/child-genesis-v1.md`), unsigned; the
@@ -258,7 +260,12 @@ object = "z6MkObject..." # optional consistency check once initialized
 kind = "software"
 name = "Example"
 summary = "Example object."
+tags = ["example"]
 ```
+
+`summary` and `tags` are for people and search, never for resolution
+(`DECISIONS.md` §42): a tag is lowercase letters, digits, and `.`, `+`,
+`-`, starting with a letter or digit, with no repeats.
 
 The `object` field is optional during bootstrapping. When present, it is a
 consistency check against the signed `ObjectRevision` binding, not the source of
