@@ -40,11 +40,12 @@ host; the host runs only Kairo and allowlisted engines.
 
 Contracts are documented under `schemas/environment/`. The first is
 `environment:linux/<arch>` (`schemas/environment/linux-v1.md`),
-implemented by the bubblewrap engine (`DECISIONS.md` §35). The second,
-`environment:linux-root/<arch>` (`schemas/environment/linux-root-v1.md`,
-§38), gives the guest the build tree as its root filesystem, for
-software that assumes it owns `/`; every dependency is placed in the
-tree. Bubblewrap implements both.
+implemented by the bubblewrap engine (`DECISIONS.md` §35). Since §41 it
+is the only Linux contract: the guest is root in its own namespaces, `/`
+is writable and holds its dependencies at their install roots, the
+source tree is at `/kairo/src`, and the build stages its artifact in
+`/kairo/package`. (The separate `linux-root` contract of §38 is folded
+into it and retired.)
 
 ---
 

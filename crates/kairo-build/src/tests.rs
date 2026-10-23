@@ -734,7 +734,7 @@ fn engine_fixture() -> Option<Bubblewrap> {
 }
 
 #[test]
-fn the_bubblewrap_engine_runs_in_an_empty_root_with_providers_only() -> TestResult {
+fn the_bubblewrap_engine_runs_with_providers_and_nothing_from_the_host() -> TestResult {
     let Some(bwrap) = engine_fixture() else {
         return Ok(());
     };
@@ -838,12 +838,14 @@ fn the_bubblewrap_engine_runs_in_an_empty_root_with_providers_only() -> TestResu
     let report = world.blob_text(tree.entries[0].blob().expect("a file"));
     let lines: Vec<&str> = report.lines().collect();
     assert_eq!(lines[0], "no-usr", "{report}");
-    assert_eq!(lines[1], "1000", "{report}");
+    // Root in its own namespaces (`DECISIONS.md` §41 sub-decision 1).
+    assert_eq!(lines[1], "0", "{report}");
     assert_eq!(lines[2], "kairo", "{report}");
     assert_eq!(lines[3], "1", "only loopback: {report}");
-    assert_eq!(lines[4], "/kairo/home /kairo/src UTC", "{report}");
+    assert_eq!(lines[4], "/tmp /kairo/src UTC", "{report}");
     assert!(
-        lines[5].starts_with("/kairo/content/") && lines[5].ends_with("/bin"),
+        lines[5].starts_with("/kairo/content/")
+            && lines[5].ends_with("/bin:/usr/local/bin:/usr/bin:/bin"),
         "{report}"
     );
     assert_eq!(lines[6], "/kairo/src", "{report}");
@@ -993,8 +995,28 @@ fn placements_take_a_subtree_and_overlay_what_the_tree_holds() -> TestResult {
     Ok(())
 }
 
+/// Artifacts by `(object, target)`, as the store's build results would
+/// give them.
+struct Built(Vec<(ObjectId, String, BlobId)>);
+
+impl kairo_resolver::ArtifactSource for Built {
+    fn artifact(
+        &self,
+        object: &ObjectId,
+        _snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<BlobId>, SourceError> {
+        Ok(self
+            .0
+            .iter()
+            .find(|(o, t, _)| o == object && t == target)
+            .map(|(_, _, id)| id.clone()))
+    }
+}
+
 #[test]
-fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
+fn artifacts_land_at_their_install_roots_and_builds_stage_into_the_package() -> TestResult {
+    use kairo_store::SourceStore as _;
     let Some(bwrap) = engine_fixture() else {
         return Ok(());
     };
@@ -1014,44 +1036,113 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
         ("bin/busybox", "@copy:/usr/bin/busybox"),
         ("bin/sh", "@link:busybox"),
     ]);
-    let host = Host::detect();
-    let contract = host.root_contract();
-    let manifest = |placed: bool| {
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    // Two providers that stage what they build under /kairo/package: one
+    // installed at /, one only invoked, at /kairo/artifact/<id>.
+    let provider = |name: &str, install: &str| {
         format!(
             r#"
             [kairo]
             schema = 1
             kind = "software"
-            name = "app"
+            name = "{name}"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[provides]]
+            provides = "tool:{name}"
+            target = "release"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox mkdir -p /kairo/package/usr/bin && busybox cp $KAIRO_PROVIDER_TOOL_SH/bin/busybox /kairo/package/usr/bin/busybox && busybox ln -s busybox /kairo/package/usr/bin/ls"]
+            [build.targets.artifact]
+            install = {install}
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            "#
+        )
+    };
+    let installed = world.object(&[("kairo.toml", &provider("boxed", "\"/\""))]);
+    let invoked = world.object(&[("kairo.toml", &provider("loose", "false"))]);
+    let mut built = Vec::new();
+    for object in [&installed, &invoked] {
+        let plan = world.plan_with(&host, &object.object_id, "release");
+        let execution = run_plan(
+            &world.fixture.store,
+            &world.trees,
+            &plan,
+            1_700_000_000,
+            &Limits {
+                timeout: Duration::from_secs(30),
+            },
+            &Engine::Bubblewrap(bwrap.clone()),
+        )?;
+        assert_eq!(
+            execution.record.status,
+            Status::Success,
+            "{:?} {}",
+            execution.record.diagnostics,
+            world.blob_text(&execution.record.logs.stderr)
+        );
+        // The artifact is the package alone: nothing from / or
+        // /kairo/src.
+        let paths: Vec<&str> = execution
+            .artifact
+            .as_ref()
+            .expect("artifact")
+            .entries
+            .iter()
+            .map(ArtifactEntry::path)
+            .collect();
+        assert_eq!(paths, ["usr/bin/busybox", "usr/bin/ls"]);
+        built.push((
+            object.object_id.clone(),
+            "release".to_owned(),
+            BlobId::new(execution.record.artifact.clone().expect("artifact id"))?,
+        ));
+    }
+    let built = Built(built);
+
+    // A consumer: both providers, and a file placed at an absolute path.
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    world.fixture.store.put_file_source(
+        &kairo_statement::FileSourceGenesis::new(kairo_statement::Sha256Digest::parse(abc)?),
+        b"abc",
+    )?;
+    let consumer = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "consumer"
             [[dependencies]]
             kind = "provides"
             provides = "{contract}"
             [[build.targets]]
             name = "release"
-            command = ["/usr/bin/sh", "-c", "mkdir -p /out; {{ ls /; id -u; echo $HOME $KAIRO_SRC $PATH; pwd; test -e /kairo && echo kairo || echo no-kairo; cat /etc/motd; echo; touch /tmp/f && chown 0:0 /tmp/f && echo chown-ok; mkdir /tmp/m && mount -t tmpfs tmpfs /tmp/m && echo mount-ok; mknod /tmp/null c 1 3 2>/dev/null || echo no-mknod; ls -A /sys | wc -l; touch /sys/x 2>/dev/null || echo sys-ro; grep -c ' /sys ' /proc/mounts; }} > /out/report"]
+            command = ["/usr/bin/busybox", "sh", "-c", "{{ ls /usr/bin; echo $KAIRO_PROVIDER_TOOL_BOXED; echo $KAIRO_PROVIDER_TOOL_LOOSE; busybox test -x $KAIRO_PROVIDER_TOOL_LOOSE/usr/bin/busybox && echo loose-ok; busybox cat /opt/data/abc.txt; echo; echo $PATH; }} > /kairo/package/report"]
             [[build.targets.dependencies]]
             kind = "provides"
-            provides = "tool:sh"
-            {}
-            [[build.targets.outputs]]
-            name = "report"
-            path = "out/report"
-            artifact_path = "report"
+            provides = "tool:boxed"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:loose"
+            [[build.targets.dependencies]]
             kind = "file"
-            "#,
-            if placed { "path = \"usr\"" } else { "" }
-        )
-    };
-    let app = world.object(&[
-        ("kairo.toml", &manifest(true)),
-        ("etc/motd", "the tree's own /etc"),
-    ]);
-    let mut engine_host = host.clone();
-    engine_host
-        .engines
-        .extend([host.contract(), contract.clone()]);
-    let plan = world.plan_with(&engine_host, &app.object_id, "release");
-    assert_eq!(plan.manifest.environment, contract);
+            sha256 = "{abc}"
+            path = "/opt/data/abc.txt"
+            "#
+        ),
+    )]);
+    let plan = Resolver::new(&world.fixture.store, &world.trees, &built, &host, &[])
+        .resolve(&consumer.object_id, &SnapshotSelector::Current, "release")
+        .expect("plan")
+        .plan;
     let execution = run_plan(
         &world.fixture.store,
         &world.trees,
@@ -1060,78 +1151,29 @@ fn under_linux_root_the_tree_is_the_guest_root() -> TestResult {
         &Limits {
             timeout: Duration::from_secs(30),
         },
-        &Engine::Bubblewrap(bwrap.clone()),
+        &Engine::Bubblewrap(bwrap),
     )?;
-    let record = &execution.record;
     assert_eq!(
-        record.status,
+        execution.record.status,
         Status::Success,
         "{:?} {}",
-        record.diagnostics,
-        world.blob_text(&record.logs.stderr)
-    );
-    assert_eq!(record.environment, contract);
-    assert!(
-        record
-            .executor
-            .isolation
-            .contains("an empty read-only /sys"),
-        "{}",
-        record.executor.isolation
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
     );
     let tree = execution.artifact.as_ref().expect("artifact");
     let report = world.blob_text(tree.entries[0].blob().expect("a file"));
     let lines: Vec<&str> = report.lines().collect();
-    // `/` is the tree: its own files, the placed provider, the kernel
-    // filesystems, and nothing from the host or /kairo.
-    let root: Vec<&str> = lines[..lines.len() - 11].to_vec();
-    assert_eq!(
-        root,
-        [
-            "dev",
-            "etc",
-            "kairo.toml",
-            "out",
-            "proc",
-            "sys",
-            "tmp",
-            "usr"
-        ],
-        "{report}"
-    );
-    let rest = &lines[lines.len() - 11..];
-    // Root inside its namespaces: chown to 0 and mounts work, device
-    // nodes don't (`DECISIONS.md` §39 sub-decision 4).
-    assert_eq!(rest[0], "0", "{report}");
-    assert_eq!(
-        &rest[5..8],
-        ["chown-ok", "mount-ok", "no-mknod"],
-        "{report}"
-    );
-    // An empty, read-only /sys that mount lists (`DECISIONS.md` §39
-    // sub-decision 6).
-    assert_eq!(&rest[8..], ["0", "sys-ro", "1"], "{report}");
-    assert_eq!(rest[1], "/tmp / /usr/bin", "{report}");
-    assert_eq!(rest[2], "/", "{report}");
-    assert_eq!(rest[3], "no-kairo", "{report}");
-    assert_eq!(rest[4], "the tree's own /etc", "{report}");
-
-    // An unplaced dependency has nowhere to appear.
-    let unplaced = world.object(&[("kairo.toml", &manifest(false))]);
-    let plan = world.plan_with(&engine_host, &unplaced.object_id, "release");
-    let refused = run_plan(
-        &world.fixture.store,
-        &world.trees,
-        &plan,
-        1,
-        &Limits {
-            timeout: Duration::from_secs(5),
-        },
-        &Engine::Bubblewrap(bwrap),
-    );
+    // boxed's files are at their real paths, its link with them; loose
+    // stays at /kairo/artifact/<id>, out of /usr.
+    assert_eq!(&lines[..2], ["busybox", "ls"], "{report}");
+    assert_eq!(lines[2], "/", "{report}");
+    assert!(lines[3].starts_with("/kairo/artifact/"), "{report}");
+    assert_eq!(lines[4], "loose-ok", "{report}");
+    assert_eq!(lines[5], "abc", "{report}");
     assert!(
-        matches!(&refused, Err(BuildError::Environment(message)) if message.contains("must be placed")),
-        "{refused:?}"
+        lines[6].starts_with("/kairo/artifact/")
+            && lines[6].ends_with("/usr/bin:/usr/local/bin:/usr/bin:/bin"),
+        "{report}"
     );
     Ok(())
 }

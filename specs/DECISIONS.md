@@ -3784,7 +3784,8 @@ Sub-decisions:
      resolved to there, an artifact or an object's tree; an environment
      or host tool can't be placed.
 
-5. **The `linux-root` contract** (`schemas/environment/linux-root-v1.md`,
+5. *Superseded by §41, which folds this contract into
+   `environment:linux`.* **The `linux-root` contract** (`schemas/environment/linux-root-v1.md`,
    label `environment:linux-root/<arch>`): the guest's `/` is the
    build tree, writable, with `/proc`, the minimal `/dev`, and an
    empty `/tmp` mounted over it; no `/kairo` paths and no host paths.

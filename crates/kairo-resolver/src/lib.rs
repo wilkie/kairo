@@ -166,13 +166,6 @@ impl Host {
     pub fn contract(&self) -> String {
         format!("{ENVIRONMENT_PREFIX}{}/{}", self.system, self.arch)
     }
-
-    /// The contract whose guest root is the build tree
-    /// (`DECISIONS.md` §38 sub-decision 5):
-    /// `environment:<system>-root/<arch>`. Only an engine provides it.
-    pub fn root_contract(&self) -> String {
-        format!("{ENVIRONMENT_PREFIX}{}-root/{}", self.system, self.arch)
-    }
 }
 
 /// `x86_64` is spelled `x86-64` in labels (`DECISIONS.md` §33).
@@ -385,6 +378,11 @@ pub enum Resolved {
         target: String,
         output: String,
         artifact: Option<String>,
+        /// Where the artifact lands in the guest: its target's install
+        /// root, or `None` for `/kairo/artifact/<id>` (`DECISIONS.md`
+        /// §41 sub-decision 3).
+        #[serde(default)]
+        install: Option<String>,
     },
     /// A held object's own tree.
     Content { object: String, snapshot: String },
@@ -517,6 +515,8 @@ pub struct Offer {
     /// The environment contract the artifact's build target declares,
     /// if any (§38 sub-decision 8).
     pub environment: Option<String>,
+    /// The artifact's install root, from its build target (§41).
+    pub install: Option<String>,
 }
 
 /// The environment contract a target declares, among its own and its
@@ -634,6 +634,12 @@ impl Index {
                                 candidate.manifest.build_target(artifact.target()).and_then(
                                     |target| declared_environment(&candidate.manifest, target),
                                 )
+                            }),
+                            install: declaration.artifact().and_then(|artifact| {
+                                candidate
+                                    .manifest
+                                    .build_target(artifact.target())
+                                    .and_then(|target| target.install().map(str::to_owned))
                             }),
                         })
                 })
@@ -1278,6 +1284,7 @@ impl<'a> Resolver<'a> {
                         target: provider_target.clone(),
                         output: output.clone(),
                         artifact: artifact.map(|id| id.to_string()),
+                        install: offer.install.clone(),
                     }
                 }
             }

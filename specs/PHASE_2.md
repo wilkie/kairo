@@ -453,8 +453,8 @@ M2-Planet and mescc-tools under the engine, matching upstream's answers
 (`DECISIONS.md` §38) runs live-bootstrap unmodified for x86 from the
 stage0-posix x86 artifact through Mes, tcc, bash, a tcc and musl
 toolchain, perl, the autotools, binutils, and gcc 4.0.4 past the end of
-upstream's own CI pass 1 to gmp, mpfr, mpc, and zlib, under a
-`linux-root` contract whose guest root is the build tree, with
+upstream's own CI pass 1 to gmp, mpfr, mpc, and zlib, under the Linux
+contract, with the guest root in its namespaces and
 distfiles archived as file sources (`bootstrap/live-bootstrap/`). After
 it come gcc and the microVM engine.
 

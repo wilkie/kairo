@@ -785,17 +785,19 @@ content unless explicitly approved by policy.
 
 `bubblewrap/1` in `crates/kairo-build` (`DECISIONS.md` §35) implements
 `environment:linux/<arch>` (`schemas/environment/linux-v1.md`). Kairo
-assembles the workspace on the host, then runs `bwrap` with all
-namespaces unshared, hostname `kairo`, uid and gid 1000, `/proc`, a
-minimal `/dev`, an empty `/tmp`, the source bound read-write at
-`/kairo/src`, `/kairo/home`, each provider bound read-only at its
-canonical path, a cleared environment, and the command run in the
-workdir. Engines are allowlisted under `[[runtime.engines]]` and probed
-before use. Under `environment:linux-root/<arch>`
-(`schemas/environment/linux-root-v1.md`, `DECISIONS.md` §38) the source
-is bound read-write at `/` instead, with `/proc`, `/dev`, and `/tmp`
-mounted over it and nothing else, and every dependency placed in the
-tree. Records name the engine path and version, the kernel
+assembles the workspace on the host: a writable `/` with each
+dependency's artifact copied in at its install root (`DECISIONS.md`
+§41), in requirement order, and the absolute placements; the source
+tree; and an empty package directory. It then runs `bwrap` with all
+namespaces unshared, hostname `kairo`, uid and gid 0 with every
+capability inside the namespaces, that `/` bound read-write, `/proc`, a
+minimal `/dev`, an empty `/tmp`, an empty read-only `/sys`, the source
+at `/kairo/src`, the package at `/kairo/package`, each uninstalled
+provider bound read-only at its `/kairo/...` path, a cleared
+environment, and the command run in the workdir. The artifact is what
+the build left under `/kairo/package`, with the declared outputs copied
+in. Engines are allowlisted under `[[runtime.engines]]` and probed
+before use. Records name the engine path and version, the kernel
 release, and "wall clock not frozen" as known nondeterminism; results
 carry the contract and `host_dependent = false`.
 

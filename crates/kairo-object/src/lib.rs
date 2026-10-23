@@ -555,6 +555,9 @@ impl ArtifactOutput {
         &self.target
     }
 
+    /// The named output, or `""` for the whole artifact, as for a
+    /// target that stages it all under `/kairo/package` (`DECISIONS.md`
+    /// §41 sub-decision 2).
     pub fn output(&self) -> &str {
         &self.output
     }
@@ -878,6 +881,8 @@ pub struct BuildTarget {
     workdir: String,
     dependencies: Vec<DependencyDeclaration>,
     outputs: Vec<BuildOutput>,
+    artifact_root: String,
+    install: Option<String>,
 }
 
 impl BuildTarget {
@@ -904,6 +909,19 @@ impl BuildTarget {
     pub fn outputs(&self) -> &[BuildOutput] {
         &self.outputs
     }
+
+    /// The artifact's root under `/kairo/package`; `"."` when not given
+    /// (`DECISIONS.md` §41 sub-decision 3).
+    pub fn artifact_root(&self) -> &str {
+        &self.artifact_root
+    }
+
+    /// Where the artifact lands in a consumer's environment, an
+    /// absolute guest path; `None` keeps it at `/kairo/artifact/<id>`.
+    /// `"/"` when not given.
+    pub fn install(&self) -> Option<&str> {
+        self.install.as_deref()
+    }
 }
 
 impl CanonicalEncode for BuildTarget {
@@ -919,6 +937,18 @@ impl CanonicalEncode for BuildTarget {
         encode_list(out, &self.outputs, |out, output| {
             output.encode_canonical(out);
         });
+        // Tagged, and only when not the defaults, so a target without
+        // an artifact section hashes as it did before one existed.
+        if self.artifact_root != "." {
+            encode_str(out, "artifact_root");
+            encode_str(out, &self.artifact_root);
+        }
+        if self.install.as_deref() != Some("/") {
+            encode_str(out, "install");
+            encode_option(out, self.install.as_ref(), |out, install| {
+                encode_str(out, install);
+            });
+        }
     }
 }
 
@@ -1001,7 +1031,6 @@ pub enum ManifestError {
         field: &'static str,
         path: String,
     },
-    NoOutputs(String),
     DuplicateOutput {
         target: String,
         name: String,
@@ -1072,7 +1101,6 @@ impl fmt::Display for ManifestError {
                 f,
                 "{field} {path:?} must be a relative path without '..' or empty components"
             ),
-            Self::NoOutputs(target) => write!(f, "build target {target} declares no outputs"),
             Self::DuplicateOutput { target, name } => {
                 write!(f, "build target {target} declares output {name} twice")
             }
@@ -1128,7 +1156,6 @@ impl Error for ManifestError {
             | Self::DuplicateTarget(_)
             | Self::EmptyCommand(_)
             | Self::UnsafePath { .. }
-            | Self::NoOutputs(_)
             | Self::DuplicateOutput { .. }
             | Self::DuplicateArtifactPath { .. }
             | Self::UnknownOutputKind(_)
@@ -1203,10 +1230,11 @@ impl RawObjectManifest {
                     .iter()
                     .find(|target| target.name == artifact.target)
                     .is_some_and(|target| {
-                        target
-                            .outputs
-                            .iter()
-                            .any(|output| output.name == artifact.output)
+                        artifact.output.is_empty()
+                            || target
+                                .outputs
+                                .iter()
+                                .any(|output| output.name == artifact.output)
                     });
                 if !declared {
                     return Err(ManifestError::UnknownArtifactProvider {
@@ -1288,6 +1316,47 @@ struct RawBuildTarget {
     dependencies: Vec<RawDependencyDeclaration>,
     #[serde(default)]
     outputs: Vec<RawBuildOutput>,
+    artifact: Option<RawArtifactSection>,
+}
+
+/// `[build.targets.artifact]` (`DECISIONS.md` §41 sub-decision 3).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawArtifactSection {
+    root: Option<String>,
+    install: Option<RawInstall>,
+}
+
+/// An absolute guest path, or `false` for none.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawInstall {
+    Path(String),
+    Off(bool),
+}
+
+/// A placement's `path`: relative, in the source tree, or absolute, in
+/// the guest's `/` (`DECISIONS.md` §41 sub-decision 1).
+fn ensure_placement_path(path: String) -> Result<String, ManifestError> {
+    if path.starts_with('/') {
+        ensure_guest_path("dependencies.path", path)
+    } else {
+        ensure_relative_path("dependencies.path", path)
+    }
+}
+
+/// An absolute guest path: `/`, or `/` and a safe relative path.
+fn ensure_guest_path(field: &'static str, path: String) -> Result<String, ManifestError> {
+    if path == "/" {
+        return Ok(path);
+    }
+    match path.strip_prefix('/') {
+        Some(rest) => {
+            ensure_relative_path(field, rest.to_owned())?;
+            Ok(path)
+        }
+        None => Err(ManifestError::UnsafePath { field, path }),
+    }
 }
 
 impl RawBuildTarget {
@@ -1308,9 +1377,32 @@ impl RawBuildTarget {
             .into_iter()
             .map(RawDependencyDeclaration::validate)
             .collect::<Result<Vec<_>, _>>()?;
-        if self.outputs.is_empty() {
-            return Err(ManifestError::NoOutputs(self.name));
-        }
+        // The artifact may be staged in /kairo/package alone, without
+        // outputs (`DECISIONS.md` §41 sub-decision 2).
+        let (artifact_root, install) = match self.artifact {
+            None => (".".to_owned(), Some("/".to_owned())),
+            Some(section) => {
+                let root = match section.root {
+                    None => ".".to_owned(),
+                    Some(root) if root == "." => root,
+                    Some(root) => ensure_relative_path("build.targets.artifact.root", root)?,
+                };
+                let install = match section.install {
+                    None => Some("/".to_owned()),
+                    Some(RawInstall::Off(false)) => None,
+                    Some(RawInstall::Off(true)) => {
+                        return Err(ManifestError::UnsafePath {
+                            field: "build.targets.artifact.install",
+                            path: "true".to_owned(),
+                        })
+                    }
+                    Some(RawInstall::Path(path)) => {
+                        Some(ensure_guest_path("build.targets.artifact.install", path)?)
+                    }
+                };
+                (root, install)
+            }
+        };
         let mut outputs: Vec<BuildOutput> = Vec::with_capacity(self.outputs.len());
         for raw in self.outputs {
             let output = raw.validate()?;
@@ -1337,6 +1429,8 @@ impl RawBuildTarget {
             workdir,
             dependencies,
             outputs,
+            artifact_root,
+            install,
         })
     }
 }
@@ -1463,7 +1557,14 @@ impl RawProvideDeclaration {
         ensure_non_empty("provides.provides", &self.provides)?;
         let artifact = match (self.target, self.output) {
             (None, None) => None,
-            (Some(target), Some(output)) => Some(ArtifactOutput { target, output }),
+            (Some(target), Some(output)) if !output.is_empty() => {
+                Some(ArtifactOutput { target, output })
+            }
+            // The whole artifact.
+            (Some(target), None) => Some(ArtifactOutput {
+                target,
+                output: String::new(),
+            }),
             _ => return Err(ManifestError::PartialArtifactProvider(self.provides)),
         };
 
@@ -1504,7 +1605,7 @@ impl RawDependencyDeclaration {
         let overlay = self.overlay.take().unwrap_or(false);
         match self.path.take() {
             Some(path) => Ok(Some(Placement {
-                path: ensure_relative_path("dependencies.path", path)?,
+                path: ensure_placement_path(path)?,
                 from,
                 overlay,
             })),
@@ -1556,7 +1657,7 @@ impl RawDependencyDeclaration {
                 "needs path, where the file goes in the source tree".to_owned(),
             )
         })?;
-        let path = ensure_relative_path("dependencies.path", path)?;
+        let path = ensure_placement_path(path)?;
         Ok(DependencyDeclaration::File(FileDependency {
             sha256,
             path,
@@ -2312,6 +2413,7 @@ mod tests {
             Err(ManifestError::DuplicateTarget(name)) if name == "release"
         ));
 
+        // A target may stage its artifact in /kairo/package alone.
         let no_outputs = r#"
             [kairo]
             schema = 1
@@ -2322,10 +2424,63 @@ mod tests {
             name = "check"
             command = ["make", "check"]
             "#;
-        assert!(matches!(
-            ObjectManifest::parse_toml(no_outputs),
-            Err(ManifestError::NoOutputs(name)) if name == "check"
-        ));
+        assert!(ObjectManifest::parse_toml(no_outputs).is_ok());
+    }
+
+    #[test]
+    fn a_target_declares_its_artifact_root_and_install_root(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |section: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
+                [[build.targets]]
+                name = "release"
+                command = ["make", "install"]
+                {section}
+                "#
+            )
+        };
+        let plain = ObjectManifest::parse_toml(&manifest(""))?;
+        let target = plain.build_target("release").ok_or("target")?;
+        assert_eq!((target.artifact_root(), target.install()), (".", Some("/")));
+        // The defaults, spelled out, hash as before.
+        let spelled = manifest("[build.targets.artifact]\nroot = \".\"\ninstall = \"/\"");
+        assert_eq!(
+            ObjectManifest::parse_toml(&spelled)?.manifest_hash(),
+            plain.manifest_hash()
+        );
+        let tool = ObjectManifest::parse_toml(&manifest(
+            "[build.targets.artifact]\nroot = \"bash\"\ninstall = false",
+        ))?;
+        let target = tool.build_target("release").ok_or("target")?;
+        assert_eq!((target.artifact_root(), target.install()), ("bash", None));
+        assert_ne!(tool.manifest_hash(), plain.manifest_hash());
+        let opt = ObjectManifest::parse_toml(&manifest(
+            "[build.targets.artifact]\ninstall = \"/opt/tool\"",
+        ))?;
+        assert_eq!(
+            opt.build_target("release").ok_or("target")?.install(),
+            Some("/opt/tool")
+        );
+        for section in [
+            "[build.targets.artifact]\ninstall = \"usr\"",
+            "[build.targets.artifact]\ninstall = \"/a/../b\"",
+            "[build.targets.artifact]\ninstall = true",
+            "[build.targets.artifact]\nroot = \"/abs\"",
+        ] {
+            assert!(
+                matches!(
+                    ObjectManifest::parse_toml(&manifest(section)),
+                    Err(ManifestError::UnsafePath { .. })
+                ),
+                "{section}"
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -2350,9 +2505,15 @@ mod tests {
                 .map(|m| m.manifest_hash())?
         );
 
+        // Without an output, the whole artifact.
+        let whole = ObjectManifest::parse_toml(&provider.replace("output = \"cli\"", ""))?;
+        assert!(matches!(
+            whole.provides(),
+            [declaration] if declaration.artifact().map(|a| (a.target(), a.output())) == Some(("release", ""))
+        ));
         for (from, to, partial) in [
-            ("output = \"cli\"", "", true),
             ("target = \"release\"", "", true),
+            ("output = \"cli\"", "output = \"\"", true),
             ("output = \"cli\"", "output = \"other\"", false),
             ("target = \"release\"", "target = \"debug\"", false),
         ] {

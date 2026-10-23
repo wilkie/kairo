@@ -336,8 +336,25 @@ from = "bin"
 ```
 
 Placements may nest but not share a path; shallower ones land first.
-Under the `environment:linux-root/<arch>` contract, every dependency
-must be placed.
+A relative `path` is in the source tree (`/kairo/src` in the guest); an
+absolute one, such as `/steps`, is in the guest's `/` (`DECISIONS.md`
+§41 sub-decision 1).
+
+**Artifacts and install roots** (`DECISIONS.md` §41). A build target
+stages its artifact under `/kairo/package`, laid out as it should be
+installed, and may say which part is the artifact and where it lands
+for the objects that use it:
+
+```toml
+[build.targets.artifact]
+root = "."        # a subdirectory of /kairo/package; the default
+install = "/"     # an absolute guest path, or false for /kairo/artifact/<id>
+```
+
+Declared `[[build.targets.outputs]]` are copied into the package too, so
+a target may have outputs, a staged package, or both. A `[[provides]]`
+entry naming a `target` without an `output` provides that target's
+whole artifact.
 
 In `kairo.toml`, fields such as `object` and `snapshot` use bare ID payloads
 because the field names provide type context. Standalone references use typed

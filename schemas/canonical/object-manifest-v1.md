@@ -108,7 +108,8 @@ present, so a manifest that doesn't use them keeps its hash.
 
 `ProvideDeclaration`: `string(provides) || option(version, string)`, then
 `string("artifact") || string(target) || string(output)` when the entry
-names a build output (an artifact provider).
+names a build output (an artifact provider); `output` is `""` when the
+entry names the target's whole artifact (`DECISIONS.md` §41).
 
 `DependencyDeclaration` variants:
 
@@ -157,7 +158,13 @@ encoded as written.
 | `command` | `list<string>`, non-empty, first element non-empty |
 | `workdir` | `string`; `"."` when not given |
 | `dependencies` | `list<DependencyDeclaration>` |
-| `outputs` | `list<BuildOutput>`, non-empty |
+| `outputs` | `list<BuildOutput>`, possibly empty |
+| `artifact_root` | present only when not `"."`: `string("artifact_root") \|\| string(root)`, a relative path under `/kairo/package` |
+| `install` | present only when not `"/"`: `string("install") \|\| option<string>(install)`, an absolute guest path, or none for `install = false` |
+
+`artifact_root` and `install` come from `[build.targets.artifact]`
+(`DECISIONS.md` §41 sub-decision 3); a target without one, or with the
+defaults spelled out, encodes as it did before they existed.
 
 `BuildOutput` is encoded as:
 
@@ -170,7 +177,8 @@ encoded as written.
 
 `workdir` (other than `"."`), `path`, and `artifact_path` must be
 `/`-separated relative paths with no empty, `.`, or `..` components and no
-backslashes.
+backslashes. A dependency's placement `path` may instead be absolute
+(`/` and such a path), naming a path in the guest's `/`.
 
 ## Ordering
 

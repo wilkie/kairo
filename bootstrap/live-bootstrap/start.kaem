@@ -14,6 +14,9 @@ BINDIR="../${ARCH_DIR}/bin"
 BUILDDIR="../${ARCH_DIR}/artifact"
 TMPDIR="${BUILDDIR}"
 OPERATING_SYSTEM="Linux"
+# The wrapper's bootstrap.cfg and truncated manifest, over upstream's.
+/x86/bin/cp /kairo/src/steps/bootstrap.cfg /steps/bootstrap.cfg
+/x86/bin/cp /kairo/src/steps/manifest /steps/manifest
 cd /seed
 /x86/bin/cp after.kaem /after.kaem
 /x86/bin/cp configurator.c /configurator.c
@@ -24,3 +27,7 @@ cd /seed
 /x86/bin/cp seed.kaem /seed.kaem
 cd /
 /x86/bin/kaem --verbose --strict --file ./after.kaem
+# What the build ships: the installed /usr, and the checked packages
+# (specs/DECISIONS.md §41 sub-decision 2), copied with the bash and
+# coreutils it built.
+/usr/bin/bash -c "PATH=/usr/bin && cp -a /usr /kairo/package/usr && cp -a /external/repo /kairo/package/repo"

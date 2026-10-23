@@ -3,7 +3,7 @@
 //! its x86 target built; `bootstrap/live-bootstrap/import.sh` archives
 //! live-bootstrap and its distfiles and creates the wrapper; `kairo
 //! build` runs live-bootstrap's own scripts under
-//! `environment:linux-root/x86`, each step checking what it built
+//! `environment:linux/x86`, each step checking what it built
 //! against upstream's checksums; every package the bash-run steps made
 //! matches the checksums upstream publishes, read from the archived
 //! source; and `kairo reproduce` matches.
@@ -197,7 +197,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     let wrapper = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &wrapper, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
-    assert_eq!(field(&built, "environment"), "environment:linux-root/x86");
+    assert_eq!(field(&built, "environment"), "environment:linux/x86");
     assert_eq!(field(&built, "host_dependent"), "no");
     let artifact = field(&built, "artifact").to_owned();
 

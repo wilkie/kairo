@@ -721,7 +721,7 @@ fn artifact_offers_must_be_built_for_the_consumers_architecture() -> TestResult 
                 r#"
                 [[dependencies]]
                 kind = "provides"
-                provides = "environment:linux-root/{arch}"
+                provides = "environment:linux/{arch}"
                 [[build.targets]]
                 name = "release"
                 command = ["make"]
@@ -738,14 +738,9 @@ fn artifact_offers_must_be_built_for_the_consumers_architecture() -> TestResult 
         )
     };
     let mut host = World::host();
-    host.engines = [
-        "environment:linux/x86-64",
-        "environment:linux/x86",
-        "environment:linux-root/x86-64",
-        "environment:linux-root/x86",
-    ]
-    .map(str::to_owned)
-    .to_vec();
+    host.engines = ["environment:linux/x86-64", "environment:linux/x86"]
+        .map(str::to_owned)
+        .to_vec();
     for (arch, wanted) in [("x86", &x86), ("x86-64", &amd64)] {
         let (app, _) = world.object(&consumer(arch));
         let resolution = world.resolve_with(&NoArtifacts, &host, &[], &app.object_id, "release")?;

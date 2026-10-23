@@ -110,6 +110,10 @@ source = "https://github.com/oriansj/stage0-posix-amd64"
 revision = "git:sha1:82efa0d6be1c9bb993a7a62af1cccd8d2cda91f6"
 path = "stage0/AMD64"
 
+# Tools invoked by path, not installed into a consumer's / (§41).
+[build.targets.artifact]
+install = false
+
 [[build.targets.outputs]]
 name = "bin"
 path = "AMD64/bin"
@@ -133,6 +137,10 @@ kind = "source"
 source = "https://github.com/oriansj/stage0-posix-x86"
 revision = "git:sha1:3b9c2bb6d4155e4f2e5f642b5e0f59255dfc5934"
 path = "stage0/x86"
+
+# Tools invoked by path, not installed into a consumer's / (§41).
+[build.targets.artifact]
+install = false
 
 [[build.targets.outputs]]
 name = "bin"

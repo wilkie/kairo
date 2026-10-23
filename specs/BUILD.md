@@ -103,6 +103,13 @@ Fields:
 - artifact_path: path inside artifact (unique within the target)
 - kind: file or directory
 
+The artifact is what the build stages under `/kairo/package`, laid out as
+it should be installed, together with each output, copied there at its
+`artifact_path` (`DECISIONS.md` §41): nothing else the build touched is
+collected. `[build.targets.artifact]` names a subdirectory of the
+package as the artifact (`root`) and where it lands in consumers'
+environments (`install`, `/` by default, or `false`).
+
 Outputs define the boundary of the artifact. Symbolic links inside an
 output are kept as links, never followed: a relative target must stay
 inside the artifact, and an absolute one is kept as the guest's path; a

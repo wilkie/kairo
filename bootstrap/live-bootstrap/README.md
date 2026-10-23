@@ -30,15 +30,15 @@ steps target i386 (§38 sub-decision 7).
 ## How it's put together
 
 live-bootstrap assumes it owns `/`: its scripts run from `/steps`,
-install into `/usr`, and bake those paths into what they build. So the
-build runs under `environment:linux-root/x86`
-(`schemas/environment/linux-root-v1.md`), where the build tree is the
-guest's root, and every input is placed in it where live-bootstrap's own
-`rootfs.py` puts it:
+install into `/usr`, and bake those paths into what they build. Under
+`environment:linux/x86` (`schemas/environment/linux-v1.md`,
+`DECISIONS.md` §41) the guest is root and `/` is writable, so every
+input is placed at the absolute path live-bootstrap's own `rootfs.py`
+puts it, and the wrapper's own files are in `/kairo/src`:
 
 | Guest path | What | How it's pinned |
 |---|---|---|
-| `/steps` | live-bootstrap's `steps/`, under this directory's `steps/bootstrap.cfg` and truncated `steps/manifest` (`overlay = true`, so the wrapper's files win) | source object, by commit |
+| `/steps` | live-bootstrap's `steps/`; `start.kaem` copies this directory's `steps/bootstrap.cfg` and truncated `steps/manifest` over them | source object, by commit |
 | `/seed` → `/` | live-bootstrap's `seed/` files; `start.kaem` copies them to `/`, as `rootfs.py` does | source object, by commit |
 | `/M2libc` | stage0-posix's M2libc, where `seed.kaem`'s `M2LIBC_PATH` points | source object, by commit |
 | `/x86/bin` | stage0-posix 1.9.1's x86 tools, the artifact its wrapper builds; this replaces live-bootstrap's rerun of stage0 | artifact, via `tool:kaem` |
@@ -46,8 +46,8 @@ guest's root, and every input is placed in it where live-bootstrap's own
 
 | File | What it is |
 |---|---|
-| `kairo.toml` | The pins and placements above; one target, `x86`, whose outputs are the installed `usr/` tree, providing `tool:mes`, `tool:tcc`, `tool:make`, `tool:bash`, `lib:musl`, and the rest, and the checked packages in `repo/`. |
-| `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: sets its variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. |
+| `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, providing `tool:mes`, `tool:tcc`, `tool:make`, `tool:bash`, `lib:musl`, and the rest, and the checked packages in `repo/`. |
+| `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: puts the wrapper's step files over upstream's, sets `kaem.run`'s variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. At the end it copies `/usr` and `/external/repo` into `/kairo/package`, the artifact. |
 | `steps/bootstrap.cfg` | What `rootfs.py --arch x86 --bwrap --external-sources` writes. |
 | `steps/manifest` | live-bootstrap's manifest, truncated after `zlib-1.3.1`, before the perl chain of upstream's CI pass 2. |
 | `import.sh` | Archives live-bootstrap and the distfiles, and creates the wrapper. |

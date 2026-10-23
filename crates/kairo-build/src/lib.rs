@@ -66,7 +66,7 @@ pub const EXECUTOR_VERSION: u32 = 1;
 pub const BUBBLEWRAP_EXECUTOR_ID: &str = "bubblewrap";
 pub const BUBBLEWRAP_EXECUTOR_VERSION: u32 = 1;
 
-fn executor_info(engine: &Engine, rooted: bool) -> ExecutorInfo {
+fn executor_info(engine: &Engine) -> ExecutorInfo {
     match engine {
         Engine::Native => ExecutorInfo {
             id: EXECUTOR_ID.to_owned(),
@@ -79,15 +79,11 @@ fn executor_info(engine: &Engine, rooted: bool) -> ExecutorInfo {
         Engine::Bubblewrap(bwrap) => ExecutorInfo {
             id: BUBBLEWRAP_EXECUTOR_ID.to_owned(),
             version: BUBBLEWRAP_EXECUTOR_VERSION,
-            isolation: if rooted {
-                "linux namespaces (bubblewrap): the build tree as /, with /proc, /dev, /tmp and \
-                 an empty read-only /sys over it; no network; hostname kairo; uid and gid 0 with \
-                 every capability inside its own namespaces"
-            } else {
-                "linux namespaces (bubblewrap): only /kairo, /proc, /dev and /tmp visible; \
-                 no network; hostname kairo; uid and gid 1000"
-            }
-            .to_owned(),
+            isolation: "linux namespaces (bubblewrap): a writable / holding the dependencies at \
+                        their install roots, /kairo/src, /kairo/package, /proc, /dev, /tmp and an \
+                        empty read-only /sys; no network; hostname kairo; uid and gid 0 with \
+                        every capability inside its own namespaces"
+                .to_owned(),
             engine: Some(EngineInfo {
                 path: bwrap.path.display().to_string(),
                 version: bwrap.version.clone(),
@@ -755,14 +751,13 @@ fn export_source(
     }
 }
 
-/// Guest paths of the `linux` contract (`schemas/environment/linux-v1.md`).
+/// Guest paths of the `linux` contract (`schemas/environment/linux-v1.md`,
+/// `DECISIONS.md` §41 sub-decision 1).
 const GUEST_SRC: &str = "/kairo/src";
-const GUEST_HOME: &str = "/kairo/home";
-/// The `linux-root` contract's labels
-/// (`schemas/environment/linux-root-v1.md`): the tree is `/`, and
-/// `HOME` is the empty `/tmp`.
-pub const LINUX_ROOT_PREFIX: &str = "environment:linux-root/";
-const ROOTED_HOME: &str = "/tmp";
+const GUEST_PACKAGE: &str = "/kairo/package";
+const GUEST_HOME: &str = "/tmp";
+/// The guest's standard command path, after its dependencies' own.
+const GUEST_PATH: [&str; 3] = ["/usr/local/bin", "/usr/bin", "/bin"];
 
 /// A provider's host directory and where the guest sees it.
 struct Mount {
@@ -803,8 +798,6 @@ pub fn run_plan(
         });
     }
     let isolated = matches!(engine, Engine::Bubblewrap(_));
-    // The tree is the guest's `/` (§38 sub-decision 5).
-    let rooted = isolated && manifest.environment.starts_with(LINUX_ROOT_PREFIX);
     let object = ObjectId::new(manifest.object.clone()).map_err(BuildError::Id)?;
     let snapshot = SnapshotId::new(manifest.snapshot.clone()).map_err(BuildError::Id)?;
 
@@ -818,7 +811,10 @@ pub fn run_plan(
     let deps = workspace.path().join("deps");
     let home = workspace.path().join("home");
     let log = workspace.path().join("log");
-    for dir in [&src, &deps, &home, &log] {
+    // The guest's writable `/`, and where it stages its artifact (§41).
+    let root = workspace.path().join("root");
+    let package = workspace.path().join("package");
+    for dir in [&src, &deps, &home, &log, &root, &package] {
         fs::create_dir(dir).map_err(|source| io_error("creating", dir, source))?;
     }
     // What a path is called where the command runs.
@@ -853,12 +849,11 @@ pub fn run_plan(
             target: manifest.target.clone(),
         })?;
 
-    // Providers, at paths named by what they are (§35 sub-decision 1),
-    // or placed in the tree (§37 sub-decision 7, §38 sub-decision 4),
-    // and the environment they contribute. Under `linux-root` the tree
-    // is the guest's `/`, so everything must be placed (§38
-    // sub-decision 5).
-    let guest_src = if rooted { "" } else { GUEST_SRC };
+    // Providers: installed at their install roots in the guest's `/`
+    // (§41 sub-decision 3), at paths named by what they are (§35
+    // sub-decision 1), or placed (§37 sub-decision 7, §38 sub-decision
+    // 4), and the environment they contribute.
+    let mut installs: Vec<(String, BlobId, String)> = Vec::new();
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     let mut mounts: Vec<Mount> = Vec::new();
     let mut path_dirs: Vec<String> = Vec::new();
@@ -876,14 +871,9 @@ pub fn run_plan(
             kairo_resolver::Requested::File { path, .. } => format!("file:{path}"),
         };
         let placed = requirement.requested.placement();
-        let unplaced = |what: String| -> Result<(), BuildError> {
-            if rooted {
-                return Err(BuildError::Environment(format!(
-                    "{what} has no path, and under {} every dependency must be placed",
-                    manifest.environment
-                )));
-            }
-            Ok(())
+        let install_root = match &requirement.resolved {
+            Resolved::Artifact { install, .. } => install.clone(),
+            _ => None,
         };
         let what = match &requirement.resolved {
             Resolved::Content {
@@ -962,7 +952,6 @@ pub fn run_plan(
         }
         let mount = match what {
             Placed::Content { object, snapshot } => {
-                unplaced(format!("object:{object}"))?;
                 let host = deps.join("content").join(snapshot.as_str());
                 if !host.exists() {
                     fs::create_dir_all(&host)
@@ -975,7 +964,13 @@ pub fn run_plan(
                 }
             }
             Placed::Artifact(artifact) => {
-                unplaced(format!("artifact {artifact}"))?;
+                // Installed into the guest's `/` once the loop is done,
+                // in requirement order, so the first wins (§41
+                // sub-decision 5, by copying).
+                if let (true, Some(install)) = (isolated, &install_root) {
+                    installs.push((install.clone(), artifact, label));
+                    continue;
+                }
                 let host = deps.join("artifact").join(artifact.as_str());
                 if !host.exists() {
                     fs::create_dir_all(&host)
@@ -992,7 +987,6 @@ pub fn run_plan(
                 revision,
                 url,
             } => {
-                unplaced(format!("{url} at {revision}"))?;
                 let staged = deps
                     .join("source")
                     .join(source.as_str())
@@ -1015,19 +1009,49 @@ pub fn run_plan(
             // A file always has a path.
             Placed::File(_) => continue,
         };
-        let bin = format!("{}/bin", seen(&mount));
-        if mount.host.join("bin").is_dir() && !path_dirs.contains(&bin) {
-            path_dirs.push(bin);
+        // Natively an installable artifact can't be installed; its
+        // `usr/bin` joins `PATH` too.
+        for sub in ["bin", "usr/bin"] {
+            let dir = format!("{}/{sub}", seen(&mount));
+            if mount.host.join(sub).is_dir() && !path_dirs.contains(&dir) {
+                path_dirs.push(dir);
+            }
         }
         env.insert(provider_var(&label), seen(&mount));
         if !mounts.iter().any(|existing| existing.guest == mount.guest) {
             mounts.push(mount);
         }
     }
+    for (index, (install, artifact, label)) in installs.into_iter().enumerate() {
+        let staging = deps.join("installed").join(index.to_string());
+        fs::create_dir_all(&staging).map_err(|source| io_error("creating", &staging, source))?;
+        materialize_artifact(store, &artifact, &staging)?;
+        let inside = guest_target(&root, &install)?;
+        place(&staging, &inside, true).map_err(|error| match error {
+            PlaceError::Occupied => BuildError::PlacementOccupied {
+                path: install.clone(),
+            },
+            PlaceError::Io(error) => error,
+        })?;
+        env.insert(provider_var(&label), install);
+    }
     // Shallowest first, so a placement nested in another lands in it.
     placements.sort_by_key(|placement| placement.path.split('/').count());
     for (index, placement) in placements.into_iter().enumerate() {
-        let inside = placement_target(&src, &placement.path)?;
+        // An absolute path is in the guest's `/`; a relative one in the
+        // source tree (§41 sub-decision 1).
+        let absolute = placement.path.starts_with('/');
+        if absolute && !isolated {
+            return Err(BuildError::Environment(format!(
+                "a dependency is placed at the absolute path {}, which needs an engine",
+                placement.path
+            )));
+        }
+        let inside = if absolute {
+            guest_target(&root, &placement.path)?
+        } else {
+            placement_target(&src, &placement.path)?
+        };
         let staging = deps.join("placed").join(index.to_string());
         fs::create_dir_all(&staging).map_err(|source| io_error("creating", &staging, source))?;
         let tree = match &placement.what {
@@ -1083,7 +1107,11 @@ pub fn run_plan(
         })?;
         let mount = Mount {
             host: inside,
-            guest: format!("{guest_src}/{}", placement.path),
+            guest: if absolute {
+                placement.path.clone()
+            } else {
+                format!("{GUEST_SRC}/{}", placement.path)
+            },
         };
         if matches!(placement.what, Placed::Artifact(_) | Placed::Content { .. }) {
             let bin = format!("{}/bin", seen(&mount));
@@ -1096,15 +1124,23 @@ pub fn run_plan(
         }
     }
     path_dirs.extend(host_tool_dirs);
+    if isolated {
+        path_dirs.extend(GUEST_PATH.map(str::to_owned));
+    }
     let src_mount = Mount {
         host: src.clone(),
-        guest: if rooted { "/" } else { GUEST_SRC }.to_owned(),
+        guest: GUEST_SRC.to_owned(),
+    };
+    let package_mount = Mount {
+        host: package.clone(),
+        guest: GUEST_PACKAGE.to_owned(),
     };
     let home_mount = Mount {
         host: home.clone(),
-        guest: if rooted { ROOTED_HOME } else { GUEST_HOME }.to_owned(),
+        guest: GUEST_HOME.to_owned(),
     };
     env.insert("HOME".to_owned(), seen(&home_mount));
+    env.insert("KAIRO_PACKAGE".to_owned(), seen(&package_mount));
     env.insert("LANG".to_owned(), "C".to_owned());
     env.insert("SOURCE_DATE_EPOCH".to_owned(), source_epoch.to_string());
     env.insert("KAIRO_SRC".to_owned(), seen(&src_mount));
@@ -1119,10 +1155,9 @@ pub fn run_plan(
     } else {
         src.join(target.workdir())
     };
-    let guest_workdir = match (target.workdir(), rooted) {
-        (".", true) => "/".to_owned(),
-        (".", false) => GUEST_SRC.to_owned(),
-        (workdir, _) => format!("{guest_src}/{workdir}"),
+    let guest_workdir = match target.workdir() {
+        "." => GUEST_SRC.to_owned(),
+        workdir => format!("{GUEST_SRC}/{workdir}"),
     };
     let stdout_path = log.join("stdout");
     let stderr_path = log.join("stderr");
@@ -1152,36 +1187,23 @@ pub fn run_plan(
                     "--new-session",
                 ])
                 .args(["--hostname", "kairo"]);
-            if rooted {
-                // Root inside its own namespaces, still the invoking
-                // user on the host (`DECISIONS.md` §39 sub-decision 4).
-                process.args(["--uid", "0", "--gid", "0", "--cap-add", "ALL"]);
-            } else {
-                process.args(["--uid", "1000", "--gid", "1000"]);
-            }
-            if rooted {
-                // The tree first, so the kernel filesystems mount over
-                // it; nothing else from the host. `/sys` is empty and
-                // read-only, so scripts that mount what isn't mounted
-                // don't mount the host's sysfs (`DECISIONS.md` §39
-                // sub-decision 6).
-                process
-                    .arg("--bind")
-                    .arg(&src)
-                    .arg("/")
-                    .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
-                    .args(["--tmpfs", "/sys", "--remount-ro", "/sys"]);
-            } else {
-                process
-                    .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
-                    .args(["--dir", "/kairo"])
-                    .arg("--bind")
-                    .arg(&src)
-                    .arg(GUEST_SRC)
-                    .arg("--bind")
-                    .arg(&home)
-                    .arg(GUEST_HOME);
-            }
+            // Root inside its own namespaces, still the invoking user on
+            // the host (§39 sub-decision 4). The writable `/` first, so
+            // the rest mounts over it; nothing else from the host. `/sys`
+            // is empty and read-only (§39 sub-decision 6).
+            process
+                .args(["--uid", "0", "--gid", "0", "--cap-add", "ALL"])
+                .arg("--bind")
+                .arg(&root)
+                .arg("/")
+                .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
+                .args(["--tmpfs", "/sys", "--remount-ro", "/sys"])
+                .arg("--bind")
+                .arg(&src)
+                .arg(GUEST_SRC)
+                .arg("--bind")
+                .arg(&package)
+                .arg(GUEST_PACKAGE);
             for mount in &mounts {
                 process.arg("--ro-bind").arg(&mount.host).arg(&mount.guest);
             }
@@ -1265,6 +1287,26 @@ pub fn run_plan(
             }
         }
     }
+    // And what the build staged under /kairo/package, from the
+    // target's artifact root (§41 sub-decision 2).
+    if status == Status::Success {
+        match collect_package(store, &package, target.artifact_root()) {
+            Ok(collected) => {
+                if !collected.is_empty() {
+                    outputs.push(OutputRecord {
+                        name: "package".to_owned(),
+                        artifact_path: target.artifact_root().to_owned(),
+                        files: collected.len(),
+                    });
+                }
+                entries.extend(collected);
+            }
+            Err(reason) => {
+                diagnostics.push(format!("package: {reason}"));
+                status = Status::Failure;
+            }
+        }
+    }
     // The outputs together must make a well-formed tree: no two at one
     // path, and nothing under a link (`DECISIONS.md` §39).
     if status == Status::Success {
@@ -1294,7 +1336,7 @@ pub fn run_plan(
         object: manifest.object.clone(),
         snapshot: manifest.snapshot.clone(),
         target: manifest.target.clone(),
-        executor: executor_info(engine, rooted),
+        executor: executor_info(engine),
         environment: manifest.environment.clone(),
         host_dependent: !isolated || manifest.host_dependent,
         host: HostInfo {
@@ -1451,6 +1493,64 @@ fn walk_dir(
         }
     }
     Ok(())
+}
+
+/// The artifact staged under `package`, from `root` within it (`"."`
+/// for all of it), as entries at their paths relative to `root`.
+fn collect_package(
+    store: &FilesystemStore,
+    package: &Path,
+    root: &str,
+) -> Result<Vec<ArtifactEntry>, String> {
+    let top = if root == "." {
+        package.to_path_buf()
+    } else {
+        package.join(root)
+    };
+    match fs::symlink_metadata(&top) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Err(format!("the artifact root {root} is not a directory")),
+        Err(_) if root == "." => return Ok(Vec::new()),
+        Err(_) => return Err(format!("the artifact root {root} was not produced")),
+    }
+    let top = top.canonicalize().map_err(|error| error.to_string())?;
+    let mut entries = Vec::new();
+    let mut children: Vec<_> = fs::read_dir(&top)
+        .map_err(|error| error.to_string())?
+        .collect::<Result<_, _>>()
+        .map_err(|error| error.to_string())?;
+    children.sort_by_key(|entry| entry.file_name());
+    for child in children {
+        let name = child
+            .file_name()
+            .into_string()
+            .map_err(|name| format!("{name:?} is not UTF-8"))?;
+        let path = child.path();
+        let kind = child.file_type().map_err(|error| error.to_string())?;
+        if kind.is_symlink() {
+            entries.push(link_entry(&path, &name)?);
+        } else if kind.is_dir() {
+            walk_dir(store, &top, &path, &name, &mut entries)?;
+        } else if kind.is_file() {
+            entries.push(store_file(store, &path, &name)?);
+        } else {
+            return Err(format!(
+                "{} is neither a file nor a directory",
+                path.display()
+            ));
+        }
+    }
+    Ok(entries)
+}
+
+/// Where an absolute guest path lands in the writable `/` at `root`,
+/// through no symlink the guest's tree holds.
+fn guest_target(root: &Path, path: &str) -> Result<PathBuf, BuildError> {
+    let relative = path.trim_start_matches('/');
+    if relative.is_empty() {
+        return Ok(root.to_path_buf());
+    }
+    placement_target(root, relative)
 }
 
 /// A link entry for the symbolic link at `path`, its target checked.

@@ -18,6 +18,17 @@ rather than per-commit.
 
 ### Added
 
+- **One Linux contract, package roots, and install roots (`DECISIONS.md`
+  §41, slice 1).** `environment:linux/<arch>` now has the guest root in
+  its namespaces with a writable `/` holding each dependency's artifact
+  at its install root (copied, in requirement order), the source tree at
+  `/kairo/src`, and an empty `/kairo/package` where the build stages its
+  artifact; `linux-root` is folded in and retired. Targets declare
+  `[build.targets.artifact] root` and `install` (`/` by default, or
+  `false` for `/kairo/artifact/<id>`), outputs are optional, provides may
+  name a target's whole artifact, and placement paths may be absolute.
+  The stage0-posix and live-bootstrap wrappers move onto it.
+
 - **An empty, read-only `/sys` under `linux-root` (`DECISIONS.md` §39
   sub-decision 6).** Scripts that mount what isn't mounted, such as
   live-bootstrap's `finalize_fhs`, no longer mount the host's sysfs.
