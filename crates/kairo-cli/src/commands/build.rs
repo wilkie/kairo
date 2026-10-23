@@ -937,6 +937,16 @@ fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
             output.name, output.artifact_path, output.files
         );
     }
+    if !record.children.is_empty() {
+        let _ = writeln!(out, "children = {}", record.children.len());
+        for child in &record.children {
+            let _ = writeln!(
+                out,
+                "  {} object:{} (artifact {})",
+                child.name, child.object, child.artifact
+            );
+        }
+    }
     if let Some(tree) = &execution.artifact {
         let _ = writeln!(out, "files = {}", tree.entries.len());
         for entry in &tree.entries {

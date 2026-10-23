@@ -36,7 +36,8 @@ Specific Object states are identified by Snapshot IDs.
 > derived from the canonical URL (`schemas/canonical/source-genesis-v1.md`),
 > its history is upstream's commits unmodified, and what actors sign
 > about it are `SourceObservation` statements. The `kairo.toml` rules of
-> §4 apply to native objects only.
+> §4 apply to native objects only. A native object's build can also
+> define **child** objects (§2.5).
 
 An Object has four related identity layers:
 
@@ -173,6 +174,31 @@ reports these checks independently. The `content` field carries the
 result of the Git lookup: `Verified` (commit found, parents agree),
 `ParentMismatch`, `CommitNotFound`, or `Indeterminate` (no repo
 supplied or non-Git revision scheme).
+
+### 2.5 Child objects
+
+One build can make several pieces of software (`DECISIONS.md` §41
+sub-decision 4). A build target names each as a child under
+`[[build.targets.children]]` (`schemas/canonical/object-manifest-v1.md`):
+a `name`, a `root` in the target's artifact, an install root, and the
+labels it provides.
+
+- **Identity.** A child's id derives from `(parent object id, target,
+  name)` (`schemas/canonical/child-genesis-v1.md`), unsigned; the
+  parent's signed manifest declares it, so the parent's signer vouches
+  for it.
+- **History.** A child has no revisions, branches, or tags of its own:
+  it exists at each parent revision whose manifest declares it, and is
+  selected by the parent's snapshots and version tags.
+- **Artifact.** A child's artifact is the part of the parent's artifact
+  under its `root`, re-rooted there, with its own artifact id; its
+  build is its parent's, and the parent's execution record lists each
+  child with its artifact.
+- **Like any object.** A consumer depends on a child by id (`kind =
+  "object"`, with a version or snapshot that selects the parent's) or
+  by a label it provides; either way the plan pins the parent's
+  artifact and the child's root, and the guest gets only the child's
+  part, at the child's install root.
 
 ---
 

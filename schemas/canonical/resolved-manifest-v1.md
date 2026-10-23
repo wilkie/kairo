@@ -78,7 +78,7 @@ both are omitted otherwise.
 
 | `kind` | Fields |
 |---|---|
-| `artifact` | `object`, `snapshot`, `target`, `output` (`""` for the whole artifact), `artifact` (blob id, or `null` when the build is in `builds_first`), `install` (the provider target's install root, or `null` for `/kairo/artifact/<id>`; `DECISIONS.md` §41) |
+| `artifact` | `object`, `snapshot`, `target`, `output` (`""` for the whole artifact), `artifact` (blob id, or `null` when the build is in `builds_first`), `install` (the provider target's install root, or `null` for `/kairo/artifact/<id>`; `DECISIONS.md` §41), and for a child object `root` (its part of the artifact, which is its parent's; absent otherwise) |
 | `content` | `object`, `snapshot` |
 | `environment` | `contract`, `engine` (the contract label the engine implements, or `null` for the host in development mode) |
 | `host-tool` | `provides`, `path`; `version` when the config states one |

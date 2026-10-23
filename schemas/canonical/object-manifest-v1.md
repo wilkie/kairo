@@ -161,10 +161,35 @@ encoded as written.
 | `outputs` | `list<BuildOutput>`, possibly empty |
 | `artifact_root` | present only when not `"."`: `string("artifact_root") \|\| string(root)`, a relative path under `/kairo/package` |
 | `install` | present only when not `"/"`: `string("install") \|\| option<string>(install)`, an absolute guest path, or none for `install = false` |
+| `children` | present only when there is at least one: `string("children") \|\| list<ChildDeclaration>` |
 
 `artifact_root` and `install` come from `[build.targets.artifact]`
 (`DECISIONS.md` §41 sub-decision 3); a target without one, or with the
 defaults spelled out, encodes as it did before they existed.
+
+`ChildDeclaration`, one `[[build.targets.children]]` entry
+(`DECISIONS.md` §41 sub-decision 4), is encoded as:
+
+| Field | Encoding |
+|---|---|
+| `name` | `string`, lowercase letters, digits, and `.`, `_`, `+`, `-`, starting with a letter or digit; unique in the target |
+| `root` | `string`, a relative path in the target's artifact |
+| `install` | `option<string>`: an absolute guest path, `/` when not given, or none for `install = false` |
+| `provides` | `list<string(provides) \|\| option<string>(version)>` |
+
+```toml
+[[build.targets.children]]
+name = "bash"
+root = "bash-5.2.15"
+[[build.targets.children.provides]]
+provides = "tool:bash"
+version = "5.2.15"
+```
+
+Each child is an object whose id derives from `(this object, target,
+name)` (`child-genesis-v1.md`); its artifact is the part of the
+target's artifact under `root`. A provides entry's artifact is always
+the child's own, so it names no target or output.
 
 `BuildOutput` is encoded as:
 
@@ -190,7 +215,8 @@ The order of TOML arrays is significant:
 - `[[provides]]` order is preserved.
 - `[[dependencies]]` order is preserved.
 - `[[build.targets]]`, each target's `command`, `[[build.targets.dependencies]]`,
-  and `[[build.targets.outputs]]` order is preserved.
+  `[[build.targets.outputs]]`, and `[[build.targets.children]]` order is
+  preserved, as is each child's `provides`.
 
 ## Excluded Fields
 

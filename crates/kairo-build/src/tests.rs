@@ -1177,3 +1177,209 @@ fn artifacts_land_at_their_install_roots_and_builds_stage_into_the_package() -> 
     );
     Ok(())
 }
+
+#[test]
+fn a_slice_is_the_part_under_its_root_and_stands_alone() {
+    let file = |path: &str| {
+        ArtifactEntry::File(FileEntry {
+            path: path.to_owned(),
+            blob: "zQm".to_owned(),
+            executable: false,
+        })
+    };
+    let link = |path: &str, link: &str| {
+        ArtifactEntry::Link(LinkEntry {
+            path: path.to_owned(),
+            link: link.to_owned(),
+        })
+    };
+    let tree = ArtifactTree::new(vec![
+        file("bash/usr/bin/bash"),
+        link("bash/usr/bin/sh", "bash"),
+        file("bashful"),
+        file("make/bin/make"),
+        link("make/bin/gmake", "../../bash/usr/bin/bash"),
+    ]);
+    let bash = slice_artifact(&tree, "bash").expect("bash");
+    assert_eq!(
+        bash.entries
+            .iter()
+            .map(ArtifactEntry::path)
+            .collect::<Vec<_>>(),
+        ["usr/bin/bash", "usr/bin/sh"]
+    );
+    assert_eq!(
+        slice_artifact(&tree, "bash/usr")
+            .expect("usr")
+            .entries
+            .len(),
+        2
+    );
+    // A link out of the slice doesn't stand alone; nothing isn't a slice.
+    assert!(slice_artifact(&tree, "make").is_err());
+    assert!(slice_artifact(&tree, "perl").is_err());
+}
+
+#[test]
+fn a_build_slices_its_children_and_a_consumer_installs_one() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(&[
+        (
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "busybox"
+            [[provides]]
+            provides = "tool:sh"
+            "#,
+        ),
+        ("bin/busybox", "@copy:/usr/bin/busybox"),
+        ("bin/sh", "@link:busybox"),
+    ]);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    // One build staging two packages, each a child.
+    let bundle = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "bundle"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "for p in boxed loose; do busybox mkdir -p /kairo/package/$p/usr/bin && busybox cp $KAIRO_PROVIDER_TOOL_SH/bin/busybox /kairo/package/$p/usr/bin/busybox; done && busybox ln -s busybox /kairo/package/boxed/usr/bin/ls"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.children]]
+            name = "boxed"
+            root = "boxed"
+            provides = [{{ provides = "tool:boxed" }}]
+            [[build.targets.children]]
+            name = "loose"
+            root = "loose"
+            install = false
+            provides = [{{ provides = "tool:loose" }}]
+            "#
+        ),
+    )]);
+    let plan = world.plan_with(&host, &bundle.object_id, "release");
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap.clone()),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    let artifact = BlobId::new(execution.record.artifact.clone().expect("artifact id"))?;
+    let tree = execution.artifact.as_ref().expect("artifact");
+    let children = &execution.record.children;
+    assert_eq!(
+        children.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+        ["boxed", "loose"]
+    );
+    for child in children {
+        assert_eq!(
+            child.object,
+            ChildGenesis::new(bundle.object_id.clone(), "release", &child.name)
+                .object_id()
+                .to_string()
+        );
+        let slice = slice_artifact(tree, &child.name).expect("slice");
+        assert_eq!(child.artifact, slice.id()?.to_string());
+        assert_eq!(
+            load_artifact(&world.fixture.store, &BlobId::new(child.artifact.clone())?)?,
+            slice
+        );
+    }
+    // A slice's tree is among what the record carries.
+    let blobs = evidence_blobs(&world.fixture.store, &execution.record)?;
+    assert!(blobs
+        .iter()
+        .any(|(id, _)| id.to_string() == children[1].artifact));
+
+    let consumer = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "consumer"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["/usr/bin/busybox", "sh", "-c", "{{ ls /usr/bin; ls /; echo $KAIRO_PROVIDER_TOOL_LOOSE; }} > /kairo/package/report"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:boxed"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:loose"
+            "#
+        ),
+    )]);
+    let built = Built(vec![(
+        bundle.object_id.clone(),
+        "release".to_owned(),
+        artifact,
+    )]);
+    let plan = Resolver::new(&world.fixture.store, &world.trees, &built, &host, &[])
+        .resolve(&consumer.object_id, &SnapshotSelector::Current, "release")
+        .expect("plan")
+        .plan;
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    let report = execution.artifact.as_ref().expect("artifact").entries[0]
+        .blob()
+        .map(|blob| world.blob_text(blob))
+        .expect("report");
+    // Only the boxed child is installed, at its root's contents; the
+    // loose one is at its own artifact id.
+    assert_eq!(
+        report,
+        format!(
+            "busybox\nls\ndev\nkairo\nproc\nsys\ntmp\nusr\n/kairo/artifact/{}\n",
+            children[1].artifact
+        )
+    );
+    Ok(())
+}

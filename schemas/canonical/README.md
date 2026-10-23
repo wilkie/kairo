@@ -60,4 +60,5 @@ is explicitly a standalone reference.
 - `source-genesis-v1.md` (unsigned; derived id is the source's object id)
 - `source-observation-v1.md`
 - `file-source-genesis-v1.md` (unsigned; derived id is the file source's object id)
+- `child-genesis-v1.md` (unsigned; derived id is the child object's id)
 - `file-observation-v1.md`

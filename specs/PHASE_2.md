@@ -455,8 +455,10 @@ stage0-posix x86 artifact through Mes, tcc, bash, a tcc and musl
 toolchain, perl, the autotools, binutils, and gcc 4.0.4 past the end of
 upstream's own CI pass 1 to gmp, mpfr, mpc, and zlib, under the Linux
 contract, with the guest root in its namespaces and
-distfiles archived as file sources (`bootstrap/live-bootstrap/`). After
-it come gcc and the microVM engine.
+distfiles archived as file sources (`bootstrap/live-bootstrap/`). A
+build can define child objects, each the part of its artifact under a
+root with an id derived from its parent's (`DECISIONS.md` §41
+sub-decision 4). After it come gcc and the microVM engine.
 
 - [x] Reconcile the four specs with each other and with what's been
       implemented since they were written.

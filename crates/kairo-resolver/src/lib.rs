@@ -383,6 +383,10 @@ pub enum Resolved {
         /// §41 sub-decision 3).
         #[serde(default)]
         install: Option<String>,
+        /// For a child object (§41 sub-decision 4): its part of the
+        /// building object's artifact, a relative path within it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<String>,
     },
     /// A held object's own tree.
     Content { object: String, snapshot: String },
@@ -517,6 +521,9 @@ pub struct Offer {
     pub environment: Option<String>,
     /// The artifact's install root, from its build target (§41).
     pub install: Option<String>,
+    /// For a child object's offer: the object whose build makes it
+    /// (its parent) and the child's root in that artifact.
+    pub built_by: Option<(ObjectId, String)>,
 }
 
 /// The environment contract a target declares, among its own and its
@@ -537,6 +544,30 @@ pub fn declared_environment(
             }
             _ => None,
         })
+}
+
+/// An offer of a child object, built by `candidate`'s `target`.
+fn child_offer(
+    candidate: &Candidate,
+    target: &kairo_object::BuildTarget,
+    child: &kairo_object::ChildDeclaration,
+    version: Option<&str>,
+) -> Offer {
+    Offer {
+        object: kairo_object::ChildGenesis::new(
+            candidate.object.clone(),
+            target.name(),
+            child.name(),
+        )
+        .object_id(),
+        snapshot: candidate.snapshot.clone(),
+        provides: String::new(),
+        version: version.map(str::to_owned),
+        artifact: Some((target.name().to_owned(), String::new())),
+        environment: declared_environment(&candidate.manifest, target),
+        install: child.install().map(str::to_owned),
+        built_by: Some((candidate.object.clone(), child.root().to_owned())),
+    }
 }
 
 /// A contract label's architecture: what follows its `/`.
@@ -641,15 +672,59 @@ impl Index {
                                     .build_target(artifact.target())
                                     .and_then(|target| target.install().map(str::to_owned))
                             }),
+                            built_by: None,
                         })
                 })
                 .collect();
+        // Child objects' labels (§41 sub-decision 4).
+        for candidate in &self.candidates {
+            for target in candidate.manifest.build_targets() {
+                for child in target.children() {
+                    for provide in child.provides().iter().filter(|p| p.provides() == label) {
+                        offers.push(child_offer(candidate, target, child, provide.version()));
+                    }
+                }
+            }
+        }
         offers.sort_by(|a, b| {
             a.rank()
                 .cmp(&b.rank())
                 .then_with(|| a.object.cmp(&b.object))
         });
         offers
+    }
+
+    /// The child object `id` among the candidates' current manifests: its
+    /// parent, the target that makes it, and its declaration.
+    pub fn child(
+        &self,
+        id: &ObjectId,
+    ) -> Option<(
+        &Candidate,
+        &kairo_object::BuildTarget,
+        &kairo_object::ChildDeclaration,
+    )> {
+        self.candidates.iter().find_map(|candidate| {
+            candidate
+                .manifest
+                .build_targets()
+                .iter()
+                .find_map(|target| {
+                    target
+                        .children()
+                        .iter()
+                        .find(|child| {
+                            &kairo_object::ChildGenesis::new(
+                                candidate.object.clone(),
+                                target.name(),
+                                child.name(),
+                            )
+                            .object_id()
+                                == id
+                        })
+                        .map(|child| (candidate, target, child))
+                })
+        })
     }
 
     /// Every provides label offered by a held object, with its offers.
@@ -659,6 +734,15 @@ impl Index {
             .iter()
             .flat_map(|candidate| candidate.manifest.provides().iter())
             .map(|declaration| declaration.provides())
+            .chain(self.candidates.iter().flat_map(|candidate| {
+                candidate
+                    .manifest
+                    .build_targets()
+                    .iter()
+                    .flat_map(|target| target.children())
+                    .flat_map(|child| child.provides())
+                    .map(|provide| provide.provides())
+            }))
             .collect();
         labels.sort_unstable();
         labels.dedup();
@@ -1016,14 +1100,30 @@ impl<'a> Resolver<'a> {
                         from,
                         overlay,
                     };
-                    let resolved = self.resolve_object(
-                        object,
-                        target_name,
-                        &requested,
-                        dependency.object(),
-                        version.as_deref(),
-                        pinned.as_ref(),
-                    )?;
+                    let resolved = if index.child(dependency.object()).is_some() {
+                        self.resolve_child(
+                            index,
+                            object,
+                            target_name,
+                            &requested,
+                            dependency.object(),
+                            version.as_deref(),
+                            pinned.as_ref(),
+                            stack,
+                            prerequisites,
+                            &mut needed_first,
+                            diagnostics,
+                        )?
+                    } else {
+                        self.resolve_object(
+                            object,
+                            target_name,
+                            &requested,
+                            dependency.object(),
+                            version.as_deref(),
+                            pinned.as_ref(),
+                        )?
+                    };
                     (requested, resolved)
                 }
                 DependencyDeclaration::Source(dependency) => {
@@ -1241,52 +1341,16 @@ impl<'a> Resolver<'a> {
                     object: offer.object.to_string(),
                     snapshot: offer.snapshot.to_string(),
                 },
-                Some((provider_target, output)) => {
-                    let artifact = self
-                        .artifacts
-                        .artifact(&offer.object, &offer.snapshot, provider_target)
-                        .map_err(|source| ResolveError::ArtifactSource {
-                            object: offer.object.clone(),
-                            target: provider_target.clone(),
-                            source,
-                        })?;
-                    if artifact.is_none() {
-                        let plan = self.resolve_target(
-                            index,
-                            &offer.object,
-                            &SnapshotSelector::Pinned(offer.snapshot.clone()),
-                            provider_target,
-                            stack,
-                            prerequisites,
-                            diagnostics,
-                        )?;
-                        let own = BuildFirst {
-                            object: offer.object.to_string(),
-                            snapshot: offer.snapshot.to_string(),
-                            target: provider_target.clone(),
-                            plan: plan.hash.to_string(),
-                        };
-                        for first in plan.manifest.builds_first.iter().chain([&own]) {
-                            if !needed_first.contains(first) {
-                                needed_first.push(first.clone());
-                            }
-                        }
-                        if !prerequisites
-                            .iter()
-                            .any(|existing| existing.hash == plan.hash)
-                        {
-                            prerequisites.push(plan);
-                        }
-                    }
-                    Resolved::Artifact {
-                        object: offer.object.to_string(),
-                        snapshot: offer.snapshot.to_string(),
-                        target: provider_target.clone(),
-                        output: output.clone(),
-                        artifact: artifact.map(|id| id.to_string()),
-                        install: offer.install.clone(),
-                    }
-                }
+                Some((provider_target, output)) => self.artifact_for(
+                    index,
+                    offer,
+                    provider_target,
+                    output,
+                    stack,
+                    prerequisites,
+                    needed_first,
+                    diagnostics,
+                )?,
             }
         } else if let Some(tool) = host_tools.first() {
             Resolved::HostTool {
@@ -1311,6 +1375,140 @@ impl<'a> Resolver<'a> {
             });
         }
         Ok(resolved)
+    }
+
+    /// The artifact `offer` names, built by its object or, for a child,
+    /// its parent; planned first when not yet built.
+    #[allow(clippy::too_many_arguments)]
+    fn artifact_for(
+        &self,
+        index: &Index,
+        offer: &Offer,
+        provider_target: &str,
+        output: &str,
+        stack: &mut Vec<(ObjectId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        needed_first: &mut Vec<BuildFirst>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Resolved, ResolveError> {
+        let builder = offer
+            .built_by
+            .as_ref()
+            .map_or(&offer.object, |(parent, _)| parent);
+        let artifact = self
+            .artifacts
+            .artifact(builder, &offer.snapshot, provider_target)
+            .map_err(|source| ResolveError::ArtifactSource {
+                object: builder.clone(),
+                target: provider_target.to_owned(),
+                source,
+            })?;
+        if artifact.is_none() {
+            let plan = self.resolve_target(
+                index,
+                builder,
+                &SnapshotSelector::Pinned(offer.snapshot.clone()),
+                provider_target,
+                stack,
+                prerequisites,
+                diagnostics,
+            )?;
+            let own = BuildFirst {
+                object: builder.to_string(),
+                snapshot: offer.snapshot.to_string(),
+                target: provider_target.to_owned(),
+                plan: plan.hash.to_string(),
+            };
+            for first in plan.manifest.builds_first.iter().chain([&own]) {
+                if !needed_first.contains(first) {
+                    needed_first.push(first.clone());
+                }
+            }
+            if !prerequisites
+                .iter()
+                .any(|existing| existing.hash == plan.hash)
+            {
+                prerequisites.push(plan);
+            }
+        }
+        Ok(Resolved::Artifact {
+            object: offer.object.to_string(),
+            snapshot: offer.snapshot.to_string(),
+            target: provider_target.to_owned(),
+            output: output.to_owned(),
+            artifact: artifact.map(|id| id.to_string()),
+            install: offer.install.clone(),
+            root: offer.built_by.as_ref().map(|(_, root)| root.clone()),
+        })
+    }
+
+    /// A child object depended on by id (§41 sub-decision 4): its
+    /// parent's snapshot chosen by the dependency's version or snapshot,
+    /// then the child's part of the parent's artifact there.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_child(
+        &self,
+        index: &Index,
+        object: &ObjectId,
+        target: &str,
+        requested: &Requested,
+        wanted: &ObjectId,
+        version: Option<&str>,
+        pinned: Option<&SnapshotId>,
+        stack: &mut Vec<(ObjectId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        needed_first: &mut Vec<BuildFirst>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Resolved, ResolveError> {
+        let unsatisfied = |considered: Vec<String>| {
+            ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                object: object.clone(),
+                target: target.to_owned(),
+                requested: requested.clone(),
+                considered,
+            }))
+        };
+        let Some((candidate, child_target, child)) = index.child(wanted) else {
+            return Err(unsatisfied(vec![format!("object:{wanted} is not held")]));
+        };
+        let parent = &candidate.object;
+        let snapshot = self.select_object_snapshot(parent, version, pinned, &unsatisfied)?;
+        let manifest = load_manifest(self.manifests, parent, &snapshot)?.ok_or_else(|| {
+            unsatisfied(vec![format!(
+                "tree for revision {} of object:{parent} is not held (kairo git fetch)",
+                snapshot.revision().as_str()
+            )])
+        })?;
+        let declared = manifest.build_target(child_target.name()).and_then(|t| {
+            t.children()
+                .iter()
+                .find(|c| c.name() == child.name())
+                .map(|c| (t, c))
+        });
+        let Some((at_target, at_child)) = declared else {
+            return Err(unsatisfied(vec![format!(
+                "object:{parent} at snapshot {} doesn't declare child {}",
+                snapshot.snapshot_id(),
+                child.name()
+            )]));
+        };
+        let at = Candidate {
+            object: parent.clone(),
+            snapshot: snapshot.snapshot_id(),
+            revision: snapshot.revision().clone(),
+            manifest: manifest.clone(),
+        };
+        let offer = child_offer(&at, at_target, at_child, None);
+        self.artifact_for(
+            index,
+            &offer,
+            at_target.name(),
+            "",
+            stack,
+            prerequisites,
+            needed_first,
+            diagnostics,
+        )
     }
 
     fn resolve_source(
@@ -1372,32 +1570,16 @@ impl<'a> Resolver<'a> {
         })
     }
 
-    fn resolve_object(
+    /// The snapshot of `wanted` an object dependency's version or
+    /// snapshot selects.
+    fn select_object_snapshot(
         &self,
-        object: &ObjectId,
-        target: &str,
-        requested: &Requested,
         wanted: &ObjectId,
         version: Option<&str>,
         pinned: Option<&SnapshotId>,
-    ) -> Result<Resolved, ResolveError> {
-        let unsatisfied = |considered: Vec<String>| {
-            ResolveError::Unsatisfied(Box::new(Unsatisfied {
-                object: object.clone(),
-                target: target.to_owned(),
-                requested: requested.clone(),
-                considered,
-            }))
-        };
-        if self
-            .store
-            .get_object_genesis(wanted)
-            .map_err(ResolveError::Store)
-            .is_err()
-        {
-            return Err(unsatisfied(vec![format!("object:{wanted} is not held")]));
-        }
-        let snapshot = match (version, pinned) {
+        unsatisfied: &dyn Fn(Vec<String>) -> ResolveError,
+    ) -> Result<Snapshot, ResolveError> {
+        Ok(match (version, pinned) {
             (_, Some(pinned)) => self
                 .select_snapshot(wanted, &SnapshotSelector::Pinned(pinned.clone()))
                 .map_err(|error| match error {
@@ -1426,7 +1608,35 @@ impl<'a> Resolver<'a> {
                     "object dependency names neither version nor snapshot".to_owned(),
                 ]))
             }
+        })
+    }
+
+    fn resolve_object(
+        &self,
+        object: &ObjectId,
+        target: &str,
+        requested: &Requested,
+        wanted: &ObjectId,
+        version: Option<&str>,
+        pinned: Option<&SnapshotId>,
+    ) -> Result<Resolved, ResolveError> {
+        let unsatisfied = |considered: Vec<String>| {
+            ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                object: object.clone(),
+                target: target.to_owned(),
+                requested: requested.clone(),
+                considered,
+            }))
         };
+        if self
+            .store
+            .get_object_genesis(wanted)
+            .map_err(ResolveError::Store)
+            .is_err()
+        {
+            return Err(unsatisfied(vec![format!("object:{wanted} is not held")]));
+        }
+        let snapshot = self.select_object_snapshot(wanted, version, pinned, &unsatisfied)?;
         if load_manifest(self.manifests, wanted, &snapshot)?.is_none() {
             return Err(unsatisfied(vec![format!(
                 "tree for revision {} of object:{wanted} is not held (kairo git fetch)",
@@ -1448,13 +1658,20 @@ pub fn describe_resolved(resolved: &Resolved) -> String {
             target,
             output,
             artifact,
+            root,
             ..
-        } => match artifact {
-            Some(artifact) => {
-                format!("object:{object} target {target} output {output} (artifact {artifact})")
+        } => {
+            let part = match root {
+                Some(root) => format!("root {root}"),
+                None => format!("output {output}"),
+            };
+            match artifact {
+                Some(artifact) => {
+                    format!("object:{object} target {target} {part} (artifact {artifact})")
+                }
+                None => format!("object:{object} target {target} {part} (build first)"),
             }
-            None => format!("object:{object} target {target} output {output} (build first)"),
-        },
+        }
         Resolved::Content { object, .. } => format!("object:{object} (content)"),
         Resolved::Environment { contract, engine } => match engine {
             Some(engine) => format!("{contract} via engine {engine}"),

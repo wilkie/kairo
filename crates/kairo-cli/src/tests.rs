@@ -9305,7 +9305,8 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
         &store,
         &kairo_core::BlobId::new(tree.entries[0].blob().expect("a file").to_owned())?,
     )?;
-    assert_eq!(output, b"no-usr\n1000\n");
+    // The guest is uid 0 in its own namespace (§41 sub-decision 1).
+    assert_eq!(output, b"no-usr\n0\n");
 
     let again = run_in_store(
         store_dir.path(),

@@ -39,7 +39,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use kairo_core::{BlobId, ObjectId, SnapshotId, Timestamp};
-use kairo_object::{ObjectManifest, OutputKind};
+use kairo_object::{ChildGenesis, ObjectManifest, OutputKind};
 use kairo_resolver::{PlanDocument, Resolved, SourceError};
 use kairo_statement::GitRevision;
 use kairo_store::{BlobStore, FilesystemStore, SourceStore};
@@ -300,6 +300,61 @@ pub fn materialize_artifact(
     dest: &Path,
 ) -> Result<ArtifactTree, BuildError> {
     let tree = load_artifact(store, artifact)?;
+    write_tree(store, artifact, &tree, dest)?;
+    Ok(tree)
+}
+
+/// The part of `tree` under `root`, re-rooted there: a child object's
+/// artifact (`DECISIONS.md` §41 sub-decision 4). It must hold something
+/// and stand alone, no relative link climbing out of it.
+pub fn slice_artifact(tree: &ArtifactTree, root: &str) -> Result<ArtifactTree, String> {
+    let entries: Vec<ArtifactEntry> = tree
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let rest = entry.path().strip_prefix(root)?.strip_prefix('/')?;
+            let mut entry = entry.clone();
+            match &mut entry {
+                ArtifactEntry::File(file) => rest.clone_into(&mut file.path),
+                ArtifactEntry::Link(link) => rest.clone_into(&mut link.path),
+            }
+            Some(entry)
+        })
+        .collect();
+    if entries.is_empty() {
+        return Err(format!("nothing is under {root}"));
+    }
+    let slice = ArtifactTree::new(entries);
+    slice.validate()?;
+    Ok(slice)
+}
+
+/// A held artifact, or for a child object its slice under `root`: the
+/// id it goes by and its tree. A slice's tree is stored too, so it can
+/// be shared like any artifact.
+pub fn artifact_at(
+    store: &FilesystemStore,
+    artifact: &BlobId,
+    root: Option<&str>,
+) -> Result<(BlobId, ArtifactTree), BuildError> {
+    let tree = load_artifact(store, artifact)?;
+    let Some(root) = root else {
+        return Ok((artifact.clone(), tree));
+    };
+    let slice = slice_artifact(&tree, root)
+        .map_err(|reason| BuildError::BadArtifact(format!("{root} of {artifact}: {reason}")))?;
+    let bytes = slice.to_bytes().map_err(BuildError::Encode)?;
+    let id = BlobId::from_bytes(ARTIFACT_TREE_DOMAIN, &bytes);
+    store.put_blob(&id, &bytes).map_err(BuildError::Store)?;
+    Ok((id, slice))
+}
+
+fn write_tree(
+    store: &FilesystemStore,
+    artifact: &BlobId,
+    tree: &ArtifactTree,
+    dest: &Path,
+) -> Result<(), BuildError> {
     for entry in &tree.entries {
         let unsafe_path = || BuildError::UnsafeArtifactPath {
             artifact: artifact.clone(),
@@ -322,7 +377,7 @@ pub fn materialize_artifact(
             }
         }
     }
-    Ok(tree)
+    Ok(())
 }
 
 fn safe_join(root: &Path, relative: &str) -> Option<PathBuf> {
@@ -371,9 +426,20 @@ pub struct ExecutionRecord {
     pub outputs: Vec<OutputRecord>,
     /// The artifact id, on success.
     pub artifact: Option<String>,
+    /// The target's child objects, each with its slice of the artifact
+    /// (`DECISIONS.md` §41 sub-decision 4), on success.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<ChildRecord>,
     pub logs: Logs,
     /// Why a failure failed, when the executor knows.
     pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChildRecord {
+    pub name: String,
+    pub object: String,
+    pub artifact: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -613,7 +679,8 @@ enum Placed {
         object: ObjectId,
         snapshot: SnapshotId,
     },
-    Artifact(BlobId),
+    /// An artifact, or a child object's slice of one under a root.
+    Artifact(BlobId, Option<String>),
     Source {
         source: ObjectId,
         revision: GitRevision,
@@ -853,7 +920,7 @@ pub fn run_plan(
     // (§41 sub-decision 3), at paths named by what they are (§35
     // sub-decision 1), or placed (§37 sub-decision 7, §38 sub-decision
     // 4), and the environment they contribute.
-    let mut installs: Vec<(String, BlobId, String)> = Vec::new();
+    let mut installs: Vec<(String, BlobId, ArtifactTree, String)> = Vec::new();
     let mut env: BTreeMap<String, String> = BTreeMap::new();
     let mut mounts: Vec<Mount> = Vec::new();
     let mut path_dirs: Vec<String> = Vec::new();
@@ -887,6 +954,7 @@ pub fn run_plan(
                 object: provider,
                 artifact,
                 target: provider_target,
+                root,
                 ..
             } => {
                 let Some(artifact) = artifact else {
@@ -894,7 +962,10 @@ pub fn run_plan(
                         builds: vec![format!("object:{provider} target {provider_target}")],
                     });
                 };
-                Placed::Artifact(BlobId::new(artifact.clone()).map_err(BuildError::Id)?)
+                Placed::Artifact(
+                    BlobId::new(artifact.clone()).map_err(BuildError::Id)?,
+                    root.clone(),
+                )
             }
             Resolved::Source {
                 source,
@@ -963,19 +1034,20 @@ pub fn run_plan(
                     guest: format!("/kairo/content/{snapshot}"),
                 }
             }
-            Placed::Artifact(artifact) => {
+            Placed::Artifact(artifact, root) => {
+                let (artifact, tree) = artifact_at(store, &artifact, root.as_deref())?;
                 // Installed into the guest's `/` once the loop is done,
                 // in requirement order, so the first wins (§41
                 // sub-decision 5, by copying).
                 if let (true, Some(install)) = (isolated, &install_root) {
-                    installs.push((install.clone(), artifact, label));
+                    installs.push((install.clone(), artifact, tree, label));
                     continue;
                 }
                 let host = deps.join("artifact").join(artifact.as_str());
                 if !host.exists() {
                     fs::create_dir_all(&host)
                         .map_err(|source| io_error("creating", &host, source))?;
-                    materialize_artifact(store, &artifact, &host)?;
+                    write_tree(store, &artifact, &tree, &host)?;
                 }
                 Mount {
                     host,
@@ -1022,10 +1094,10 @@ pub fn run_plan(
             mounts.push(mount);
         }
     }
-    for (index, (install, artifact, label)) in installs.into_iter().enumerate() {
+    for (index, (install, artifact, tree, label)) in installs.into_iter().enumerate() {
         let staging = deps.join("installed").join(index.to_string());
         fs::create_dir_all(&staging).map_err(|source| io_error("creating", &staging, source))?;
-        materialize_artifact(store, &artifact, &staging)?;
+        write_tree(store, &artifact, &tree, &staging)?;
         let inside = guest_target(&root, &install)?;
         place(&staging, &inside, true).map_err(|error| match error {
             PlaceError::Occupied => BuildError::PlacementOccupied {
@@ -1070,8 +1142,9 @@ pub fn run_plan(
                 export_tree(trees, object, snapshot, &staging)?;
                 staging.clone()
             }
-            Placed::Artifact(artifact) => {
-                materialize_artifact(store, artifact, &staging)?;
+            Placed::Artifact(artifact, root) => {
+                let (artifact, tree) = artifact_at(store, artifact, root.as_deref())?;
+                write_tree(store, &artifact, &tree, &staging)?;
                 staging.clone()
             }
             Placed::Source {
@@ -1113,7 +1186,10 @@ pub fn run_plan(
                 format!("{GUEST_SRC}/{}", placement.path)
             },
         };
-        if matches!(placement.what, Placed::Artifact(_) | Placed::Content { .. }) {
+        if matches!(
+            placement.what,
+            Placed::Artifact(..) | Placed::Content { .. }
+        ) {
             let bin = format!("{}/bin", seen(&mount));
             if mount.host.join("bin").is_dir() && !path_dirs.contains(&bin) {
                 path_dirs.push(bin);
@@ -1315,6 +1391,38 @@ pub fn run_plan(
             status = Status::Failure;
         }
     }
+    // Each child is a slice of what was built (§41 sub-decision 4).
+    let mut children: Vec<ChildRecord> = Vec::new();
+    if status == Status::Success {
+        let tree = ArtifactTree::new(entries.clone());
+        for child in target.children() {
+            match slice_artifact(&tree, child.root()) {
+                Ok(slice) => {
+                    let bytes = slice.to_bytes().map_err(BuildError::Encode)?;
+                    let id = BlobId::from_bytes(ARTIFACT_TREE_DOMAIN, &bytes);
+                    store.put_blob(&id, &bytes).map_err(BuildError::Store)?;
+                    children.push(ChildRecord {
+                        name: child.name().to_owned(),
+                        object: ChildGenesis::new(
+                            ObjectId::new(manifest.object.clone()).map_err(BuildError::Id)?,
+                            target.name(),
+                            child.name(),
+                        )
+                        .object_id()
+                        .to_string(),
+                        artifact: id.to_string(),
+                    });
+                }
+                Err(reason) => {
+                    diagnostics.push(format!("child {}: {reason}", child.name()));
+                    status = Status::Failure;
+                }
+            }
+        }
+        if status != Status::Success {
+            children.clear();
+        }
+    }
     let artifact = if status == Status::Success {
         let tree = ArtifactTree::new(entries);
         let bytes = tree.to_bytes().map_err(BuildError::Encode)?;
@@ -1353,6 +1461,7 @@ pub fn run_plan(
         exit_code,
         outputs,
         artifact: artifact.as_ref().map(|(id, _)| id.to_string()),
+        children,
         logs,
         diagnostics,
     };
@@ -1803,6 +1912,12 @@ fn evidence_blobs(
                 ARTIFACT_BLOB_DOMAIN,
             ));
         }
+    }
+    for child in &record.children {
+        blobs.push((
+            BlobId::new(child.artifact.clone()).map_err(BuildError::Id)?,
+            ARTIFACT_TREE_DOMAIN,
+        ));
     }
     blobs.sort_by(|a, b| a.0.cmp(&b.0));
     blobs.dedup_by(|a, b| a.0 == b.0);

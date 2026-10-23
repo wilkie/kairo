@@ -660,7 +660,11 @@ version and isolation claim, environment contract (`none` in
 development mode), `host_dependent`, host system, architecture and the
 host tools used, start and end times, status (`success`, `failure`,
 `timeout`), exit code, outputs with file counts, the artifact id, the
-stdout and stderr blobs, and diagnostics.
+target's child objects with each one's id and artifact id (the part of
+the artifact under its root, stored as its own artifact tree;
+`DECISIONS.md` §41 sub-decision 4), the stdout and stderr blobs, and
+diagnostics. A child whose root holds nothing, or whose part doesn't
+stand alone (a relative link climbing out of it), fails the build.
 
 ---
 

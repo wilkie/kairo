@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **Child objects (`DECISIONS.md` §41 sub-decision 4, slice 2a).** A
+  build target declares `[[build.targets.children]]`, each a `name`, a
+  `root` in its artifact, an install root, and provides labels. A
+  child's id derives from `(parent, target, name)`
+  (`schemas/canonical/child-genesis-v1.md`); consumers depend on it by
+  id or by label, the plan pins the parent's artifact and the child's
+  `root`, and the guest gets only that part, at the child's install
+  root. Execution records list each child with the id of its slice of
+  the artifact, and `kairo build` prints them.
+
 - **One Linux contract, package roots, and install roots (`DECISIONS.md`
   §41, slice 1).** `environment:linux/<arch>` now has the guest root in
   its namespaces with a writable `/` holding each dependency's artifact

@@ -17,6 +17,122 @@ use serde::Deserialize;
 /// `schemas/canonical/object-manifest-v1.md`.
 pub const OBJECT_MANIFEST_DOMAIN: &[u8] = b"kairo.object.manifest.v1";
 
+/// Domain separator for a child object's id (`DECISIONS.md` §41
+/// sub-decision 4).
+pub const CHILD_GENESIS_DOMAIN: &[u8] = b"kairo.object.child.v1";
+
+/// A child object's genesis: its parent, the build target that makes
+/// it, and its name there. Unsigned; the parent's signed manifest
+/// declares the child, so the parent's signer vouches for it. Canonical
+/// form: `schemas/canonical/child-genesis-v1.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildGenesis {
+    parent: ObjectId,
+    target: String,
+    name: String,
+}
+
+impl ChildGenesis {
+    pub fn new(parent: ObjectId, target: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            parent,
+            target: target.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn parent(&self) -> &ObjectId {
+        &self.parent
+    }
+
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The same on every node for the same parent, target, and name.
+    pub fn object_id(&self) -> ObjectId {
+        ObjectId::from_bytes(CHILD_GENESIS_DOMAIN, &self.canonical_bytes())
+    }
+}
+
+impl CanonicalEncode for ChildGenesis {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, "ChildGenesis");
+        encode_u8(out, 1);
+        encode_str(out, self.parent.as_str());
+        encode_str(out, &self.target);
+        encode_str(out, &self.name);
+    }
+}
+
+/// One `[[build.targets.children]]` entry (`DECISIONS.md` §41
+/// sub-decision 4): a part of the target's artifact that is an object
+/// of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildDeclaration {
+    name: String,
+    root: String,
+    install: Option<String>,
+    provides: Vec<ChildProvide>,
+}
+
+impl ChildDeclaration {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The child's part of the artifact: a relative path within it.
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// Where the child lands for a consumer, as a target's install root.
+    pub fn install(&self) -> Option<&str> {
+        self.install.as_deref()
+    }
+
+    pub fn provides(&self) -> &[ChildProvide] {
+        &self.provides
+    }
+}
+
+impl CanonicalEncode for ChildDeclaration {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.name);
+        encode_str(out, &self.root);
+        encode_option(out, self.install.as_ref(), |out, install| {
+            encode_str(out, install);
+        });
+        encode_list(out, &self.provides, |out, provide| {
+            encode_str(out, &provide.provides);
+            encode_option(out, provide.version.as_ref(), |out, version| {
+                encode_str(out, version);
+            });
+        });
+    }
+}
+
+/// A label a child provides; its artifact is always the child's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildProvide {
+    provides: String,
+    version: Option<String>,
+}
+
+impl ChildProvide {
+    pub fn provides(&self) -> &str {
+        &self.provides
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+}
+
 /// Canonical Snapshot v1 encoding is documented at
 /// `schemas/canonical/snapshot-v1.md`.
 const SNAPSHOT_DOMAIN: &[u8] = b"kairo.snapshot.v1";
@@ -883,6 +999,7 @@ pub struct BuildTarget {
     outputs: Vec<BuildOutput>,
     artifact_root: String,
     install: Option<String>,
+    children: Vec<ChildDeclaration>,
 }
 
 impl BuildTarget {
@@ -922,6 +1039,11 @@ impl BuildTarget {
     pub fn install(&self) -> Option<&str> {
         self.install.as_deref()
     }
+
+    /// The child objects this target's artifact holds.
+    pub fn children(&self) -> &[ChildDeclaration] {
+        &self.children
+    }
 }
 
 impl CanonicalEncode for BuildTarget {
@@ -947,6 +1069,12 @@ impl CanonicalEncode for BuildTarget {
             encode_str(out, "install");
             encode_option(out, self.install.as_ref(), |out, install| {
                 encode_str(out, install);
+            });
+        }
+        if !self.children.is_empty() {
+            encode_str(out, "children");
+            encode_list(out, &self.children, |out, child| {
+                child.encode_canonical(out);
             });
         }
     }
@@ -1058,6 +1186,11 @@ pub enum ManifestError {
     InvalidFileDependency(String),
     /// `from` or `overlay` without the `path` they qualify.
     PlacementWithoutPath,
+    /// A malformed `[[build.targets.children]]` entry.
+    InvalidChild {
+        target: String,
+        reason: String,
+    },
     /// Two dependencies of one target placed at the same path.
     PlacementConflict {
         target: String,
@@ -1120,6 +1253,9 @@ impl fmt::Display for ManifestError {
             ),
             Self::InvalidSourceDependency(message) => write!(f, "source dependency {message}"),
             Self::InvalidFileDependency(message) => write!(f, "file dependency {message}"),
+            Self::InvalidChild { target, reason } => {
+                write!(f, "build target {target}'s child: {reason}")
+            }
             Self::PlacementWithoutPath => {
                 f.write_str("a dependency's from and overlay need the path they place at")
             }
@@ -1165,6 +1301,7 @@ impl Error for ManifestError {
             | Self::InvalidSourceDependency(_)
             | Self::InvalidFileDependency(_)
             | Self::PlacementWithoutPath
+            | Self::InvalidChild { .. }
             | Self::PlacementConflict { .. } => None,
         }
     }
@@ -1317,6 +1454,50 @@ struct RawBuildTarget {
     #[serde(default)]
     outputs: Vec<RawBuildOutput>,
     artifact: Option<RawArtifactSection>,
+    #[serde(default)]
+    children: Vec<RawChildDeclaration>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawChildDeclaration {
+    name: String,
+    root: String,
+    install: Option<RawInstall>,
+    #[serde(default)]
+    provides: Vec<RawChildProvide>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawChildProvide {
+    provides: String,
+    version: Option<String>,
+}
+
+/// A child's name: lowercase letters, digits, and `.`, `_`, `+`, `-`,
+/// starting with a letter or digit, as package names are.
+fn is_child_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._+-".contains(c))
+}
+
+fn validate_install(
+    field: &'static str,
+    install: Option<RawInstall>,
+) -> Result<Option<String>, ManifestError> {
+    match install {
+        None => Ok(Some("/".to_owned())),
+        Some(RawInstall::Off(false)) => Ok(None),
+        Some(RawInstall::Off(true)) => Err(ManifestError::UnsafePath {
+            field,
+            path: "true".to_owned(),
+        }),
+        Some(RawInstall::Path(path)) => Ok(Some(ensure_guest_path(field, path)?)),
+    }
 }
 
 /// `[build.targets.artifact]` (`DECISIONS.md` §41 sub-decision 3).
@@ -1387,19 +1568,7 @@ impl RawBuildTarget {
                     Some(root) if root == "." => root,
                     Some(root) => ensure_relative_path("build.targets.artifact.root", root)?,
                 };
-                let install = match section.install {
-                    None => Some("/".to_owned()),
-                    Some(RawInstall::Off(false)) => None,
-                    Some(RawInstall::Off(true)) => {
-                        return Err(ManifestError::UnsafePath {
-                            field: "build.targets.artifact.install",
-                            path: "true".to_owned(),
-                        })
-                    }
-                    Some(RawInstall::Path(path)) => {
-                        Some(ensure_guest_path("build.targets.artifact.install", path)?)
-                    }
-                };
+                let install = validate_install("build.targets.artifact.install", section.install)?;
                 (root, install)
             }
         };
@@ -1423,6 +1592,40 @@ impl RawBuildTarget {
             }
             outputs.push(output);
         }
+        let mut children: Vec<ChildDeclaration> = Vec::with_capacity(self.children.len());
+        for raw in self.children {
+            if !is_child_name(&raw.name) {
+                return Err(ManifestError::InvalidChild {
+                    target: self.name,
+                    reason: format!("{:?} is not a child name", raw.name),
+                });
+            }
+            if children.iter().any(|child| child.name == raw.name) {
+                return Err(ManifestError::InvalidChild {
+                    target: self.name,
+                    reason: format!("{} is declared twice", raw.name),
+                });
+            }
+            let root = ensure_relative_path("build.targets.children.root", raw.root)?;
+            let install = validate_install("build.targets.children.install", raw.install)?;
+            let mut provides = Vec::with_capacity(raw.provides.len());
+            for provide in raw.provides {
+                ensure_non_empty(
+                    "build.targets.children.provides.provides",
+                    &provide.provides,
+                )?;
+                provides.push(ChildProvide {
+                    provides: provide.provides,
+                    version: provide.version,
+                });
+            }
+            children.push(ChildDeclaration {
+                name: raw.name,
+                root,
+                install,
+                provides,
+            });
+        }
         Ok(BuildTarget {
             name: self.name,
             command: self.command,
@@ -1431,6 +1634,7 @@ impl RawBuildTarget {
             outputs,
             artifact_root,
             install,
+            children,
         })
     }
 }
@@ -2481,6 +2685,103 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn a_target_declares_child_objects() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |children: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
+                [[build.targets]]
+                name = "release"
+                command = ["make", "install"]
+                {children}
+                "#
+            )
+        };
+        let parsed = ObjectManifest::parse_toml(&manifest(
+            r#"
+            [[build.targets.children]]
+            name = "bash-5.2"
+            root = "bash-5.2"
+            provides = [{ provides = "tool:bash", version = "5.2" }]
+            [[build.targets.children]]
+            name = "seed"
+            root = "seed/files"
+            install = false
+            "#,
+        ))?;
+        let target = parsed.build_target("release").ok_or("target")?;
+        let [bash, seed] = target.children() else {
+            return Err("two children".into());
+        };
+        assert_eq!(
+            (bash.name(), bash.root(), bash.install()),
+            ("bash-5.2", "bash-5.2", Some("/"))
+        );
+        assert!(matches!(
+            bash.provides(),
+            [provide] if provide.provides() == "tool:bash" && provide.version() == Some("5.2")
+        ));
+        assert_eq!(
+            (seed.root(), seed.install(), seed.provides().len()),
+            ("seed/files", None, 0)
+        );
+        // Children are part of what the manifest hash covers.
+        assert_ne!(
+            parsed.manifest_hash(),
+            ObjectManifest::parse_toml(&manifest(""))?.manifest_hash()
+        );
+
+        for children in [
+            "[[build.targets.children]]\nname = \"Bash\"\nroot = \"bash\"",
+            "[[build.targets.children]]\nname = \"a\"\nroot = \"a\"\n[[build.targets.children]]\nname = \"a\"\nroot = \"b\"",
+        ] {
+            assert!(
+                matches!(
+                    ObjectManifest::parse_toml(&manifest(children)),
+                    Err(ManifestError::InvalidChild { .. })
+                ),
+                "{children}"
+            );
+        }
+        for children in [
+            "[[build.targets.children]]\nname = \"a\"\nroot = \"/a\"",
+            "[[build.targets.children]]\nname = \"a\"\nroot = \"a/../b\"",
+            "[[build.targets.children]]\nname = \"a\"\nroot = \"a\"\ninstall = \"usr\"",
+        ] {
+            assert!(
+                matches!(
+                    ObjectManifest::parse_toml(&manifest(children)),
+                    Err(ManifestError::UnsafePath { .. })
+                ),
+                "{children}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_child_id_derives_from_its_parent_target_and_name() {
+        let parent = ObjectId::from_bytes(b"test", b"parent");
+        let other = ObjectId::from_bytes(b"test", b"other");
+        let id = ChildGenesis::new(parent.clone(), "release", "bash").object_id();
+        assert_eq!(
+            id,
+            ChildGenesis::new(parent.clone(), "release", "bash").object_id()
+        );
+        for different in [
+            ChildGenesis::new(other, "release", "bash"),
+            ChildGenesis::new(parent.clone(), "debug", "bash"),
+            ChildGenesis::new(parent.clone(), "release", "make"),
+        ] {
+            assert_ne!(different.object_id(), id);
+        }
+        assert_ne!(id, parent);
     }
 
     #[test]

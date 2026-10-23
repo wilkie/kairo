@@ -770,3 +770,90 @@ fn artifact_offers_must_be_built_for_the_consumers_architecture() -> TestResult 
     );
     Ok(())
 }
+
+fn bundle() -> String {
+    manifest(
+        "bundle",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "bash"
+        root = "bash"
+        provides = [{ provides = "tool:bash", version = "5.2" }]
+        [[build.targets.children]]
+        name = "make"
+        root = "make"
+        install = false
+        "#,
+    )
+}
+
+#[test]
+fn a_child_object_resolves_by_label_and_by_id_to_its_parents_build() -> TestResult {
+    let mut world = World::new();
+    let (parent, revision) = world.object(&bundle());
+    // A child's versions are its parent's.
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &parent, &revision, "1.0.0");
+    let child = |name: &str| {
+        kairo_object::ChildGenesis::new(parent.object_id.clone(), "release", name).object_id()
+    };
+    let (by_label, _) = world.object(&app_requiring("tool:bash", Some(">=5")));
+    let (by_id, _) = world.object(&manifest(
+        "app",
+        &format!(
+            r#"
+            [[dependencies]]
+            kind = "object"
+            object = "{}"
+            version = "^1"
+            {RELEASE_TARGET}
+            "#,
+            child("make")
+        ),
+    ));
+
+    // Unbuilt, the parent's target is what builds first.
+    let resolution = world.resolve(&by_label.object_id, "release")?;
+    assert_eq!(resolution.prerequisites.len(), 1);
+    assert_eq!(
+        resolution.prerequisites[0].manifest.object,
+        parent.object_id.to_string()
+    );
+    assert!(matches!(
+        &resolution.plan.manifest.requirements[0].resolved,
+        Resolved::Artifact { object, artifact: None, root: Some(root), install: Some(install), .. }
+            if object == &child("bash").to_string() && root == "bash" && install == "/"
+    ));
+
+    // Built, both children are slices of the parent's one artifact.
+    let artifact = BlobId::from_bytes(b"test", b"bundle");
+    let held = Held(vec![(
+        parent.object_id.to_string(),
+        "release".to_owned(),
+        artifact.clone(),
+    )]);
+    let with = world.resolve_with(&held, &World::host(), &[], &by_label.object_id, "release")?;
+    assert!(with.plan.manifest.builds_first.is_empty());
+    let id = world.resolve_with(&held, &World::host(), &[], &by_id.object_id, "release")?;
+    assert!(id.prerequisites.is_empty());
+    assert!(matches!(
+        &id.plan.manifest.requirements[0].resolved,
+        Resolved::Artifact { object, artifact: Some(held), root: Some(root), install: None, target, .. }
+            if object == &child("make").to_string()
+                && held == &artifact.to_string()
+                && root == "make"
+                && target == "release"
+    ));
+
+    // The labels a held object's children provide are listed.
+    let index = Index::build(&world.fixture.store, &world.manifests)?;
+    assert!(index
+        .all_offers()
+        .get("tool:bash")
+        .is_some_and(|offers| offers.iter().any(|offer| offer.object == child("bash"))));
+    Ok(())
+}
