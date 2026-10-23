@@ -1067,6 +1067,20 @@ impl<'a> Resolver<'a> {
                             dependency.provides(),
                         )?
                     } else {
+                        // Every version this target requires of the label.
+                        let together: Vec<&str> = manifest
+                            .dependencies()
+                            .iter()
+                            .chain(target.dependencies())
+                            .filter_map(|other| match other {
+                                DependencyDeclaration::Provides(other)
+                                    if other.provides() == dependency.provides() =>
+                                {
+                                    other.version()
+                                }
+                                _ => None,
+                            })
+                            .collect();
                         self.resolve_provides(
                             index,
                             object,
@@ -1074,6 +1088,7 @@ impl<'a> Resolver<'a> {
                             &requested,
                             dependency.provides(),
                             dependency.version(),
+                            &together,
                             isolated,
                             consumer_environment.as_deref(),
                             stack,
@@ -1090,6 +1105,7 @@ impl<'a> Resolver<'a> {
                         ObjectDependencySelector::Snapshot(snapshot) => {
                             (None, Some(snapshot.clone()))
                         }
+                        ObjectDependencySelector::Highest => (None, None),
                     };
                     let (path, from, overlay) = placement_fields(dependency.placement());
                     let requested = Requested::Object {
@@ -1270,6 +1286,7 @@ impl<'a> Resolver<'a> {
         requested: &Requested,
         label: &str,
         version: Option<&str>,
+        together: &[&str],
         isolated: bool,
         consumer_environment: Option<&str>,
         stack: &mut Vec<(ObjectId, String)>,
@@ -1327,6 +1344,17 @@ impl<'a> Resolver<'a> {
             })
             .collect();
 
+        // The highest version that satisfies the requirement, and before
+        // it any that satisfy every requirement this target makes of the
+        // label (§43); offers without a version come last, and ties keep
+        // the index's order.
+        matching.sort_by_cached_key(|offer| {
+            let declared = offer.version.as_deref();
+            let all = together
+                .iter()
+                .all(|requirement| version_matches(Some(requirement), declared));
+            (!all, std::cmp::Reverse(declared.and_then(lenient_version)))
+        });
         let mut others: Vec<String> = matching.iter().skip(1).map(Offer::describe).collect();
         others.extend(
             host_tools
@@ -1603,11 +1631,16 @@ impl<'a> Resolver<'a> {
                     .map(|(_, snapshot)| snapshot)
                     .ok_or_else(|| unsatisfied(considered))?
             }
-            (None, None) => {
-                return Err(unsatisfied(vec![
-                    "object dependency names neither version nor snapshot".to_owned(),
-                ]))
-            }
+            // The highest version (§43); the tags come highest first.
+            (None, None) => tagged_snapshots(self.store, wanted)?
+                .into_iter()
+                .next()
+                .map(|(_, snapshot)| snapshot)
+                .ok_or_else(|| {
+                    unsatisfied(vec![format!(
+                        "object:{wanted} has no version tags; name a snapshot"
+                    )])
+                })?,
         })
     }
 

@@ -1353,7 +1353,13 @@ pub fn run_plan(
                         path: install.clone(),
                     });
                 }
-                layers.push(cached_layer(store, artifact, tree, install)?);
+                // Two requirements met by one artifact at one root are one
+                // layer: overlayfs refuses a layer twice, and a second
+                // copy would add nothing.
+                let layer = cached_layer(store, artifact, tree, install)?;
+                if !layers.contains(&layer) {
+                    layers.push(layer);
+                }
             }
             let links = LayerLinks::new(&layers)?;
             if links.fit(bwrap, &root, &work) {

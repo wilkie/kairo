@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **The highest version by default (`DECISIONS.md` §43).** Among the
+  offers that satisfy a requirement the resolver takes the highest
+  version, preferring those that satisfy every requirement the target
+  makes of the label; an object dependency with neither `version` nor
+  `snapshot` takes the object's highest version tag instead of being
+  refused.
+
 - **live-bootstrap's packages as child objects (`DECISIONS.md` §41
   sub-decision 6, slice 4).** The wrapper extracts each of its 77
   packages into `/kairo/package/<package>/`, and each is a child

@@ -197,7 +197,8 @@ is the kind of each label it provides, not a type of the child.
   build is its parent's, and the parent's execution record lists each
   child with its artifact.
 - **Like any object.** A consumer depends on a child by id (`kind =
-  "object"`, with a version or snapshot that selects the parent's) or
+  "object"`, with a version or snapshot that selects the parent's, or
+  neither for its highest version) or
   by a label it provides; either way the plan pins the parent's
   artifact and the child's root, and the guest gets only the child's
   part, at the child's install root.
@@ -317,10 +318,14 @@ object = "z6MkObject..."
 snapshot = "z6MkSnapshot..."
 ```
 
-Object dependencies MUST specify exactly one selector:
+Object dependencies specify at most one selector:
 
 - `version` for a version requirement resolved by the planner
 - `snapshot` for an exact Object snapshot
+- neither, for the object's highest version tag (`DECISIONS.md` §43)
+
+When several offers satisfy a requirement, the planner takes the highest
+version (§43).
 
 A provides dependency may give a `version` requirement. Version requirements
 use Cargo's syntax (`">=4, <5"`, `"^4.1.0"`).

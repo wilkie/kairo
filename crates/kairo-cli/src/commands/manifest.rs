@@ -136,6 +136,9 @@ fn push_dependencies(output: &mut String, dependencies: &[DependencyDeclaration]
                     ObjectDependencySelector::Snapshot(snapshot) => {
                         output.push_str(&format!("{indent}  snapshot = {snapshot}\n"));
                     }
+                    ObjectDependencySelector::Highest => {
+                        output.push_str(&format!("{indent}  version = highest\n"));
+                    }
                 }
                 push_placement(output, dependency.placement(), indent);
             }

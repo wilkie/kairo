@@ -857,3 +857,111 @@ fn a_child_object_resolves_by_label_and_by_id_to_its_parents_build() -> TestResu
         .is_some_and(|offers| offers.iter().any(|offer| offer.object == child("bash"))));
     Ok(())
 }
+
+#[test]
+fn the_highest_version_that_satisfies_every_requirement_is_chosen() -> TestResult {
+    let mut world = World::new();
+    let mut tools = HashMap::new();
+    for version in ["1.0", "2.0", "1.5"] {
+        let (tool, _) = world.object(&manifest(
+            "tool",
+            &format!(
+                r#"
+                [[provides]]
+                provides = "tool:x"
+                version = "{version}"
+                target = "release"
+                output = "bin"
+                {RELEASE_TARGET}
+                "#
+            ),
+        ));
+        tools.insert(version, tool.object_id.to_string());
+    }
+    let chosen =
+        |resolution: &Resolution, index: usize| match &resolution.plan.manifest.requirements[index]
+            .resolved
+        {
+            Resolved::Artifact { object, .. } => object.clone(),
+            _ => String::new(),
+        };
+
+    // Without a version, the highest.
+    let (any, _) = world.object(&app_requiring("tool:x", None));
+    assert_eq!(
+        chosen(&world.resolve(&any.object_id, "release")?, 0),
+        tools["2.0"]
+    );
+    // With one, the highest that satisfies it.
+    let (one, _) = world.object(&app_requiring("tool:x", Some("^1")));
+    assert_eq!(
+        chosen(&world.resolve(&one.object_id, "release")?, 0),
+        tools["1.5"]
+    );
+    // Another requirement on the label in the same target narrows what
+    // the unversioned one takes.
+    let (both, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:x"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:x"
+        version = "<1.5"
+        "#,
+    ));
+    let resolution = world.resolve(&both.object_id, "release")?;
+    assert_eq!(chosen(&resolution, 0), tools["1.0"]);
+    assert_eq!(chosen(&resolution, 1), tools["1.0"]);
+    Ok(())
+}
+
+#[test]
+fn an_object_dependency_without_a_selector_takes_the_highest_version_tag() -> TestResult {
+    let mut world = World::new();
+    let (lib, first) = world.object(&manifest("lib", ""));
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &lib, &first, "1.0.0");
+    let second = world.revision(
+        &lib,
+        &manifest("lib", "summary = \"v2\""),
+        vec![first.statement.unsigned().body().revision().clone()],
+    );
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &lib, &second, "2.0.0");
+    let (untagged, _) = world.object(&manifest("untagged", ""));
+    let app = |object: &ObjectId| {
+        manifest(
+            "app",
+            &format!(
+                r#"
+                [[dependencies]]
+                kind = "object"
+                object = "{object}"
+                {RELEASE_TARGET}
+                "#
+            ),
+        )
+    };
+    let (by_id, _) = world.object(&app(&lib.object_id));
+    let resolution = world.resolve(&by_id.object_id, "release")?;
+    let second_snapshot = Snapshot::from_object_revision(&lib.object_id, &second.statement)?;
+    assert!(matches!(
+        &resolution.plan.manifest.requirements[0].resolved,
+        Resolved::Content { snapshot, .. } if snapshot == &second_snapshot.snapshot_id().to_string()
+    ));
+    // An object with no versions needs a snapshot named.
+    let (no_tags, _) = world.object(&app(&untagged.object_id));
+    assert!(matches!(
+        world.resolve(&no_tags.object_id, "release"),
+        Err(ResolveError::Unsatisfied(_))
+    ));
+    Ok(())
+}

@@ -1000,6 +1000,8 @@ impl CanonicalEncode for ObjectDependency {
 pub enum ObjectDependencySelector {
     Version(String),
     Snapshot(SnapshotId),
+    /// Neither given: the object's highest version (`DECISIONS.md` §43).
+    Highest,
 }
 
 impl CanonicalEncode for ObjectDependencySelector {
@@ -1013,6 +1015,9 @@ impl CanonicalEncode for ObjectDependencySelector {
                 encode_str(out, "snapshot");
                 encode_str(out, snapshot.as_str());
             }
+            // Nothing, so what follows (a placement's `path`, or the next
+            // dependency) is never mistaken for a selector.
+            Self::Highest => {}
         }
     }
 }
@@ -1171,7 +1176,6 @@ pub enum ManifestError {
     EmptyField(&'static str),
     UnknownDependencyKind(String),
     MissingObjectDependencyObject,
-    MissingObjectDependencySelector,
     ConflictingObjectDependencySelectors,
     MissingProvidesDependency,
     /// A version requirement that isn't in Cargo's syntax.
@@ -1249,9 +1253,6 @@ impl fmt::Display for ManifestError {
             Self::UnknownDependencyKind(kind) => write!(f, "unknown dependency kind {kind}"),
             Self::MissingObjectDependencyObject => {
                 f.write_str("object dependency is missing object")
-            }
-            Self::MissingObjectDependencySelector => {
-                f.write_str("object dependency must specify version or snapshot")
             }
             Self::ConflictingObjectDependencySelectors => {
                 f.write_str("object dependency cannot specify both version and snapshot")
@@ -1333,7 +1334,6 @@ impl Error for ManifestError {
             | Self::EmptyField(_)
             | Self::UnknownDependencyKind(_)
             | Self::MissingObjectDependencyObject
-            | Self::MissingObjectDependencySelector
             | Self::ConflictingObjectDependencySelectors
             | Self::MissingProvidesDependency
             | Self::InvalidVersionRequirement { .. }
@@ -2003,7 +2003,7 @@ impl RawDependencyDeclaration {
             (None, Some(snapshot)) => ObjectDependencySelector::Snapshot(
                 SnapshotId::new(snapshot).map_err(ManifestError::InvalidSnapshotId)?,
             ),
-            (None, None) => return Err(ManifestError::MissingObjectDependencySelector),
+            (None, None) => ObjectDependencySelector::Highest,
             (Some(_), Some(_)) => return Err(ManifestError::ConflictingObjectDependencySelectors),
         };
 
@@ -2214,24 +2214,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_object_dependency_without_selector() {
-        let manifest = ObjectManifest::parse_toml(&format!(
-            r#"
-            [kairo]
-            schema = 1
-            kind = "software"
-            name = "Example"
+    fn an_object_dependency_without_a_selector_means_its_highest_version(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |selector: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
 
-            [[dependencies]]
-            kind = "object"
-            object = "{OBJECT_ID}"
-            "#
-        ));
-
+                [[dependencies]]
+                kind = "object"
+                object = "{OBJECT_ID}"
+                {selector}
+                "#
+            )
+        };
+        let highest = ObjectManifest::parse_toml(&manifest(""))?;
         assert!(matches!(
-            manifest,
-            Err(ManifestError::MissingObjectDependencySelector)
+            highest.dependencies(),
+            [DependencyDeclaration::Object(dependency)]
+                if dependency.selector() == &ObjectDependencySelector::Highest
         ));
+        assert_ne!(
+            highest.manifest_hash(),
+            ObjectManifest::parse_toml(&manifest("version = \"*\""))?.manifest_hash()
+        );
+        Ok(())
     }
 
     #[test]

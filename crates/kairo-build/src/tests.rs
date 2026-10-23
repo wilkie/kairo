@@ -1494,6 +1494,10 @@ fn overlaid_and_copied_dependencies_give_the_guest_the_same_tree() -> TestResult
             [[build.targets.dependencies]]
             kind = "provides"
             provides = "tool:third"
+            # Met by the same artifact as the first: one layer.
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:first"
             [[build.targets.dependencies]]
             kind = "file"
             sha256 = "{abc}"

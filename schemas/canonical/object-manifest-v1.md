@@ -155,6 +155,7 @@ path; `from` and `overlay` require a `path`, and a file takes no
 |---|---|
 | `Version` | `string("version") || string(version)` |
 | `Snapshot` | `string("snapshot") || string(snapshot_id)` |
+| `Highest` | nothing: neither was given, and the object's highest version tag is meant (`DECISIONS.md` §43) |
 
 Version requirements (object dependency `version`, provides dependency
 `version`) use Cargo's requirement syntax (`">=4, <5"`, `"^4.1.0"`) and are

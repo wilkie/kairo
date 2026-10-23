@@ -4395,3 +4395,52 @@ Affected specs:
   `summary` and `tags`; label kind validation.
 - `OBJECT.md` §2.5, §4.1 — tags and summaries.
 - `SEARCH.md` §4–§6 — indexed fields, filters, child results.
+
+---
+
+## 43. The Highest Version by Default
+
+Decision: when more than one offer satisfies a requirement, the
+resolver takes the **highest version**; and an object dependency that
+gives neither `version` nor `snapshot` selects the object's **highest
+version tag**, instead of being refused.
+
+Sub-decisions:
+
+1. **Among offers.** A `kind = "provides"` requirement resolves to the
+   highest version among the offers whose versions satisfy it, versions
+   read leniently (`2.69` as `2.69.0`). Offers whose version doesn't
+   parse, or that declare none, come after every versioned one; among
+   equals, the index's order stands (artifact providers before content
+   providers, then object id). Before this the choice among satisfying
+   offers was by object id, which for live-bootstrap's nine autoconf
+   children (§41 sub-decision 6) meant an arbitrary one.
+
+2. **Within a target.** Where a target requires one label more than
+   once, an offer that satisfies all of those requirements comes before
+   one that satisfies only the requirement being resolved, so an
+   unversioned `tool:autoconf` beside `tool:autoconf` `<2.60` takes the
+   highest version both accept. The rule looks no further than the
+   target: a provider's own build is planned on its own, and the
+   resolver doesn't search for one set of versions across a whole plan.
+   A requirement no offer satisfies together with the others still
+   resolves alone, to its own highest.
+
+3. **Object dependencies.** `kind = "object"` with only `object` means
+   the highest of the object's version tags, as `version = "*"` would
+   but without saying so; it encodes as no selector, so manifests that
+   give one keep their hashes. An object with no version tags is
+   unsatisfied, and the diagnostic asks for a snapshot. The plan pins
+   the snapshot chosen either way, so a later tag changes a new plan,
+   never an old one.
+
+Rationale: the highest version is what a consumer that names no version
+almost always means, and making it the rule turns an arbitrary choice
+into a predictable one. Requiring a selector on every object dependency
+made the common case verbose without making it safer, since the plan
+pins what was chosen.
+
+Affected specs:
+
+- `OBJECT.md` §4.4 — object dependency selectors.
+- `schemas/canonical/object-manifest-v1.md` — `ObjectDependencySelector`.
