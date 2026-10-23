@@ -7,8 +7,9 @@ use axum::Router;
 use kairo_config::FederationConfig;
 use kairo_core::{ActorId, Timestamp};
 use kairo_federation_core::{
-    NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_ANNOUNCE, SUPPORTS_INVENTORY,
-    SUPPORTS_OBJECT_PULL, SUPPORTS_PUSH, SUPPORTS_STATEMENT_BATCH, SUPPORTS_TRUST,
+    NodeDocument, UnsignedNodeDocument, PROTOCOL_VERSION, SUPPORTS_ANNOUNCE, SUPPORTS_CHILDREN,
+    SUPPORTS_INVENTORY, SUPPORTS_OBJECT_PULL, SUPPORTS_PUSH, SUPPORTS_STATEMENT_BATCH,
+    SUPPORTS_TRUST,
 };
 use kairo_identity::json::ActorGenesisJson;
 use kairo_identity::{ActorKind, ActorResolver, SecretSigningKey};
@@ -122,6 +123,7 @@ impl Node {
                 SUPPORTS_PUSH.to_owned(),
                 SUPPORTS_TRUST.to_owned(),
                 SUPPORTS_INVENTORY.to_owned(),
+                SUPPORTS_CHILDREN.to_owned(),
             ],
         }
         .sign(signer, signed_at);

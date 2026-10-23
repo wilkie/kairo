@@ -62,8 +62,9 @@ use kairo_federation_core::{
     SUPPORTS_STATEMENT_BATCH, WELL_KNOWN_PATH,
 };
 use kairo_federation_core::{
-    ActorExport, GitAvailability, Inventory, RelayedInventories, TrustListing, INVENTORY_PATH,
-    RELAYED_INVENTORIES_PATH, SUPPORTS_INVENTORY, SUPPORTS_TRUST, TRUST_PATH,
+    ActorExport, ChildListing, GitAvailability, Inventory, RelayedInventories, TrustListing,
+    CHILDREN_PATH, INVENTORY_PATH, RELAYED_INVENTORIES_PATH, SUPPORTS_CHILDREN, SUPPORTS_INVENTORY,
+    SUPPORTS_TRUST, TRUST_PATH,
 };
 use kairo_identity::SecretSigningKey;
 use kairo_object::OBJECT_MANIFEST_DOMAIN;
@@ -489,6 +490,38 @@ pub fn pull_object(
         });
     }
     Ok(pull.report)
+}
+
+/// Which published object the child object `child` belongs to, as the
+/// peer at `peer_url` says (`DECISIONS.md` §45): `None` when the peer
+/// doesn't know it as a child, or doesn't answer for children. The
+/// answer is checked, not trusted: `child` must derive from the parent,
+/// target, and name it gives. Nothing is stored.
+pub fn find_child_parent(
+    peer_url: &str,
+    child: &ObjectId,
+    options: &PullOptions,
+) -> Result<Option<ChildListing>, PullError> {
+    let (peer, document) = connect(peer_url, options)?;
+    if !document.supports(SUPPORTS_CHILDREN) {
+        return Ok(None);
+    }
+    let path = format!("{API_PREFIX}{CHILDREN_PATH}/{child}");
+    let listing: ChildListing = match peer.get_json(&path, options.limits.max_json_bytes) {
+        Ok(listing) => listing,
+        Err(PullError::Status { status: 404, .. }) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let derived =
+        kairo_object::ChildGenesis::new(listing.parent.clone(), &listing.target, &listing.name)
+            .object_id();
+    if &listing.child != child || &derived != child {
+        return Err(PullError::ListingMismatch {
+            expected: child.clone(),
+            found: derived,
+        });
+    }
+    Ok(Some(listing))
 }
 
 /// Fetch and check a peer's node document: it validates, matches the

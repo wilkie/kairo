@@ -28,6 +28,10 @@ rather than per-commit.
   `tag:`, `provides:<label>`, and `provides:<kind>:*` filters, with no
   index yet. `kairo fetch` and `kairo federation publish`, `unpublish`,
   `follow`, and `unfollow` given a child's id act on its parent.
+  A node answers `GET /federation/v1/children/{id}` for the children of
+  what it publishes (§45), so `kairo fetch --from` of a child whose
+  parent this node has never held asks the peer, checks that the id
+  derives from the answer, and pulls the parent.
 
 - **Re-importing a bootstrap wrapper extends it.** The stage0-posix and
   live-bootstrap `import.sh` take `--wrapper <object id>`: the new

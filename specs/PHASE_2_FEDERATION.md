@@ -56,6 +56,7 @@ Out of scope: see `DECISIONS.md` §16 sub-decision 10.
 | `GET` | `/federation/v1/objects/{id}/genesis` | `ObjectGenesis` JSON, exactly as stored |
 | `GET` | `/federation/v1/objects/{id}/git/info/refs?service=git-upload-pack` | Git protocol v2 capability advertisement (`DECISIONS.md` §22) |
 | `POST` | `/federation/v1/objects/{id}/git/git-upload-pack` | Git protocol v2 `ls-refs` / `fetch`, filtered to published commits (§22) |
+| `GET` | `/federation/v1/children/{id}` | `{ schema: "kairo.fed.child.v1", child, parent, target, name }`: the published object a child object belongs to, from any of its revisions' manifests; the client re-derives `child` from the rest and refuses an answer that doesn't (`DECISIONS.md` §45). Advertised as `supports: "children"` |
 | `GET` | `/federation/v1/actors/{id}` | `ActorListing` |
 | `GET` | `/federation/v1/statements/{id}` | statement JSON, exactly as stored |
 | `POST` | `/federation/v1/statement-batch` | up to 256 statements, each exactly as stored, in request order; unserved ids left out (`DECISIONS.md` §24) |

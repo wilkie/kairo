@@ -10923,3 +10923,103 @@ fn a_childs_id_stands_for_its_parent_in_search_and_federation(
     );
     Ok(())
 }
+
+#[test]
+fn fetching_a_child_by_id_asks_the_peer_and_pulls_its_parent(
+) -> Result<(), Box<dyn std::error::Error>> {
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let origin_dir = tempfile::TempDir::new()?;
+    let origin = origin_dir.path();
+    let node_actor = parse_field(
+        &run_in(
+            origin,
+            Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "node".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            },
+        )?,
+        "actor = ",
+    )?;
+    let actor = create_local_actor(origin)?;
+    let parent = create_held_object(
+        origin,
+        &actor,
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "bundle"
+
+        [[build.targets]]
+        name = "release"
+        command = ["sh", "build.sh"]
+
+        [[build.targets.children]]
+        name = "bash"
+        root = "bash"
+        version = "5.2.15"
+        provides = [{ provides = "tool:bash" }]
+        "#,
+    )?;
+    run_in(
+        origin,
+        federation(FederationCommand::Publish {
+            object: parent.clone(),
+        }),
+    )?;
+    let child = kairo_object::ChildGenesis::new(ObjectId::new(parent.clone())?, "release", "bash")
+        .object_id()
+        .to_string();
+    let (base_url, stop, server) = serve_federation(origin, &node_actor)?;
+
+    // A node that has never seen the parent asks the peer which object
+    // the child belongs to, checks the answer, and pulls that.
+    let local_dir = tempfile::TempDir::new()?;
+    let local = local_dir.path();
+    std::fs::write(
+        local.join("config.toml"),
+        format!("[[federation.peers]]\nurl = \"{base_url}\"\nnode_actor = \"{node_actor}\"\n"),
+    )?;
+    let fetch = |object: &str| {
+        run_in(
+            local,
+            Command::Fetch {
+                object: object.to_owned(),
+                from: Some(base_url.clone()),
+                allow_peer: false,
+                require_complete: false,
+                json: false,
+            },
+        )
+    };
+    let fetched = fetch(&child)?;
+    assert!(
+        fetched.starts_with(&format!("child = {child}\n")),
+        "{fetched}"
+    );
+    assert!(fetched.contains(&parent), "{fetched}");
+    let found = run_in(
+        local,
+        Command::Search {
+            query: vec!["provides:tool:bash".to_owned()],
+            json: false,
+        },
+    )?;
+    assert!(
+        found.contains(&format!("  object = object:{child}\n")),
+        "{found}"
+    );
+    // An id that is neither an object nor a child the peer knows is
+    // fetched as given, and the peer has nothing for it.
+    assert!(fetch(OBJECT_ID).is_err());
+
+    drop(stop);
+    server.join().map_err(|_| "server thread panicked")?;
+    Ok(())
+}

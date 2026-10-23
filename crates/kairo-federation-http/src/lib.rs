@@ -135,6 +135,50 @@ pub fn manifest_source_pins<'a>(
 /// sub-decision 9, §38): a Git source's observations with only the
 /// pinned commits' history, and a file source whole, its observations
 /// and its bytes. Sources not held here are left out.
+/// Every child object some revision of `object` declares, among
+/// `statements`, with the target and name its id derives from
+/// (`DECISIONS.md` §45): read from the manifest at each revision's
+/// commit, so a child an older revision declares is found too.
+pub fn manifest_children<'a>(
+    store: &kairo_store::FilesystemStore,
+    object: &kairo_core::ObjectId,
+    statements: impl IntoIterator<Item = &'a kairo_core::StatementId>,
+) -> std::collections::BTreeMap<kairo_core::ObjectId, (String, String)> {
+    use kairo_store::StatementStore;
+    let mut children = std::collections::BTreeMap::new();
+    let Ok(path) = kairo_git::object_repo_path(&git_root(store), object.as_str()) else {
+        return children;
+    };
+    let Ok(repo) = kairo_git::open(&path) else {
+        return children;
+    };
+    for id in statements {
+        let Ok(revision) = store.get_object_revision(id) else {
+            continue;
+        };
+        let Ok(Some(commit)) = revision.unsigned().body().revision().git() else {
+            continue;
+        };
+        let Ok(Some(bytes)) = repo.read_blob_at_path(&commit, "kairo.toml") else {
+            continue;
+        };
+        let Ok(manifest) =
+            kairo_object::ObjectManifest::parse_toml(&String::from_utf8_lossy(&bytes))
+        else {
+            continue;
+        };
+        for target in manifest.build_targets() {
+            for child in target.children() {
+                let id =
+                    kairo_object::ChildGenesis::new(object.clone(), target.name(), child.name())
+                        .object_id();
+                children.insert(id, (target.name().to_owned(), child.name().to_owned()));
+            }
+        }
+    }
+    children
+}
+
 pub fn pinned_source_closures<'a>(
     store: &kairo_store::FilesystemStore,
     object: &kairo_core::ObjectId,

@@ -11,8 +11,8 @@ use kairo_config::{Config, ConfigSource};
 use kairo_core::{ActorId, KairoRef, ObjectId, Timestamp};
 use kairo_federation_core::Announcement;
 use kairo_federation_http::client::{
-    announce, export_actor, fetch_trust, learn_from_export, learn_peer, normalize_peer_url,
-    pull_object, push, GitOutcome, NodeSigner, PullOptions, PullReport,
+    announce, export_actor, fetch_trust, find_child_parent, learn_from_export, learn_peer,
+    normalize_peer_url, pull_object, push, GitOutcome, NodeSigner, PullOptions, PullReport,
 };
 use kairo_federation_service::{limits_from, DiscoverOutcome, ReceiveOutcome, Received, Via};
 use kairo_identity::ActorKind;
@@ -212,7 +212,25 @@ pub(crate) struct FetchArgs<'a> {
 /// `node_actor` pin is passed to the pull, which refuses a different
 /// claim before fetching anything.
 pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
-    let (object, child) = object_or_parent(args.object.to_owned(), paths)?;
+    let (mut object, mut child) = object_or_parent(args.object.to_owned(), paths)?;
+    // An id this node can't place may be a child the peer can
+    // (`DECISIONS.md` §45): ask, and fetch the parent it names.
+    let held = kairo_store::ObjectStore::get_object_genesis(&open_store(paths)?, &object).is_ok();
+    if let (None, false, Some(from)) = (&child, held, args.from) {
+        let (config, url, peer) = peer_policy(from, args.allow_peer, args.offline, paths)
+            .map_err(|error| error.into_cli(CliError::Fetch))?;
+        let options = PullOptions {
+            limits: limits_from(&config.federation.limits),
+            expected_node_actor: peer.and_then(|peer| peer.node_actor),
+            require_complete: args.require_complete,
+        };
+        if let Some(listing) = find_child_parent(&url, &object, &options)
+            .map_err(|error| CliError::Fetch(Box::new(error)))?
+        {
+            child = Some(object);
+            object = listing.parent;
+        }
+    }
     let fetched = fetch_object(&object, args, paths)?;
     Ok(if args.json {
         fetched

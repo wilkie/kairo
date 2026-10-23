@@ -1587,7 +1587,10 @@ Given a child object's id (`DECISIONS.md` §44 sub-decision 4),
 `publish`, `unpublish`, `follow`, `unfollow`, and `kairo fetch` act on
 its parent, found from the manifests this node holds, and print
 `child = <id>` first; a child has no statements of its own, and a peer
-serving the parent serves it.
+serving the parent serves it. `kairo fetch --from <peer>` of an id this
+node can't place asks the peer which object it belongs to
+(`GET /federation/v1/children/{id}`, `DECISIONS.md` §45), checks that
+the id derives from the answer, and pulls that parent.
 
 Follows (`DECISIONS.md` §28) are what this node keeps current: an
 object, or one truster's chain in one scope. `follow` and `unfollow`

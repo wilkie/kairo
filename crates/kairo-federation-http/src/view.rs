@@ -33,6 +33,9 @@ pub(crate) struct PublishedView {
     /// For each published native object, the sources its revisions pin
     /// that this node serves (`DECISIONS.md` §37 sub-decision 9).
     pub sources: BTreeMap<ObjectId, Vec<ObjectId>>,
+    /// Each child object a published native object's revisions declare:
+    /// its parent, target, and name (`DECISIONS.md` §45).
+    pub children: BTreeMap<ObjectId, (ObjectId, String, String)>,
     /// Every actor named by some closure, and the node actor, with
     /// their key-event ids.
     pub actors: BTreeMap<ActorId, Vec<StatementId>>,
@@ -81,6 +84,12 @@ impl PublishedView {
             }
             if !served.is_empty() {
                 view.sources.insert(published.object_id.clone(), served);
+            }
+            for (child, (target, name)) in
+                crate::manifest_children(store, &published.object_id, &closure.statements)
+            {
+                view.children
+                    .insert(child, (published.object_id.clone(), target, name));
             }
             view.objects.push(published.object_id.clone());
             view.closures.insert(published.object_id, closure);

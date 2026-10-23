@@ -21,6 +21,7 @@
 
 mod announce;
 mod batch;
+mod child;
 mod error;
 mod inventory;
 mod listing;
@@ -44,6 +45,7 @@ pub use batch::{
     BatchedStatement, StatementBatch, StatementBatchRequest, StatementBatchRequestError,
     StatementBatchRequestSchema, StatementBatchSchema, MAX_BATCH_IDS, STATEMENT_BATCH_PATH,
 };
+pub use child::{ChildListing, ChildListingSchema, CHILDREN_PATH};
 pub use error::{FedErrorBody, FedErrorCode, FedErrorEnvelope, ERROR_SCHEMA};
 pub use inventory::{
     Inventory, InventorySchema, InventoryShapeError, RelayedInventories, RelayedInventoriesSchema,
@@ -102,6 +104,10 @@ pub const SUPPORTS_TRUST: &str = "trust";
 /// `supports` value for `GET /federation/v1/inventory`
 /// (`specs/DECISIONS.md` §29).
 pub const SUPPORTS_INVENTORY: &str = "inventory";
+
+/// `supports` value for `GET /federation/v1/children/{id}`
+/// (`specs/DECISIONS.md` §45).
+pub const SUPPORTS_CHILDREN: &str = "children";
 
 /// Path of the node document, relative to the node's base URL.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/kairo-node";

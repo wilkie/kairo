@@ -4507,10 +4507,9 @@ Sub-decisions:
    sub-decision 2, and say so (`child = <id>`); a peer that serves the
    parent serves its children, whose artifacts travel with the
    parent's execution records (§41 slice 2a). The parent is found from
-   the manifests this node holds, so a first fetch of a child whose
-   parent this node has never held names the parent instead: a peer
-   doesn't yet say which object a child belongs to, and the id alone
-   can't be inverted. An id this node can't place is taken as given.
+   the manifests this node holds, or, for `kairo fetch --from` of a
+   child whose parent this node has never held, from the peer (§45).
+   An id neither can place is taken as given.
 
 Rationale: the version a consumer asks of bash is bash's, so it must
 be the child's own; declaring it in the parent's manifest keeps
@@ -4527,3 +4526,50 @@ Affected specs:
 - `CLI.md` — `kairo search`; child ids in federation commands.
 - `PHASE_2.md` §9 — what's searchable, and no index yet.
 
+---
+
+## 45. Peers Say Which Object a Child Belongs To
+
+Decision: a node serves **`GET /federation/v1/children/{id}`**,
+answering for each child object that some revision of one of its
+published objects declares, with the parent, target, and name its id
+derives from; and `kairo fetch --from <peer>` of an id this node can't
+place asks the peer, checks the answer, and pulls the parent. This
+closes the gap §44 sub-decision 4 left: a child's id is a hash, and
+only a node holding the parent's manifest can say whose child it is.
+
+Sub-decisions:
+
+1. **The answer proves itself.** The response is `{ schema:
+   "kairo.fed.child.v1", child, parent, target, name }`. The client
+   re-derives the child's id from `(parent, target, name)`
+   (`schemas/canonical/child-genesis-v1.md`) and refuses an answer
+   that doesn't give the id it asked about, so a peer can't redirect a
+   fetch to some other object; nothing about the answer needs trust.
+   What is then pulled from the parent is checked as every pull is.
+
+2. **From what the node publishes.** A node answers only for children
+   of objects it publishes, read from the manifest at every revision
+   in the published closure, so a child an older revision declares is
+   answered for too. Anything else is `404 fed_not_found`, as for an
+   unpublished object; a node lists no children, so the endpoint
+   reveals nothing a client couldn't learn by pulling the parent.
+
+3. **Advertised and optional.** Nodes that serve it list
+   `"children"` in their node document's `supports`; a client asks
+   only such nodes, and treats a `404` as "not a child here", taking
+   the id as given.
+
+4. **Only when needed.** `kairo fetch` asks the peer only when the id
+   is neither an object this node holds nor a child of one: the local
+   answer (§44) needs no request.
+
+Rationale: a child is fetched through its parent, and a node that has
+never seen the parent has nothing to derive the parent from. The peer
+that publishes the parent can say, and because the claim is checkable
+from the id alone, saying it costs the client no trust.
+
+Affected specs:
+
+- `PHASE_2_FEDERATION.md` — the endpoint and the `supports` value.
+- `CLI.md` — `kairo fetch` of a child.
