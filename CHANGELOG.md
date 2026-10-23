@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **Overlay provisioning (`DECISIONS.md` §41 sub-decision 5, slice 3).**
+  Where bubblewrap has `--overlay-src` (0.11 and later), each
+  installed dependency is a read-only layer cached under
+  `<store>/cache/layers/` and stacked under the build's writable `/`,
+  the first dependency on top; older engines copy, as before, and give
+  the same tree. Execution records and `kairo build` say which was
+  used (`provisioning`). Engine tests take `KAIRO_TEST_BWRAP` to name
+  another bubblewrap.
+
 - **Label kinds, tags, and child summaries (`DECISIONS.md` §42).** A
   provides label's kind must be `tool`, `lib`, `doc`, `data`, or
   `environment`, checked wherever a manifest declares or requires one,

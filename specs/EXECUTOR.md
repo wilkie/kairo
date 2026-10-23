@@ -665,6 +665,8 @@ the artifact under its root, stored as its own artifact tree;
 `DECISIONS.md` §41 sub-decision 4), the stdout and stderr blobs, and
 diagnostics. A child whose root holds nothing, or whose part doesn't
 stand alone (a relative link climbing out of it), fails the build.
+Under an engine the record also says how the guest's `/` was
+provisioned, `overlay` or `copy` (`DECISIONS.md` §41 sub-decision 5).
 
 ---
 
@@ -804,7 +806,10 @@ in. Engines are allowlisted under `[[runtime.engines]]` and probed
 before use. Dependencies are provisioned by bubblewrap's overlay
 options where the probe finds them (0.11 and later), each artifact a
 cached read-only layer under the build's writable one, and copied
-otherwise; the record says which (`DECISIONS.md` §41 sub-decision 5). Records name the engine path and version, the kernel
+otherwise; the record says which (`DECISIONS.md` §41 sub-decision 5).
+Layers are cached under `<store>/cache/layers/`, one per artifact and
+install root, and a placement gives way to them exactly as it would to
+their copies, so both give the guest the same tree. Records name the engine path and version, the kernel
 release, and "wall clock not frozen" as known nondeterminism; results
 carry the contract and `host_dependent = false`.
 

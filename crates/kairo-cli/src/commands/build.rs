@@ -918,6 +918,16 @@ fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
         record.executor.id, record.executor.version, record.executor.isolation
     );
     let _ = writeln!(out, "environment = {}", record.environment);
+    if let Some(provisioning) = record.provisioning {
+        let _ = writeln!(
+            out,
+            "provisioning = {}",
+            match provisioning {
+                kairo_build::Provisioning::Overlay => "overlay",
+                kairo_build::Provisioning::Copy => "copy",
+            }
+        );
+    }
     let _ = writeln!(
         out,
         "host_dependent = {}",

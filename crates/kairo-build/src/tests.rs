@@ -724,7 +724,10 @@ fn engine_fixture() -> Option<Bubblewrap> {
         if has_interpreter(&busybox)? {
             return None; // dynamically linked: unusable in an empty root
         }
-        Bubblewrap::probe(Path::new("/usr/bin/bwrap")).ok()
+        // KAIRO_TEST_BWRAP names another bubblewrap, such as one new
+        // enough to overlay (§41 sub-decision 5).
+        let bwrap = std::env::var_os("KAIRO_TEST_BWRAP").unwrap_or("/usr/bin/bwrap".into());
+        Bubblewrap::probe(Path::new(&bwrap)).ok()
     })();
     assert!(
         found.is_some() || std::env::var_os("KAIRO_REQUIRE_ENGINE").is_none(),
@@ -1381,5 +1384,226 @@ fn a_build_slices_its_children_and_a_consumer_installs_one() -> TestResult {
             children[1].artifact
         )
     );
+    Ok(())
+}
+
+#[test]
+fn overlaid_and_copied_dependencies_give_the_guest_the_same_tree() -> TestResult {
+    use kairo_store::SourceStore as _;
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(&[
+        (
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "busybox"
+            [[provides]]
+            provides = "tool:sh"
+            "#,
+        ),
+        ("bin/busybox", "@copy:/usr/bin/busybox"),
+        ("bin/sh", "@link:busybox"),
+    ]);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    // Two providers installed at /, both with a usr/share/who; one also
+    // at /opt/second.
+    let provider = |name: &str, install: &str| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "{name}"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[provides]]
+            provides = "tool:{name}"
+            target = "release"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox mkdir -p /kairo/package/usr/bin /kairo/package/usr/share && busybox cp $KAIRO_PROVIDER_TOOL_SH/bin/busybox /kairo/package/usr/bin/busybox && echo {name} > /kairo/package/usr/share/who && echo {name} > /kairo/package/usr/share/{name}"]
+            [build.targets.artifact]
+            install = "{install}"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            "#
+        )
+    };
+    let first = world.object(&[("kairo.toml", &provider("first", "/"))]);
+    let second = world.object(&[("kairo.toml", &provider("second", "/"))]);
+    let third = world.object(&[("kairo.toml", &provider("third", "/opt/third"))]);
+    let limits = Limits {
+        timeout: Duration::from_secs(30),
+    };
+    let mut built = Vec::new();
+    for object in [&first, &second, &third] {
+        let plan = world.plan_with(&host, &object.object_id, "release");
+        let execution = run_plan(
+            &world.fixture.store,
+            &world.trees,
+            &plan,
+            1_700_000_000,
+            &limits,
+            &Engine::Bubblewrap(bwrap.clone()),
+        )?;
+        assert_eq!(execution.record.status, Status::Success);
+        built.push((
+            object.object_id.clone(),
+            "release".to_owned(),
+            BlobId::new(execution.record.artifact.clone().expect("artifact id"))?,
+        ));
+    }
+    let built = Built(built);
+
+    // The consumer: the first provider wins usr/share/who over the
+    // second, and over an overlaid file placed there; a file placed
+    // where nothing is lands.
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    world.fixture.store.put_file_source(
+        &kairo_statement::FileSourceGenesis::new(kairo_statement::Sha256Digest::parse(abc)?),
+        b"abc",
+    )?;
+    let consumer = |placed: &str, overlay: bool| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "consumer"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["/usr/bin/busybox", "sh", "-c", "{{ busybox find / -path /proc -prune -o -path /dev -prune -o -print | busybox sort; busybox cat /usr/share/who /usr/share/abc /opt/third/usr/share/third; }} > /kairo/package/report"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:first"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:second"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:third"
+            [[build.targets.dependencies]]
+            kind = "file"
+            sha256 = "{abc}"
+            path = "/usr/share/abc"
+            [[build.targets.dependencies]]
+            kind = "file"
+            sha256 = "{abc}"
+            path = "{placed}"
+            overlay = {overlay}
+            "#
+        )
+    };
+    let gives_way = world.object(&[("kairo.toml", &consumer("/usr/share/who", true))]);
+    // A placement that doesn't overlay is refused where a dependency
+    // already is, either way.
+    let refused = world.object(&[("kairo.toml", &consumer("/usr/share/who", false))]);
+    let copying = Bubblewrap {
+        overlay: false,
+        ..bwrap.clone()
+    };
+    let run = |object: &ObjectId, engine: &Bubblewrap| {
+        let plan = Resolver::new(&world.fixture.store, &world.trees, &built, &host, &[])
+            .resolve(object, &SnapshotSelector::Current, "release")
+            .expect("plan")
+            .plan;
+        run_plan(
+            &world.fixture.store,
+            &world.trees,
+            &plan,
+            1_700_000_000,
+            &limits,
+            &Engine::Bubblewrap(engine.clone()),
+        )
+    };
+    let copied = run(&gives_way.object_id, &copying)?;
+    assert_eq!(copied.record.provisioning, Some(Provisioning::Copy));
+    assert_eq!(
+        copied.record.status,
+        Status::Success,
+        "{:?} {}",
+        copied.record.diagnostics,
+        world.blob_text(&copied.record.logs.stderr)
+    );
+    let report = world.blob_text(
+        copied.artifact.as_ref().expect("artifact").entries[0]
+            .blob()
+            .expect("a file"),
+    );
+    assert!(report.ends_with("first\nabcthird\n"), "{report}");
+    if bwrap.overlay {
+        let overlaid = run(&gives_way.object_id, &bwrap)?;
+        assert_eq!(overlaid.record.provisioning, Some(Provisioning::Overlay));
+        let theirs = world.blob_text(
+            overlaid.artifact.as_ref().expect("artifact").entries[0]
+                .blob()
+                .expect("a file"),
+        );
+        assert_eq!(theirs, report);
+        assert_eq!(overlaid.record.artifact, copied.record.artifact);
+        // Its workspace is gone, overlayfs's work directory with it.
+        assert_eq!(
+            fs::read_dir(world.fixture.store.root().join("build"))?.count(),
+            0
+        );
+        // The layers are cached for the next build.
+        assert_eq!(
+            fs::read_dir(world.fixture.store.root().join("cache/layers"))?.count(),
+            3
+        );
+    }
+
+    for engine in [&copying, &bwrap] {
+        assert!(matches!(
+            run(&refused.object_id, engine),
+            Err(BuildError::PlacementOccupied { path }) if path == "/usr/share/who"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn a_union_lookup_follows_overlayfs_precedence() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let [top, bottom] = ["top", "bottom"].map(|name| dir.path().join(name));
+    fs::create_dir_all(top.join("usr/bin"))?;
+    fs::write(top.join("usr/bin/sh"), "top")?;
+    std::os::unix::fs::symlink("usr/lib", top.join("lib"))?;
+    fs::create_dir_all(bottom.join("usr/bin"))?;
+    fs::create_dir_all(bottom.join("lib/x"))?;
+    fs::create_dir_all(bottom.join("usr/bin/sh"))?;
+    fs::write(bottom.join("usr/bin/ls"), "bottom")?;
+    let layers = [top.clone(), bottom.clone()];
+    // Directories merge; the top's file hides the bottom's directory;
+    // what's under the top's link is hidden too.
+    assert!(matches!(union_lookup(&layers, "/usr/bin"), UnionEntry::Dir(dirs) if dirs.len() == 2));
+    assert!(matches!(
+        union_lookup(&layers, "/usr/bin/sh"),
+        UnionEntry::Other
+    ));
+    assert!(matches!(
+        union_lookup(&layers, "/usr/bin/ls"),
+        UnionEntry::Other
+    ));
+    assert!(matches!(union_lookup(&layers, "/lib"), UnionEntry::Other));
+    assert!(matches!(
+        union_lookup(&layers, "/lib/x"),
+        UnionEntry::Blocked
+    ));
+    assert!(matches!(union_lookup(&layers, "/opt"), UnionEntry::Missing));
+    assert!(matches!(union_lookup(&layers, "/"), UnionEntry::Dir(_)));
+    assert!(matches!(union_lookup(&[], "/usr"), UnionEntry::Missing));
     Ok(())
 }

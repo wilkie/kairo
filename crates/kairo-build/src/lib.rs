@@ -430,6 +430,10 @@ pub struct ExecutionRecord {
     /// (`DECISIONS.md` §41 sub-decision 4), on success.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<ChildRecord>,
+    /// How an engine assembled the guest's `/`; absent in development
+    /// mode (`DECISIONS.md` §41 sub-decision 5).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provisioning: Option<Provisioning>,
     pub logs: Logs,
     /// Why a failure failed, when the executor knows.
     pub diagnostics: Vec<String>,
@@ -558,6 +562,10 @@ pub struct Bubblewrap {
     /// Whether i386 programs run in its sandboxes: an x86-64 kernel
     /// with IA32 emulation (`DECISIONS.md` §38 sub-decision 7).
     pub runs_x86: bool,
+    /// Whether it mounts a writable overlay (`--overlay-src`, from
+    /// 0.11): dependencies are then overlaid, not copied
+    /// (`DECISIONS.md` §41 sub-decision 5).
+    pub overlay: bool,
 }
 
 impl Bubblewrap {
@@ -596,8 +604,245 @@ impl Bubblewrap {
             path: path.to_path_buf(),
             version,
             runs_x86: std::env::consts::ARCH == "x86_64" && probe_x86(path),
+            overlay: probe_overlay(path),
         })
     }
+
+    /// Whether it names overlay layers to the kernel by short
+    /// `/proc/self/fd` paths (0.12 on) rather than by host path (0.11).
+    fn names_layers_by_fd(&self) -> bool {
+        let version = self.version.rsplit(' ').next().unwrap_or_default();
+        let mut parts = version
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0));
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (0, 12)
+    }
+}
+
+/// Whether `bwrap` mounts a writable overlay here, as root in its
+/// namespaces, the way a build's `/` is mounted.
+fn probe_overlay(bwrap: &Path) -> bool {
+    let Ok(dir) = tempfile::tempdir() else {
+        return false;
+    };
+    let [lower, upper, work] = ["lower", "upper", "work"].map(|name| dir.path().join(name));
+    if [&lower, &upper, &work]
+        .iter()
+        .any(|path| fs::create_dir(path).is_err())
+    {
+        return false;
+    }
+    let mounted = Command::new(bwrap)
+        .args(["--unshare-all", "--unshare-user", "--die-with-parent"])
+        .args(["--uid", "0", "--gid", "0", "--cap-add", "ALL"])
+        .args(["--ro-bind", "/", "/", "--tmpfs", "/tmp"])
+        .arg("--overlay-src")
+        .arg(&lower)
+        .arg("--overlay")
+        .arg(&upper)
+        .arg(&work)
+        .arg("/tmp/overlay")
+        .arg("--")
+        .arg(bwrap)
+        .arg("--version")
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    release_overlay_work(&work);
+    mounted
+}
+
+/// overlayfs leaves an empty `work/work` with no permissions, which
+/// would keep its directory from being removed.
+fn release_overlay_work(work: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(work.join("work"), fs::Permissions::from_mode(0o700));
+}
+
+/// How the guest's `/` was assembled (`DECISIONS.md` §41 sub-decision
+/// 5); the guest sees the same tree either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Provisioning {
+    /// Each dependency a cached layer under the build's writable one.
+    Overlay,
+    /// Each dependency copied into the build's `/`.
+    Copy,
+}
+
+const LAYERS_DIR: &str = "cache/layers";
+const LAYER_DOMAIN: &[u8] = b"kairo.build.layer.v1";
+
+/// The cached overlay layer holding `artifact` at `install`, laid out
+/// from `/`: written once, then shared read-only by every build.
+fn cached_layer(
+    store: &FilesystemStore,
+    artifact: &BlobId,
+    tree: &ArtifactTree,
+    install: &str,
+) -> Result<PathBuf, BuildError> {
+    use std::os::unix::fs::PermissionsExt;
+    let name = BlobId::from_bytes(LAYER_DOMAIN, format!("{artifact}\n{install}").as_bytes());
+    let dir = store.root().join(LAYERS_DIR);
+    let layer = dir.join(name.as_str());
+    if layer.is_dir() {
+        return Ok(layer);
+    }
+    fs::create_dir_all(&dir).map_err(|source| io_error("creating", &dir, source))?;
+    let staging = tempfile::Builder::new()
+        .prefix(".new-")
+        .tempdir_in(&dir)
+        .map_err(|source| io_error("creating a layer under", &dir, source))?;
+    fs::set_permissions(staging.path(), fs::Permissions::from_mode(0o755))
+        .map_err(|source| io_error("setting permissions on", staging.path(), source))?;
+    let at = guest_target(staging.path(), install)?;
+    fs::create_dir_all(&at).map_err(|source| io_error("creating", &at, source))?;
+    write_tree(store, artifact, tree, &at)?;
+    let staged = staging.keep();
+    match fs::rename(&staged, &layer) {
+        Ok(()) => Ok(layer),
+        // Another build cached it first.
+        Err(_) if layer.is_dir() => {
+            let _ = fs::remove_dir_all(&staged);
+            Ok(layer)
+        }
+        Err(source) => Err(io_error("caching", &layer, source)),
+    }
+}
+
+/// The layers named to the engine through short symbolic links, so
+/// that more of them fit in the kernel's page of mount options.
+struct LayerLinks {
+    _dir: tempfile::TempDir,
+    links: Vec<PathBuf>,
+}
+
+impl LayerLinks {
+    fn new(layers: &[PathBuf]) -> Result<Self, BuildError> {
+        let dir = tempfile::Builder::new()
+            .prefix("kl")
+            .tempdir()
+            .map_err(|source| io_error("creating", Path::new("layer links"), source))?;
+        let at = dir
+            .path()
+            .canonicalize()
+            .map_err(|source| io_error("resolving", dir.path(), source))?;
+        let mut links = Vec::with_capacity(layers.len());
+        for (index, layer) in layers.iter().enumerate() {
+            let layer = layer
+                .canonicalize()
+                .map_err(|source| io_error("resolving", layer, source))?;
+            // Relative, so it resolves the same under bubblewrap's
+            // `/oldroot`, where 0.11 looks it up.
+            let mut target = PathBuf::new();
+            for _ in at.components().skip(1) {
+                target.push("..");
+            }
+            target.push(layer.strip_prefix("/").unwrap_or(&layer));
+            let link = at.join(index.to_string());
+            std::os::unix::fs::symlink(&target, &link)
+                .map_err(|source| io_error("linking", &link, source))?;
+            links.push(link);
+        }
+        Ok(Self { _dir: dir, links })
+    }
+
+    /// Whether the mount options for these layers over `upper` fit in
+    /// the page the kernel reads them from.
+    fn fit(&self, bwrap: &Bubblewrap, upper: &Path, work: &Path) -> bool {
+        const BUDGET: usize = 4096 - 64;
+        let name = |path: &Path| {
+            if bwrap.names_layers_by_fd() {
+                "/proc/self/fd/1000".len()
+            } else {
+                "/oldroot".len() + path.as_os_str().len()
+            }
+        };
+        let total = "upperdir=,workdir=,lowerdir=,userxattr".len()
+            + name(upper)
+            + name(work)
+            + self.links.iter().map(|link| name(link) + 1).sum::<usize>();
+        // overlayfs stacks at most 500 lower layers.
+        total <= BUDGET && self.links.len() <= 500
+    }
+}
+
+/// What a path is in the union of overlay layers, the first on top.
+enum UnionEntry {
+    Missing,
+    /// A directory, merged from these layers' directories.
+    Dir(Vec<PathBuf>),
+    /// A file or link.
+    Other,
+    /// Under a file or link: it can't exist.
+    Blocked,
+}
+
+/// Look `relative` up as overlayfs would in `layers`, the first on top:
+/// the topmost entry decides, and directories merge down to the first
+/// layer whose entry isn't one.
+fn union_lookup(layers: &[PathBuf], relative: &str) -> UnionEntry {
+    let parts: Vec<&str> = relative
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let mut active: Vec<PathBuf> = layers.to_vec();
+    if active.is_empty() {
+        return UnionEntry::Missing;
+    }
+    for (index, part) in parts.iter().enumerate() {
+        let mut dirs = Vec::new();
+        let mut other = false;
+        for layer in &active {
+            let at = layer.join(part);
+            match at.symlink_metadata() {
+                Err(_) => {}
+                Ok(meta) if meta.is_dir() => dirs.push(at),
+                Ok(_) => {
+                    other = dirs.is_empty();
+                    break;
+                }
+            }
+        }
+        if dirs.is_empty() {
+            return match (other, index + 1 == parts.len()) {
+                (false, _) => UnionEntry::Missing,
+                (true, true) => UnionEntry::Other,
+                (true, false) => UnionEntry::Blocked,
+            };
+        }
+        active = dirs;
+    }
+    UnionEntry::Dir(active)
+}
+
+/// Drop from the staged tree at `tree` (to land at `relative`) what the
+/// layers already hold, as merging into copies of them would: what's
+/// already there wins.
+fn prune_under_layers(tree: &Path, layers: &[PathBuf], relative: &str) -> Result<(), BuildError> {
+    let entries = fs::read_dir(tree).map_err(|source| io_error("reading", tree, source))?;
+    for entry in entries {
+        let entry = entry.map_err(|source| io_error("reading", tree, source))?;
+        let path = entry.path();
+        let name = entry.file_name();
+        let at = format!("{relative}/{}", name.to_string_lossy());
+        let ours_dir = entry
+            .file_type()
+            .map_err(|source| io_error("reading", &path, source))?
+            .is_dir();
+        match union_lookup(layers, &at) {
+            UnionEntry::Missing => {}
+            UnionEntry::Dir(_) if ours_dir => prune_under_layers(&path, layers, &at)?,
+            _ if ours_dir => {
+                fs::remove_dir_all(&path).map_err(|source| io_error("removing", &path, source))?
+            }
+            _ => fs::remove_file(&path).map_err(|source| io_error("removing", &path, source))?,
+        }
+    }
+    Ok(())
 }
 
 /// A static i386 program of 96 bytes that exits with status 42 (the
@@ -1094,17 +1339,46 @@ pub fn run_plan(
             mounts.push(mount);
         }
     }
+    // Overlaid where the engine can (§41 sub-decision 5): each install a
+    // cached layer, the first on top. Otherwise copied into `/`, the
+    // first winning, which gives the guest the same tree.
+    let mut layers: Vec<PathBuf> = Vec::new();
+    let mut layer_links: Option<LayerLinks> = None;
+    let work = workspace.path().join("work");
+    if let Engine::Bubblewrap(bwrap) = engine {
+        if bwrap.overlay && !installs.is_empty() {
+            for (install, artifact, tree, _) in &installs {
+                if let UnionEntry::Blocked = union_lookup(&layers, install) {
+                    return Err(BuildError::PlacementOccupied {
+                        path: install.clone(),
+                    });
+                }
+                layers.push(cached_layer(store, artifact, tree, install)?);
+            }
+            let links = LayerLinks::new(&layers)?;
+            if links.fit(bwrap, &root, &work) {
+                fs::create_dir(&work).map_err(|source| io_error("creating", &work, source))?;
+                layer_links = Some(links);
+            } else {
+                layers.clear();
+            }
+        }
+    }
+    let overlaid = layer_links.is_some();
     for (index, (install, artifact, tree, label)) in installs.into_iter().enumerate() {
-        let staging = deps.join("installed").join(index.to_string());
-        fs::create_dir_all(&staging).map_err(|source| io_error("creating", &staging, source))?;
-        write_tree(store, &artifact, &tree, &staging)?;
-        let inside = guest_target(&root, &install)?;
-        place(&staging, &inside, true).map_err(|error| match error {
-            PlaceError::Occupied => BuildError::PlacementOccupied {
-                path: install.clone(),
-            },
-            PlaceError::Io(error) => error,
-        })?;
+        if !overlaid {
+            let staging = deps.join("installed").join(index.to_string());
+            fs::create_dir_all(&staging)
+                .map_err(|source| io_error("creating", &staging, source))?;
+            write_tree(store, &artifact, &tree, &staging)?;
+            let inside = guest_target(&root, &install)?;
+            place(&staging, &inside, true).map_err(|error| match error {
+                PlaceError::Occupied => BuildError::PlacementOccupied {
+                    path: install.clone(),
+                },
+                PlaceError::Io(error) => error,
+            })?;
+        }
         env.insert(provider_var(&label), install);
     }
     // Shallowest first, so a placement nested in another lands in it.
@@ -1172,12 +1446,35 @@ pub fn run_plan(
                 sub
             }
         };
-        place(&tree, &inside, placement.overlay).map_err(|error| match error {
-            PlaceError::Occupied => BuildError::PlacementOccupied {
-                path: placement.path.clone(),
-            },
-            PlaceError::Io(error) => error,
-        })?;
+        // Overlaid, the dependencies aren't in `root`, so what copying
+        // would have met there is looked up in the layers, and the
+        // placement gives way to them as it would to their copies.
+        let occupied = || BuildError::PlacementOccupied {
+            path: placement.path.clone(),
+        };
+        let mut gives_way = false;
+        if absolute && overlaid {
+            let tree_is_dir = tree.symlink_metadata().is_ok_and(|meta| meta.is_dir());
+            match union_lookup(&layers, &placement.path) {
+                UnionEntry::Missing => {}
+                UnionEntry::Blocked => return Err(occupied()),
+                UnionEntry::Dir(dirs)
+                    if dirs
+                        .iter()
+                        .all(|dir| fs::read_dir(dir).is_ok_and(|mut e| e.next().is_none())) => {}
+                _ if !placement.overlay => return Err(occupied()),
+                UnionEntry::Dir(_) if tree_is_dir => {
+                    prune_under_layers(&tree, &layers, &placement.path)?;
+                }
+                _ => gives_way = true,
+            }
+        }
+        if !gives_way {
+            place(&tree, &inside, placement.overlay).map_err(|error| match error {
+                PlaceError::Occupied => occupied(),
+                PlaceError::Io(error) => error,
+            })?;
+        }
         let mount = Mount {
             host: inside,
             guest: if absolute {
@@ -1267,11 +1564,21 @@ pub fn run_plan(
             // the host (§39 sub-decision 4). The writable `/` first, so
             // the rest mounts over it; nothing else from the host. `/sys`
             // is empty and read-only (§39 sub-decision 6).
+            process.args(["--uid", "0", "--gid", "0", "--cap-add", "ALL"]);
+            match &layer_links {
+                // bubblewrap stacks the first source at the bottom, and
+                // the first dependency belongs on top.
+                Some(links) => {
+                    for link in links.links.iter().rev() {
+                        process.arg("--overlay-src").arg(link);
+                    }
+                    process.arg("--overlay").arg(&root).arg(&work).arg("/");
+                }
+                None => {
+                    process.arg("--bind").arg(&root).arg("/");
+                }
+            }
             process
-                .args(["--uid", "0", "--gid", "0", "--cap-add", "ALL"])
-                .arg("--bind")
-                .arg(&root)
-                .arg("/")
                 .args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"])
                 .args(["--tmpfs", "/sys", "--remount-ro", "/sys"])
                 .arg("--bind")
@@ -1362,6 +1669,9 @@ pub fn run_plan(
                 }
             }
         }
+    }
+    if overlaid {
+        release_overlay_work(&work);
     }
     // And what the build staged under /kairo/package, from the
     // target's artifact root (§41 sub-decision 2).
@@ -1462,6 +1772,11 @@ pub fn run_plan(
         outputs,
         artifact: artifact.as_ref().map(|(id, _)| id.to_string()),
         children,
+        provisioning: match engine {
+            Engine::Native => None,
+            Engine::Bubblewrap(_) if overlaid => Some(Provisioning::Overlay),
+            Engine::Bubblewrap(_) => Some(Provisioning::Copy),
+        },
         logs,
         diagnostics,
     };
