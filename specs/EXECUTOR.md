@@ -801,7 +801,10 @@ provider bound read-only at its `/kairo/...` path, a cleared
 environment, and the command run in the workdir. The artifact is what
 the build left under `/kairo/package`, with the declared outputs copied
 in. Engines are allowlisted under `[[runtime.engines]]` and probed
-before use. Records name the engine path and version, the kernel
+before use. Dependencies are provisioned by bubblewrap's overlay
+options where the probe finds them (0.11 and later), each artifact a
+cached read-only layer under the build's writable one, and copied
+otherwise; the record says which (`DECISIONS.md` §41 sub-decision 5). Records name the engine path and version, the kernel
 release, and "wall clock not frozen" as known nondeterminism; results
 carry the contract and `host_dependent = false`.
 

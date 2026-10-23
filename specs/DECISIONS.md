@@ -4225,16 +4225,37 @@ Sub-decisions:
 
 5. **Provisioning by overlay.** The engine assembles the guest's `/`
    as an overlay: each dependency's artifact is materialized once on
-   the host, cached by artifact id and shared read-only across builds,
-   and stacked at its install root in dependency order; the build's
-   writable layer is on host disk, with overlayfs's work directory in
-   the same mount. bubblewrap before 0.10 has no overlay options, so
-   the engine mounts it from a small helper that runs first inside the
-   sandbox, as root in its namespaces. Where an overlay isn't possible,
-   the engine copies the dependencies into place in the same order,
-   and the guest sees the same tree. Deletions a build makes in the
-   overlay (whiteouts) never reach an artifact: artifacts only hold
-   what is staged under `/kairo/package`.
+   the host as a layer laid out from `/` (so keyed by artifact id and
+   install root), cached and shared read-only across builds, and
+   stacked in dependency order, the first dependency on top; the
+   build's writable layer is on host disk, with overlayfs's work
+   directory in the same filesystem, and the absolute placements are
+   copied into it before the command runs. Deletions a build makes in
+   the overlay (whiteouts) never reach an artifact: artifacts only hold
+   what is staged under `/kairo/package`. *Amended:*
+   - **bubblewrap's own overlay, from 0.11.** bubblewrap 0.11.0 added
+     `--overlay-src` and `--overlay`, mounting with `userxattr`
+     (Linux 5.11 or later, and not in setuid installs); the engine
+     uses them when its probe finds them. No helper runs inside the
+     sandbox: a Kairo program in every guest would be one more thing
+     the guest didn't ask for, and the copy below already gives the
+     same tree.
+   - **Copying otherwise.** On an older bubblewrap, or when an overlay
+     can't be mounted, the engine copies the dependencies into the
+     build's `/` in the same order, the first one winning, as slice 1
+     does. The guest sees the same tree either way, so the execution
+     record says which was used and the plan doesn't.
+   - **Short layer names.** The kernel takes the whole layer list in
+     one page of mount options. bubblewrap 0.12 names each layer by a
+     short `/proc/self/fd` path, but 0.11 passes the host path, which
+     for a cached artifact is about 100 bytes, so some 40 layers. The
+     engine therefore names layers through a per-build directory of
+     short symbolic links; a stack that still doesn't fit is copied.
+   - **The development host.** Ubuntu 24.04 ships bubblewrap 0.9.0
+     with no backport; 26.04 ships 0.11.1, Debian 13, Fedora 44, and
+     Alpine 3.24 ship 0.12.0. A host on 24.04 can build 0.12 into a
+     directory of its own and allowlist it under `[[runtime.engines]]`
+     without replacing the system's.
 
 6. **live-bootstrap.** Its wrapper places live-bootstrap's steps and
    seed files at their absolute paths (`/steps`, `/`) and its distfiles
