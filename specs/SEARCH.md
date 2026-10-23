@@ -39,7 +39,10 @@ Search results must never imply validity unless validated.
 
 ### 3.1 Local Search
 
-Search over local store data.
+Search over local store data. `kairo search` (`DECISIONS.md` §44)
+implements it for native objects at their current snapshots and their
+children; `version` is a child's own, and `parent` names a child's
+parent.
 
 Sources:
 
@@ -126,9 +129,10 @@ Each result must include:
   "object_id": "z6MkObject...",
   "snapshot_id": null,
   "name": "Example",
-  "description": "...",
+  "summary": "...",
   "tags": [],
-  "provides": [],
+  "provides": [{ "provides": "tool:example", "version": "1.0" }],
+  "version": null,
   "parent": null,
   "source": "local",
   "validation": "unverified",

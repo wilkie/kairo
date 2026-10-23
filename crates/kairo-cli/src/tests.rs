@@ -10822,3 +10822,104 @@ fn a_source_whose_url_fails_is_fetched_through_its_mirror() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[test]
+fn a_childs_id_stands_for_its_parent_in_search_and_federation(
+) -> Result<(), Box<dyn std::error::Error>> {
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let store_dir = tempfile::TempDir::new()?;
+    let actor = create_local_actor(store_dir.path())?;
+    let parent = create_held_object(
+        store_dir.path(),
+        &actor,
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "bundle"
+        summary = "A bundle of tools."
+
+        [[build.targets]]
+        name = "release"
+        command = ["sh", "build.sh"]
+
+        [[build.targets.children]]
+        name = "bash"
+        root = "bash"
+        version = "5.2.15"
+        summary = "The GNU shell."
+        tags = ["shell", "gnu"]
+        provides = [{ provides = "tool:bash" }]
+        "#,
+    )?;
+    let child = kairo_object::ChildGenesis::new(ObjectId::new(parent.clone())?, "release", "bash")
+        .object_id()
+        .to_string();
+
+    let found = run_in_store(
+        store_dir.path(),
+        Command::Search {
+            query: vec!["gnu".to_owned(), "provides:tool:*".to_owned()],
+            json: false,
+        },
+    )?;
+    assert!(found.starts_with("results = 1\n"), "{found}");
+    assert!(
+        found.contains(&format!("  object = object:{child}\n")),
+        "{found}"
+    );
+    assert!(
+        found.contains("  version = 5.2.15\n  summary = The GNU shell.\n"),
+        "{found}"
+    );
+    assert!(found.contains("  provides = tool:bash 5.2.15\n"), "{found}");
+    assert!(
+        found.contains(&format!("  parent = object:{parent}\n")),
+        "{found}"
+    );
+    assert!(
+        found.ends_with("source = local\nvalidation = unverified\n"),
+        "{found}"
+    );
+
+    // Publishing or following the child is publishing or following
+    // its parent.
+    let published = run_in_store(
+        store_dir.path(),
+        federation(FederationCommand::Publish {
+            object: child.clone(),
+        }),
+    )?;
+    assert_eq!(
+        published,
+        format!("child = {child}\nobject = {parent}\nstatus = published\n")
+    );
+    let followed = run_in_store(
+        store_dir.path(),
+        federation(FederationCommand::Follow {
+            target: crate::cli::FollowTarget {
+                object: Some(child.clone()),
+                trust_by: None,
+                scope: None,
+            },
+        }),
+    )?;
+    assert!(
+        followed.starts_with(&format!("child = {child}\n")),
+        "{followed}"
+    );
+    assert!(followed.contains(&parent), "{followed}");
+    let unpublished = run_in_store(
+        store_dir.path(),
+        federation(FederationCommand::Unpublish {
+            object: child.clone(),
+        }),
+    )?;
+    assert!(
+        unpublished.contains("status = unpublished"),
+        "{unpublished}"
+    );
+    Ok(())
+}

@@ -80,6 +80,7 @@ pub struct ChildDeclaration {
     provides: Vec<ChildProvide>,
     summary: Option<String>,
     tags: Vec<String>,
+    version: Option<String>,
 }
 
 impl ChildDeclaration {
@@ -109,6 +110,12 @@ impl ChildDeclaration {
     pub fn tags(&self) -> &[String] {
         &self.tags
     }
+
+    /// The version of the software the child holds (`DECISIONS.md` §44
+    /// sub-decision 1); its labels' versions default to it.
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
 }
 
 impl CanonicalEncode for ChildDeclaration {
@@ -131,6 +138,10 @@ impl CanonicalEncode for ChildDeclaration {
         if !self.tags.is_empty() {
             encode_str(out, "tags");
             encode_list(out, &self.tags, |out, tag| encode_str(out, tag));
+        }
+        if let Some(version) = &self.version {
+            encode_str(out, "version");
+            encode_str(out, version);
         }
     }
 }
@@ -1520,6 +1531,7 @@ struct RawChildDeclaration {
     summary: Option<String>,
     #[serde(default)]
     tags: Vec<String>,
+    version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1663,6 +1675,9 @@ impl RawBuildTarget {
             let root = ensure_relative_path("build.targets.children.root", raw.root)?;
             let install = validate_install("build.targets.children.install", raw.install)?;
             ensure_tags("build.targets.children.tags", &raw.tags)?;
+            if let Some(version) = &raw.version {
+                ensure_non_empty("build.targets.children.version", version)?;
+            }
             let mut provides = Vec::with_capacity(raw.provides.len());
             for provide in raw.provides {
                 ensure_label(
@@ -1671,7 +1686,8 @@ impl RawBuildTarget {
                 )?;
                 provides.push(ChildProvide {
                     provides: provide.provides,
-                    version: provide.version,
+                    // A label says the child's version unless it says its own.
+                    version: provide.version.or_else(|| raw.version.clone()),
                 });
             }
             children.push(ChildDeclaration {
@@ -1681,6 +1697,7 @@ impl RawBuildTarget {
                 provides,
                 summary: raw.summary,
                 tags: raw.tags,
+                version: raw.version,
             });
         }
         Ok(BuildTarget {
@@ -2960,6 +2977,54 @@ mod tests {
         assert_eq!(children.len(), 77);
         assert!(children.iter().any(|child| child.name() == "bash-5.2.15_0"
             && child.provides().iter().any(|p| p.provides() == "tool:bash")));
+        Ok(())
+    }
+
+    #[test]
+    fn a_childs_labels_take_its_version_unless_they_give_their_own(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |child: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "Example"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                [[build.targets.children]]
+                name = "bash"
+                root = "bash"
+                {child}
+                "#
+            )
+        };
+        let parsed = ObjectManifest::parse_toml(&manifest(
+            "version = \"5.2.15\"\nprovides = [{ provides = \"tool:bash\" }, { provides = \"tool:sh\", version = \"1\" }]",
+        ))?;
+        let target = parsed.build_target("release").ok_or("target")?;
+        let [bash] = target.children() else {
+            return Err("one child".into());
+        };
+        assert_eq!(bash.version(), Some("5.2.15"));
+        let versions: Vec<Option<&str>> =
+            bash.provides().iter().map(ChildProvide::version).collect();
+        assert_eq!(versions, [Some("5.2.15"), Some("1")]);
+        // The version is part of the manifest, and a default spelled out
+        // is the same manifest.
+        let spelled = ObjectManifest::parse_toml(&manifest(
+            "version = \"5.2.15\"\nprovides = [{ provides = \"tool:bash\", version = \"5.2.15\" }, { provides = \"tool:sh\", version = \"1\" }]",
+        ))?;
+        assert_eq!(spelled.manifest_hash(), parsed.manifest_hash());
+        assert_ne!(
+            ObjectManifest::parse_toml(&manifest(""))?.manifest_hash(),
+            ObjectManifest::parse_toml(&manifest("version = \"5.2.15\""))?.manifest_hash()
+        );
+        assert!(matches!(
+            ObjectManifest::parse_toml(&manifest("version = \"\"")),
+            Err(ManifestError::EmptyField("build.targets.children.version"))
+        ));
         Ok(())
     }
 

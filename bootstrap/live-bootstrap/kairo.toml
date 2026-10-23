@@ -619,528 +619,605 @@ name = "autoconf-2.52_0"
 root = "autoconf-2.52_0"
 summary = "autoconf 2.52, as live-bootstrap builds it (package autoconf-2.52_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.52" }]
+version = "2.52"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.53_0"
 root = "autoconf-2.53_0"
 summary = "autoconf 2.53, as live-bootstrap builds it (package autoconf-2.53_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.53" }]
+version = "2.53"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.54_0"
 root = "autoconf-2.54_0"
 summary = "autoconf 2.54, as live-bootstrap builds it (package autoconf-2.54_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.54" }]
+version = "2.54"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.55_0"
 root = "autoconf-2.55_0"
 summary = "autoconf 2.55, as live-bootstrap builds it (package autoconf-2.55_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.55" }]
+version = "2.55"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.57_0"
 root = "autoconf-2.57_0"
 summary = "autoconf 2.57, as live-bootstrap builds it (package autoconf-2.57_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.57" }]
+version = "2.57"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.59_0"
 root = "autoconf-2.59_0"
 summary = "autoconf 2.59, as live-bootstrap builds it (package autoconf-2.59_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.59" }]
+version = "2.59"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.61_0"
 root = "autoconf-2.61_0"
 summary = "autoconf 2.61, as live-bootstrap builds it (package autoconf-2.61_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.61" }]
+version = "2.61"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.64_0"
 root = "autoconf-2.64_0"
 summary = "autoconf 2.64, as live-bootstrap builds it (package autoconf-2.64_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.64" }]
+version = "2.64"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-2.69_0"
 root = "autoconf-2.69_0"
 summary = "autoconf 2.69, as live-bootstrap builds it (package autoconf-2.69_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:autoconf", version = "2.69" }]
+version = "2.69"
+provides = [{ provides = "tool:autoconf" }]
 
 [[build.targets.children]]
 name = "autoconf-archive-2021.02.19_0"
 root = "autoconf-archive-2021.02.19_0"
 summary = "autoconf-archive 2021.02.19, as live-bootstrap builds it (package autoconf-archive-2021.02.19_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "data:autoconf-archive", version = "2021.02.19" }]
+version = "2021.02.19"
+provides = [{ provides = "data:autoconf-archive" }]
 
 [[build.targets.children]]
 name = "automake-1.10.3_0"
 root = "automake-1.10.3_0"
 summary = "automake 1.10.3, as live-bootstrap builds it (package automake-1.10.3_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.10.3" }]
+version = "1.10.3"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.11.2_0"
 root = "automake-1.11.2_0"
 summary = "automake 1.11.2, as live-bootstrap builds it (package automake-1.11.2_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.11.2" }]
+version = "1.11.2"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.15.1_0"
 root = "automake-1.15.1_0"
 summary = "automake 1.15.1, as live-bootstrap builds it (package automake-1.15.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.15.1" }]
+version = "1.15.1"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.6.3_0"
 root = "automake-1.6.3_0"
 summary = "automake 1.6.3, as live-bootstrap builds it (package automake-1.6.3_0)."
 tags = ["live-bootstrap"]
+version = "1.6.3"
 
 [[build.targets.children]]
 name = "automake-1.6.3_1"
 root = "automake-1.6.3_1"
 summary = "automake 1.6.3, as live-bootstrap builds it (package automake-1.6.3_1)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.6.3" }]
+version = "1.6.3"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.7.8_0"
 root = "automake-1.7.8_0"
 summary = "automake 1.7.8, as live-bootstrap builds it (package automake-1.7.8_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.7.8" }]
+version = "1.7.8"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.7_0"
 root = "automake-1.7_0"
 summary = "automake 1.7, as live-bootstrap builds it (package automake-1.7_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.7" }]
+version = "1.7"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.8.5_0"
 root = "automake-1.8.5_0"
 summary = "automake 1.8.5, as live-bootstrap builds it (package automake-1.8.5_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.8.5" }]
+version = "1.8.5"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "automake-1.9.6_0"
 root = "automake-1.9.6_0"
 summary = "automake 1.9.6, as live-bootstrap builds it (package automake-1.9.6_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:automake", version = "1.9.6" }]
+version = "1.9.6"
+provides = [{ provides = "tool:automake" }]
 
 [[build.targets.children]]
 name = "bash-5.2.15_0"
 root = "bash-5.2.15_0"
 summary = "bash 5.2.15, as live-bootstrap builds it (package bash-5.2.15_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:bash", version = "5.2.15" }]
+version = "5.2.15"
+provides = [{ provides = "tool:bash" }]
 
 [[build.targets.children]]
 name = "bc-1.08.1_0"
 root = "bc-1.08.1_0"
 summary = "bc 1.08.1, as live-bootstrap builds it (package bc-1.08.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:bc", version = "1.08.1" }]
+version = "1.08.1"
+provides = [{ provides = "tool:bc" }]
 
 [[build.targets.children]]
 name = "binutils-2.30_0"
 root = "binutils-2.30_0"
 summary = "binutils 2.30, as live-bootstrap builds it (package binutils-2.30_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:binutils", version = "2.30" }]
+version = "2.30"
+provides = [{ provides = "tool:binutils" }]
 
 [[build.targets.children]]
 name = "bison-2.3_0"
 root = "bison-2.3_0"
 summary = "bison 2.3, as live-bootstrap builds it (package bison-2.3_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:bison", version = "2.3" }]
+version = "2.3"
+provides = [{ provides = "tool:bison" }]
 
 [[build.targets.children]]
 name = "bison-3.4.1_0"
 root = "bison-3.4.1_0"
 summary = "bison 3.4.1, as live-bootstrap builds it (package bison-3.4.1_0)."
 tags = ["live-bootstrap"]
+version = "3.4.1"
 
 [[build.targets.children]]
 name = "bison-3.4.1_1"
 root = "bison-3.4.1_1"
 summary = "bison 3.4.1, as live-bootstrap builds it (package bison-3.4.1_1)."
 tags = ["live-bootstrap"]
+version = "3.4.1"
 
 [[build.targets.children]]
 name = "bison-3.4.1_2"
 root = "bison-3.4.1_2"
 summary = "bison 3.4.1, as live-bootstrap builds it (package bison-3.4.1_2)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:bison", version = "3.4.1" }]
+version = "3.4.1"
+provides = [{ provides = "tool:bison" }]
 
 [[build.targets.children]]
 name = "bzip2-1.0.8_0"
 root = "bzip2-1.0.8_0"
 summary = "bzip2 1.0.8, as live-bootstrap builds it (package bzip2-1.0.8_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:bzip2", version = "1.0.8" }]
+version = "1.0.8"
+provides = [{ provides = "tool:bzip2" }]
 
 [[build.targets.children]]
 name = "coreutils-5.0_0"
 root = "coreutils-5.0_0"
 summary = "coreutils 5.0, as live-bootstrap builds it (package coreutils-5.0_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:coreutils", version = "5.0" }]
+version = "5.0"
+provides = [{ provides = "tool:coreutils" }]
 
 [[build.targets.children]]
 name = "coreutils-6.10_0"
 root = "coreutils-6.10_0"
 summary = "coreutils 6.10, as live-bootstrap builds it (package coreutils-6.10_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:coreutils", version = "6.10" }]
+version = "6.10"
+provides = [{ provides = "tool:coreutils" }]
 
 [[build.targets.children]]
 name = "coreutils-9.4_0"
 root = "coreutils-9.4_0"
 summary = "coreutils 9.4, as live-bootstrap builds it (package coreutils-9.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:coreutils", version = "9.4" }]
+version = "9.4"
+provides = [{ provides = "tool:coreutils" }]
 
 [[build.targets.children]]
 name = "curl-8.17.0_0"
 root = "curl-8.17.0_0"
 summary = "curl 8.17.0, as live-bootstrap builds it (package curl-8.17.0_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:curl", version = "8.17.0" }]
+version = "8.17.0"
+provides = [{ provides = "tool:curl" }]
 
 [[build.targets.children]]
 name = "dhcpcd-10.0.1_0"
 root = "dhcpcd-10.0.1_0"
 summary = "dhcpcd 10.0.1, as live-bootstrap builds it (package dhcpcd-10.0.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:dhcpcd", version = "10.0.1" }]
+version = "10.0.1"
+provides = [{ provides = "tool:dhcpcd" }]
 
 [[build.targets.children]]
 name = "diffutils-2.7_0"
 root = "diffutils-2.7_0"
 summary = "diffutils 2.7, as live-bootstrap builds it (package diffutils-2.7_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:diffutils", version = "2.7" }, { provides = "tool:diff", version = "2.7" }]
+version = "2.7"
+provides = [{ provides = "tool:diffutils" }, { provides = "tool:diff" }]
 
 [[build.targets.children]]
 name = "e2fsprogs-1.45.7_0"
 root = "e2fsprogs-1.45.7_0"
 summary = "e2fsprogs 1.45.7, as live-bootstrap builds it (package e2fsprogs-1.45.7_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:e2fsprogs", version = "1.45.7" }]
+version = "1.45.7"
+provides = [{ provides = "tool:e2fsprogs" }]
 
 [[build.targets.children]]
 name = "ed-1.4_0"
 root = "ed-1.4_0"
 summary = "ed 1.4, as live-bootstrap builds it (package ed-1.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:ed", version = "1.4" }]
+version = "1.4"
+provides = [{ provides = "tool:ed" }]
 
 [[build.targets.children]]
 name = "file-5.44_0"
 root = "file-5.44_0"
 summary = "file 5.44, as live-bootstrap builds it (package file-5.44_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:file", version = "5.44" }]
+version = "5.44"
+provides = [{ provides = "tool:file" }]
 
 [[build.targets.children]]
 name = "findutils-4.2.33_0"
 root = "findutils-4.2.33_0"
 summary = "findutils 4.2.33, as live-bootstrap builds it (package findutils-4.2.33_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:findutils", version = "4.2.33" }, { provides = "tool:find", version = "4.2.33" }]
+version = "4.2.33"
+provides = [{ provides = "tool:findutils" }, { provides = "tool:find" }]
 
 [[build.targets.children]]
 name = "flex-2.5.11_0"
 root = "flex-2.5.11_0"
 summary = "flex 2.5.11, as live-bootstrap builds it (package flex-2.5.11_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:flex", version = "2.5.11" }]
+version = "2.5.11"
+provides = [{ provides = "tool:flex" }]
 
 [[build.targets.children]]
 name = "flex-2.5.33_0"
 root = "flex-2.5.33_0"
 summary = "flex 2.5.33, as live-bootstrap builds it (package flex-2.5.33_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:flex", version = "2.5.33" }]
+version = "2.5.33"
+provides = [{ provides = "tool:flex" }]
 
 [[build.targets.children]]
 name = "flex-2.6.4_0"
 root = "flex-2.6.4_0"
 summary = "flex 2.6.4, as live-bootstrap builds it (package flex-2.6.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:flex", version = "2.6.4" }]
+version = "2.6.4"
+provides = [{ provides = "tool:flex" }]
 
 [[build.targets.children]]
 name = "gawk-3.0.4_0"
 root = "gawk-3.0.4_0"
 summary = "gawk 3.0.4, as live-bootstrap builds it (package gawk-3.0.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:gawk", version = "3.0.4" }]
+version = "3.0.4"
+provides = [{ provides = "tool:gawk" }]
 
 [[build.targets.children]]
 name = "gcc-4.0.4_0"
 root = "gcc-4.0.4_0"
 summary = "gcc 4.0.4, as live-bootstrap builds it (package gcc-4.0.4_0)."
 tags = ["live-bootstrap"]
+version = "4.0.4"
 
 [[build.targets.children]]
 name = "gcc-4.0.4_1"
 root = "gcc-4.0.4_1"
 summary = "gcc 4.0.4, as live-bootstrap builds it (package gcc-4.0.4_1)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:gcc", version = "4.0.4" }]
+version = "4.0.4"
+provides = [{ provides = "tool:gcc" }]
 
 [[build.targets.children]]
 name = "gmp-6.2.1_0"
 root = "gmp-6.2.1_0"
 summary = "gmp 6.2.1, as live-bootstrap builds it (package gmp-6.2.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:gmp", version = "6.2.1" }]
+version = "6.2.1"
+provides = [{ provides = "lib:gmp" }]
 
 [[build.targets.children]]
 name = "grep-2.4_0"
 root = "grep-2.4_0"
 summary = "grep 2.4, as live-bootstrap builds it (package grep-2.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:grep", version = "2.4" }]
+version = "2.4"
+provides = [{ provides = "tool:grep" }]
 
 [[build.targets.children]]
 name = "heirloom-devtools-070527_0"
 root = "heirloom-devtools-070527_0"
 summary = "heirloom-devtools 070527, as live-bootstrap builds it (package heirloom-devtools-070527_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:heirloom-devtools", version = "070527" }, { provides = "tool:yacc", version = "070527" }, { provides = "tool:lex", version = "070527" }]
+version = "070527"
+provides = [{ provides = "tool:heirloom-devtools" }, { provides = "tool:yacc" }, { provides = "tool:lex" }]
 
 [[build.targets.children]]
 name = "help2man-1.36.4_0"
 root = "help2man-1.36.4_0"
 summary = "help2man 1.36.4, as live-bootstrap builds it (package help2man-1.36.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:help2man", version = "1.36.4" }]
+version = "1.36.4"
+provides = [{ provides = "tool:help2man" }]
 
 [[build.targets.children]]
 name = "kbd-1.15_0"
 root = "kbd-1.15_0"
 summary = "kbd 1.15, as live-bootstrap builds it (package kbd-1.15_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:kbd", version = "1.15" }]
+version = "1.15"
+provides = [{ provides = "tool:kbd" }]
 
 [[build.targets.children]]
 name = "libtool-2.2.4_0"
 root = "libtool-2.2.4_0"
 summary = "libtool 2.2.4, as live-bootstrap builds it (package libtool-2.2.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:libtool", version = "2.2.4" }]
+version = "2.2.4"
+provides = [{ provides = "tool:libtool" }]
 
 [[build.targets.children]]
 name = "libtool-2.4.7_0"
 root = "libtool-2.4.7_0"
 summary = "libtool 2.4.7, as live-bootstrap builds it (package libtool-2.4.7_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:libtool", version = "2.4.7" }]
+version = "2.4.7"
+provides = [{ provides = "tool:libtool" }]
 
 [[build.targets.children]]
 name = "linux-headers-4.14.341-openela_0"
 root = "linux-headers-4.14.341-openela_0"
 summary = "linux-headers 4.14.341-openela, as live-bootstrap builds it (package linux-headers-4.14.341-openela_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:linux:headers", version = "4.14.341-openela" }]
+version = "4.14.341-openela"
+provides = [{ provides = "lib:linux:headers" }]
 
 [[build.targets.children]]
 name = "m4-1.4.7_0"
 root = "m4-1.4.7_0"
 summary = "m4 1.4.7, as live-bootstrap builds it (package m4-1.4.7_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:m4", version = "1.4.7" }]
+version = "1.4.7"
+provides = [{ provides = "tool:m4" }]
 
 [[build.targets.children]]
 name = "make-3.82_0"
 root = "make-3.82_0"
 summary = "make 3.82, as live-bootstrap builds it (package make-3.82_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:make", version = "3.82" }]
+version = "3.82"
+provides = [{ provides = "tool:make" }]
 
 [[build.targets.children]]
 name = "make-4.2.1_0"
 root = "make-4.2.1_0"
 summary = "make 4.2.1, as live-bootstrap builds it (package make-4.2.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:make", version = "4.2.1" }]
+version = "4.2.1"
+provides = [{ provides = "tool:make" }]
 
 [[build.targets.children]]
 name = "mpc-1.2.1_0"
 root = "mpc-1.2.1_0"
 summary = "mpc 1.2.1, as live-bootstrap builds it (package mpc-1.2.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:mpc", version = "1.2.1" }]
+version = "1.2.1"
+provides = [{ provides = "lib:mpc" }]
 
 [[build.targets.children]]
 name = "mpfr-4.1.0_0"
 root = "mpfr-4.1.0_0"
 summary = "mpfr 4.1.0, as live-bootstrap builds it (package mpfr-4.1.0_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:mpfr", version = "4.1.0" }]
+version = "4.1.0"
+provides = [{ provides = "lib:mpfr" }]
 
 [[build.targets.children]]
 name = "musl-1.1.24_0"
 root = "musl-1.1.24_0"
 summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_0)."
 tags = ["live-bootstrap"]
+version = "1.1.24"
 
 [[build.targets.children]]
 name = "musl-1.1.24_1"
 root = "musl-1.1.24_1"
 summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_1)."
 tags = ["live-bootstrap"]
+version = "1.1.24"
 
 [[build.targets.children]]
 name = "musl-1.1.24_2"
 root = "musl-1.1.24_2"
 summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_2)."
 tags = ["live-bootstrap"]
+version = "1.1.24"
 
 [[build.targets.children]]
 name = "musl-1.1.24_3"
 root = "musl-1.1.24_3"
 summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_3)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:musl", version = "1.1.24" }]
+version = "1.1.24"
+provides = [{ provides = "lib:musl" }]
 
 [[build.targets.children]]
 name = "musl-1.2.5_0"
 root = "musl-1.2.5_0"
 summary = "musl 1.2.5, as live-bootstrap builds it (package musl-1.2.5_0)."
 tags = ["live-bootstrap"]
+version = "1.2.5"
 
 [[build.targets.children]]
 name = "musl-1.2.5_1"
 root = "musl-1.2.5_1"
 summary = "musl 1.2.5, as live-bootstrap builds it (package musl-1.2.5_1)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:musl", version = "1.2.5" }]
+version = "1.2.5"
+provides = [{ provides = "lib:musl" }]
 
 [[build.targets.children]]
 name = "perl-5.000_0"
 root = "perl-5.000_0"
 summary = "perl 5.000, as live-bootstrap builds it (package perl-5.000_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:perl", version = "5.000" }]
+version = "5.000"
+provides = [{ provides = "tool:perl" }]
 
 [[build.targets.children]]
 name = "perl-5.003_0"
 root = "perl-5.003_0"
 summary = "perl 5.003, as live-bootstrap builds it (package perl-5.003_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:perl", version = "5.003" }]
+version = "5.003"
+provides = [{ provides = "tool:perl" }]
 
 [[build.targets.children]]
 name = "perl-5.6.2_0"
 root = "perl-5.6.2_0"
 summary = "perl 5.6.2, as live-bootstrap builds it (package perl-5.6.2_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:perl", version = "5.6.2" }]
+version = "5.6.2"
+provides = [{ provides = "tool:perl" }]
 
 [[build.targets.children]]
 name = "perl5.004-05_0"
 root = "perl5.004-05_0"
 summary = "perl 5.004_05, as live-bootstrap builds it (package perl5.004-05_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:perl", version = "5.004_05" }]
+version = "5.004_05"
+provides = [{ provides = "tool:perl" }]
 
 [[build.targets.children]]
 name = "perl5.005-03_0"
 root = "perl5.005-03_0"
 summary = "perl 5.005_03, as live-bootstrap builds it (package perl5.005-03_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:perl", version = "5.005_03" }]
+version = "5.005_03"
+provides = [{ provides = "tool:perl" }]
 
 [[build.targets.children]]
 name = "pkg-config-0.29.2_0"
 root = "pkg-config-0.29.2_0"
 summary = "pkg-config 0.29.2, as live-bootstrap builds it (package pkg-config-0.29.2_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:pkg-config", version = "0.29.2" }]
+version = "0.29.2"
+provides = [{ provides = "tool:pkg-config" }]
 
 [[build.targets.children]]
 name = "sed-4.0.9_0"
 root = "sed-4.0.9_0"
 summary = "sed 4.0.9, as live-bootstrap builds it (package sed-4.0.9_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:sed", version = "4.0.9" }]
+version = "4.0.9"
+provides = [{ provides = "tool:sed" }]
 
 [[build.targets.children]]
 name = "tar-1.34_0"
 root = "tar-1.34_0"
 summary = "tar 1.34, as live-bootstrap builds it (package tar-1.34_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:tar", version = "1.34" }]
+version = "1.34"
+provides = [{ provides = "tool:tar" }]
 
 [[build.targets.children]]
 name = "tcc-0.9.27_0"
 root = "tcc-0.9.27_0"
 summary = "tcc 0.9.27, as live-bootstrap builds it (package tcc-0.9.27_0)."
 tags = ["live-bootstrap"]
+version = "0.9.27"
 
 [[build.targets.children]]
 name = "tcc-0.9.27_1"
 root = "tcc-0.9.27_1"
 summary = "tcc 0.9.27, as live-bootstrap builds it (package tcc-0.9.27_1)."
 tags = ["live-bootstrap"]
+version = "0.9.27"
 
 [[build.targets.children]]
 name = "tcc-0.9.27_2"
 root = "tcc-0.9.27_2"
 summary = "tcc 0.9.27, as live-bootstrap builds it (package tcc-0.9.27_2)."
 tags = ["live-bootstrap"]
+version = "0.9.27"
 
 [[build.targets.children]]
 name = "tcc-0.9.27_3"
 root = "tcc-0.9.27_3"
 summary = "tcc 0.9.27, as live-bootstrap builds it (package tcc-0.9.27_3)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:tcc", version = "0.9.27" }]
+version = "0.9.27"
+provides = [{ provides = "tool:tcc" }]
 
 [[build.targets.children]]
 name = "util-linux-2.19.1_0"
 root = "util-linux-2.19.1_0"
 summary = "util-linux 2.19.1, as live-bootstrap builds it (package util-linux-2.19.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:util-linux", version = "2.19.1" }]
+version = "2.19.1"
+provides = [{ provides = "tool:util-linux" }]
 
 [[build.targets.children]]
 name = "xz-5.6.4_0"
 root = "xz-5.6.4_0"
 summary = "xz 5.6.4, as live-bootstrap builds it (package xz-5.6.4_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "tool:xz", version = "5.6.4" }]
+version = "5.6.4"
+provides = [{ provides = "tool:xz" }]
 
 [[build.targets.children]]
 name = "zlib-1.3.1_0"
 root = "zlib-1.3.1_0"
 summary = "zlib 1.3.1, as live-bootstrap builds it (package zlib-1.3.1_0)."
 tags = ["live-bootstrap"]
-provides = [{ provides = "lib:zlib", version = "1.3.1" }]
+version = "1.3.1"
+provides = [{ provides = "lib:zlib" }]
 
 # What only the kaem-run steps built, which make no packages, is the
 # parent's own.

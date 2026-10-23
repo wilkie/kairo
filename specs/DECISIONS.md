@@ -4444,3 +4444,86 @@ Affected specs:
 
 - `OBJECT.md` §4.4 — object dependency selectors.
 - `schemas/canonical/object-manifest-v1.md` — `ObjectDependencySelector`.
+
+---
+
+## 44. Child Versions, Local Search, and Children over Federation
+
+Decision: a child object's **version** is declared with it, in the
+manifest its parent's revision signs, and selecting a child by id with
+a version (or none) chooses among the parent's current and
+version-tagged snapshots by that version; **`kairo search`** finds
+objects and children by name, summary, tags, and labels by scanning
+what the store holds; and a command given a child's id for
+**fetching, following, or publishing** acts on its parent. This
+completes §41 sub-decision 4's "like any object" and amends §43
+sub-decision 3 for children.
+
+Sub-decisions:
+
+1. **A child's version is its own.** `[[build.targets.children]]`
+   takes an optional `version`, the version of the software the child
+   holds (bash's `5.2.15`, not live-bootstrap's). A `provides` entry
+   without a version of its own takes the child's, so the manifest
+   says the version once; the canonical form records the child's
+   version when given, and each label's after the default is applied.
+   Children need no `ObjectVersionTag`: the parent's signer vouches
+   for the version as for everything else in the manifest, and a child
+   still has no statements of its own. The parent's own version tags
+   say nothing about a child's version and aren't matched against it.
+
+2. **Selecting a child by id.** For `kind = "object"` naming a child:
+   - with `snapshot`, that snapshot of the parent, whose manifest must
+     declare the child;
+   - with `version`, the parent's current snapshot and each of its
+     version-tagged snapshots that declare the child at a version
+     satisfying the requirement; the highest child version wins, and
+     between equal versions the current snapshot, then the higher tag;
+   - with neither, the same, taking the highest child version (§43);
+     a child declared without a version is found this way only when no
+     declaration of it has one.
+   The parent is found from the current manifests the resolver
+   indexes; failing that, from the manifests at each held object's
+   version-tagged snapshots, or, with `snapshot`, the object that
+   snapshot belongs to. So a child that only an older, tagged or
+   pinned, revision of its parent declares still resolves.
+
+3. **Local search.** `kairo search <query>` covers native objects at
+   their current snapshots and their children: name, summary, tags,
+   provides labels and versions, and a child's version. Free words
+   match name, summary, and tags without regard to case; `tag:<tag>`,
+   `provides:<label>`, and `provides:<kind>:*` filter (`SEARCH.md`
+   §5); unknown filters are ignored and reported. Each result carries
+   its id, name, summary, tags, provides, the parent of a child, and
+   `source = local`, `validation = unverified` (`SEARCH.md` §6). There
+   is no index yet: a query reads what the resolver's index reads, so
+   a store's own size bounds its cost, and an index backend waits for
+   query patterns that need one (`STORE.md`). Federated search stays
+   with discovery (`CLI.md`).
+
+4. **Children over federation.** A child has no statements, so
+   `kairo fetch`, `kairo federation follow`, `unfollow`, `publish`,
+   and `unpublish` given a child's id act on its parent, found as in
+   sub-decision 2, and say so (`child = <id>`); a peer that serves the
+   parent serves its children, whose artifacts travel with the
+   parent's execution records (§41 slice 2a). The parent is found from
+   the manifests this node holds, so a first fetch of a child whose
+   parent this node has never held names the parent instead: a peer
+   doesn't yet say which object a child belongs to, and the id alone
+   can't be inverted. An id this node can't place is taken as given.
+
+Rationale: the version a consumer asks of bash is bash's, so it must
+be the child's own; declaring it in the parent's manifest keeps
+children free of statements while letting the parent's history carry
+every version a child has had. Scanning for search is enough until a
+store is large enough to need more, and saves committing to an index
+format before anything queries it.
+
+Affected specs:
+
+- `schemas/canonical/object-manifest-v1.md` — child `version`.
+- `OBJECT.md` §2.5 — child versions and selection.
+- `SEARCH.md` — the local query and result.
+- `CLI.md` — `kairo search`; child ids in federation commands.
+- `PHASE_2.md` §9 — what's searchable, and no index yet.
+

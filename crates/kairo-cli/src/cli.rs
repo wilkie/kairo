@@ -245,6 +245,16 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ProviderCommand,
     },
+    /// Find held objects and their children by name, summary, tags,
+    /// and provides labels (`specs/DECISIONS.md` §44). Free words match
+    /// name, summary, and tags; `tag:<tag>`, `provides:<label>`, and
+    /// `provides:<kind>:*` filter. Results are unverified candidates.
+    Search {
+        /// The query, e.g. `gnu tag:shell provides:tool:*`.
+        query: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

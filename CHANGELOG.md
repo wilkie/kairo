@@ -18,6 +18,17 @@ rather than per-commit.
 
 ### Added
 
+- **Child versions, `kairo search`, and children over federation
+  (`DECISIONS.md` §44, slice 2b).** A child declares its own
+  `version`, which its labels take unless they give theirs, and a
+  child depended on by id is chosen by that version among its parent's
+  current and version-tagged snapshots, so one only an older tagged or
+  pinned revision declares still resolves. `kairo search <query>`
+  finds held objects and their children by name, summary, tags, and
+  `tag:`, `provides:<label>`, and `provides:<kind>:*` filters, with no
+  index yet. `kairo fetch` and `kairo federation publish`, `unpublish`,
+  `follow`, and `unfollow` given a child's id act on its parent.
+
 - **Re-importing a bootstrap wrapper extends it.** The stage0-posix and
   live-bootstrap `import.sh` take `--wrapper <object id>`: the new
   commit's parent is that object's current one and its revision names

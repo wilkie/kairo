@@ -24,6 +24,7 @@ use kairo_store::{
 };
 
 use crate::cli::FederationCommand;
+use crate::commands::build::CacheManifests;
 use crate::commands::config::load_config;
 use crate::error::CliError;
 use crate::store_paths::{open_keystore, open_store, StorePaths};
@@ -71,25 +72,29 @@ pub(crate) fn run_federation_command(
         FederationCommand::Receive => run_receive(offline, paths),
         FederationCommand::Discover => run_discover(offline, paths),
         FederationCommand::Holders { object } => run_holders(&parse_object(object)?, paths),
-        FederationCommand::Follow { target } => run_follow(
-            &follow_of(target.object, target.trust_by, target.scope)?,
-            true,
-            paths,
-        ),
-        FederationCommand::Unfollow { target } => run_follow(
-            &follow_of(target.object, target.trust_by, target.scope)?,
-            false,
-            paths,
-        ),
+        FederationCommand::Follow { target } => {
+            let (follow, child) = follow_of(target.object, target.trust_by, target.scope, paths)?;
+            Ok(child_line(child.as_ref()) + &run_follow(&follow, true, paths)?)
+        }
+        FederationCommand::Unfollow { target } => {
+            let (follow, child) = follow_of(target.object, target.trust_by, target.scope, paths)?;
+            Ok(child_line(child.as_ref()) + &run_follow(&follow, false, paths)?)
+        }
         FederationCommand::Sync { target } => {
             let only = match (&target.object, &target.trust_by) {
                 (None, None) => None,
-                _ => Some(follow_of(target.object, target.trust_by, target.scope)?),
+                _ => Some(follow_of(target.object, target.trust_by, target.scope, paths)?.0),
             };
             run_sync(only.as_ref(), offline, paths)
         }
-        FederationCommand::Publish { object } => run_publish(&parse_object(object)?, paths),
-        FederationCommand::Unpublish { object } => run_unpublish(&parse_object(object)?, paths),
+        FederationCommand::Publish { object } => {
+            let (object, child) = object_or_parent(object, paths)?;
+            Ok(child_line(child.as_ref()) + &run_publish(&object, paths)?)
+        }
+        FederationCommand::Unpublish { object } => {
+            let (object, child) = object_or_parent(object, paths)?;
+            Ok(child_line(child.as_ref()) + &run_unpublish(&object, paths)?)
+        }
         FederationCommand::Published => run_published(paths),
         FederationCommand::Status => run_status(paths),
         FederationCommand::Provenance { record } => run_provenance(record, paths),
@@ -98,6 +103,39 @@ pub(crate) fn run_federation_command(
 
 fn parse_object(object: String) -> Result<ObjectId, CliError> {
     ObjectId::new(object.clone()).map_err(|source| CliError::ParseObjectId { object, source })
+}
+
+/// `object`, or for a child object its parent, which is what is
+/// published, fetched, and followed: a child has no statements of its
+/// own (`DECISIONS.md` §44 sub-decision 4). With the child's id when
+/// it was one. An id this node can't place is taken as given.
+fn object_or_parent(
+    object: String,
+    paths: &StorePaths,
+) -> Result<(ObjectId, Option<ObjectId>), CliError> {
+    let object = parse_object(object)?;
+    let store = open_store(paths)?;
+    if kairo_store::ObjectStore::get_object_genesis(&store, &object).is_ok() {
+        return Ok((object, None));
+    }
+    let manifests = CacheManifests { paths };
+    let resolve = |error| CliError::Resolve(Box::new(error));
+    let index = kairo_resolver::Index::build(&store, &manifests).map_err(resolve)?;
+    Ok(
+        match kairo_resolver::parent_of_child(&store, &manifests, &index, &object)
+            .map_err(resolve)?
+        {
+            Some(parent) => (parent, Some(object)),
+            None => (object, None),
+        },
+    )
+}
+
+/// The line saying a child's id stood for its parent.
+fn child_line(child: Option<&ObjectId>) -> String {
+    child
+        .map(|child| format!("child = {child}\n"))
+        .unwrap_or_default()
 }
 
 fn run_publish(object: &ObjectId, paths: &StorePaths) -> Result<String, CliError> {
@@ -174,7 +212,21 @@ pub(crate) struct FetchArgs<'a> {
 /// `node_actor` pin is passed to the pull, which refuses a different
 /// claim before fetching anything.
 pub(crate) fn run_fetch(args: &FetchArgs<'_>, paths: &StorePaths) -> Result<String, CliError> {
-    let object = parse_object(args.object.to_owned())?;
+    let (object, child) = object_or_parent(args.object.to_owned(), paths)?;
+    let fetched = fetch_object(&object, args, paths)?;
+    Ok(if args.json {
+        fetched
+    } else {
+        child_line(child.as_ref()) + &fetched
+    })
+}
+
+fn fetch_object(
+    object: &ObjectId,
+    args: &FetchArgs<'_>,
+    paths: &StorePaths,
+) -> Result<String, CliError> {
+    let object = object.clone();
     let Some(from) = args.from else {
         return run_acquire(&object, args.json, args.offline, paths);
     };
@@ -848,17 +900,25 @@ impl Pin {
 }
 
 /// A follow from its CLI spelling.
+/// A child's id follows its parent; the child's id, when it was one.
 fn follow_of(
     object: Option<String>,
     trust_by: Option<String>,
     scope: Option<String>,
-) -> Result<Follow, CliError> {
+    paths: &StorePaths,
+) -> Result<(Follow, Option<ObjectId>), CliError> {
     match (object, trust_by, scope) {
-        (Some(object), None, None) => Ok(Follow::Object(parse_object(object)?)),
-        (None, Some(by), Some(scope)) => Ok(Follow::Trust {
-            by: parse_actor(&by)?,
-            scope: TrustScope::parse(&scope).map_err(CliError::ParseTrustScope)?,
-        }),
+        (Some(object), None, None) => {
+            let (object, child) = object_or_parent(object, paths)?;
+            Ok((Follow::Object(object), child))
+        }
+        (None, Some(by), Some(scope)) => Ok((
+            Follow::Trust {
+                by: parse_actor(&by)?,
+                scope: TrustScope::parse(&scope).map_err(CliError::ParseTrustScope)?,
+            },
+            None,
+        )),
         _ => Err(CliError::NodeActorChoice {
             message: "name --object <id>, or --trust-by <actor> with --scope <scope>".to_owned(),
         }),

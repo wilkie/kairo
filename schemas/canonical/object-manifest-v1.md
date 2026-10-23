@@ -186,18 +186,22 @@ defaults spelled out, encodes as it did before they existed.
 | `name` | `string`, lowercase letters, digits, and `.`, `_`, `+`, `-`, starting with a letter or digit; unique in the target |
 | `root` | `string`, a relative path in the target's artifact |
 | `install` | `option<string>`: an absolute guest path, `/` when not given, or none for `install = false` |
-| `provides` | `list<string(provides) \|\| option<string>(version)>` |
+| `provides` | `list<string(provides) \|\| option<string>(version)>`, each version the entry's own or else the child's |
 | `summary` | present only when given: `string("summary") \|\| string(summary)` |
 | `tags` | present only when there is at least one: `string("tags") \|\| list<string>` |
+| `version` | present only when given: `string("version") \|\| string(version)`, the version of the software the child holds (`DECISIONS.md` §44) |
 
 ```toml
 [[build.targets.children]]
 name = "bash"
 root = "bash-5.2.15"
-[[build.targets.children.provides]]
-provides = "tool:bash"
 version = "5.2.15"
+[[build.targets.children.provides]]
+provides = "tool:bash"          # version 5.2.15, the child's
 ```
+
+A provides entry without a version takes the child's, so spelling the
+child's version out on the entry is the same manifest.
 
 Each child is an object whose id derives from `(this object, target,
 name)` (`child-genesis-v1.md`); its artifact is the part of the

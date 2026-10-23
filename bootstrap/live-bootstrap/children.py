@@ -4,9 +4,10 @@
 Reads live-bootstrap package file names (`bash-5.2.15_0.tar.bz2`), one per
 line, in the order the build makes them; prints one child per package,
 rooted at the directory start.kaem extracts it into and installed at /
-(specs/DECISIONS.md §41 sub-decision 6). The last revision of each name
-and version provides that name's label, with the version; earlier
-revisions, which later steps rebuilt, are children without labels.
+(specs/DECISIONS.md §41 sub-decision 6), at the version the package
+holds (§44). The last revision of each name and version provides that
+name's label, at the child's version; earlier revisions, which later
+steps rebuilt, are children without labels.
 
     kairo build ... | sed -n 's|^  repo/\\([^ ]*\\) .*|\\1|p' | ./children.py
 """
@@ -56,11 +57,10 @@ def main():
         print(f'root = "{package}"')
         print(f'summary = "{name} {version}, as live-bootstrap builds it (package {package})."')
         print('tags = ["live-bootstrap"]')
+        print(f'version = "{version}"')
         if last[(name, version)] == revision:
             labels = LIBRARIES.get(name, [f"tool:{name}"]) + ALSO.get(name, [])
-            provides = ", ".join(
-                f'{{ provides = "{label}", version = "{version}" }}' for label in labels
-            )
+            provides = ", ".join(f'{{ provides = "{label}" }}' for label in labels)
             print(f"provides = [{provides}]")
         print()
 

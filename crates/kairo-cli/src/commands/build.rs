@@ -98,8 +98,8 @@ impl ArtifactSource for StoreArtifacts<'_> {
 }
 
 /// Manifests from the managed Git cache, at the revision's commit.
-struct CacheManifests<'a> {
-    paths: &'a StorePaths,
+pub(crate) struct CacheManifests<'a> {
+    pub(crate) paths: &'a StorePaths,
 }
 
 impl ManifestSource for CacheManifests<'_> {

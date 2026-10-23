@@ -546,6 +546,43 @@ pub fn declared_environment(
         })
 }
 
+/// The object whose build makes the child `id` (`DECISIONS.md` §44
+/// sub-decision 2): found in the current manifests `index` holds, or
+/// else in the manifests at each held object's version-tagged
+/// snapshots. `None` when no manifest this node holds declares it.
+pub fn parent_of_child(
+    store: &FilesystemStore,
+    manifests: &dyn ManifestSource,
+    index: &Index,
+    id: &ObjectId,
+) -> Result<Option<ObjectId>, ResolveError> {
+    if let Some((candidate, _, _)) = index.child(id) {
+        return Ok(Some(candidate.object.clone()));
+    }
+    for candidate in &index.candidates {
+        for (_, snapshot) in tagged_snapshots(store, &candidate.object)? {
+            let Some(manifest) = load_manifest(manifests, &candidate.object, &snapshot)? else {
+                continue;
+            };
+            let declares = manifest.build_targets().iter().any(|target| {
+                target.children().iter().any(|child| {
+                    &kairo_object::ChildGenesis::new(
+                        candidate.object.clone(),
+                        target.name(),
+                        child.name(),
+                    )
+                    .object_id()
+                        == id
+                })
+            });
+            if declares {
+                return Ok(Some(candidate.object.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// An offer of a child object, built by `candidate`'s `target`.
 fn child_offer(
     candidate: &Candidate,
@@ -1116,7 +1153,8 @@ impl<'a> Resolver<'a> {
                         from,
                         overlay,
                     };
-                    let resolved = if index.child(dependency.object()).is_some() {
+                    // Not an object of its own: a child (§44).
+                    let resolved = if self.store.get_object_genesis(dependency.object()).is_err() {
                         self.resolve_child(
                             index,
                             object,
@@ -1496,36 +1534,108 @@ impl<'a> Resolver<'a> {
                 considered,
             }))
         };
-        let Some((candidate, child_target, child)) = index.child(wanted) else {
-            return Err(unsatisfied(vec![format!("object:{wanted} is not held")]));
-        };
-        let parent = &candidate.object;
-        let snapshot = self.select_object_snapshot(parent, version, pinned, &unsatisfied)?;
-        let manifest = load_manifest(self.manifests, parent, &snapshot)?.ok_or_else(|| {
-            unsatisfied(vec![format!(
-                "tree for revision {} of object:{parent} is not held (kairo git fetch)",
-                snapshot.revision().as_str()
-            )])
-        })?;
-        let declared = manifest.build_target(child_target.name()).and_then(|t| {
-            t.children()
+        // The parent: from the current manifests, or else whichever held
+        // object declares the child at one of its snapshots (§44
+        // sub-decision 2).
+        let parents: Vec<ObjectId> = match index.child(wanted) {
+            Some((candidate, _, _)) => vec![candidate.object.clone()],
+            None => index
+                .candidates
                 .iter()
-                .find(|c| c.name() == child.name())
-                .map(|c| (t, c))
-        });
-        let Some((at_target, at_child)) = declared else {
-            return Err(unsatisfied(vec![format!(
-                "object:{parent} at snapshot {} doesn't declare child {}",
-                snapshot.snapshot_id(),
-                child.name()
-            )]));
+                .map(|candidate| candidate.object.clone())
+                .collect(),
         };
-        let at = Candidate {
-            object: parent.clone(),
-            snapshot: snapshot.snapshot_id(),
-            revision: snapshot.revision().clone(),
-            manifest: manifest.clone(),
+        // Each declaration of the child, the current snapshot's first,
+        // then the tagged ones', highest tag first.
+        let mut considered = Vec::new();
+        let mut declared: Vec<(Option<semver::Version>, Candidate, String, String)> = Vec::new();
+        for parent in &parents {
+            let mut snapshots: Vec<Snapshot> =
+                current_snapshot(self.store, parent)?.into_iter().collect();
+            for (_, tagged) in tagged_snapshots(self.store, parent)? {
+                if !snapshots
+                    .iter()
+                    .any(|held| held.snapshot_id() == tagged.snapshot_id())
+                {
+                    snapshots.push(tagged);
+                }
+            }
+            for snapshot in snapshots {
+                if pinned.is_some_and(|pinned| pinned != &snapshot.snapshot_id()) {
+                    continue;
+                }
+                let Some(manifest) = load_manifest(self.manifests, parent, &snapshot)? else {
+                    continue;
+                };
+                let found = manifest.build_targets().iter().find_map(|target| {
+                    target
+                        .children()
+                        .iter()
+                        .find(|child| {
+                            &kairo_object::ChildGenesis::new(
+                                parent.clone(),
+                                target.name(),
+                                child.name(),
+                            )
+                            .object_id()
+                                == wanted
+                        })
+                        .map(|child| {
+                            (
+                                target.name().to_owned(),
+                                child.name().to_owned(),
+                                child.version().map(str::to_owned),
+                            )
+                        })
+                });
+                let Some((target_name, child_name, child_version)) = found else {
+                    continue;
+                };
+                if !version_matches(version, child_version.as_deref()) {
+                    considered.push(format!(
+                        "object:{wanted} at snapshot {} is version {}",
+                        snapshot.snapshot_id(),
+                        child_version.as_deref().unwrap_or("unknown")
+                    ));
+                    continue;
+                }
+                declared.push((
+                    child_version.as_deref().and_then(lenient_version),
+                    Candidate {
+                        object: parent.clone(),
+                        snapshot: snapshot.snapshot_id(),
+                        revision: snapshot.revision().clone(),
+                        manifest,
+                    },
+                    target_name,
+                    child_name,
+                ));
+            }
+        }
+        // The highest version; the order above breaks ties.
+        declared.sort_by(|a, b| b.0.cmp(&a.0));
+        let Some((_, at, target_name, child_name)) = declared.into_iter().next() else {
+            if considered.is_empty() {
+                considered.push(match pinned {
+                    Some(pinned) => {
+                        format!("no held object declares object:{wanted} at snapshot {pinned}")
+                    }
+                    None => format!("object:{wanted} is not held"),
+                });
+            }
+            return Err(unsatisfied(considered));
         };
+        let (at_target, at_child) = at
+            .manifest
+            .build_target(&target_name)
+            .and_then(|target| {
+                target
+                    .children()
+                    .iter()
+                    .find(|child| child.name() == child_name)
+                    .map(|child| (target, child))
+            })
+            .ok_or_else(|| unsatisfied(vec![format!("object:{wanted} is not held")]))?;
         let offer = child_offer(&at, at_target, at_child, None);
         self.artifact_for(
             index,

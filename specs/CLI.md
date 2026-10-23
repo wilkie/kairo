@@ -766,6 +766,7 @@ kairo fetch          [post-v1] depends on Phase 2 §4
 kairo sync           [post-v1] depends on Phase 2 §4
 kairo build          [v1, development mode] DECISIONS.md §33–§34
 kairo provider       [v1] DECISIONS.md §33
+kairo search         [v1] local only, DECISIONS.md §44
 kairo run            [post-v1] depends on Phase 2 §7
 kairo reproduce      [v1, development mode] DECISIONS.md §33
 kairo pin            [post-v1] depends on GC design
@@ -1271,6 +1272,26 @@ prints what a requirement would pin to, the candidates a version
 requirement rejected, and the development-mode host tools from
 `[[runtime.host.tools]]` that would stand in.
 
+### 17.2 `kairo search`
+
+**[implemented].** Held objects at their current snapshots and their
+children, found by name, summary, tags, and provides labels
+(`DECISIONS.md` §44 sub-decision 3, `SEARCH.md`).
+
+```text
+kairo search <query>... [--json]
+```
+
+Free words match name, summary, and tags, without regard to case, and
+all must match; `tag:<tag>`, `provides:<label>`, and
+`provides:<kind>:*` filter; other `key:value` terms are ignored and
+printed as `ignored = ...`. Results whose name or a tag a word names
+exactly come first, then by name. Each prints its object, name, a
+child's version, summary, tags, provides labels with versions, and a
+child's `parent`; the output ends `source = local` and `validation =
+unverified`, since search finds candidates and verifies nothing. There
+is no index: a query reads what the resolver's index reads.
+
 ---
 
 ## 18. `kairo run`
@@ -1561,6 +1582,12 @@ federation must be enabled, and the peer must be listed unless
   each entry either way. An upload's closure bundle is ingested
   through the same verifier as a pull (`ingested ...` lines), with
   provenance naming `push:<node-actor-id>`.
+
+Given a child object's id (`DECISIONS.md` §44 sub-decision 4),
+`publish`, `unpublish`, `follow`, `unfollow`, and `kairo fetch` act on
+its parent, found from the manifests this node holds, and print
+`child = <id>` first; a child has no statements of its own, and a peer
+serving the parent serves it.
 
 Follows (`DECISIONS.md` §28) are what this node keeps current: an
 object, or one truster's chain in one scope. `follow` and `unfollow`

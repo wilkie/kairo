@@ -781,10 +781,12 @@ fn bundle() -> String {
         [[build.targets.children]]
         name = "bash"
         root = "bash"
-        provides = [{ provides = "tool:bash", version = "5.2" }]
+        version = "5.2"
+        provides = [{ provides = "tool:bash" }]
         [[build.targets.children]]
         name = "make"
         root = "make"
+        version = "4.4"
         install = false
         "#,
     )
@@ -809,7 +811,7 @@ fn a_child_object_resolves_by_label_and_by_id_to_its_parents_build() -> TestResu
             [[dependencies]]
             kind = "object"
             object = "{}"
-            version = "^1"
+            version = "^4"
             {RELEASE_TARGET}
             "#,
             child("make")
@@ -963,5 +965,99 @@ fn an_object_dependency_without_a_selector_takes_the_highest_version_tag() -> Te
         world.resolve(&no_tags.object_id, "release"),
         Err(ResolveError::Unsatisfied(_))
     ));
+    Ok(())
+}
+
+#[test]
+fn a_child_is_chosen_by_its_own_version_across_its_parents_snapshots() -> TestResult {
+    let mut world = World::new();
+    let declaring = |make: &str, extra: &str| {
+        manifest(
+            "bundle",
+            &format!(
+                r#"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                [[build.targets.children]]
+                name = "make"
+                root = "make"
+                version = "{make}"
+                {extra}
+                "#
+            ),
+        )
+    };
+    // Revision 1, tagged 1.0.0: make 4.3 and a child later dropped.
+    let (parent, first) = world.object(&declaring(
+        "4.3",
+        "[[build.targets.children]]\nname = \"gone\"\nroot = \"gone\"\nversion = \"1.0\"",
+    ));
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &parent, &first, "1.0.0");
+    // Revision 2, the head: make 4.4, untagged.
+    let second = world.revision(
+        &parent,
+        &declaring("4.4", ""),
+        vec![first.statement.unsigned().body().revision().clone()],
+    );
+    world
+        .fixture
+        .set_branch(&world.actor, &parent, &second, "head");
+    let first_snapshot = Snapshot::from_object_revision(&parent.object_id, &first.statement)?;
+    let child = |name: &str| {
+        kairo_object::ChildGenesis::new(parent.object_id.clone(), "release", name).object_id()
+    };
+    let snapshot_for =
+        |world: &mut World, object: ObjectId, selector: &str| -> Result<String, ResolveError> {
+            let (app, _) = world.object(&manifest(
+                "app",
+                &format!(
+                    r#"
+                [[dependencies]]
+                kind = "object"
+                object = "{object}"
+                {selector}
+                {RELEASE_TARGET}
+                "#
+                ),
+            ));
+            let resolution = world.resolve(&app.object_id, "release")?;
+            Ok(match &resolution.plan.manifest.requirements[0].resolved {
+                Resolved::Artifact { snapshot, .. } => snapshot.clone(),
+                _ => String::new(),
+            })
+        };
+    let first_id = first_snapshot.snapshot_id().to_string();
+    let second_id = current_snapshot(&world.fixture.store, &parent.object_id)?
+        .ok_or("a head")?
+        .snapshot_id()
+        .to_string();
+    // The child's version picks the snapshot, not the parent's tag.
+    assert_eq!(snapshot_for(&mut world, child("make"), "")?, second_id);
+    assert_eq!(
+        snapshot_for(&mut world, child("make"), "version = \"^4\"")?,
+        second_id
+    );
+    assert_eq!(
+        snapshot_for(&mut world, child("make"), "version = \"~4.3\"")?,
+        first_id
+    );
+    assert!(matches!(
+        snapshot_for(&mut world, child("make"), "version = \"^1\""),
+        Err(ResolveError::Unsatisfied(_))
+    ));
+    // Pinned to the parent's tagged snapshot.
+    assert_eq!(
+        snapshot_for(
+            &mut world,
+            child("make"),
+            &format!("snapshot = \"{first_id}\"")
+        )?,
+        first_id
+    );
+    // Declared only at the tagged revision, it's still found there.
+    assert_eq!(snapshot_for(&mut world, child("gone"), "")?, first_id);
     Ok(())
 }

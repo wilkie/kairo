@@ -190,16 +190,20 @@ is the kind of each label it provides, not a type of the child.
   parent's signed manifest declares it, so the parent's signer vouches
   for it.
 - **History.** A child has no revisions, branches, or tags of its own:
-  it exists at each parent revision whose manifest declares it, and is
-  selected by the parent's snapshots and version tags.
+  it exists at each parent revision whose manifest declares it.
+- **Version.** A child's `version` is the software's own (bash's
+  `5.2.15`, not its parent's), declared with it, and its labels take it
+  unless they give their own (`DECISIONS.md` §44). The parent's version
+  tags say nothing about it.
 - **Artifact.** A child's artifact is the part of the parent's artifact
   under its `root`, re-rooted there, with its own artifact id; its
   build is its parent's, and the parent's execution record lists each
   child with its artifact.
 - **Like any object.** A consumer depends on a child by id (`kind =
-  "object"`, with a version or snapshot that selects the parent's, or
-  neither for its highest version) or
-  by a label it provides; either way the plan pins the parent's
+  "object"`) or by a label it provides. By id, `snapshot` names the
+  parent's snapshot; `version`, or neither for the highest, chooses by
+  the child's version among the parent's current and version-tagged
+  snapshots that declare it. Either way the plan pins the parent's
   artifact and the child's root, and the guest gets only the child's
   part, at the child's install root.
 

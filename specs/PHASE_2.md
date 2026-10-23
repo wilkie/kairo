@@ -496,11 +496,16 @@ capability claim.
 `specs/SEARCH.md` describes a long-term search/discovery layer. Phase 2 is
 the MVP slice.
 
-- [ ] Decide what's searchable: actors, objects, statements, blobs?
-- [ ] Decide indexer: SQLite? Tantivy? Plain inverted-file?
+- [x] Decide what's searchable: native objects at their current
+      snapshots and their children, by name, summary, tags, and
+      provides labels (`DECISIONS.md` §44 sub-decision 3); actors,
+      statements, and blobs wait for a need.
+- [ ] Decide indexer: deferred. A query scans what the resolver's index
+      reads, which a store's size bounds; an index backend waits for
+      query patterns that need one.
 - [ ] Implement the index alongside the materialized indices already in
       `kairo-store`.
-- [ ] Add CLI: `kairo search <query>`.
+- [x] Add CLI: `kairo search <query>`.
 
 **Why it matters:** discoverability for federated content; secondary to the
 trust + verify story.
