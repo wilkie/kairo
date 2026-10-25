@@ -8,6 +8,10 @@
 //! matches the checksums upstream publishes, read from the archived
 //! source; and `kairo reproduce` matches.
 //!
+//! With `KAIRO_LIVE_BOOTSTRAP_PERL` set, it then builds pass 2, the perl
+//! chain (`bootstrap/live-bootstrap-perl/`, `specs/DECISIONS.md` §49),
+//! from pass 1's root, and checks its packages and children too.
+//!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
 //! several minutes.
@@ -259,57 +263,15 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
             .expect("SHA256SUMS.pkgs in the commit"),
     )
     .expect("utf8");
-    let packages: Vec<(&str, &str)> = built
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let path = parts.next()?.strip_prefix("repo/")?;
-            Some((path, parts.next()?))
-        })
-        .collect();
-    assert_eq!(packages.len(), 77, "{built}");
-    for (package, blob) in packages {
-        let digest = sums
-            .lines()
-            .find_map(|line| {
-                let (digest, name) = line.split_once("  ")?;
-                (name == package).then_some(digest)
-            })
-            .unwrap_or_else(|| panic!("{package} isn't in SHA256SUMS.pkgs"));
-        let bytes = kairo_store::BlobStore::get_blob(
-            &blob_store,
-            &kairo_core::BlobId::new(blob).expect("blob id"),
-        )
-        .expect("blob");
-        assert_eq!(sha256(&bytes), digest, "{package}");
-    }
+    assert_eq!(check_packages(&built, &sums, &blob_store), 77, "{built}");
 
     // Each package is a child object, its artifact the package's own
     // files (DECISIONS.md §41 sub-decision 6): bash's is bash alone.
     assert_eq!(field(&built, "children"), "77", "{built}");
-    let bash = built
-        .lines()
-        .find_map(|line| {
-            let rest = line.strip_prefix("  bash-5.2.15_0 object:")?;
-            rest.split_once(" (artifact ")
-                .map(|(_, artifact)| artifact.trim_end_matches(')').to_owned())
-        })
-        .unwrap_or_else(|| panic!("no bash child in:\n{built}"));
-    let tree: serde_json::Value = serde_json::from_slice(
-        &kairo_store::BlobStore::get_blob(
-            &blob_store,
-            &kairo_core::BlobId::new(bash).expect("blob id"),
-        )
-        .expect("the bash child's artifact"),
-    )
-    .expect("an artifact tree");
-    let paths: Vec<&str> = tree["entries"]
-        .as_array()
-        .expect("entries")
-        .iter()
-        .filter_map(|entry| entry["path"].as_str())
-        .collect();
-    assert_eq!(paths, ["usr/bin/bash", "usr/bin/sh"]);
+    assert_eq!(
+        child_paths(&built, "bash-5.2.15_0", &blob_store),
+        ["usr/bin/bash", "usr/bin/sh"]
+    );
 
     // A consumer names tool:gcc alone: binutils, musl, and the kernel
     // headers come as what gcc requires (DECISIONS.md §46), and the
@@ -377,4 +339,76 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         "{reproduced}"
     );
     assert_eq!(field(&reproduced, "reproduced_artifact"), artifact);
+
+    // Pass 2, the perl chain (DECISIONS.md §49), when asked for: it goes
+    // on from pass 1's whole root, which it doesn't build again.
+    if std::env::var_os("KAIRO_LIVE_BOOTSTRAP_PERL").is_none() {
+        return;
+    }
+    let imported = import(store, &actor, "live-bootstrap-perl");
+    let perl = format!("object:{}", field(&imported, "wrapper"));
+    let built = build(store, &perl, &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    assert!(!built.contains("\nbuilds = "), "{built}");
+    // Every package so far, pass 1's and its own, is upstream's.
+    assert_eq!(check_packages(&built, &sums, &blob_store), 107, "{built}");
+    // Its children are its own packages.
+    assert_eq!(field(&built, "children"), "30", "{built}");
+    assert!(child_paths(&built, "perl-5.42.0_0", &blob_store).contains(&"usr/bin/perl".to_owned()));
+}
+
+/// Check every package a build lists in `repo/` against upstream's
+/// `SHA256SUMS.pkgs`; how many there were.
+fn check_packages(built: &str, sums: &str, blob_store: &kairo_store::FilesystemStore) -> usize {
+    let packages: Vec<(&str, &str)> = built
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let path = parts.next()?.strip_prefix("repo/")?;
+            Some((path, parts.next()?))
+        })
+        .collect();
+    for (package, blob) in &packages {
+        let digest = sums
+            .lines()
+            .find_map(|line| {
+                let (digest, name) = line.split_once("  ")?;
+                (name == *package).then_some(digest)
+            })
+            .unwrap_or_else(|| panic!("{package} isn't in SHA256SUMS.pkgs"));
+        let bytes = kairo_store::BlobStore::get_blob(
+            blob_store,
+            &kairo_core::BlobId::new(*blob).expect("blob id"),
+        )
+        .expect("blob");
+        assert_eq!(sha256(&bytes), digest, "{package}");
+    }
+    packages.len()
+}
+
+/// The paths in the artifact of the child a build lists as `name`.
+fn child_paths(built: &str, name: &str, blob_store: &kairo_store::FilesystemStore) -> Vec<String> {
+    let prefix = format!("  {name} object:");
+    let artifact = built
+        .lines()
+        .find_map(|line| {
+            let rest = line.strip_prefix(&prefix)?;
+            rest.split_once(" (artifact ")
+                .map(|(_, artifact)| artifact.trim_end_matches(')').to_owned())
+        })
+        .unwrap_or_else(|| panic!("no {name} child in:\n{built}"));
+    let tree: serde_json::Value = serde_json::from_slice(
+        &kairo_store::BlobStore::get_blob(
+            blob_store,
+            &kairo_core::BlobId::new(artifact).expect("blob id"),
+        )
+        .expect("the child's artifact"),
+    )
+    .expect("an artifact tree");
+    tree["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .filter_map(|entry| entry["path"].as_str().map(str::to_owned))
+        .collect()
 }

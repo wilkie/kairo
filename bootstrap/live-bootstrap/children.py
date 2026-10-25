@@ -24,6 +24,8 @@ LIBRARIES = {
     "musl": ["lib:musl"],
     "linux-headers": ["lib:linux:headers"],
     "autoconf-archive": ["data:autoconf-archive"],
+    # A perl module perl's own build uses.
+    "perl-Devel-Tokenizer-C": ["lib:perl:Devel-Tokenizer-C"],
 }
 # What a package needs beside it wherever it is installed, and what
 # using one of its labels confers on whatever is built with it
@@ -64,7 +66,9 @@ def main():
             last[(name, version)] = revision
     for package, name, version, revision in packages:
         print("[[build.targets.children]]")
-        print(f'name = "{package}"')
+        # Child names are lowercase (child-genesis-v1); the root is the
+        # package's own spelling.
+        print(f'name = "{package.lower()}"')
         print(f'root = "{package}"')
         print(f'summary = "{name} {version}, as live-bootstrap builds it (package {package})."')
         print('tags = ["live-bootstrap"]')

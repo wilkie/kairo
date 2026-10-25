@@ -267,29 +267,7 @@ parse_import_args "$@"
 kairo source fetch "$LIVE_BOOTSTRAP_URL" --actor "$ACTOR" --require-complete >&2
 
 # 2. The distfiles, each from the first mirror that serves its bytes.
-for entry in "${DISTFILES[@]}"; do
-    read -r -a words <<<"$(tr '\n' ' ' <<<"$entry")"
-    sha256=${words[0]}
-    name=${words[1]}
-    urls=("${words[@]:2}")
-    # GNU's own server serves every file kernel.org's GNU mirror does.
-    for url in "${words[@]:2}"; do
-        case "$url" in
-        https://mirrors.kernel.org/gnu/*)
-            urls+=("https://ftp.gnu.org/gnu/${url#https://mirrors.kernel.org/gnu/}")
-            ;;
-        esac
-    done
-    fetched=no
-    for url in "${urls[@]}"; do
-        if kairo source fetch-file "$url" --sha256 "$sha256" --actor "$ACTOR" >&2; then
-            fetched=yes
-            break
-        fi
-        echo "import.sh: $url failed; trying the next mirror" >&2
-    done
-    [ "$fetched" = yes ] || fail "no mirror served $name ($sha256)"
-done
+fetch_distfiles
 
 # 3. The native wrapper (../wrapper.sh).
 WORK=$(mktemp -d)

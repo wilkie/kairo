@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap pass 2: the perl chain (`DECISIONS.md` §49).**
+  `bootstrap/live-bootstrap-perl/` goes on from pass 1's whole root,
+  now provided as `data:live-bootstrap:x86:zlib-1.3.1`, through
+  upstream's perl chain to perl 5.42.0, with automake 1.16.3, autoconf
+  2.71, and bison 3.8.2, each package checked against upstream and a
+  child of its own. Pass 1 ships the state a later pass needs in
+  `state/`; `children.py` lowercases child names.
+
 - **Owner preference among offers (`DECISIONS.md` §48).** The resolver
   ranks offers by owner before version: actors named by `kairo build
   --prefer` or `[resolve] prefer`, then this node's own actors, then

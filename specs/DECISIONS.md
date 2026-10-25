@@ -4847,3 +4847,72 @@ Affected specs:
 - `PLANNER.md` §4.2 — the ranking.
 - `CLI.md` §17 — `kairo build --prefer`, the `alternatives` lines,
   `kairo provider resolve`, and `kairo search`'s `owner`.
+
+---
+
+## 49. live-bootstrap in Passes
+
+Decision: Kairo's live-bootstrap runs in **passes**, each a native
+object of its own that goes on from the previous pass's whole root
+rather than one object whose manifest truncation moves further each
+milestone. Pass 1 (`bootstrap/live-bootstrap/`, §38) runs to
+`zlib-1.3.1`; pass 2 (`bootstrap/live-bootstrap-perl/`) runs
+upstream's perl chain, to `perl-5.42.0` and the uninstall of perl
+5.6.2 and 5.8.9. A later pass (openssl through gcc 4.7.4, binutils
+2.41, and musl rebuilt) follows the same shape. Building on a pass
+never rebuilds the passes before it.
+
+Sub-decisions:
+
+1. **A pass's whole root is a label.** Each pass's parent provides
+   `data:live-bootstrap:<arch>:<last step>`, its target's whole
+   artifact: `data:live-bootstrap:x86:zlib-1.3.1` for pass 1,
+   `data:live-bootstrap:x86:perl-5.42.0` for pass 2. The label names
+   the step the root is after, so the next pass depends on exactly the
+   state it continues from, and labels match exactly (§33). It is
+   `data`: files the next pass's scripts read (§42).
+
+2. **What a pass ships.** Its artifact holds the installed `usr/`;
+   every package so far in `repo/`; and in `state/` what the steps left
+   outside the packages that the next pass needs: `/steps/env` and
+   `/steps/bootstrap.cfg` as the improve steps edited them, and the
+   `script-generator` the seed built and checked. Each package the pass
+   made is extracted as a child (§41 sub-decision 6); a pass's children
+   are its own packages only.
+
+3. **How a pass goes on.** The artifact installs at `/`, so `/usr` is
+   where live-bootstrap expects it and, with overlay provisioning,
+   nothing is copied. The pass's start script links `/external/repo` to
+   `/repo` (package revisions are counted there, and `uninstall` reads
+   earlier packages' file lists from it), puts `state/` back in
+   `/steps`, and remakes the rest of the root outside the packages as
+   the earlier steps made it: `merged_usr`'s links from `/`, then
+   upstream's own `populate_device_nodes` and `finalize_fhs`, which
+   check before they make. Upstream's `script-generator` then writes
+   the scripts for upstream's manifest truncated at this pass's end, so
+   pass numbers and predicates come out as in one continuous run, and
+   the start script runs the generated script from the step after the
+   previous pass's last.
+
+4. **The checks are upstream's.** Every package a pass makes is
+   checked against live-bootstrap's `SHA256SUMS.pkgs`, as in pass 1, so
+   a continuation that diverged from a continuous run where it matters
+   fails at the step that diverged.
+
+5. **Distfiles with no stable upstream bytes.** The gnulib snapshots
+   name no URL, and GitHub's archive tarballs aren't promised stable;
+   upstream's `mirror.sh` makes both with `git archive`. Pass 2's
+   import fetches each distfile from its upstream URL, then from
+   live-bootstrap's maintainers' mirrors, then its archive.org mirror;
+   the SHA-256 pins the bytes whichever serves them.
+
+Rationale: a milestone a few hours past the last would otherwise mean
+rebuilding everything before it on every attempt, and one object
+holding the whole chain would grow without bound. Passes keep each
+build to its own steps, give each stretch of the chain its own
+children and labels, and use the same continuity upstream's own CI
+relies on between its passes: the root, the packages, and the
+generated scripts.
+
+Affected specs: none beyond this entry; the wrappers' READMEs
+describe the layout.
