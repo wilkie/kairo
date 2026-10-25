@@ -1,7 +1,9 @@
 //! `kairo store ...` runners. Maintenance operations on the
 //! local store directory itself.
 
-use kairo_store::RebuildReport;
+use std::fmt::Write as _;
+
+use kairo_store::{RebuildReport, VerifyFailure};
 
 use crate::cli::StoreCommand;
 use crate::error::CliError;
@@ -13,6 +15,7 @@ pub(crate) fn run_store_command(
 ) -> Result<String, CliError> {
     match command {
         StoreCommand::RebuildIndexes => run_rebuild_indexes(paths),
+        StoreCommand::Verify => run_verify(paths),
     }
 }
 
@@ -42,4 +45,39 @@ fn format_report(paths: &StorePaths, report: &RebuildReport) -> String {
         }
     }
     out
+}
+
+/// `kairo store verify` (DECISIONS.md §47): every record and blob, and
+/// the build's execution records, against their ids.
+fn run_verify(paths: &StorePaths) -> Result<String, CliError> {
+    let store = open_store(paths)?;
+    let mut report = store
+        .verify(kairo_build::STORED_BLOB_DOMAINS)
+        .map_err(|source| CliError::StoreVerify {
+            message: source.to_string(),
+        })?;
+    let (executions, failures) =
+        kairo_build::verify_records(&store).map_err(|source| CliError::StoreVerify {
+            message: source.to_string(),
+        })?;
+    report.records += executions;
+    report.failures.extend(failures);
+    let mut out = String::new();
+    let _ = writeln!(out, "verified store");
+    let _ = writeln!(out, "store = {}", paths.store.display());
+    let _ = writeln!(out, "records = {}", report.records);
+    let _ = writeln!(out, "blobs = {}", report.blobs);
+    let _ = writeln!(out, "blob_bytes = {}", report.bytes);
+    let _ = writeln!(out, "corrupt = {}", report.failures.len());
+    for VerifyFailure { path, reason } in &report.failures {
+        let _ = writeln!(out, "corrupt: {}: {reason}", path.display());
+    }
+    if report.failures.is_empty() {
+        Ok(out)
+    } else {
+        Err(CliError::StoreCorrupt {
+            summary: out,
+            corrupt: report.failures.len(),
+        })
+    }
 }

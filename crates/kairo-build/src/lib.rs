@@ -529,6 +529,58 @@ pub fn record_path(store: &FilesystemStore, id: &BlobId) -> PathBuf {
         .join(format!("{}.json", id.as_str()))
 }
 
+/// Every domain a blob in the store is hashed under, those most blobs
+/// use first, for [`FilesystemStore::verify`] (`specs/DECISIONS.md`
+/// §47). A new kind of stored blob adds its domain here, or verify
+/// reports each one as corrupt.
+pub const STORED_BLOB_DOMAINS: &[&[u8]] = &[
+    ARTIFACT_BLOB_DOMAIN,
+    // A file source's bytes go by their plain SHA-256.
+    b"",
+    LOG_BLOB_DOMAIN,
+    ARTIFACT_TREE_DOMAIN,
+    kairo_resolver::RESOLVED_MANIFEST_DOMAIN,
+    kairo_object::OBJECT_MANIFEST_DOMAIN,
+];
+
+/// Re-hash each execution record against the id it is filed under: how
+/// many there are, and those that don't match.
+pub fn verify_records(
+    store: &FilesystemStore,
+) -> Result<(usize, Vec<kairo_store::VerifyFailure>), BuildError> {
+    let dir = store.root().join(EXECUTIONS_DIR);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((0, Vec::new())),
+        Err(source) => return Err(io_error("reading", &dir, source)),
+    };
+    let mut count = 0;
+    let mut failures = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|source| io_error("reading", &dir, source))?
+            .path();
+        let Some(stem) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+            .filter(|stem| !stem.starts_with('.'))
+        else {
+            continue;
+        };
+        count += 1;
+        let bytes = fs::read(&path).map_err(|source| io_error("reading", &path, source))?;
+        let actual = BlobId::from_bytes(EXECUTION_RECORD_DOMAIN, &bytes);
+        if actual.as_str() != stem {
+            failures.push(kairo_store::VerifyFailure {
+                reason: format!("its bytes hash to {actual}"),
+                path,
+            });
+        }
+    }
+    Ok((count, failures))
+}
+
 /// Read a record back by id.
 pub fn load_record(store: &FilesystemStore, id: &BlobId) -> Result<ExecutionRecord, BuildError> {
     let path = record_path(store, id);

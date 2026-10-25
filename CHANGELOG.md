@@ -18,6 +18,12 @@ rather than per-commit.
 
 ### Added
 
+- **`kairo store verify` (`DECISIONS.md` §47).** Re-hashes every
+  record and blob in the store, and the build's execution records,
+  against the id each is filed under, lists every one that doesn't
+  match, and exits 10 if any don't. It repairs nothing; run it when the
+  disk is in doubt or on a schedule.
+
 - **Stalled source fetches are retried (`DECISIONS.md` §40).** `kairo
   source fetch` runs a fetch of a source or a submodule's pinned
   commits again, up to three attempts, when git aborts the transfer
@@ -507,6 +513,11 @@ rather than per-commit.
   `401 fed_unauthenticated`. No endpoint requires it yet; push will.
 
 ### Changed
+
+- **A file source's bytes are read as stored (`DECISIONS.md` §47).**
+  They were checked against their hash when put; the read no longer
+  re-hashes them, and `kairo store verify` is what finds a file the
+  storage changed.
 
 - **Push plans and closure bundles gained optional `sources` fields**
   (`DECISIONS.md` §38 sub-decision 10): the plan request lists pinned

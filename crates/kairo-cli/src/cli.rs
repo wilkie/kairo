@@ -535,6 +535,16 @@ pub(crate) enum StoreCommand {
     /// Not safe to run concurrently with `kairo daemon start` or
     /// any other writer; stop writers first.
     RebuildIndexes,
+    /// Re-hash every record and blob in the store against the id it
+    /// is filed under, and name each that doesn't match.
+    ///
+    /// Reads trust the storage to return what was written (DECISIONS.md
+    /// §47); this finds where it didn't: a flipped bit, a truncated
+    /// file, an edit by hand. It reads the whole store, so run it when
+    /// you suspect the disk or on a schedule (cron, a systemd timer);
+    /// a checksumming file system or scrub catches the same faults
+    /// sooner. Exits 10 when anything doesn't match.
+    Verify,
 }
 
 #[derive(Debug, Subcommand)]

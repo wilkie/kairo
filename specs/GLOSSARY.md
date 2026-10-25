@@ -69,6 +69,12 @@ recoverable: every fixity failure is surfaced to the caller (e.g.
 `BundleError::FixityMismatch`, `BundleError::BlobHashMismatch`) rather
 than papered over with a "best effort" repair.
 
+Fixity is checked when content enters the store, not each time it is
+read back (`DECISIONS.md` §47): blob bytes are read as stored, and
+`kairo store verify` re-hashes the whole store on request to find
+where the storage failed. Records still re-derive their ids on read,
+as part of decoding them.
+
 Where fixity is enforced today:
 
 - **Store reads** — `get_actor`, `get_object_genesis`,
@@ -82,6 +88,11 @@ Where fixity is enforced today:
   identical ids.
 - **Keystore reads** — the stored `actor_id` and `key_id` fields must
   agree with the recomputed values for the loaded secret key.
+- **Puts of blobs** — a file source's bytes, an imported bundle's
+  blobs, a pulled blob, and a build's outputs are hashed before they
+  are stored.
+- **`kairo store verify`** — every record and blob, against the id it
+  is filed under.
 - **`kairo verify object`** — the genesis-derives-id check is part of
   the aggregate verdict; a fixity failure on the genesis record is
   reported as `INVALID`.

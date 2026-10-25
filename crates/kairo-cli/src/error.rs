@@ -193,6 +193,16 @@ pub(crate) enum CliError {
         summary: String,
         missing: usize,
     },
+    /// `kairo store verify` couldn't walk the store.
+    StoreVerify {
+        message: String,
+    },
+    /// `kairo store verify` found files that don't match their ids; the
+    /// summary is the report otherwise printed.
+    StoreCorrupt {
+        summary: String,
+        corrupt: usize,
+    },
     /// A bundle's execution evidence couldn't be written or read.
     BundleExecutions {
         message: String,
@@ -619,6 +629,7 @@ impl CliError {
             | Self::BuildSignerUntrusted { .. }
             | Self::NoEngine { .. } => 7,
             Self::Fetch(_) | Self::PeerRequest { .. } => 11,
+            Self::StoreVerify { .. } | Self::StoreCorrupt { .. } => 10,
             _ => 1,
         }
     }
@@ -737,6 +748,12 @@ impl fmt::Display for CliError {
             } => write!(
                 f,
                 "{url} served bytes hashing to {actual}, not the expected {expected}; nothing was kept"
+            ),
+            Self::StoreVerify { message } => write!(f, "verifying the store: {message}"),
+            Self::StoreCorrupt { summary, corrupt } => write!(
+                f,
+                "{summary}{corrupt} file(s) in the store don't match the ids they are filed under; \
+                 check the storage, then restore them from a peer or a backup"
             ),
             Self::SourceIncomplete { summary, missing } => write!(
                 f,
@@ -1316,6 +1333,8 @@ impl Error for CliError {
             | Self::FileFetch { .. }
             | Self::FileHashMismatch { .. }
             | Self::SourceIncomplete { .. }
+            | Self::StoreVerify { .. }
+            | Self::StoreCorrupt { .. }
             | Self::NotAResultRef { .. }
             | Self::ReproduceUnavailable { .. }
             | Self::ProviderUnavailable { .. }

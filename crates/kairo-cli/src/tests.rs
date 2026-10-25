@@ -6169,6 +6169,103 @@ fn store_rebuild_indexes_after_seed_reports_per_kind_counts(
     Ok(())
 }
 
+#[test]
+fn store_verify_passes_a_sound_store_and_names_a_changed_blob(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store_dir = tempfile::TempDir::new()?;
+    let store = store_dir.path();
+    let manifest_path = store_dir.path().join("kairo.toml");
+    std::fs::write(
+        &manifest_path,
+        "[kairo]\nschema = 1\nkind = \"software\"\nname = \"Example\"\n\n[content]\nkind = \"tree\"\n",
+    )?;
+    let actor = parse_field(
+        &run_in(
+            store,
+            Command::Actor {
+                command: ActorCommand::Create {
+                    kind: "person".to_owned(),
+                    attestation_keys: vec![],
+                    generate_attestation_keys: 1,
+                    attestation_threshold: 1,
+                },
+            },
+        )?,
+        "actor = ",
+    )?;
+    let object = parse_field(
+        &run_in(
+            store,
+            Command::Object {
+                command: ObjectSubcommand::Create {
+                    actor: actor.clone(),
+                    kind: "software".to_owned(),
+                    initial_revision: None,
+                },
+            },
+        )?,
+        "object = ",
+    )?;
+    run_in(
+        store,
+        Command::Revision {
+            command: RevisionCommand::Create {
+                actor,
+                object,
+                revision: "git:sha1:5573e39b6600496d40f493d00ec7658479a19607".to_owned(),
+                manifest: manifest_path,
+                parents: vec![],
+                no_attests_reachable_history: false,
+            },
+        },
+    )?;
+    let verify = || {
+        run_in(
+            store,
+            Command::Store {
+                command: StoreCommand::Verify,
+            },
+        )
+    };
+    let output = verify()?;
+    assert!(output.contains("records = 3"), "{output}");
+    // The revision's manifest.
+    assert!(output.contains("blobs = 1"), "{output}");
+    assert!(output.contains("corrupt = 0"), "{output}");
+
+    // One flipped bit in the manifest blob.
+    let blob = files_under(&store.join("blobs"))?
+        .into_iter()
+        .next()
+        .ok_or("no blob")?;
+    let mut bytes = std::fs::read(&blob)?;
+    bytes[0] ^= 1;
+    std::fs::write(&blob, bytes)?;
+    let error = verify().err().ok_or("verify passed a changed blob")?;
+    assert_eq!(error.exit_code(), 10);
+    let message = error.to_string();
+    assert!(message.contains("corrupt = 1"), "{message}");
+    assert!(
+        message.contains(&format!("corrupt: {}: ", blob.display())),
+        "{message}"
+    );
+    Ok(())
+}
+
+/// Every file under `dir`.
+fn files_under(dir: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            files.extend(files_under(&path)?);
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
 // --- kairo federation -------------------------------------------------
 
 fn run_in(store: &std::path::Path, command: Command) -> Result<String, CliError> {

@@ -773,7 +773,7 @@ kairo pin            [post-v1] depends on GC design
 kairo unpin          [post-v1] depends on GC design
 kairo list           [post-v1] depends on indexing
 kairo task           [post-v1] depends on TaskManager
-kairo store          [post-v1] depends on long-running task surface
+kairo store          [v1: verify, rebuild-indexes; rest post-v1] DECISIONS.md §47
 kairo federation     [post-v1] depends on Phase 2 §4
 kairo policy         [post-v1] depends on PolicyService
 kairo config         [post-v1] depends on ConfigService
@@ -1495,9 +1495,10 @@ Task status must be distinct from validation status.
 
 ## 24. `kairo store`
 
-**[post-v1].** Store maintenance (verify, GC, rebuild-index)
-depends on long-running task surface and GC design. v1 surfaces
-store identity through `kairo status` only.
+**[post-v1].** Store maintenance (GC, status) depends on the
+long-running task surface and GC design; `kairo store verify`
+(`DECISIONS.md` §47) and `kairo store rebuild-indexes` are
+implemented and run in the foreground.
 
 Store diagnostics and maintenance.
 
@@ -1512,6 +1513,24 @@ kairo store path
 ```
 
 Store maintenance commands must not alter object semantics.
+
+`kairo store verify` re-hashes every record and blob in the store
+against the id it is filed under (`DECISIONS.md` §47). Reads trust the
+storage, so this is the check that finds a flipped bit, a truncated
+file, or an edit by hand. It reads the whole store; run it when the
+disk is in doubt, or from cron or a systemd timer. It repairs nothing.
+
+```text
+verified store
+store = /home/user/.local/share/kairo/store
+records = 279
+blobs = 6441
+blob_bytes = 559676539
+corrupt = 1
+corrupt: <store>/blobs/Py/E1/zQmPy…: its 756876 bytes hash to zQmPy… under none of the 6 blob domains
+```
+
+It exits `10` when anything doesn't match, after listing each one.
 
 Garbage collection must respect pins and active tasks.
 

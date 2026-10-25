@@ -72,6 +72,12 @@ returns `StoreError::Corrupt { reason: HashMismatch { expected,
 actual } }`. Silent recovery would defeat the entire point of
 content-addressing. See `specs/GLOSSARY.md` "Fixity."
 
+This is a rule for records. Blob bytes are checked when they are put
+and read back as stored (`specs/DECISIONS.md` §47); don't add a re-hash
+to a blob read. `FilesystemStore::verify` is where a whole-store check
+lives, and a new kind of stored blob adds its domain to
+`kairo_build::STORED_BLOB_DOMAINS` so verify can check it.
+
 ## Materialized indices are derived state
 
 If an index file is lost or wrong, it is correct-by-construction to

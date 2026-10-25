@@ -4699,3 +4699,64 @@ Affected specs:
 - `OBJECT.md`, `BUILD.md`, `PLANNER.md` — runtime requirements and
   conferral.
 - `CLI.md` §17 — plans show the runtime closure and chains.
+
+## 47. Reads Trust the Storage; `kairo store verify` Finds Where It Failed
+
+Decision: Kairo checks content against its id when the content enters
+the store (a fetch, an import, a pull, a build's outputs) and not each
+time it is read back. A read assumes the storage returns the bytes it
+was given. Finding where storage didn't is a separate check,
+`kairo store verify`, which re-hashes every record and blob in the
+store against the id it is filed under. An operator runs it when the
+disk is in doubt, or on a schedule; the better defence against the same
+faults lives below Kairo, in a checksumming file system, scrubs, and
+ECC memory, which the system's administrator manages.
+
+Sub-decisions:
+
+1. **Blob bytes are read as stored.** A file source's bytes, an
+   artifact's files, logs, and manifests are returned by the store
+   without being re-hashed. Their hash was checked when they were put
+   (`put_file_source`, bundle import, a federation pull, an executor
+   storing what a build made).
+
+2. **Records still derive their ids on read.** A record (actor,
+   object genesis, statement, source genesis) is parsed on every read,
+   and its id is re-derived from the parsed body as part of decoding
+   it. That costs next to nothing beside the parse and catches a
+   record filed under the wrong name, which is a bug, not a storage
+   fault. The rule in `crates/kairo-store/AGENTS.md` stands for
+   records.
+
+3. **`kairo store verify`.** Walks the store's actors, objects,
+   statements, sources, file sources, execution records, and blobs,
+   re-derives each one's id from its bytes, and lists every one that
+   doesn't match its file name: `corrupt: <path>: <reason>`. It goes on
+   past a mismatch and exits `10` (store error) if it found any, `0`
+   otherwise. A blob's id is `sha256(domain || bytes)`, and nothing on
+   disk records the domain, so each blob is tried against the domains
+   blobs are stored under (`kairo_build::STORED_BLOB_DOMAINS`, the most
+   common first). A blob that matches none is reported, so a new kind
+   of blob must add its domain to that list. Derived state is not
+   checked: indexes are rebuilt from the statements
+   (`kairo store rebuild-indexes`), the Git cache is Git's to check
+   (`git fsck`), and build layers are rebuilt from artifacts.
+
+4. **Nothing is repaired.** Verify reports; it doesn't delete or
+   re-fetch. A corrupt file comes back from a peer, a mirror, or a
+   backup, once the storage under it is trusted again.
+
+Rationale: re-hashing each blob on every read spends time on every
+build to catch a fault the storage stack is better placed to prevent,
+and a check on read can't catch a fault in the page cache after it,
+while one in the copy can't be told from one on the disk. A check run
+on request, over the whole store, says which files are bad wherever
+the fault happened, and the operator who suspects the hardware decides
+when to run it.
+
+Affected specs:
+
+- `CLI.md` §24 — `kairo store verify` is implemented.
+- `GLOSSARY.md` "Fixity" — where fixity is checked.
+- `crates/kairo-store/AGENTS.md` — the fixity rule covers records;
+  blob bytes are read as stored.

@@ -449,7 +449,8 @@ pub trait SourceStore {
     /// until they arrive.
     fn put_file_source_genesis(&self, genesis: &FileSourceGenesis) -> Result<ObjectId, StoreError>;
     fn get_file_source(&self, id: &ObjectId) -> Result<FileSourceGenesis, StoreError>;
-    /// A file source's bytes, checked against its hash.
+    /// A file source's bytes, as stored: they were checked against its
+    /// hash when put, and reads trust the storage (DECISIONS.md §47).
     fn get_file_source_bytes(&self, id: &ObjectId) -> Result<Vec<u8>, StoreError>;
     /// Whether the file source's genesis and bytes are both held,
     /// without reading the bytes.
@@ -649,6 +650,52 @@ pub struct RebuildReport {
     pub by_kind: BTreeMap<StatementKind, usize>,
 }
 
+/// What [`FilesystemStore::verify`] checked, and every record or blob
+/// whose bytes don't derive the id it is filed under.
+#[derive(Debug, Default)]
+pub struct VerifyReport {
+    pub records: usize,
+    pub blobs: usize,
+    /// The blobs' total size.
+    pub bytes: u64,
+    pub failures: Vec<VerifyFailure>,
+}
+
+/// One file that failed [`FilesystemStore::verify`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyFailure {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+/// What a pass over `statements/` does with each file.
+#[derive(Debug, Clone, Copy)]
+enum StatementPass {
+    Index,
+    Verify,
+}
+
+/// A record filed under `stem` whose body derives `actual` is corrupt.
+fn same_id(stem: &str, actual: &str) -> Result<(), StoreError> {
+    if stem == actual {
+        return Ok(());
+    }
+    Err(StoreError::Corrupt {
+        id: stem.to_owned(),
+        reason: CorruptReason::HashMismatch {
+            expected: stem.to_owned(),
+            actual: actual.to_owned(),
+        },
+    })
+}
+
+fn parse_corrupt(stem: &str, error: impl ToString) -> StoreError {
+    StoreError::Corrupt {
+        id: stem.to_owned(),
+        reason: CorruptReason::Parse(error.to_string()),
+    }
+}
+
 /// Persistence interface for raw byte blobs.
 ///
 /// `BlobId` is domain-prefixed (`sha256(domain || bytes)`), so the store
@@ -802,6 +849,21 @@ impl FilesystemStore {
         &self,
         dir_name: &str,
         report: &mut RebuildReport,
+        handle_one: F,
+    ) -> Result<(), StoreError>
+    where
+        F: FnMut(&FilesystemStore, &Path, &mut RebuildReport) -> Result<(), StoreError>,
+    {
+        self.walk_sharded(dir_name, Some("json"), report, handle_one)
+    }
+
+    /// Each file two shard levels under `dir_name` with `extension`, or
+    /// every file when it is `None`.
+    fn walk_sharded<F>(
+        &self,
+        dir_name: &str,
+        extension: Option<&str>,
+        report: &mut RebuildReport,
         mut handle_one: F,
     ) -> Result<(), StoreError>
     where
@@ -826,7 +888,11 @@ impl FilesystemStore {
                 for entry in fs::read_dir(shard2.path())? {
                     let entry = entry?;
                     let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                    if !path.is_file()
+                        || extension.is_some_and(|extension| {
+                            path.extension().and_then(|s| s.to_str()) != Some(extension)
+                        })
+                    {
                         continue;
                     }
                     handle_one(self, &path, report)?;
@@ -871,6 +937,19 @@ impl FilesystemStore {
         path: &Path,
         report: &mut RebuildReport,
     ) -> Result<(), StoreError> {
+        let kind = self.replay_statement(path, StatementPass::Index)?;
+        report.statements_scanned += 1;
+        *report.by_kind.entry(kind).or_insert(0) += 1;
+        Ok(())
+    }
+
+    /// Parse one file under `statements/` by its kind, and index it or
+    /// check that it derives the id it is filed under.
+    fn replay_statement(
+        &self,
+        path: &Path,
+        pass: StatementPass,
+    ) -> Result<StatementKind, StoreError> {
         let bytes = fs::read(path)?;
         let file_stem = path
             .file_stem()
@@ -917,7 +996,10 @@ impl FilesystemStore {
                     reason: CorruptReason::Parse(error.to_string()),
                 })?;
                 let id = signed.statement_id();
-                self.$index_fn(&signed, &id)?;
+                match pass {
+                    StatementPass::Index => self.$index_fn(&signed, &id)?,
+                    StatementPass::Verify => same_id(&file_stem, id.as_str())?,
+                }
             }};
         }
 
@@ -1005,10 +1087,92 @@ impl FilesystemStore {
                 );
             }
         }
+        Ok(kind)
+    }
 
-        report.statements_scanned += 1;
-        *report.by_kind.entry(kind).or_insert(0) += 1;
-        Ok(())
+    /// Re-hash every content-addressed record and blob in the store
+    /// against the id it is filed under (`specs/DECISIONS.md` §47).
+    /// Reads trust the storage to return what was written; this is the
+    /// check that finds where it didn't, run when an operator asks.
+    ///
+    /// A blob's id is `sha256(domain || bytes)` and the store doesn't
+    /// know the domain, so each blob is tried against `blob_domains`,
+    /// most common first; one that matches none is reported. Every
+    /// mismatch is collected rather than stopping the walk; only an
+    /// unreadable directory stops it. Derived state (indexes, the Git
+    /// cache, build layers) isn't checked: indexes are rebuilt from the
+    /// statements, and Git checks its own objects.
+    pub fn verify(&self, blob_domains: &[&[u8]]) -> Result<VerifyReport, StoreError> {
+        let mut report = VerifyReport::default();
+        let mut scratch = RebuildReport::default();
+        for dir in [
+            ACTORS_DIR,
+            OBJECTS_DIR,
+            STATEMENTS_DIR,
+            SOURCES_DIR,
+            FILE_SOURCES_DIR,
+        ] {
+            self.walk_sharded(dir, Some("json"), &mut scratch, |store, path, _| {
+                report.records += 1;
+                if let Err(error) = store.verify_record(dir, path) {
+                    report.failures.push(VerifyFailure {
+                        path: path.to_path_buf(),
+                        reason: error.to_string(),
+                    });
+                }
+                Ok(())
+            })?;
+        }
+        self.walk_sharded(BLOBS_DIR, None, &mut scratch, |_, path, _| {
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            // An interrupted atomic write leaves `.<id>.tmp` behind.
+            if name.starts_with('.') {
+                return Ok(());
+            }
+            report.blobs += 1;
+            let bytes = fs::read(path)?;
+            report.bytes += bytes.len() as u64;
+            let matches = blob_domains
+                .iter()
+                .any(|domain| BlobId::from_bytes(domain, &bytes).as_str() == name);
+            if !matches {
+                report.failures.push(VerifyFailure {
+                    path: path.to_path_buf(),
+                    reason: format!(
+                        "its {} bytes hash to {name} under none of the {} blob domains",
+                        bytes.len(),
+                        blob_domains.len()
+                    ),
+                });
+            }
+            Ok(())
+        })?;
+        Ok(report)
+    }
+
+    /// Read the record at `path` under `dir` the way its getter does,
+    /// which re-derives its id and compares it with the file's name.
+    fn verify_record(&self, dir: &str, path: &Path) -> Result<(), StoreError> {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let object = || ObjectId::new(stem).map_err(|error| parse_corrupt(stem, error));
+        match dir {
+            ACTORS_DIR => {
+                let actor = ActorId::new(stem).map_err(|error| parse_corrupt(stem, error))?;
+                self.get_actor(&actor).map(drop)
+            }
+            OBJECTS_DIR => self.get_object_genesis(&object()?).map(drop),
+            STATEMENTS_DIR => self.replay_statement(path, StatementPass::Verify).map(drop),
+            SOURCES_DIR => self.get_source(&object()?).map(drop),
+            FILE_SOURCES_DIR => self.get_file_source(&object()?).map(drop),
+            // `verify` walks only the directories above.
+            _ => Ok(()),
+        }
     }
 
     /// Open the on-disk blob for `id` for streaming reads.
@@ -3530,20 +3694,10 @@ impl SourceStore for FilesystemStore {
     }
 
     fn get_file_source_bytes(&self, id: &ObjectId) -> Result<Vec<u8>, StoreError> {
+        // The bytes were checked when they were put; reads trust the
+        // storage, and `verify` finds where it failed (DECISIONS.md §47).
         let genesis = self.get_file_source(id)?;
-        let blob = genesis.sha256().blob_id();
-        let bytes = self.get_blob(&blob)?;
-        let actual = BlobId::from_bytes(b"", &bytes);
-        if actual != blob {
-            return Err(StoreError::Corrupt {
-                id: blob.to_string(),
-                reason: CorruptReason::HashMismatch {
-                    expected: blob.to_string(),
-                    actual: actual.to_string(),
-                },
-            });
-        }
-        Ok(bytes)
+        self.get_blob(&genesis.sha256().blob_id())
     }
 
     fn holds_file_source(&self, id: &ObjectId) -> Result<bool, StoreError> {
@@ -4571,15 +4725,28 @@ mod tests {
         );
         assert_eq!(store.list_file_observations(&source)?.len(), 2);
 
-        // Bytes changed on disk are caught on read.
-        fs::write(
-            store.shard_path(BLOBS_DIR, digest.blob_id().as_str(), BLOB_SUFFIX)?,
-            b"abd",
-        )?;
-        assert!(matches!(
-            store.get_file_source_bytes(&source),
-            Err(StoreError::Corrupt { .. })
-        ));
+        // Bytes changed on disk are read as they are, and found by
+        // verify, which checks every record too.
+        assert!(store.verify(&[b""])?.failures.is_empty());
+        let blob = store.shard_path(BLOBS_DIR, digest.blob_id().as_str(), BLOB_SUFFIX)?;
+        fs::write(&blob, b"abd")?;
+        assert_eq!(store.get_file_source_bytes(&source)?, b"abd");
+        let report = store.verify(&[b"kairo.test.other.v1", b""])?;
+        assert_eq!((report.records, report.blobs, report.bytes), (3, 1, 3));
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].path, blob);
+        assert!(report.failures[0]
+            .reason
+            .contains("none of the 2 blob domains"));
+        // A statement whose body derives another id is found, and the
+        // walk goes on past it.
+        let first = store.shard_path(STATEMENTS_DIR, ids[0].as_str(), JSON_SUFFIX)?;
+        let second = store.shard_path(STATEMENTS_DIR, ids[1].as_str(), JSON_SUFFIX)?;
+        fs::copy(&first, &second)?;
+        let report = store.verify(&[b""])?;
+        let paths: Vec<&Path> = report.failures.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(paths, [second.as_path(), blob.as_path()]);
+        assert!(report.failures[0].reason.contains("hash mismatch"));
         Ok(())
     }
 
