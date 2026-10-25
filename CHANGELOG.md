@@ -18,6 +18,21 @@ rather than per-commit.
 
 ### Added
 
+- **Runtime requirements and what a build confers (`DECISIONS.md`
+  §46).** A target or child declares `requires`, what its artifact
+  needs beside it wherever it is installed, and a provides entry
+  declares `confers`, what a build that uses the label gets as a
+  runtime requirement of its own artifact, pinned to the provider's
+  build or given as a range. The resolver records an artifact's runtime
+  requirements in the plan that builds it, reads them back for
+  consumers, gathers every requirement on a label across the closure,
+  chooses one offer per label satisfying all of them (re-choosing a
+  declared requirement when the closure asks more of it), installs more
+  than one only where the providers declare `coexists`, and otherwise
+  refuses the plan naming each requirement's chain. Plans gain
+  `runtime` and `requires`; the executor installs the runtime closure
+  and refuses co-existing providers that collide on a path.
+
 - **Child versions, `kairo search`, and children over federation
   (`DECISIONS.md` §44, slice 2b).** A child declares its own
   `version`, which its labels take unless they give theirs, and a

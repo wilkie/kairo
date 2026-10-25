@@ -264,6 +264,21 @@ A run target declares what it requires, not how every possible provider executes
 
 ---
 
+### 8.1 Runtime requirements and the closure
+
+Per `DECISIONS.md` §46, the planner gathers every requirement on a
+label across the plan's closure: the target's own, what each resolved
+artifact requires beside it (`requires`), and what its build
+dependencies conferred on it (`confers`), read from the plan that built
+each artifact. It chooses one offer per label satisfying all of them,
+the highest version first, re-choosing a declared requirement when the
+closure asks more of its label; installs more than one only where the
+providers declare that their versions co-exist; and otherwise refuses
+the plan, naming every requirement on the label and the chain it came
+through. The runtime closure is recorded in the plan's `runtime`
+section, and what the planned artifact will itself require in its
+`requires` section.
+
 ## 9. Environment Capabilities
 
 Environments are first-class capabilities.

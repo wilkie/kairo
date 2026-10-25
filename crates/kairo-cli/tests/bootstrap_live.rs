@@ -278,6 +278,55 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         .collect();
     assert_eq!(paths, ["usr/bin/bash", "usr/bin/sh"]);
 
+    // A consumer names tool:gcc alone: binutils, musl, and the kernel
+    // headers come as what gcc requires (DECISIONS.md §46), and the
+    // program it builds runs.
+    let hello = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bootstrap/live-bootstrap/hello");
+    let created = Command::new("bash")
+        .arg(hello.join("create.sh"))
+        .arg(&actor)
+        .arg("--store")
+        .arg(store)
+        .env("KAIRO", KAIRO)
+        .output()
+        .expect("run create.sh");
+    assert!(
+        created.status.success(),
+        "create.sh failed:\n{}{}",
+        String::from_utf8_lossy(&created.stdout),
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let consumer = field(&String::from_utf8_lossy(&created.stdout), "object").to_owned();
+    let built = build(store, &format!("object:{consumer}"), &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    assert_eq!(field(&built, "provisioning"), "overlay", "{built}");
+    let plan = kairo(
+        store,
+        &[
+            "build",
+            &format!("object:{consumer}"),
+            "--target",
+            "x86",
+            "--plan-only",
+        ],
+    );
+    for label in ["tool:binutils", "lib:musl 1.2.5", "lib:linux:headers"] {
+        assert!(
+            plan.contains(&format!("  {label}")) && plan.contains("via tool:gcc"),
+            "{plan}"
+        );
+    }
+    let out = built
+        .lines()
+        .find_map(|line| line.strip_prefix("  out "))
+        .expect("the out file");
+    let text = kairo_store::BlobStore::get_blob(
+        &blob_store,
+        &kairo_core::BlobId::new(out.trim()).expect("blob id"),
+    )
+    .expect("out");
+    assert_eq!(String::from_utf8_lossy(&text), "hello from gcc 4.0.4\n");
+
     // Another run of the same plan gives the same artifact.
     let result = field(&built, "result").to_owned();
     let reproduced = kairo(

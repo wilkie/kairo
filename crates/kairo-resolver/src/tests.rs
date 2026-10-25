@@ -1061,3 +1061,431 @@ fn a_child_is_chosen_by_its_own_version_across_its_parents_snapshots() -> TestRe
     assert_eq!(snapshot_for(&mut world, child("gone"), "")?, first_id);
     Ok(())
 }
+
+/// Artifacts with the plans that built them, as a store with build
+/// results would give them.
+struct HeldWithPlans {
+    artifacts: Vec<(String, String, BlobId)>,
+    plans: Vec<(String, String, Vec<u8>)>,
+}
+
+impl ArtifactSource for HeldWithPlans {
+    fn artifact(
+        &self,
+        object: &ObjectId,
+        _snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<BlobId>, SourceError> {
+        Ok(self
+            .artifacts
+            .iter()
+            .find(|(o, t, _)| o == &object.to_string() && t == target)
+            .map(|(_, _, id)| id.clone()))
+    }
+
+    fn build_plan(
+        &self,
+        object: &ObjectId,
+        _snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<Vec<u8>>, SourceError> {
+        Ok(self
+            .plans
+            .iter()
+            .find(|(o, t, _)| o == &object.to_string() && t == target)
+            .map(|(_, _, bytes)| bytes.clone()))
+    }
+}
+
+/// A toolchain bundle: g++ requires binutils wherever it is installed,
+/// and confers its own libstdc++ on whatever it builds (§46).
+fn toolchain() -> String {
+    manifest(
+        "toolchain",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "g++"
+        root = "g++"
+        version = "11.4.0"
+        requires = [{ provides = "tool:binutils" }]
+        provides = [{ provides = "tool:g++", confers = [{ provides = "lib:stdc++" }] }]
+        [[build.targets.children]]
+        name = "libstdc++"
+        root = "libstdc++"
+        version = "11.4.0"
+        provides = [{ provides = "lib:stdc++" }]
+        "#,
+    )
+}
+
+fn runtime_labels(resolution: &Resolution) -> Vec<(String, Vec<String>)> {
+    resolution
+        .plan
+        .manifest
+        .runtime
+        .iter()
+        .map(|entry| (entry.provides.clone(), entry.via.clone()))
+        .collect()
+}
+
+#[test]
+fn a_build_dependency_requires_and_confers_through_the_plan() -> TestResult {
+    let mut world = World::new();
+    let (toolchain, _) = world.object(&toolchain());
+    let (binutils, _) = world.object(&artifact_provider("tool:binutils", ""));
+    let child = |name: &str| {
+        kairo_object::ChildGenesis::new(toolchain.object_id.clone(), "release", name).object_id()
+    };
+    // The app builds with g++: binutils joins its build environment,
+    // and its artifact will require the toolchain's own libstdc++.
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[provides]]
+        provides = "tool:app"
+        target = "release"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:g++"
+        "#,
+    ));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    assert_eq!(
+        runtime_labels(&resolution),
+        [(
+            "tool:binutils".to_owned(),
+            vec!["tool:g++".to_owned(), "tool:binutils".to_owned()]
+        )]
+    );
+    assert!(matches!(
+        &resolution.plan.manifest.runtime[0].resolved,
+        Resolved::Artifact { object, .. } if object == &binutils.object_id.to_string()
+    ));
+    let [required] = resolution.plan.manifest.requires.as_slice() else {
+        return Err(format!("{:?}", resolution.plan.manifest.requires).into());
+    };
+    assert_eq!(required.provides, "lib:stdc++");
+    assert_eq!(
+        required.pin.as_ref().map(|pin| pin.object.clone()),
+        Some(child("libstdc++").to_string())
+    );
+    assert_eq!(
+        required.via,
+        format!("conferred by tool:g++ from object:{}", child("g++"))
+    );
+    // The binutils build is needed first, as the toolchain's is.
+    let first: Vec<&str> = resolution
+        .plan
+        .manifest
+        .builds_first
+        .iter()
+        .map(|b| b.object.as_str())
+        .collect();
+    assert!(
+        first.contains(&toolchain.object_id.to_string().as_str()),
+        "{first:?}"
+    );
+    assert!(
+        first.contains(&binutils.object_id.to_string().as_str()),
+        "{first:?}"
+    );
+
+    // With the app built, a consumer of tool:app gets libstdc++ too,
+    // pinned to the toolchain's, read from the plan that built the app.
+    let artifact = BlobId::from_bytes(b"test", b"app");
+    let held = HeldWithPlans {
+        artifacts: vec![(app.object_id.to_string(), "release".to_owned(), artifact)],
+        plans: vec![(
+            app.object_id.to_string(),
+            "release".to_owned(),
+            resolution.plan.bytes.clone(),
+        )],
+    };
+    let (user, _) = world.object(&app_requiring("tool:app", None));
+    let using = world.resolve_with(&held, &World::host(), &[], &user.object_id, "release")?;
+    assert_eq!(
+        runtime_labels(&using),
+        [(
+            "lib:stdc++".to_owned(),
+            vec!["tool:app".to_owned(), "lib:stdc++".to_owned()]
+        )]
+    );
+    assert!(matches!(
+        &using.plan.manifest.runtime[0].resolved,
+        Resolved::Artifact { object, root: Some(root), .. }
+            if object == &child("libstdc++").to_string() && root == "libstdc++"
+    ));
+    // Nothing is conferred onward by merely using the app.
+    assert!(using.plan.manifest.requires.is_empty());
+    Ok(())
+}
+
+/// A tool whose label confers `lib:stdc++` with the given requirement.
+fn conferring_tool(name: &str, label: &str, confers: &str) -> String {
+    manifest(
+        name,
+        &format!(
+            r#"
+            [[provides]]
+            provides = "{label}"
+            target = "release"
+            confers = [{{ provides = "lib:stdc++"{confers} }}]
+            {RELEASE_TARGET}
+            "#
+        ),
+    )
+}
+
+fn stdcxx(version: &str, coexists: bool) -> String {
+    manifest(
+        "libstdc++",
+        &format!(
+            r#"
+            [[provides]]
+            provides = "lib:stdc++"
+            version = "{version}"
+            target = "release"
+            coexists = {coexists}
+            {RELEASE_TARGET}
+            "#
+        ),
+    )
+}
+
+#[test]
+fn ranges_unify_to_the_highest_version_that_satisfies_them_all() -> TestResult {
+    let mut world = World::new();
+    world.object(&stdcxx("11.4.0", false));
+    let (thirteen, _) = world.object(&stdcxx("13.2.0", false));
+    world.object(&conferring_tool("foo", "tool:foo", r#", version = ">=11""#));
+    world.object(&conferring_tool("bar", "tool:bar", r#", version = ">=13""#));
+    // The app's own artifact requires both tools' libstdc++ ranges;
+    // one that uses the app gets a single libstdc++ at 13.
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[provides]]
+        provides = "tool:app"
+        target = "release"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:foo"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:bar"
+        "#,
+    ));
+    let plan = world.resolve(&app.object_id, "release")?.plan;
+    let versions: Vec<Option<&str>> = plan
+        .manifest
+        .requires
+        .iter()
+        .map(|r| r.version.as_deref())
+        .collect();
+    assert_eq!(versions, [Some(">=11"), Some(">=13")]);
+    let held = HeldWithPlans {
+        artifacts: vec![(
+            app.object_id.to_string(),
+            "release".to_owned(),
+            BlobId::from_bytes(b"test", b"app"),
+        )],
+        plans: vec![(app.object_id.to_string(), "release".to_owned(), plan.bytes)],
+    };
+    let (user, _) = world.object(&app_requiring("tool:app", None));
+    let using = world.resolve_with(&held, &World::host(), &[], &user.object_id, "release")?;
+    assert_eq!(using.plan.manifest.runtime.len(), 1);
+    assert!(matches!(
+        &using.plan.manifest.runtime[0].resolved,
+        Resolved::Artifact { object, .. } if object == &thirteen.object_id.to_string()
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_closure_constraint_re_chooses_a_declared_requirement() -> TestResult {
+    let mut world = World::new();
+    let mut xs = HashMap::new();
+    for version in ["1.0", "2.0"] {
+        let (x, _) = world.object(&manifest(
+            "x",
+            &format!(
+                r#"
+                [[provides]]
+                provides = "tool:x"
+                version = "{version}"
+                target = "release"
+                {RELEASE_TARGET}
+                "#
+            ),
+        ));
+        xs.insert(version, x.object_id.to_string());
+    }
+    // y needs an x below 2 beside it; the app, which wanted any x,
+    // takes the one that serves both.
+    world.object(&manifest(
+        "y",
+        r#"
+        [[provides]]
+        provides = "tool:y"
+        target = "release"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        requires = [{ provides = "tool:x", version = "<2" }]
+        "#,
+    ));
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:x"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:y"
+        "#,
+    ));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    assert!(matches!(
+        &resolution.plan.manifest.requirements[0].resolved,
+        Resolved::Artifact { object, .. } if object == &xs["1.0"]
+    ));
+    // The declared x serves y's requirement: nothing extra is installed.
+    assert!(resolution.plan.manifest.runtime.is_empty());
+    Ok(())
+}
+
+#[test]
+fn pins_that_no_one_offer_satisfies_conflict_unless_they_coexist() -> TestResult {
+    for coexists in [false, true] {
+        let mut world = World::new();
+        // baz confers its own libstdc++ (11); bar wants >=13.
+        world.object(&stdcxx("13.2.0", coexists));
+        let (baz, _) = world.object(&manifest(
+            "baz",
+            &format!(
+                r#"
+                [[provides]]
+                provides = "tool:baz"
+                target = "release"
+                confers = [{{ provides = "lib:stdc++" }}]
+                [[provides]]
+                provides = "lib:stdc++"
+                version = "11.0.0"
+                target = "release"
+                coexists = {coexists}
+                {RELEASE_TARGET}
+                "#
+            ),
+        ));
+        world.object(&conferring_tool("bar", "tool:bar", r#", version = ">=13""#));
+        let (app, _) = world.object(&manifest(
+            "app",
+            r#"
+            [[provides]]
+            provides = "tool:app"
+            target = "release"
+            [[build.targets]]
+            name = "release"
+            command = ["make"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:baz"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:bar"
+            "#,
+        ));
+        let plan = world.resolve(&app.object_id, "release")?.plan;
+        assert_eq!(
+            plan.manifest.requires[0]
+                .pin
+                .as_ref()
+                .map(|pin| pin.object.clone()),
+            Some(baz.object_id.to_string())
+        );
+        let held = HeldWithPlans {
+            artifacts: vec![(
+                app.object_id.to_string(),
+                "release".to_owned(),
+                BlobId::from_bytes(b"test", b"app"),
+            )],
+            plans: vec![(app.object_id.to_string(), "release".to_owned(), plan.bytes)],
+        };
+        let (user, _) = world.object(&app_requiring("tool:app", None));
+        let using = world.resolve_with(&held, &World::host(), &[], &user.object_id, "release");
+        if coexists {
+            let using = using?;
+            let labels: Vec<&str> = using
+                .plan
+                .manifest
+                .runtime
+                .iter()
+                .map(|entry| entry.provides.as_str())
+                .collect();
+            assert_eq!(labels, ["lib:stdc++", "lib:stdc++"]);
+        } else {
+            let error = using.expect_err("a conflict");
+            assert!(
+                matches!(&error, ResolveError::Conflict { label, unmet, .. } if label == "lib:stdc++" && unmet.len() == 2),
+                "{error}"
+            );
+            let text = error.to_string();
+            assert!(text.contains("pinned to object:"), "{text}");
+            assert!(
+                text.contains(">=13, required via tool:app > lib:stdc++"),
+                "{text}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_child_named_by_id_brings_what_it_requires() -> TestResult {
+    let mut world = World::new();
+    let (toolchain, _) = world.object(&toolchain());
+    let (binutils, _) = world.object(&artifact_provider("tool:binutils", ""));
+    let gxx =
+        kairo_object::ChildGenesis::new(toolchain.object_id.clone(), "release", "g++").object_id();
+    let (app, _) = world.object(&manifest(
+        "app",
+        &format!(
+            r#"
+            [[build.targets]]
+            name = "release"
+            command = ["make"]
+            [[build.targets.dependencies]]
+            kind = "object"
+            object = "{gxx}"
+            "#
+        ),
+    ));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    assert_eq!(
+        runtime_labels(&resolution),
+        [(
+            "tool:binutils".to_owned(),
+            vec![format!("object:{gxx}"), "tool:binutils".to_owned()]
+        )]
+    );
+    assert!(matches!(
+        &resolution.plan.manifest.runtime[0].resolved,
+        Resolved::Artifact { object, .. } if object == &binutils.object_id.to_string()
+    ));
+    // A label confers; an id names no label, so nothing is conferred.
+    assert!(resolution.plan.manifest.requires.is_empty());
+    Ok(())
+}

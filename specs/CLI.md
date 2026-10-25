@@ -1254,6 +1254,12 @@ result = <BuildResult statement id>
 Preceded by `builds = N`, and with a `--- build i of N ---` line per
 build when prerequisites were built first.
 
+A plan's `runtime = <n>` lines list the runtime closure of the build
+dependencies, each as `<label> [<version>] via <chain> -> <provider>`,
+and its `requires = <n>` lines what the artifact will require at run
+time, with `pinned to object:<id>` for a conferred label without a
+version (`DECISIONS.md` §46).
+
 ### 17.1 `kairo provider`
 
 **[implemented].** What held objects provide, at their current

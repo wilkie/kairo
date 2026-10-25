@@ -25,6 +25,17 @@ LIBRARIES = {
     "linux-headers": ["lib:linux:headers"],
     "autoconf-archive": ["data:autoconf-archive"],
 }
+# What a package needs beside it wherever it is installed, and what
+# using one of its labels confers on whatever is built with it
+# (specs/DECISIONS.md §46): gcc runs binutils and compiles against musl
+# and the kernel headers, and what it builds links against musl.
+REQUIRES = {
+    "gcc": ["tool:binutils", "lib:musl", "lib:linux:headers"],
+}
+CONFERS = {
+    "tool:gcc": ["lib:musl"],
+    "lib:musl": ["lib:musl"],
+}
 # Packages whose programs go by other names.
 ALSO = {
     "heirloom-devtools": ["tool:yacc", "tool:lex"],
@@ -58,10 +69,20 @@ def main():
         print(f'summary = "{name} {version}, as live-bootstrap builds it (package {package})."')
         print('tags = ["live-bootstrap"]')
         print(f'version = "{version}"')
+        if name in REQUIRES:
+            requires = ", ".join(f'{{ provides = "{label}" }}' for label in REQUIRES[name])
+            print(f"requires = [{requires}]")
         if last[(name, version)] == revision:
             labels = LIBRARIES.get(name, [f"tool:{name}"]) + ALSO.get(name, [])
-            provides = ", ".join(f'{{ provides = "{label}" }}' for label in labels)
-            print(f"provides = [{provides}]")
+            entries = []
+            for label in labels:
+                conferred = ", ".join(f'{{ provides = "{c}" }}' for c in CONFERS.get(label, []))
+                entries.append(
+                    f'{{ provides = "{label}", confers = [{conferred}] }}'
+                    if conferred
+                    else f'{{ provides = "{label}" }}'
+                )
+            print(f"provides = [{', '.join(entries)}]")
         print()
 
 

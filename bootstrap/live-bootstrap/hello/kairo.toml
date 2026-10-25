@@ -1,0 +1,36 @@
+# A C program built with live-bootstrap's gcc, as a consumer of its
+# child objects: it names tool:gcc, and binutils, musl, and the kernel
+# headers come as what gcc requires (specs/DECISIONS.md §46), and
+# tool:gcc confers musl on this artifact. live-bootstrap's gcc links
+# statically by default, so this program doesn't need musl to run, but
+# a library built the same way would.
+[kairo]
+schema = 1
+kind = "software"
+name = "hello-from-live-bootstrap"
+summary = "A C program built and run with live-bootstrap's gcc 4.0.4."
+tags = ["example", "live-bootstrap"]
+
+[[dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets]]
+name = "x86"
+command = ["/usr/bin/bash", "-c", "printf '#include <stdio.h>\\nint main(void) { puts(\"hello from gcc 4.0.4\"); return 0; }\\n' > hello.c && gcc -o /kairo/package/hello hello.c && /kairo/package/hello > /kairo/package/out"]
+[build.targets.artifact]
+install = "/opt/hello"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:bash"
+version = "^5"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:coreutils"
+version = "^9"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gcc"

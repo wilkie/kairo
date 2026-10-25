@@ -82,6 +82,20 @@ pub trait ArtifactSource {
         snapshot: &SnapshotId,
         target: &str,
     ) -> Result<Option<BlobId>, SourceError>;
+
+    /// The plan (resolved manifest bytes) the held build of `target`
+    /// at `snapshot` cites, if this node holds it (`DECISIONS.md` §46
+    /// sub-decision 3). A source that answers [`Self::artifact`] but
+    /// holds no plan leaves the artifact's runtime requirements unknown,
+    /// and the resolver takes them as none.
+    fn build_plan(
+        &self,
+        _object: &ObjectId,
+        _snapshot: &SnapshotId,
+        _target: &str,
+    ) -> Result<Option<Vec<u8>>, SourceError> {
+        Ok(None)
+    }
 }
 
 /// Whether this node holds a source's commit (§37): the source object,
@@ -212,6 +226,54 @@ pub struct ResolvedManifest {
     /// The builds this plan needs first, dependencies before
     /// dependents, each by its own plan hash.
     pub builds_first: Vec<BuildFirst>,
+    /// What the artifact this plan builds, and each of its children,
+    /// will require at run time (`DECISIONS.md` §46 sub-decision 3):
+    /// declared, or conferred by a build dependency.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<ArtifactRequirement>,
+    /// The runtime closure of the build dependencies, installed in the
+    /// build environment after the declared requirements (§46
+    /// sub-decision 7).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runtime: Vec<RuntimeRequirement>,
+}
+
+/// One provider, pinned (`DECISIONS.md` §46 sub-decision 2): an object
+/// or child id at a snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pin {
+    pub object: String,
+    pub snapshot: String,
+}
+
+/// A runtime requirement of the artifact a plan builds (§46).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtifactRequirement {
+    pub provides: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<Pin>,
+    /// The child this applies to; none for the target's artifact and
+    /// every child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<String>,
+    /// `declared`, or `conferred by <label> from object:<id>`.
+    pub via: String,
+}
+
+/// A requirement of the build environment that the runtime closure of
+/// the build dependencies brought (§46 sub-decision 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeRequirement {
+    pub provides: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<Pin>,
+    /// The labels it came through, the build dependency first.
+    pub via: Vec<String>,
+    pub resolved: Resolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +586,25 @@ pub struct Offer {
     /// For a child object's offer: the object whose build makes it
     /// (its parent) and the child's root in that artifact.
     pub built_by: Option<(ObjectId, String)>,
+    /// A child offer's name, for its own entries in the parent's plan.
+    pub child_name: Option<String>,
+    /// What resolving this label confers on the consumer's artifact
+    /// (`DECISIONS.md` §46 sub-decision 2): labels, each with a version
+    /// requirement or, without one, pinned to this offer's own build.
+    pub confers: Vec<(String, Option<String>)>,
+    /// Whether other versions of the label can be installed beside this
+    /// one at the same root (§46 sub-decision 5).
+    pub coexists: bool,
+}
+
+impl Offer {
+    /// The object whose build makes this offer's artifact: the offer's
+    /// own, or a child's parent.
+    fn builder(&self) -> &ObjectId {
+        self.built_by
+            .as_ref()
+            .map_or(&self.object, |(parent, _)| parent)
+    }
 }
 
 /// The environment contract a target declares, among its own and its
@@ -588,7 +669,7 @@ fn child_offer(
     candidate: &Candidate,
     target: &kairo_object::BuildTarget,
     child: &kairo_object::ChildDeclaration,
-    version: Option<&str>,
+    provide: Option<&kairo_object::ChildProvide>,
 ) -> Offer {
     Offer {
         object: kairo_object::ChildGenesis::new(
@@ -598,14 +679,91 @@ fn child_offer(
         )
         .object_id(),
         snapshot: candidate.snapshot.clone(),
-        provides: String::new(),
-        version: version.map(str::to_owned),
+        provides: provide.map(|p| p.provides().to_owned()).unwrap_or_default(),
+        version: provide
+            .and_then(|p| p.version())
+            .or(child.version())
+            .map(str::to_owned),
         artifact: Some((target.name().to_owned(), String::new())),
         environment: declared_environment(&candidate.manifest, target),
         install: child.install().map(str::to_owned),
         built_by: Some((candidate.object.clone(), child.root().to_owned())),
+        child_name: Some(child.name().to_owned()),
+        confers: provide
+            .map(|p| {
+                p.confers()
+                    .iter()
+                    .map(|c| (c.provides().to_owned(), c.version().map(str::to_owned)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        coexists: provide.is_some_and(kairo_object::ChildProvide::coexists),
     }
 }
+
+/// One requirement on a label in a plan's closure (`DECISIONS.md` §46
+/// sub-decision 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Constraint {
+    version: Option<String>,
+    pin: Option<(ObjectId, SnapshotId)>,
+    /// The labels it came through, the build dependency first; empty
+    /// for the target's own requirement.
+    via: Vec<String>,
+}
+
+impl Constraint {
+    fn satisfied_by(&self, offer: &Offer) -> bool {
+        self.pin
+            .as_ref()
+            .is_none_or(|(object, snapshot)| &offer.object == object && &offer.snapshot == snapshot)
+            && version_matches(self.version.as_deref(), offer.version.as_deref())
+    }
+
+    fn describe(&self, label: &str) -> String {
+        let what = match (&self.pin, &self.version) {
+            (Some((object, snapshot)), _) => {
+                format!("{label} pinned to object:{object} at snapshot {snapshot}")
+            }
+            (None, Some(version)) => format!("{label} {version}"),
+            (None, None) => format!("{label} (any version)"),
+        };
+        if self.via.is_empty() {
+            format!("{what}, required by this target")
+        } else {
+            format!("{what}, required via {}", self.via.join(" > "))
+        }
+    }
+}
+
+/// What a label resolved to: a held offer, or a development-mode host
+/// tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Picked {
+    Offer(Box<Offer>),
+    HostTool(HostTool),
+}
+
+/// One offer (or host tool) chosen for a label, and which of the
+/// label's constraints it serves.
+#[derive(Debug, Clone)]
+struct Choice {
+    picked: Picked,
+    serves: Vec<usize>,
+}
+
+/// Why a label's constraints couldn't be met by offers that co-exist.
+struct Conflict {
+    label: String,
+    unmet: Vec<String>,
+    considered: Vec<String>,
+}
+
+/// How many times the declared requirements are re-chosen under what
+/// the runtime closure asks of them, and how many rounds the closure
+/// gets to settle, before the resolver gives up (§46 sub-decision 4).
+const CLOSURE_PASSES: usize = 8;
+const CLOSURE_ROUNDS: usize = 32;
 
 /// A contract label's architecture: what follows its `/`.
 fn contract_arch(label: &str) -> &str {
@@ -710,6 +868,13 @@ impl Index {
                                     .and_then(|target| target.install().map(str::to_owned))
                             }),
                             built_by: None,
+                            child_name: None,
+                            confers: declaration
+                                .confers()
+                                .iter()
+                                .map(|c| (c.provides().to_owned(), c.version().map(str::to_owned)))
+                                .collect(),
+                            coexists: declaration.coexists(),
                         })
                 })
                 .collect();
@@ -718,7 +883,7 @@ impl Index {
             for target in candidate.manifest.build_targets() {
                 for child in target.children() {
                     for provide in child.provides().iter().filter(|p| p.provides() == label) {
-                        offers.push(child_offer(candidate, target, child, provide.version()));
+                        offers.push(child_offer(candidate, target, child, Some(provide)));
                     }
                 }
             }
@@ -944,6 +1109,45 @@ pub struct Resolver<'a> {
     source_seeds: &'a [SourceSeed],
 }
 
+/// What the runtime closure settled to, or why the declared
+/// requirements must be re-chosen first.
+enum Closure {
+    Converged(Vec<(String, Picked, Vec<String>)>),
+    Reconsider(BTreeMap<String, Vec<Constraint>>),
+}
+
+impl Conflict {
+    /// For a target's own requirement: unsatisfied when nothing asked
+    /// more of the label than the target did, a conflict otherwise.
+    fn into_error(
+        self,
+        object: &ObjectId,
+        target: &str,
+        requested: &Requested,
+        constraints: &[Constraint],
+    ) -> ResolveError {
+        if constraints.len() <= 1 {
+            return ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                object: object.clone(),
+                target: target.to_owned(),
+                requested: requested.clone(),
+                considered: self.considered,
+            }));
+        }
+        self.into_runtime_error(object, target)
+    }
+
+    fn into_runtime_error(self, object: &ObjectId, target: &str) -> ResolveError {
+        ResolveError::Conflict {
+            object: object.clone(),
+            target: target.to_owned(),
+            label: self.label,
+            unmet: self.unmet,
+            considered: self.considered,
+        }
+    }
+}
+
 impl fmt::Debug for Resolver<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Resolver")
@@ -1013,6 +1217,30 @@ impl<'a> Resolver<'a> {
             &mut prerequisites,
             &mut diagnostics,
         )?;
+        // Only the plans the final plan needs first, transitively: a
+        // choice the runtime closure reconsidered may have planned
+        // builds nothing now uses (§46).
+        let mut wanted: Vec<String> = plan
+            .manifest
+            .builds_first
+            .iter()
+            .map(|first| first.plan.clone())
+            .collect();
+        let mut at = 0;
+        while at < wanted.len() {
+            if let Some(found) = prerequisites
+                .iter()
+                .find(|existing| existing.hash.to_string() == wanted[at])
+            {
+                for first in &found.manifest.builds_first {
+                    if !wanted.contains(&first.plan) {
+                        wanted.push(first.plan.clone());
+                    }
+                }
+            }
+            at += 1;
+        }
+        prerequisites.retain(|existing| wanted.contains(&existing.hash.to_string()));
         Ok(Resolution {
             plan,
             prerequisites,
@@ -1061,152 +1289,235 @@ impl<'a> Resolver<'a> {
                     .collect(),
             })?;
 
-        let mut requirements = Vec::new();
-        let mut environment = "none".to_owned();
-        let mut host_dependent = false;
-        let mut needed_first: Vec<BuildFirst> = Vec::new();
-        // Under an engine, host tools are not candidates (§35
-        // sub-decision 4), so the environment is settled first.
-        let consumer_environment = declared_environment(&manifest, target);
-        let isolated = manifest
-            .dependencies()
-            .iter()
-            .chain(target.dependencies())
-            .any(|dependency| match dependency {
-                DependencyDeclaration::Provides(dependency) => {
-                    dependency.provides().starts_with(ENVIRONMENT_PREFIX)
-                        && self
-                            .host
-                            .engines
-                            .iter()
-                            .any(|contract| contract == dependency.provides())
-                }
-                DependencyDeclaration::Object(_)
-                | DependencyDeclaration::Source(_)
-                | DependencyDeclaration::File(_) => false,
-            });
-        for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
-            let (requested, resolved) = match dependency {
-                DependencyDeclaration::Provides(dependency) => {
-                    let (path, from, overlay) = placement_fields(dependency.placement());
-                    let requested = Requested::Provides {
-                        provides: dependency.provides().to_owned(),
-                        version: dependency.version().map(str::to_owned),
-                        path,
-                        from,
-                        overlay,
-                    };
-                    let resolved = if dependency.provides().starts_with(ENVIRONMENT_PREFIX) {
-                        self.resolve_environment(
-                            object,
-                            target_name,
-                            &requested,
-                            dependency.provides(),
-                        )?
-                    } else {
-                        // Every version this target requires of the label.
-                        let together: Vec<&str> = manifest
-                            .dependencies()
-                            .iter()
-                            .chain(target.dependencies())
-                            .filter_map(|other| match other {
-                                DependencyDeclaration::Provides(other)
-                                    if other.provides() == dependency.provides() =>
-                                {
-                                    other.version()
+        let alternatives_before = diagnostics.alternatives.len();
+        let mut extras: BTreeMap<String, Vec<Constraint>> = BTreeMap::new();
+        let mut passes = 0;
+        let (requirements, environment, host_dependent, needed_first, requires, runtime) = loop {
+            diagnostics.alternatives.truncate(alternatives_before);
+            let mut requirements = Vec::new();
+            let mut environment = "none".to_owned();
+            let mut host_dependent = false;
+            let mut needed_first: Vec<BuildFirst> = Vec::new();
+            // What this target's artifact and children require at run time
+            // (§46 sub-decision 3): declared here, conferred below.
+            let mut requires: Vec<ArtifactRequirement> = target
+                .requires()
+                .iter()
+                .map(|required| ArtifactRequirement {
+                    provides: required.provides().to_owned(),
+                    version: required.version().map(str::to_owned),
+                    pin: None,
+                    child: None,
+                    via: "declared".to_owned(),
+                })
+                .chain(target.children().iter().flat_map(|child| {
+                    child
+                        .requires()
+                        .iter()
+                        .map(move |required| ArtifactRequirement {
+                            provides: required.provides().to_owned(),
+                            version: required.version().map(str::to_owned),
+                            pin: None,
+                            child: Some(child.name().to_owned()),
+                            via: "declared".to_owned(),
+                        })
+                }))
+                .collect();
+            // Every choice made for a label, and the co-existing extra ones
+            // that are installed beyond the declared requirement.
+            let mut chosen: BTreeMap<String, Vec<Picked>> = BTreeMap::new();
+            let mut seeded: Vec<(String, Picked, Vec<String>)> = Vec::new();
+            let mut seen_labels: BTreeMap<String, usize> = BTreeMap::new();
+            // Under an engine, host tools are not candidates (§35
+            // sub-decision 4), so the environment is settled first.
+            let consumer_environment = declared_environment(&manifest, target);
+            let isolated = manifest
+                .dependencies()
+                .iter()
+                .chain(target.dependencies())
+                .any(|dependency| match dependency {
+                    DependencyDeclaration::Provides(dependency) => {
+                        dependency.provides().starts_with(ENVIRONMENT_PREFIX)
+                            && self
+                                .host
+                                .engines
+                                .iter()
+                                .any(|contract| contract == dependency.provides())
+                    }
+                    DependencyDeclaration::Object(_)
+                    | DependencyDeclaration::Source(_)
+                    | DependencyDeclaration::File(_) => false,
+                });
+            for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
+                let (requested, resolved) = match dependency {
+                    DependencyDeclaration::Provides(dependency) => {
+                        let (path, from, overlay) = placement_fields(dependency.placement());
+                        let requested = Requested::Provides {
+                            provides: dependency.provides().to_owned(),
+                            version: dependency.version().map(str::to_owned),
+                            path,
+                            from,
+                            overlay,
+                        };
+                        let resolved = if dependency.provides().starts_with(ENVIRONMENT_PREFIX) {
+                            self.resolve_environment(
+                                object,
+                                target_name,
+                                &requested,
+                                dependency.provides(),
+                            )?
+                        } else {
+                            // Every requirement on the label: this target's own,
+                            // then what the runtime closure asked of it (§46).
+                            let label = dependency.provides();
+                            let own: Vec<Constraint> = manifest
+                                .dependencies()
+                                .iter()
+                                .chain(target.dependencies())
+                                .filter_map(|other| match other {
+                                    DependencyDeclaration::Provides(other)
+                                        if other.provides() == label =>
+                                    {
+                                        Some(Constraint {
+                                            version: other.version().map(str::to_owned),
+                                            pin: None,
+                                            via: Vec::new(),
+                                        })
+                                    }
+                                    _ => None,
+                                })
+                                .collect();
+                            let mine = *seen_labels.get(label).unwrap_or(&0);
+                            seen_labels.insert(label.to_owned(), mine + 1);
+                            let own_count = own.len();
+                            let mut constraints = own;
+                            constraints.extend(extras.get(label).cloned().unwrap_or_default());
+                            let (resolved, choices) = self.resolve_provides(
+                                index,
+                                object,
+                                target_name,
+                                &requested,
+                                label,
+                                &constraints,
+                                mine,
+                                isolated,
+                                consumer_environment.as_deref(),
+                                stack,
+                                prerequisites,
+                                &mut needed_first,
+                                diagnostics,
+                            )?;
+                            for choice in choices {
+                                let picks = chosen.entry(label.to_owned()).or_default();
+                                if !picks.contains(&choice.picked) {
+                                    picks.push(choice.picked.clone());
                                 }
-                                _ => None,
-                            })
-                            .collect();
-                        self.resolve_provides(
-                            index,
-                            object,
-                            target_name,
-                            &requested,
-                            dependency.provides(),
-                            dependency.version(),
-                            &together,
-                            isolated,
-                            consumer_environment.as_deref(),
-                            stack,
-                            prerequisites,
-                            &mut needed_first,
-                            diagnostics,
-                        )?
-                    };
-                    (requested, resolved)
-                }
-                DependencyDeclaration::Object(dependency) => {
-                    let (version, pinned) = match dependency.selector() {
-                        ObjectDependencySelector::Version(version) => (Some(version.clone()), None),
-                        ObjectDependencySelector::Snapshot(snapshot) => {
-                            (None, Some(snapshot.clone()))
-                        }
-                        ObjectDependencySelector::Highest => (None, None),
-                    };
-                    let (path, from, overlay) = placement_fields(dependency.placement());
-                    let requested = Requested::Object {
-                        object: dependency.object().to_string(),
-                        version: version.clone(),
-                        snapshot: pinned.as_ref().map(ToString::to_string),
-                        path,
-                        from,
-                        overlay,
-                    };
-                    // Not an object of its own: a child (§44).
-                    let resolved = if self.store.get_object_genesis(dependency.object()).is_err() {
-                        self.resolve_child(
-                            index,
-                            object,
-                            target_name,
-                            &requested,
-                            dependency.object(),
-                            version.as_deref(),
-                            pinned.as_ref(),
-                            stack,
-                            prerequisites,
-                            &mut needed_first,
-                            diagnostics,
-                        )?
-                    } else {
-                        self.resolve_object(
-                            object,
-                            target_name,
-                            &requested,
-                            dependency.object(),
-                            version.as_deref(),
-                            pinned.as_ref(),
-                        )?
-                    };
-                    (requested, resolved)
-                }
-                DependencyDeclaration::Source(dependency) => {
-                    let (path, from, overlay) = placement_fields(dependency.placement());
-                    let requested = Requested::Source {
-                        source: dependency.url().to_string(),
-                        revision: dependency.revision().to_string(),
-                        path,
-                        seed: dependency.seed(),
-                        from,
-                        overlay,
-                    };
-                    let resolved =
-                        self.resolve_source(object, target_name, &requested, dependency)?;
-                    (requested, resolved)
-                }
-                DependencyDeclaration::File(dependency) => {
-                    let requested = Requested::File {
-                        sha256: dependency.sha256().to_string(),
-                        path: dependency.path().to_owned(),
-                        overlay: dependency.overlay(),
-                    };
-                    let source = dependency.source();
-                    if !self
-                        .store
-                        .holds_file_source(&source)
-                        .map_err(ResolveError::Store)?
-                    {
-                        return Err(ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                                let serves_own = choice.serves.iter().any(|&i| i < own_count);
+                                if let (Picked::Offer(offer), true) = (&choice.picked, serves_own) {
+                                    for entry in self.conferred(index, object, label, offer)? {
+                                        if !requires.contains(&entry) {
+                                            requires.push(entry);
+                                        }
+                                    }
+                                }
+                                if !serves_own {
+                                    let via = choice
+                                        .serves
+                                        .iter()
+                                        .map(|&i| constraints[i].via.clone())
+                                        .min_by_key(|via| (via.len(), via.clone()))
+                                        .unwrap_or_default();
+                                    let entry = (label.to_owned(), choice.picked, via);
+                                    if !seeded.contains(&entry) {
+                                        seeded.push(entry);
+                                    }
+                                }
+                            }
+                            resolved
+                        };
+                        (requested, resolved)
+                    }
+                    DependencyDeclaration::Object(dependency) => {
+                        let (version, pinned) = match dependency.selector() {
+                            ObjectDependencySelector::Version(version) => {
+                                (Some(version.clone()), None)
+                            }
+                            ObjectDependencySelector::Snapshot(snapshot) => {
+                                (None, Some(snapshot.clone()))
+                            }
+                            ObjectDependencySelector::Highest => (None, None),
+                        };
+                        let (path, from, overlay) = placement_fields(dependency.placement());
+                        let requested = Requested::Object {
+                            object: dependency.object().to_string(),
+                            version: version.clone(),
+                            snapshot: pinned.as_ref().map(ToString::to_string),
+                            path,
+                            from,
+                            overlay,
+                        };
+                        // Not an object of its own: a child (§44).
+                        let resolved =
+                            if self.store.get_object_genesis(dependency.object()).is_err() {
+                                let (resolved, offer) = self.resolve_child(
+                                    index,
+                                    object,
+                                    target_name,
+                                    &requested,
+                                    dependency.object(),
+                                    version.as_deref(),
+                                    pinned.as_ref(),
+                                    stack,
+                                    prerequisites,
+                                    &mut needed_first,
+                                    diagnostics,
+                                )?;
+                                // Its artifact brings what it requires
+                                // (§46), as one resolved by label does.
+                                chosen
+                                    .entry(format!("object:{}", dependency.object()))
+                                    .or_default()
+                                    .push(Picked::Offer(Box::new(offer)));
+                                resolved
+                            } else {
+                                self.resolve_object(
+                                    object,
+                                    target_name,
+                                    &requested,
+                                    dependency.object(),
+                                    version.as_deref(),
+                                    pinned.as_ref(),
+                                )?
+                            };
+                        (requested, resolved)
+                    }
+                    DependencyDeclaration::Source(dependency) => {
+                        let (path, from, overlay) = placement_fields(dependency.placement());
+                        let requested = Requested::Source {
+                            source: dependency.url().to_string(),
+                            revision: dependency.revision().to_string(),
+                            path,
+                            seed: dependency.seed(),
+                            from,
+                            overlay,
+                        };
+                        let resolved =
+                            self.resolve_source(object, target_name, &requested, dependency)?;
+                        (requested, resolved)
+                    }
+                    DependencyDeclaration::File(dependency) => {
+                        let requested = Requested::File {
+                            sha256: dependency.sha256().to_string(),
+                            path: dependency.path().to_owned(),
+                            overlay: dependency.overlay(),
+                        };
+                        let source = dependency.source();
+                        if !self
+                            .store
+                            .holds_file_source(&source)
+                            .map_err(ResolveError::Store)?
+                        {
+                            return Err(ResolveError::Unsatisfied(Box::new(Unsatisfied {
                             object: object.clone(),
                             target: target_name.to_owned(),
                             requested,
@@ -1216,33 +1527,100 @@ impl<'a> Resolver<'a> {
                                 dependency.sha256()
                             )],
                         })));
+                        }
+                        let resolved = Resolved::File {
+                            source: source.to_string(),
+                            sha256: dependency.sha256().to_string(),
+                            path: dependency.path().to_owned(),
+                        };
+                        (requested, resolved)
                     }
-                    let resolved = Resolved::File {
-                        source: source.to_string(),
-                        sha256: dependency.sha256().to_string(),
-                        path: dependency.path().to_owned(),
-                    };
-                    (requested, resolved)
+                };
+                match &resolved {
+                    Resolved::Environment {
+                        contract,
+                        engine: Some(_),
+                    } => environment = contract.clone(),
+                    Resolved::Environment { engine: None, .. } | Resolved::HostTool { .. } => {
+                        host_dependent = true;
+                    }
+                    Resolved::Artifact { .. }
+                    | Resolved::Content { .. }
+                    | Resolved::Source { .. }
+                    | Resolved::File { .. } => {}
                 }
-            };
-            match &resolved {
-                Resolved::Environment {
-                    contract,
-                    engine: Some(_),
-                } => environment = contract.clone(),
-                Resolved::Environment { engine: None, .. } | Resolved::HostTool { .. } => {
-                    host_dependent = true;
-                }
-                Resolved::Artifact { .. }
-                | Resolved::Content { .. }
-                | Resolved::Source { .. }
-                | Resolved::File { .. } => {}
+                requirements.push(Requirement {
+                    requested,
+                    resolved,
+                });
             }
-            requirements.push(Requirement {
-                requested,
-                resolved,
-            });
-        }
+            // The runtime closure of what was chosen (§46 sub-decisions 4
+            // and 7), installed after the declared requirements.
+            match self.runtime_closure(
+                index,
+                object,
+                target_name,
+                &chosen,
+                &seeded,
+                isolated,
+                consumer_environment.as_deref(),
+                stack,
+                prerequisites,
+                diagnostics,
+            )? {
+                Closure::Converged(closure) => {
+                    let mut runtime = Vec::with_capacity(closure.len());
+                    for (label, picked, via) in closure {
+                        let (version, pin) = match &picked {
+                            Picked::Offer(offer) => (
+                                offer.version.clone(),
+                                Some(Pin {
+                                    object: offer.object.to_string(),
+                                    snapshot: offer.snapshot.to_string(),
+                                }),
+                            ),
+                            Picked::HostTool(tool) => (tool.version.clone(), None),
+                        };
+                        let resolved = self.materialize(
+                            index,
+                            &picked,
+                            stack,
+                            prerequisites,
+                            &mut needed_first,
+                            diagnostics,
+                        )?;
+                        if matches!(resolved, Resolved::HostTool { .. }) {
+                            host_dependent = true;
+                        }
+                        runtime.push(RuntimeRequirement {
+                            provides: label,
+                            version,
+                            pin,
+                            via,
+                            resolved,
+                        });
+                    }
+                    break (
+                        requirements,
+                        environment,
+                        host_dependent,
+                        needed_first,
+                        requires,
+                        runtime,
+                    );
+                }
+                Closure::Reconsider(constraints) => {
+                    passes += 1;
+                    if passes >= CLOSURE_PASSES {
+                        return Err(ResolveError::NoConvergence {
+                            object: object.clone(),
+                            target: target_name.to_owned(),
+                        });
+                    }
+                    extras = constraints;
+                }
+            }
+        };
 
         stack.pop();
         PlanDocument::new(ResolvedManifest {
@@ -1254,6 +1632,8 @@ impl<'a> Resolver<'a> {
             host_dependent,
             requirements,
             builds_first: needed_first,
+            requires,
+            runtime,
         })
     }
 
@@ -1315,25 +1695,21 @@ impl<'a> Resolver<'a> {
         })))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_provides(
+    /// The offers of `label` that together satisfy `constraints` (§46
+    /// sub-decision 4): the highest that satisfies all of them, or,
+    /// when none does and every offer involved co-exists with the
+    /// others, more than one (sub-decision 5); a development-mode host
+    /// tool when nothing held will do and no engine isolates the build.
+    fn choose_for_label(
         &self,
         index: &Index,
-        object: &ObjectId,
-        target: &str,
-        requested: &Requested,
         label: &str,
-        version: Option<&str>,
-        together: &[&str],
+        constraints: &[Constraint],
         isolated: bool,
         consumer_environment: Option<&str>,
-        stack: &mut Vec<(ObjectId, String)>,
-        prerequisites: &mut Vec<PlanDocument>,
-        needed_first: &mut Vec<BuildFirst>,
-        diagnostics: &mut Diagnostics,
-    ) -> Result<Resolved, ResolveError> {
+    ) -> Result<Vec<Choice>, Conflict> {
         let mut considered = Vec::new();
-        let mut matching = Vec::new();
+        let mut offers = Vec::new();
         for offer in index.offers(label) {
             // Binaries are for one architecture (§38 sub-decision 8).
             if let (Some(wanted), Some(built)) = (consumer_environment, &offer.environment) {
@@ -1346,67 +1722,149 @@ impl<'a> Resolver<'a> {
                     continue;
                 }
             }
-            if version_matches(version, offer.version.as_deref()) {
-                matching.push(offer);
-            } else {
-                considered.push(format!(
-                    "{} version {} doesn't satisfy {}",
-                    offer.describe(),
-                    offer.version.as_deref().unwrap_or("unknown"),
-                    version.unwrap_or_default()
-                ));
-            }
+            offers.push(offer);
         }
-        let host_tools: Vec<&HostTool> = self
-            .host_tools
-            .iter()
-            .filter(|tool| tool.provides == label)
-            .filter(|tool| {
-                if isolated {
-                    considered.push(format!(
+        // Highest version first; offers without one last; ties keep the
+        // index's order (§43).
+        offers.sort_by_cached_key(|offer| {
+            std::cmp::Reverse(offer.version.as_deref().and_then(lenient_version))
+        });
+        let mut remaining: Vec<usize> = (0..constraints.len()).collect();
+        let mut choices: Vec<Choice> = Vec::new();
+        while !remaining.is_empty() {
+            let satisfies = |offer: &Offer, which: &[usize]| {
+                which
+                    .iter()
+                    .filter(|&&i| constraints[i].satisfied_by(offer))
+                    .copied()
+                    .collect::<Vec<usize>>()
+            };
+            // The highest offer satisfying everything left, or else the
+            // one satisfying most of it, to be joined by others.
+            let best = offers
+                .iter()
+                .filter(|offer| {
+                    !choices
+                        .iter()
+                        .any(|c| c.picked == Picked::Offer(Box::new((*offer).clone())))
+                })
+                .map(|offer| (satisfies(offer, &remaining), offer))
+                .filter(|(served, _)| !served.is_empty())
+                // The first of equal counts: the highest version.
+                .min_by_key(|(served, _)| std::cmp::Reverse(served.len()));
+            let Some((served, offer)) = best else {
+                break;
+            };
+            remaining.retain(|i| !served.contains(i));
+            choices.push(Choice {
+                picked: Picked::Offer(Box::new(offer.clone())),
+                serves: served,
+            });
+        }
+        if !remaining.is_empty() {
+            // Nothing held serves these; a host tool may, in development
+            // mode, when it satisfies every version asked and no pin.
+            let tool = self.host_tools.iter().find(|tool| {
+                tool.provides == label
+                    && !isolated
+                    && constraints.iter().all(|c| {
+                        c.pin.is_none()
+                            && version_matches(c.version.as_deref(), tool.version.as_deref())
+                    })
+            });
+            if let (Some(tool), true) = (tool, choices.is_empty()) {
+                return Ok(vec![Choice {
+                    picked: Picked::HostTool(tool.clone()),
+                    serves: (0..constraints.len()).collect(),
+                }]);
+            }
+            for tool in self.host_tools.iter().filter(|tool| tool.provides == label) {
+                considered.push(if isolated {
+                    format!(
                         "host tool {} (not usable under an isolation engine)",
                         tool.path.display()
-                    ));
-                    false
-                } else if version_matches(version, tool.version.as_deref()) {
-                    true
+                    )
                 } else {
-                    considered.push(format!(
-                        "host tool {} version {} doesn't satisfy {}",
+                    format!(
+                        "host tool {} version {} doesn't satisfy every requirement",
                         tool.path.display(),
-                        tool.version.as_deref().unwrap_or("unknown"),
-                        version.unwrap_or_default()
-                    ));
-                    false
-                }
-            })
-            .collect();
-
-        // The highest version that satisfies the requirement, and before
-        // it any that satisfy every requirement this target makes of the
-        // label (§43); offers without a version come last, and ties keep
-        // the index's order.
-        matching.sort_by_cached_key(|offer| {
-            let declared = offer.version.as_deref();
-            let all = together
+                        tool.version.as_deref().unwrap_or("unknown")
+                    )
+                });
+            }
+            for offer in &offers {
+                let unmet = constraints
+                    .iter()
+                    .find(|constraint| !constraint.satisfied_by(offer))
+                    .map(|constraint| match (&constraint.pin, &constraint.version) {
+                        (Some((object, _)), _) => format!("the pin to object:{object}"),
+                        (None, Some(version)) => version.clone(),
+                        (None, None) => "anything".to_owned(),
+                    })
+                    .unwrap_or_else(|| "its co-existence".to_owned());
+                considered.push(format!(
+                    "{} version {} doesn't satisfy {unmet}",
+                    offer.describe(),
+                    offer.version.as_deref().unwrap_or("unknown")
+                ));
+            }
+            return Err(Conflict {
+                label: label.to_owned(),
+                unmet: remaining
+                    .iter()
+                    .map(|&i| constraints[i].describe(label))
+                    .collect(),
+                considered,
+            });
+        }
+        if choices.len() > 1 {
+            let all_coexist = choices
                 .iter()
-                .all(|requirement| version_matches(Some(requirement), declared));
-            (!all, std::cmp::Reverse(declared.and_then(lenient_version)))
-        });
-        let mut others: Vec<String> = matching.iter().skip(1).map(Offer::describe).collect();
-        others.extend(
-            host_tools
-                .iter()
-                .skip(usize::from(matching.is_empty()))
-                .map(|tool| format!("host tool {}", tool.path.display())),
-        );
+                .all(|c| matches!(&c.picked, Picked::Offer(offer) if offer.coexists));
+            if !all_coexist {
+                return Err(Conflict {
+                    label: label.to_owned(),
+                    unmet: constraints.iter().map(|c| c.describe(label)).collect(),
+                    considered: choices
+                        .iter()
+                        .filter_map(|c| match &c.picked {
+                            Picked::Offer(offer) => Some(format!(
+                                "{} version {} doesn't co-exist with other versions",
+                                offer.describe(),
+                                offer.version.as_deref().unwrap_or("unknown")
+                            )),
+                            Picked::HostTool(_) => None,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        Ok(choices)
+    }
 
-        let resolved = if let Some(offer) = matching.first() {
-            match &offer.artifact {
-                None => Resolved::Content {
+    /// What `picked` is in a plan: its artifact (planned first when not
+    /// yet built), its tree, or the host tool.
+    #[allow(clippy::too_many_arguments)]
+    fn materialize(
+        &self,
+        index: &Index,
+        picked: &Picked,
+        stack: &mut Vec<(ObjectId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        needed_first: &mut Vec<BuildFirst>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Resolved, ResolveError> {
+        match picked {
+            Picked::HostTool(tool) => Ok(Resolved::HostTool {
+                provides: tool.provides.clone(),
+                version: tool.version.clone(),
+                path: tool.path.display().to_string(),
+            }),
+            Picked::Offer(offer) => match &offer.artifact {
+                None => Ok(Resolved::Content {
                     object: offer.object.to_string(),
                     snapshot: offer.snapshot.to_string(),
-                },
+                }),
                 Some((provider_target, output)) => self.artifact_for(
                     index,
                     offer,
@@ -1416,23 +1874,78 @@ impl<'a> Resolver<'a> {
                     prerequisites,
                     needed_first,
                     diagnostics,
-                )?,
-            }
-        } else if let Some(tool) = host_tools.first() {
-            Resolved::HostTool {
-                provides: tool.provides.clone(),
-                version: tool.version.clone(),
-                path: tool.path.display().to_string(),
-            }
-        } else {
-            return Err(ResolveError::Unsatisfied(Box::new(Unsatisfied {
-                object: object.clone(),
-                target: target.to_owned(),
-                requested: requested.clone(),
-                considered,
-            })));
-        };
+                ),
+            },
+        }
+    }
 
+    /// A target's own provides requirement, resolved under every
+    /// constraint on its label: what it pins, and every choice made for
+    /// the label (more than one only where they co-exist).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_provides(
+        &self,
+        index: &Index,
+        object: &ObjectId,
+        target: &str,
+        requested: &Requested,
+        label: &str,
+        constraints: &[Constraint],
+        mine: usize,
+        isolated: bool,
+        consumer_environment: Option<&str>,
+        stack: &mut Vec<(ObjectId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        needed_first: &mut Vec<BuildFirst>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<(Resolved, Vec<Choice>), ResolveError> {
+        let choices = self
+            .choose_for_label(index, label, constraints, isolated, consumer_environment)
+            .map_err(|conflict| conflict.into_error(object, target, requested, constraints))?;
+        let own = choices
+            .iter()
+            .find(|choice| choice.serves.contains(&mine))
+            .ok_or_else(|| {
+                ResolveError::Unsatisfied(Box::new(Unsatisfied {
+                    object: object.clone(),
+                    target: target.to_owned(),
+                    requested: requested.clone(),
+                    considered: vec!["no choice served this requirement".to_owned()],
+                }))
+            })?;
+        let resolved = self.materialize(
+            index,
+            &own.picked,
+            stack,
+            prerequisites,
+            needed_first,
+            diagnostics,
+        )?;
+        // What else would have done for this requirement alone.
+        let others: Vec<String> = index
+            .offers(label)
+            .iter()
+            .filter(|offer| constraints[mine].satisfied_by(offer))
+            .filter(|offer| match (consumer_environment, &offer.environment) {
+                (Some(wanted), Some(built)) => contract_arch(wanted) == contract_arch(built),
+                _ => true,
+            })
+            .filter(|offer| {
+                !choices
+                    .iter()
+                    .any(|c| c.picked == Picked::Offer(Box::new((*offer).clone())))
+            })
+            .map(Offer::describe)
+            .chain(
+                self.host_tools
+                    .iter()
+                    .filter(|tool| {
+                        tool.provides == label
+                            && !matches!(&own.picked, Picked::HostTool(t) if t == *tool)
+                    })
+                    .map(|tool| format!("host tool {}", tool.path.display())),
+            )
+            .collect();
         if !others.is_empty() {
             diagnostics.alternatives.push(Alternative {
                 requested: requested.clone(),
@@ -1440,7 +1953,242 @@ impl<'a> Resolver<'a> {
                 others,
             });
         }
-        Ok(resolved)
+        Ok((resolved, choices))
+    }
+
+    /// What resolving `offer` confers on the consumer's artifact (§46
+    /// sub-decision 2), as the plan records it: each label pinned to the
+    /// provider's own build when it gives no version.
+    fn conferred(
+        &self,
+        index: &Index,
+        object: &ObjectId,
+        label: &str,
+        offer: &Offer,
+    ) -> Result<Vec<ArtifactRequirement>, ResolveError> {
+        let mut entries = Vec::new();
+        for (conferred, version) in &offer.confers {
+            let pin = if version.is_some() {
+                None
+            } else {
+                // The sibling providing it at the same build.
+                let sibling = index.offers(conferred).into_iter().find(|candidate| {
+                    candidate.builder() == offer.builder() && candidate.snapshot == offer.snapshot
+                });
+                let Some(sibling) = sibling else {
+                    return Err(ResolveError::ConferralUnsatisfied {
+                        object: object.clone(),
+                        provider: offer.object.clone(),
+                        label: label.to_owned(),
+                        conferred: conferred.clone(),
+                    });
+                };
+                Some(Pin {
+                    object: sibling.object.to_string(),
+                    snapshot: sibling.snapshot.to_string(),
+                })
+            };
+            entries.push(ArtifactRequirement {
+                provides: conferred.clone(),
+                version: version.clone(),
+                pin,
+                child: None,
+                via: format!("conferred by {label} from object:{}", offer.object),
+            });
+        }
+        Ok(entries)
+    }
+
+    /// What the artifact `offer` resolves to requires at run time (§46
+    /// sub-decision 3), from the plan that built it or will build it.
+    fn artifact_requires(
+        &self,
+        index: &Index,
+        offer: &Offer,
+        stack: &mut Vec<(ObjectId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Vec<ArtifactRequirement>, ResolveError> {
+        let Some((target, _)) = &offer.artifact else {
+            return Ok(Vec::new());
+        };
+        let builder = offer.builder().clone();
+        let snapshot = offer.snapshot.clone();
+        let planned = prerequisites.iter().find(|plan| {
+            plan.manifest.object == builder.to_string()
+                && plan.manifest.snapshot == snapshot.to_string()
+                && &plan.manifest.target == target
+        });
+        let requires = if let Some(plan) = planned {
+            plan.manifest.requires.clone()
+        } else {
+            let built = self
+                .artifacts
+                .artifact(&builder, &snapshot, target)
+                .map_err(|source| ResolveError::ArtifactSource {
+                    object: builder.clone(),
+                    target: target.clone(),
+                    source,
+                })?;
+            if built.is_some() {
+                match self
+                    .artifacts
+                    .build_plan(&builder, &snapshot, target)
+                    .map_err(|source| ResolveError::ArtifactSource {
+                        object: builder.clone(),
+                        target: target.clone(),
+                        source,
+                    })? {
+                    Some(bytes) => PlanDocument::from_bytes(bytes)?.manifest.requires,
+                    None => Vec::new(),
+                }
+            } else {
+                let plan = self.resolve_target(
+                    index,
+                    &builder,
+                    &SnapshotSelector::Pinned(snapshot.clone()),
+                    target,
+                    stack,
+                    prerequisites,
+                    diagnostics,
+                )?;
+                let requires = plan.manifest.requires.clone();
+                if !prerequisites
+                    .iter()
+                    .any(|existing| existing.hash == plan.hash)
+                {
+                    prerequisites.push(plan);
+                }
+                requires
+            }
+        };
+        Ok(requires
+            .into_iter()
+            .filter(|entry| entry.child.is_none() || entry.child == offer.child_name)
+            .collect())
+    }
+
+    /// The runtime closure of the build dependencies (§46 sub-decisions
+    /// 4 and 7): rounds of gathering what every chosen artifact requires
+    /// and choosing for each label until the choices stop changing.
+    /// `Reconsider` says a declared requirement's label was asked
+    /// something its choice doesn't satisfy, with every constraint on
+    /// such labels, for the declared requirements to be re-chosen under.
+    #[allow(clippy::too_many_arguments)]
+    fn runtime_closure(
+        &self,
+        index: &Index,
+        object: &ObjectId,
+        target_name: &str,
+        declared: &BTreeMap<String, Vec<Picked>>,
+        seeded: &[(String, Picked, Vec<String>)],
+        isolated: bool,
+        consumer_environment: Option<&str>,
+        stack: &mut Vec<(ObjectId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Closure, ResolveError> {
+        let mut runtime: Vec<(String, Picked, Vec<String>)> = seeded.to_vec();
+        for _ in 0..CLOSURE_ROUNDS {
+            // What every current choice requires, one level down.
+            let mut gathered: BTreeMap<String, Vec<Constraint>> = BTreeMap::new();
+            let sources = declared
+                .iter()
+                .flat_map(|(label, picks)| {
+                    picks.iter().map(move |pick| (pick, vec![label.clone()]))
+                })
+                .chain(runtime.iter().map(|(_, pick, via)| (pick, via.clone())));
+            for (pick, via) in sources {
+                let Picked::Offer(offer) = pick else {
+                    continue;
+                };
+                for entry in
+                    self.artifact_requires(index, offer, stack, prerequisites, diagnostics)?
+                {
+                    let pin = match entry.pin {
+                        None => None,
+                        Some(pin) => Some((
+                            ObjectId::new(pin.object).map_err(|_| {
+                                ResolveError::UnsupportedSchema(
+                                    "a pin in a held plan isn't an object id".to_owned(),
+                                )
+                            })?,
+                            SnapshotId::new(pin.snapshot).map_err(|_| {
+                                ResolveError::UnsupportedSchema(
+                                    "a pin in a held plan isn't a snapshot id".to_owned(),
+                                )
+                            })?,
+                        )),
+                    };
+                    let mut chain = via.clone();
+                    chain.push(entry.provides.clone());
+                    gathered
+                        .entry(entry.provides)
+                        .or_default()
+                        .push(Constraint {
+                            version: entry.version,
+                            pin,
+                            via: chain,
+                        });
+                }
+            }
+            // A declared label asked something its choices don't give:
+            // the declared requirements are re-chosen under it all.
+            let mut reconsider: BTreeMap<String, Vec<Constraint>> = BTreeMap::new();
+            for (label, constraints) in &gathered {
+                let Some(picks) = declared.get(label) else {
+                    continue;
+                };
+                let unmet = constraints.iter().any(|constraint| {
+                    !picks.iter().any(|pick| match pick {
+                        Picked::Offer(offer) => constraint.satisfied_by(offer),
+                        Picked::HostTool(tool) => {
+                            constraint.pin.is_none()
+                                && version_matches(
+                                    constraint.version.as_deref(),
+                                    tool.version.as_deref(),
+                                )
+                        }
+                    })
+                });
+                if unmet {
+                    reconsider.insert(label.clone(), constraints.clone());
+                }
+            }
+            if !reconsider.is_empty() {
+                return Ok(Closure::Reconsider(reconsider));
+            }
+            // The other labels: chosen anew from everything asked of
+            // them this round.
+            let mut next: Vec<(String, Picked, Vec<String>)> = seeded.to_vec();
+            for (label, constraints) in &gathered {
+                if declared.contains_key(label) {
+                    continue;
+                }
+                let choices = self
+                    .choose_for_label(index, label, constraints, isolated, consumer_environment)
+                    .map_err(|conflict| conflict.into_runtime_error(object, target_name))?;
+                for choice in choices {
+                    let via = choice
+                        .serves
+                        .iter()
+                        .map(|&i| constraints[i].via.clone())
+                        .min_by_key(|via| (via.len(), via.clone()))
+                        .unwrap_or_default();
+                    next.push((label.clone(), choice.picked, via));
+                }
+            }
+            // Nearest the build dependencies first, then by label.
+            next.sort_by(|a, b| (a.2.len(), &a.2, &a.0).cmp(&(b.2.len(), &b.2, &b.0)));
+            if next == runtime {
+                return Ok(Closure::Converged(runtime));
+            }
+            runtime = next;
+        }
+        Err(ResolveError::NoConvergence {
+            object: object.clone(),
+            target: target_name.to_owned(),
+        })
     }
 
     /// The artifact `offer` names, built by its object or, for a child,
@@ -1525,7 +2273,7 @@ impl<'a> Resolver<'a> {
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
         diagnostics: &mut Diagnostics,
-    ) -> Result<Resolved, ResolveError> {
+    ) -> Result<(Resolved, Offer), ResolveError> {
         let unsatisfied = |considered: Vec<String>| {
             ResolveError::Unsatisfied(Box::new(Unsatisfied {
                 object: object.clone(),
@@ -1637,7 +2385,7 @@ impl<'a> Resolver<'a> {
             })
             .ok_or_else(|| unsatisfied(vec![format!("object:{wanted} is not held")]))?;
         let offer = child_offer(&at, at_target, at_child, None);
-        self.artifact_for(
+        let resolved = self.artifact_for(
             index,
             &offer,
             at_target.name(),
@@ -1646,7 +2394,8 @@ impl<'a> Resolver<'a> {
             prerequisites,
             needed_first,
             diagnostics,
-        )
+        )?;
+        Ok((resolved, offer))
     }
 
     fn resolve_source(
@@ -1904,6 +2653,29 @@ pub enum ResolveError {
     Cycle {
         chain: Vec<String>,
     },
+    /// No set of co-existing providers satisfies every requirement on
+    /// a label in the plan's closure (`DECISIONS.md` §46).
+    Conflict {
+        object: ObjectId,
+        target: String,
+        label: String,
+        unmet: Vec<String>,
+        considered: Vec<String>,
+    },
+    /// A provider confers a label from its own build, but nothing at
+    /// that build provides it.
+    ConferralUnsatisfied {
+        object: ObjectId,
+        provider: ObjectId,
+        label: String,
+        conferred: String,
+    },
+    /// The runtime closure kept changing what it asked of the declared
+    /// requirements.
+    NoConvergence {
+        object: ObjectId,
+        target: String,
+    },
     Encode(serde_json::Error),
     UnsupportedSchema(String),
 }
@@ -1986,6 +2758,38 @@ impl fmt::Display for ResolveError {
                 Ok(())
             }
             Self::Cycle { chain } => write!(f, "build dependencies form a cycle: {}", chain.join(" -> ")),
+            Self::Conflict {
+                object,
+                target,
+                label,
+                unmet,
+                considered,
+            } => {
+                write!(
+                    f,
+                    "object:{object} target {target}: no provider of {label} satisfies every requirement on it, and they don't co-exist"
+                )?;
+                for line in unmet {
+                    write!(f, "\n  required: {line}")?;
+                }
+                for line in considered {
+                    write!(f, "\n  considered: {line}")?;
+                }
+                Ok(())
+            }
+            Self::ConferralUnsatisfied {
+                object,
+                provider,
+                label,
+                conferred,
+            } => write!(
+                f,
+                "planning object:{object}: {label} from object:{provider} confers {conferred} from its own build, but nothing built with it provides {conferred}"
+            ),
+            Self::NoConvergence { object, target } => write!(
+                f,
+                "object:{object} target {target}: the runtime closure didn't settle after {CLOSURE_PASSES} passes"
+            ),
             Self::Encode(error) => write!(f, "encoding the resolved manifest: {error}"),
             Self::UnsupportedSchema(schema) => {
                 write!(f, "unsupported resolved manifest schema {schema}")
@@ -2011,6 +2815,9 @@ impl Error for ResolveError {
             | Self::NoTarget { .. }
             | Self::Unsatisfied(_)
             | Self::Cycle { .. }
+            | Self::Conflict { .. }
+            | Self::ConferralUnsatisfied { .. }
+            | Self::NoConvergence { .. }
             | Self::UnsupportedSchema(_) => None,
         }
     }

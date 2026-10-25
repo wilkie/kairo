@@ -66,7 +66,56 @@ impl StoreArtifacts<'_> {
     }
 }
 
+impl StoreArtifacts<'_> {
+    /// The newest accepted, successful build of `target` at `snapshot`
+    /// whose artifact is held.
+    fn head(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<kairo_store::BuildResultHead>, SourceError> {
+        let heads = self
+            .store
+            .list_build_results(object)
+            .map_err(|error| SourceError(error.to_string()))?;
+        for head in heads {
+            if &head.snapshot != snapshot || head.target != target {
+                continue;
+            }
+            let Some(artifact) = &head.artifact else {
+                continue;
+            };
+            if !self.accepts(&head.actor) {
+                continue;
+            }
+            match self.store.get_blob(artifact) {
+                Ok(_) => return Ok(Some(head)),
+                Err(kairo_store::StoreError::Missing) => continue,
+                Err(error) => return Err(SourceError(error.to_string())),
+            }
+        }
+        Ok(None)
+    }
+}
+
 impl ArtifactSource for StoreArtifacts<'_> {
+    fn build_plan(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<Vec<u8>>, SourceError> {
+        let Some(head) = self.head(object, snapshot, target)? else {
+            return Ok(None);
+        };
+        match self.store.get_blob(&head.resolved_manifest) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(kairo_store::StoreError::Missing) => Ok(None),
+            Err(error) => Err(SourceError(error.to_string())),
+        }
+    }
+
     fn artifact(
         &self,
         object: &ObjectId,
@@ -642,8 +691,14 @@ pub(crate) fn run_reproduce(
         .iter()
         .map(|build| format!("a build of object:{} target {}", build.object, build.target))
         .collect();
-    for requirement in &plan.manifest.requirements {
-        match &requirement.resolved {
+    let resolved = plan
+        .manifest
+        .requirements
+        .iter()
+        .map(|requirement| &requirement.resolved)
+        .chain(plan.manifest.runtime.iter().map(|entry| &entry.resolved));
+    for resolved in resolved {
+        match resolved {
             kairo_resolver::Resolved::Artifact {
                 object,
                 target,
@@ -840,6 +895,49 @@ fn format_resolution(resolution: &Resolution) -> String {
             requirement.requested,
             describe_resolved(&requirement.resolved)
         );
+    }
+    if !plan.runtime.is_empty() {
+        let _ = writeln!(out, "runtime = {}", plan.runtime.len());
+        for entry in &plan.runtime {
+            let _ = writeln!(
+                out,
+                "  {}{} via {} -> {}",
+                entry.provides,
+                entry
+                    .version
+                    .as_deref()
+                    .map(|version| format!(" {version}"))
+                    .unwrap_or_default(),
+                entry.via.join(" > "),
+                describe_resolved(&entry.resolved)
+            );
+        }
+    }
+    if !plan.requires.is_empty() {
+        let _ = writeln!(out, "requires = {}", plan.requires.len());
+        for entry in &plan.requires {
+            let _ = writeln!(
+                out,
+                "  {}{}{}{} ({})",
+                entry
+                    .child
+                    .as_deref()
+                    .map(|child| format!("{child}: "))
+                    .unwrap_or_default(),
+                entry.provides,
+                entry
+                    .version
+                    .as_deref()
+                    .map(|version| format!(" {version}"))
+                    .unwrap_or_default(),
+                entry
+                    .pin
+                    .as_ref()
+                    .map(|pin| format!(" pinned to object:{}", pin.object))
+                    .unwrap_or_default(),
+                entry.via
+            );
+        }
     }
     let _ = writeln!(out, "builds_first = {}", plan.builds_first.len());
     for first in &plan.builds_first {

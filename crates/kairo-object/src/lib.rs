@@ -81,6 +81,7 @@ pub struct ChildDeclaration {
     summary: Option<String>,
     tags: Vec<String>,
     version: Option<String>,
+    requires: Vec<LabelRequirement>,
 }
 
 impl ChildDeclaration {
@@ -116,6 +117,12 @@ impl ChildDeclaration {
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
     }
+
+    /// What the child's artifact needs beside it wherever it is
+    /// installed (`DECISIONS.md` §46 sub-decision 1).
+    pub fn requires(&self) -> &[LabelRequirement] {
+        &self.requires
+    }
 }
 
 impl CanonicalEncode for ChildDeclaration {
@@ -130,6 +137,7 @@ impl CanonicalEncode for ChildDeclaration {
             encode_option(out, provide.version.as_ref(), |out, version| {
                 encode_str(out, version);
             });
+            encode_conferral(out, &provide.confers, provide.coexists);
         });
         if let Some(summary) = &self.summary {
             encode_str(out, "summary");
@@ -143,6 +151,12 @@ impl CanonicalEncode for ChildDeclaration {
             encode_str(out, "version");
             encode_str(out, version);
         }
+        if !self.requires.is_empty() {
+            encode_str(out, "requires");
+            encode_list(out, &self.requires, |out, required| {
+                required.encode_canonical(out);
+            });
+        }
     }
 }
 
@@ -151,6 +165,8 @@ impl CanonicalEncode for ChildDeclaration {
 pub struct ChildProvide {
     provides: String,
     version: Option<String>,
+    confers: Vec<LabelRequirement>,
+    coexists: bool,
 }
 
 impl ChildProvide {
@@ -160,6 +176,18 @@ impl ChildProvide {
 
     pub fn version(&self) -> Option<&str> {
         self.version.as_deref()
+    }
+
+    /// What a build that resolves this label gets as runtime
+    /// requirements of its artifact (`DECISIONS.md` §46).
+    pub fn confers(&self) -> &[LabelRequirement] {
+        &self.confers
+    }
+
+    /// Whether other versions of the label can be installed beside this
+    /// one at the same root (§46 sub-decision 5).
+    pub fn coexists(&self) -> bool {
+        self.coexists
     }
 }
 
@@ -692,11 +720,57 @@ impl CanonicalEncode for ContentSection {
 /// either through a build target's output (an artifact provider) or
 /// as its own tree (a content provider) — `specs/DECISIONS.md` §33
 /// sub-decision 2, §34 sub-decision 5.
+/// A requirement on a provides label (`DECISIONS.md` §46): what an
+/// artifact needs beside it wherever it is installed (`requires`), or
+/// what using a label at build time confers on the artifact built
+/// (`confers`). In `confers`, no version means the provider's own
+/// build; in `requires`, any version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelRequirement {
+    provides: String,
+    version: Option<String>,
+}
+
+impl LabelRequirement {
+    pub fn provides(&self) -> &str {
+        &self.provides
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+}
+
+impl CanonicalEncode for LabelRequirement {
+    fn encode_canonical(&self, out: &mut Vec<u8>) {
+        encode_str(out, &self.provides);
+        encode_option(out, self.version.as_ref(), |out, version| {
+            encode_str(out, version);
+        });
+    }
+}
+
+/// `confers` and `coexists` on a provides entry, tagged and present
+/// only when set, so an entry without them hashes as before (§46).
+fn encode_conferral(out: &mut Vec<u8>, confers: &[LabelRequirement], coexists: bool) {
+    if !confers.is_empty() {
+        encode_str(out, "confers");
+        encode_list(out, confers, |out, conferred| {
+            conferred.encode_canonical(out)
+        });
+    }
+    if coexists {
+        encode_str(out, "coexists");
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProvideDeclaration {
     provides: String,
     version: Option<String>,
     artifact: Option<ArtifactOutput>,
+    confers: Vec<LabelRequirement>,
+    coexists: bool,
 }
 
 /// Which build output provides a label.
@@ -735,6 +809,20 @@ impl ProvideDeclaration {
     }
 }
 
+impl ProvideDeclaration {
+    /// What a build that resolves this label gets as runtime
+    /// requirements of its artifact (`DECISIONS.md` §46).
+    pub fn confers(&self) -> &[LabelRequirement] {
+        &self.confers
+    }
+
+    /// Whether other versions of the label can be installed beside this
+    /// one at the same root (§46 sub-decision 5).
+    pub fn coexists(&self) -> bool {
+        self.coexists
+    }
+}
+
 impl CanonicalEncode for ProvideDeclaration {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, &self.provides);
@@ -748,6 +836,7 @@ impl CanonicalEncode for ProvideDeclaration {
             encode_str(out, &artifact.target);
             encode_str(out, &artifact.output);
         }
+        encode_conferral(out, &self.confers, self.coexists);
     }
 }
 
@@ -1045,6 +1134,7 @@ pub struct BuildTarget {
     artifact_root: String,
     install: Option<String>,
     children: Vec<ChildDeclaration>,
+    requires: Vec<LabelRequirement>,
 }
 
 impl BuildTarget {
@@ -1089,6 +1179,12 @@ impl BuildTarget {
     pub fn children(&self) -> &[ChildDeclaration] {
         &self.children
     }
+
+    /// What the target's artifact needs beside it wherever it is
+    /// installed (`DECISIONS.md` §46 sub-decision 1).
+    pub fn requires(&self) -> &[LabelRequirement] {
+        &self.requires
+    }
 }
 
 impl CanonicalEncode for BuildTarget {
@@ -1120,6 +1216,12 @@ impl CanonicalEncode for BuildTarget {
             encode_str(out, "children");
             encode_list(out, &self.children, |out, child| {
                 child.encode_canonical(out);
+            });
+        }
+        if !self.requires.is_empty() {
+            encode_str(out, "requires");
+            encode_list(out, &self.requires, |out, required| {
+                required.encode_canonical(out);
             });
         }
     }
@@ -1518,6 +1620,34 @@ struct RawBuildTarget {
     artifact: Option<RawArtifactSection>,
     #[serde(default)]
     children: Vec<RawChildDeclaration>,
+    #[serde(default)]
+    requires: Vec<RawLabelRequirement>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLabelRequirement {
+    provides: String,
+    version: Option<String>,
+}
+
+/// Parsed and checked `requires` or `confers` entries.
+fn validate_label_requirements(
+    field: &'static str,
+    raw: Vec<RawLabelRequirement>,
+) -> Result<Vec<LabelRequirement>, ManifestError> {
+    let mut out = Vec::with_capacity(raw.len());
+    for entry in raw {
+        ensure_label(field, &entry.provides)?;
+        if let Some(version) = &entry.version {
+            ensure_version_requirement(field, version)?;
+        }
+        out.push(LabelRequirement {
+            provides: entry.provides,
+            version: entry.version,
+        });
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1532,6 +1662,8 @@ struct RawChildDeclaration {
     #[serde(default)]
     tags: Vec<String>,
     version: Option<String>,
+    #[serde(default)]
+    requires: Vec<RawLabelRequirement>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1539,6 +1671,9 @@ struct RawChildDeclaration {
 struct RawChildProvide {
     provides: String,
     version: Option<String>,
+    #[serde(default)]
+    confers: Vec<RawLabelRequirement>,
+    coexists: Option<bool>,
 }
 
 /// A child's name: lowercase letters, digits, and `.`, `_`, `+`, `-`,
@@ -1688,6 +1823,11 @@ impl RawBuildTarget {
                     provides: provide.provides,
                     // A label says the child's version unless it says its own.
                     version: provide.version.or_else(|| raw.version.clone()),
+                    confers: validate_label_requirements(
+                        "build.targets.children.provides.confers",
+                        provide.confers,
+                    )?,
+                    coexists: provide.coexists.unwrap_or(false),
                 });
             }
             children.push(ChildDeclaration {
@@ -1698,6 +1838,10 @@ impl RawBuildTarget {
                 summary: raw.summary,
                 tags: raw.tags,
                 version: raw.version,
+                requires: validate_label_requirements(
+                    "build.targets.children.requires",
+                    raw.requires,
+                )?,
             });
         }
         Ok(BuildTarget {
@@ -1709,6 +1853,7 @@ impl RawBuildTarget {
             artifact_root,
             install,
             children,
+            requires: validate_label_requirements("build.targets.requires", self.requires)?,
         })
     }
 }
@@ -1832,6 +1977,9 @@ struct RawProvideDeclaration {
     version: Option<String>,
     target: Option<String>,
     output: Option<String>,
+    #[serde(default)]
+    confers: Vec<RawLabelRequirement>,
+    coexists: Option<bool>,
 }
 
 impl RawProvideDeclaration {
@@ -1854,6 +2002,8 @@ impl RawProvideDeclaration {
             provides: self.provides,
             version: self.version,
             artifact,
+            confers: validate_label_requirements("provides.confers", self.confers)?,
+            coexists: self.coexists.unwrap_or(false),
         })
     }
 }
@@ -2975,6 +3125,15 @@ mod tests {
         ))?;
         let children = live.build_target("x86").ok_or("x86 target")?.children();
         assert_eq!(children.len(), 77);
+        let gcc = children
+            .iter()
+            .find(|child| child.name() == "gcc-4.0.4_1")
+            .ok_or("gcc")?;
+        assert_eq!(gcc.requires().len(), 3);
+        assert_eq!(gcc.provides()[0].confers()[0].provides(), "lib:musl");
+        ObjectManifest::parse_toml(include_str!(
+            "../../../bootstrap/live-bootstrap/hello/kairo.toml"
+        ))?;
         assert!(children.iter().any(|child| child.name() == "bash-5.2.15_0"
             && child.provides().iter().any(|p| p.provides() == "tool:bash")));
         Ok(())
@@ -3025,6 +3184,83 @@ mod tests {
             ObjectManifest::parse_toml(&manifest("version = \"\"")),
             Err(ManifestError::EmptyField("build.targets.children.version"))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn requires_and_confers_are_declared_and_hashed() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |provides: &str, target: &str| {
+            format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "gcc"
+                [[provides]]
+                provides = "lib:gcc"
+                target = "release"
+                {provides}
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                {target}
+                [[build.targets.children]]
+                name = "g++"
+                root = "g++"
+                version = "11.4.0"
+                requires = [{{ provides = "tool:binutils" }}, {{ provides = "lib:stdc++", version = "^11" }}]
+                provides = [{{ provides = "tool:g++", confers = [{{ provides = "lib:stdc++" }}] }}]
+                "#
+            )
+        };
+        let parsed = ObjectManifest::parse_toml(&manifest(
+            "confers = [{ provides = \"lib:gcc\", version = \">=11\" }]\ncoexists = true",
+            "requires = [{ provides = \"lib:musl\" }]",
+        ))?;
+        let [lib_gcc] = parsed.provides() else {
+            return Err("one provides".into());
+        };
+        assert!(lib_gcc.coexists());
+        assert!(matches!(
+            lib_gcc.confers(),
+            [conferred] if conferred.provides() == "lib:gcc" && conferred.version() == Some(">=11")
+        ));
+        let target = parsed.build_target("release").ok_or("target")?;
+        assert!(
+            matches!(target.requires(), [r] if r.provides() == "lib:musl" && r.version().is_none())
+        );
+        let [gxx] = target.children() else {
+            return Err("one child".into());
+        };
+        assert_eq!(gxx.requires().len(), 2);
+        assert_eq!(gxx.requires()[1].version(), Some("^11"));
+        let [tool_gxx] = gxx.provides() else {
+            return Err("one label".into());
+        };
+        assert!(
+            matches!(tool_gxx.confers(), [c] if c.provides() == "lib:stdc++" && c.version().is_none())
+        );
+        assert!(!tool_gxx.coexists());
+        // Each is part of the hash; absent, the hash is as before.
+        let plain = ObjectManifest::parse_toml(&manifest("", ""))?;
+        assert_ne!(plain.manifest_hash(), parsed.manifest_hash());
+        assert_eq!(
+            ObjectManifest::parse_toml(&manifest("coexists = false", ""))?.manifest_hash(),
+            plain.manifest_hash()
+        );
+        for (provides, target) in [
+            ("confers = [{ provides = \"gcc\" }]", ""),
+            (
+                "confers = [{ provides = \"lib:gcc\", version = \"eleven\" }]",
+                "",
+            ),
+            ("", "requires = [{ provides = \"binutils\" }]"),
+        ] {
+            assert!(
+                ObjectManifest::parse_toml(&manifest(provides, target)).is_err(),
+                "{provides}{target}"
+            );
+        }
         Ok(())
     }
 

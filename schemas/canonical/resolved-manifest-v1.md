@@ -94,6 +94,27 @@ where `plan` is that build's own plan hash.
 {"schema":"kairo.resolved-manifest.v1","object":"zQmApp...","snapshot":"zQmSnap...","target":"release","environment":"none","host_dependent":true,"requirements":[{"requested":{"kind":"provides","provides":"tool:make","version":">=4"},"resolved":{"kind":"artifact","object":"zQmMake...","snapshot":"zQmMakeSnap...","target":"release","output":"bin","artifact":null}},{"requested":{"kind":"provides","provides":"environment:linux/x86-64"},"resolved":{"kind":"environment","contract":"environment:linux/x86-64","engine":null}}],"builds_first":[{"object":"zQmMake...","snapshot":"zQmMakeSnap...","target":"release","plan":"zQmPlan..."}]}
 ```
 
+## Runtime requirements (`DECISIONS.md` §46)
+
+Two sections follow `builds_first`, each present only when non-empty,
+so a plan without them is as before:
+
+- `requires`: what the artifact this plan builds, and each of its
+  children, will require at run time. Each entry: `provides`; `version`
+  (a requirement) or `pin` (`{ object, snapshot }`, one provider, for a
+  conferred label without a version); `child`, the child it applies to,
+  or absent for the target's artifact and every child; `via`, either
+  `declared` or `conferred by <label> from object:<id>`. A consumer
+  whose requirement resolves to this artifact reads these from the plan
+  the build result cites.
+- `runtime`: the runtime closure of the build dependencies, installed
+  in the build environment after the declared requirements. Each entry:
+  `provides`, `version`, `pin` (the provider chosen), `via` (the labels
+  it came through, the build dependency first), and `resolved` as a
+  requirement's.
+
+Both are part of the plan hash.
+
 ## Excluded
 
 - which objects the resolver skipped and which candidates it didn't

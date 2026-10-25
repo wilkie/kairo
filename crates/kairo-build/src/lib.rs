@@ -1172,7 +1172,23 @@ pub fn run_plan(
     let mut host_tool_dirs: Vec<String> = Vec::new();
     let mut host_tools: Vec<String> = Vec::new();
     let mut placements: Vec<Placement> = Vec::new();
-    for requirement in &manifest.requirements {
+    // The declared requirements, then the runtime closure of the
+    // dependencies (§46 sub-decision 7), installed like any requirement.
+    let runtime: Vec<kairo_resolver::Requirement> = manifest
+        .runtime
+        .iter()
+        .map(|entry| kairo_resolver::Requirement {
+            requested: kairo_resolver::Requested::Provides {
+                provides: entry.provides.clone(),
+                version: entry.version.clone(),
+                path: None,
+                from: None,
+                overlay: false,
+            },
+            resolved: entry.resolved.clone(),
+        })
+        .collect();
+    for requirement in manifest.requirements.iter().chain(&runtime) {
         let label = match &requirement.requested {
             kairo_resolver::Requested::Provides { provides, .. } => provides.clone(),
             kairo_resolver::Requested::Object { object, .. } => format!("object:{object}"),
@@ -1371,6 +1387,27 @@ pub fn run_plan(
         }
     }
     let overlaid = layer_links.is_some();
+    // Two providers of one label at one root co-exist only when their
+    // files don't collide; one would silently shadow the other
+    // otherwise (§46 sub-decision 5).
+    for (a, (root_a, artifact_a, tree_a, label_a)) in installs.iter().enumerate() {
+        for (root_b, artifact_b, tree_b, label_b) in installs.iter().skip(a + 1) {
+            if label_a != label_b || root_a != root_b || artifact_a == artifact_b {
+                continue;
+            }
+            if let Some(entry) = tree_a.entries.iter().find(|entry| {
+                tree_b
+                    .entries
+                    .iter()
+                    .any(|other| other.path() == entry.path())
+            }) {
+                return Err(BuildError::CoexistOverlap {
+                    label: label_a.clone(),
+                    path: format!("{}/{}", root_a.trim_end_matches('/'), entry.path()),
+                });
+            }
+        }
+    }
     for (index, (install, artifact, tree, label)) in installs.into_iter().enumerate() {
         if !overlaid {
             let staging = deps.join("installed").join(index.to_string());
@@ -2099,6 +2136,12 @@ pub enum BuildError {
     PlacementOccupied {
         path: String,
     },
+    /// Two co-existing providers of one label put a file at the same
+    /// path (`DECISIONS.md` §46 sub-decision 5).
+    CoexistOverlap {
+        label: String,
+        path: String,
+    },
     /// A file source's bytes couldn't be read or failed their hash.
     FileSource {
         path: String,
@@ -2158,6 +2201,10 @@ impl fmt::Display for BuildError {
                 f,
                 "a dependency is placed at {path}, which the snapshot's tree already fills (or reaches through a symlink)"
             ),
+            Self::CoexistOverlap { label, path } => write!(
+                f,
+                "two providers of {label} that claim to co-exist both put a file at {path}"
+            ),
             Self::FileSource { path, reason } => {
                 write!(f, "the file placed at {path}: {reason}")
             }
@@ -2191,6 +2238,7 @@ impl Error for BuildError {
             | Self::EngineMismatch { .. }
             | Self::SourceTree { .. }
             | Self::PlacementOccupied { .. }
+            | Self::CoexistOverlap { .. }
             | Self::FileSource { .. }
             | Self::Fixity { .. } => None,
         }

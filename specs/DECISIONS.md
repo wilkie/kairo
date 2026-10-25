@@ -4423,8 +4423,9 @@ Sub-decisions:
    highest version both accept. The rule looks no further than the
    target: a provider's own build is planned on its own, and the
    resolver doesn't search for one set of versions across a whole plan.
-   A requirement no offer satisfies together with the others still
-   resolves alone, to its own highest.
+   *Amended by §46 sub-decision 4:* a requirement no offer satisfies
+   together with the others on its label is a conflict, not a second
+   provider, unless the providers co-exist.
 
 3. **Object dependencies.** `kind = "object"` with only `object` means
    the highest of the object's version tags, as `version = "*"` would
@@ -4573,3 +4574,118 @@ Affected specs:
 
 - `PHASE_2_FEDERATION.md` — the endpoint and the `supports` value.
 - `CLI.md` — `kairo fetch` of a child.
+
+---
+
+## 46. Runtime Requirements and What a Build Confers
+
+Decision: an artifact can declare what it **requires** wherever it is
+installed, and a provides label can declare what using it at build
+time **confers** on the artifact built, as a runtime requirement; the
+resolver gathers both across the plan's whole closure and chooses
+**one offer per label** that satisfies every requirement on it, or
+installs more than one only where the providers say their versions
+**co-exist**, and refuses the plan, naming both chains, otherwise.
+Runtime requirements are computed when a build is planned and
+recorded in its plan, so a consumer of its artifact reads them from
+the plan that built it and declares nothing.
+
+Sub-decisions:
+
+1. **`requires`: wherever the artifact is installed.** A build target
+   or child declares `requires = [{ provides, version? }]`: labels
+   its artifact needs beside it, at build time or at run time. gcc
+   requires `tool:binutils` (it runs `as` and `ld`) and its C library's
+   headers and startup files; a script requires its interpreter. Each
+   is a provides requirement like any other, with a version requirement
+   or none.
+
+2. **`confers`: what using a label passes on.** A provides entry, of an
+   object or a child, declares `confers = [{ provides, version? }]`:
+   what a build that resolves this label gets as a runtime requirement
+   of its own artifact, without declaring it. It belongs to the label,
+   not the object: `tool:g++` confers `lib:stdc++`; `tool:gcc` confers
+   `lib:gcc`; a library's `lib:zlib` confers `lib:zlib`, since linking
+   against it means needing it, while `lib:zlib:static` and headers
+   confer nothing. Nothing is conferred that a manifest doesn't say:
+   using make at build time doesn't make an artifact need make, and
+   nothing is inferred from binaries.
+   - **No version means this build.** A conferred entry without a
+     version pins the label to the provider's own build: the sibling
+     (the object itself, or one of its children at the same snapshot)
+     that provides that label, exactly what the artifact was linked
+     against. A provider whose library doesn't promise compatibility
+     across versions says nothing more.
+   - **A version means a range.** `version = ">=11.4"` says any
+     offer satisfying it will do, which is how a provider states the
+     forward compatibility the gcc runtime libraries and glibc keep;
+     the manifest's author decides, never a default.
+   - Conferred requirements apply to the target's artifact and to each
+     of its children, which were built in the same environment.
+
+3. **Computed at plan time, read from the plan.** Which provider a
+   label resolved to is a fact of the plan, so the resolver records in
+   each plan what the artifact it builds will require at run time:
+   the target's and children's declared `requires`, and what each
+   resolved build dependency conferred, each with `via` saying which
+   label brought it. A consumer whose requirement resolves to the
+   artifact reads these from the plan that built it, which the build
+   result cites and the store holds, or from the prerequisite plan when
+   the build is still to come; a child's are its parent's plan's
+   entries for the target and for that child. Runtime requirements are
+   themselves artifacts with requirements, so the reading recurses.
+
+4. **Unified, one offer per label.** Every requirement on a label in
+   the closure, the consumer's own, the declared, and the conferred, is
+   a constraint; the resolver chooses the highest offer that satisfies
+   all of them (§43 extended from the target to the closure). A
+   constraint that arrives after a label was chosen re-chooses it, and
+   what the earlier choice brought is recomputed, until nothing
+   changes. A pin satisfies a range when its version does; two
+   different pins on one label, or a pin outside a range, can't be
+   satisfied by one offer. `>=11` and `>=13` on `lib:stdc++` give one
+   libstdc++ at 13.
+
+5. **Co-existing versions.** A provides entry may declare
+   `coexists = true`: its files are versioned so that other versions
+   of the label can be installed beside it at the same root. When no
+   one offer satisfies every constraint on a label and every offer the
+   resolver would install declares `coexists`, it installs more than
+   one, each serving the constraints it satisfies; the executor refuses
+   the build if two of them share a file path, since one would
+   silently shadow the other. How a built artifact targets the
+   versioned name at link time is the provider's business. Offers at
+   different install roots co-exist without saying so.
+
+6. **Otherwise a conflict, and the plan is refused.** The error names
+   the label and every constraint on it with its chain
+   (`lib:stdc++ pinned to gcc-11.4.0's by tool:foo, built with tool:g++
+   from object:...; >=13 by tool:bar ...`). The consumer's own
+   requirement is one constraint among these, not an override; a way
+   to force a choice is a later feature if one is ever needed.
+
+7. **Installed with what needs them.** A plan lists the runtime
+   closure of its build dependencies as requirements of the build
+   environment, after the declared ones, each with `via`; the executor
+   installs them like any requirement. Build dependencies' runtime
+   requirements are not conferred onward unless a `confers` entry says
+   so.
+
+Rationale: a build-time choice fixes what the artifact needs at run
+time, and the one place that knows the choice is the plan. Letting the
+provider say what it confers, once, spares every consumer from
+knowing, while keeping compatibility claims where the knowledge is:
+with the library's own manifest, as a range, or absent, as a pin.
+Unifying across the closure is what lets the satisfier find the one
+version that serves everyone when there is one, and say clearly when
+there isn't.
+
+Affected specs:
+
+- `schemas/canonical/object-manifest-v1.md` — `requires`, `confers`,
+  `coexists`.
+- `schemas/canonical/resolved-manifest-v1.md` — `runtime` and
+  `requires` sections of the plan.
+- `OBJECT.md`, `BUILD.md`, `PLANNER.md` — runtime requirements and
+  conferral.
+- `CLI.md` §17 — plans show the runtime closure and chains.

@@ -421,6 +421,39 @@ command = ["PROGRAM.EXE"]
 [[run.targets.requires]]
 provides = "environment:dos/x86"
 
+### 4.7 Runtime requirements and what a build confers
+
+`DECISIONS.md` §46. A build target or child declares what its
+artifact needs beside it wherever it is installed, and a provides
+entry declares what a build that uses its label gets as a runtime
+requirement of the artifact it builds:
+
+```toml
+[[build.targets]]
+name = "release"
+command = ["make", "install"]
+requires = [{ provides = "tool:binutils" }]
+
+[[build.targets.children]]
+name = "g++"
+root = "g++"
+version = "11.4.0"
+provides = [{ provides = "tool:g++", confers = [{ provides = "lib:stdc++" }] }]
+
+[[build.targets.children]]
+name = "libstdc++"
+root = "libstdc++"
+version = "11.4.0"
+provides = [{ provides = "lib:stdc++", coexists = true }]
+```
+
+A conferred label without a version pins the provider's own build;
+with one, any provider satisfying it will do. Nothing is conferred that
+a manifest doesn't say. `coexists = true` says other versions of the
+label can be installed beside this one. The resolver records an
+artifact's runtime requirements in the plan that builds it, and a
+consumer reads them from there, declaring nothing.
+
 ---
 
 ## 5. Capabilities Model

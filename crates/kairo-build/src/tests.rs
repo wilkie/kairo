@@ -1611,3 +1611,278 @@ fn a_union_lookup_follows_overlayfs_precedence() -> TestResult {
     assert!(matches!(union_lookup(&[], "/usr"), UnionEntry::Missing));
     Ok(())
 }
+
+/// Artifacts with the plans that built them, by `(object, target)`.
+struct BuiltWithPlans(Vec<(ObjectId, String, BlobId, Vec<u8>)>);
+
+impl kairo_resolver::ArtifactSource for BuiltWithPlans {
+    fn artifact(
+        &self,
+        object: &ObjectId,
+        _snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<BlobId>, SourceError> {
+        Ok(self
+            .0
+            .iter()
+            .find(|(o, t, _, _)| o == object && t == target)
+            .map(|(_, _, id, _)| id.clone()))
+    }
+
+    fn build_plan(
+        &self,
+        object: &ObjectId,
+        _snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<Vec<u8>>, SourceError> {
+        Ok(self
+            .0
+            .iter()
+            .find(|(o, t, _, _)| o == object && t == target)
+            .map(|(_, _, _, plan)| plan.clone()))
+    }
+}
+
+const BUSYBOX_PROVIDER: &[(&str, &str)] = &[
+    (
+        "kairo.toml",
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "busybox"
+        [[provides]]
+        provides = "tool:sh"
+        "#,
+    ),
+    ("bin/busybox", "@copy:/usr/bin/busybox"),
+    ("bin/sh", "@link:busybox"),
+];
+
+#[test]
+fn what_a_dependency_requires_is_installed_beside_it() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(BUSYBOX_PROVIDER);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    // A bundle of two children: main requires helper beside it (§46).
+    let bundle = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "bundle"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox mkdir -p /kairo/package/main/usr/bin /kairo/package/helper/usr/bin && busybox cp $KAIRO_PROVIDER_TOOL_SH/bin/busybox /kairo/package/main/usr/bin/busybox && echo main > /kairo/package/main/usr/bin/main && echo helper > /kairo/package/helper/usr/bin/helper"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.children]]
+            name = "main"
+            root = "main"
+            requires = [{{ provides = "tool:helper" }}]
+            provides = [{{ provides = "tool:main" }}]
+            [[build.targets.children]]
+            name = "helper"
+            root = "helper"
+            provides = [{{ provides = "tool:helper" }}]
+            "#
+        ),
+    )]);
+    let plan = world.plan_with(&host, &bundle.object_id, "release");
+    let limits = Limits {
+        timeout: Duration::from_secs(30),
+    };
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &limits,
+        &Engine::Bubblewrap(bwrap.clone()),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    // The plan says what each child will require.
+    assert!(matches!(
+        plan.manifest.requires.as_slice(),
+        [required] if required.provides == "tool:helper" && required.child.as_deref() == Some("main")
+    ));
+    let built = BuiltWithPlans(vec![(
+        bundle.object_id.clone(),
+        "release".to_owned(),
+        BlobId::new(execution.record.artifact.clone().expect("artifact id"))?,
+        plan.bytes.clone(),
+    )]);
+
+    // A consumer names main alone and finds helper beside it.
+    let consumer = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "consumer"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["/usr/bin/busybox", "sh", "-c", "ls /usr/bin > /kairo/package/report"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:main"
+            "#
+        ),
+    )]);
+    let plan = Resolver::new(&world.fixture.store, &world.trees, &built, &host, &[])
+        .resolve(&consumer.object_id, &SnapshotSelector::Current, "release")
+        .expect("plan")
+        .plan;
+    assert!(matches!(
+        plan.manifest.runtime.as_slice(),
+        [entry] if entry.provides == "tool:helper" && entry.via == ["tool:main", "tool:helper"]
+    ));
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &limits,
+        &Engine::Bubblewrap(bwrap),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    let report = world.blob_text(
+        execution.artifact.as_ref().expect("artifact").entries[0]
+            .blob()
+            .expect("a file"),
+    );
+    assert_eq!(report, "busybox\nhelper\nmain\n");
+    Ok(())
+}
+
+#[test]
+fn coexisting_providers_may_not_put_a_file_at_the_same_path() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(BUSYBOX_PROVIDER);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    // Two versions of one library, each claiming to co-exist, both
+    // shipping usr/bin/busybox.
+    let provider = |version: &str| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "thing"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[provides]]
+            provides = "lib:thing"
+            version = "{version}"
+            target = "release"
+            coexists = true
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox mkdir -p /kairo/package/usr/bin && busybox cp $KAIRO_PROVIDER_TOOL_SH/bin/busybox /kairo/package/usr/bin/busybox && echo {version} > /kairo/package/usr/bin/version"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            "#
+        )
+    };
+    let limits = Limits {
+        timeout: Duration::from_secs(30),
+    };
+    let mut built = Vec::new();
+    for version in ["1.0", "2.0"] {
+        let object = world.object(&[("kairo.toml", &provider(version))]);
+        let plan = world.plan_with(&host, &object.object_id, "release");
+        let execution = run_plan(
+            &world.fixture.store,
+            &world.trees,
+            &plan,
+            1_700_000_000,
+            &limits,
+            &Engine::Bubblewrap(bwrap.clone()),
+        )?;
+        assert_eq!(execution.record.status, Status::Success);
+        built.push((
+            object.object_id.clone(),
+            "release".to_owned(),
+            BlobId::new(execution.record.artifact.clone().expect("artifact id"))?,
+            plan.bytes,
+        ));
+    }
+    let built = BuiltWithPlans(built);
+    let consumer = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "consumer"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["/usr/bin/busybox", "true"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "lib:thing"
+            version = "=1.0"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "lib:thing"
+            version = "=2.0"
+            "#
+        ),
+    )]);
+    let plan = Resolver::new(&world.fixture.store, &world.trees, &built, &host, &[])
+        .resolve(&consumer.object_id, &SnapshotSelector::Current, "release")
+        .expect("plan")
+        .plan;
+    // The resolver let both in; the executor refuses the collision.
+    assert!(matches!(
+        run_plan(
+            &world.fixture.store,
+            &world.trees,
+            &plan,
+            1_700_000_000,
+            &limits,
+            &Engine::Bubblewrap(bwrap),
+        ),
+        Err(BuildError::CoexistOverlap { label, path }) if label == "lib:thing" && path == "/usr/bin/busybox"
+    ));
+    Ok(())
+}

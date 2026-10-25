@@ -245,3 +245,14 @@ See FEDERATION.md.
 - dependency resolution is external
 - reproducibility is primary
 - trust is derived from signed evidence
+
+## Runtime requirements
+
+A target's artifact may need other labels beside it wherever it is
+installed (`requires`), and the labels it was built with may confer
+requirements on it (`confers`); both are declared in `kairo.toml` and
+gathered by the planner (`DECISIONS.md` §46, `PLANNER.md` §8.1). The
+executor installs a plan's `runtime` section after its declared
+requirements, in the same way, and refuses a build in which two
+providers of one label that claim to co-exist put a file at the same
+path.

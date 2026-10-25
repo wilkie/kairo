@@ -119,7 +119,17 @@ non-empty specifier and `kind` one of `tool`, `lib`, `doc`, `data`, and
 `ProvideDeclaration`: `string(provides) || option(version, string)`, then
 `string("artifact") || string(target) || string(output)` when the entry
 names a build output (an artifact provider); `output` is `""` when the
-entry names the target's whole artifact (`DECISIONS.md` §41).
+entry names the target's whole artifact (`DECISIONS.md` §41); then
+`string("confers") || list<LabelRequirement>` when the entry confers
+anything, and `string("coexists")` when `coexists = true`
+(`DECISIONS.md` §46). A child's provides entries carry the same two,
+after their version.
+
+`LabelRequirement`, one `requires` or `confers` entry: `string(provides)
+|| option<string>(version)`, the label a registered kind (§42) and the
+version a requirement in Cargo's syntax. In `requires` no version means
+any; in `confers` it means the provider's own build (§46 sub-decision
+2).
 
 `DependencyDeclaration` variants:
 
@@ -173,6 +183,7 @@ encoded as written.
 | `artifact_root` | present only when not `"."`: `string("artifact_root") \|\| string(root)`, a relative path under `/kairo/package` |
 | `install` | present only when not `"/"`: `string("install") \|\| option<string>(install)`, an absolute guest path, or none for `install = false` |
 | `children` | present only when there is at least one: `string("children") \|\| list<ChildDeclaration>` |
+| `requires` | present only when there is at least one: `string("requires") \|\| list<LabelRequirement>`, what the artifact needs beside it wherever it is installed (`DECISIONS.md` §46) |
 
 `artifact_root` and `install` come from `[build.targets.artifact]`
 (`DECISIONS.md` §41 sub-decision 3); a target without one, or with the
@@ -190,6 +201,7 @@ defaults spelled out, encodes as it did before they existed.
 | `summary` | present only when given: `string("summary") \|\| string(summary)` |
 | `tags` | present only when there is at least one: `string("tags") \|\| list<string>` |
 | `version` | present only when given: `string("version") \|\| string(version)`, the version of the software the child holds (`DECISIONS.md` §44) |
+| `requires` | present only when there is at least one: `string("requires") \|\| list<LabelRequirement>` (`DECISIONS.md` §46) |
 
 ```toml
 [[build.targets.children]]
