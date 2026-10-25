@@ -77,9 +77,30 @@ fn field<'a>(text: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {name} in:\n{text}"))
 }
 
+/// The last `lines` lines of the guest log blob named by `field` (`stdout`
+/// or `stderr`) in a build's output, read from the store.
+fn guest_log(store: &Path, output: &str, field: &str, lines: usize) -> String {
+    let prefix = format!("{field} = ");
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .and_then(|blob| kairo_core::BlobId::new(blob).ok())
+        .and_then(|blob| {
+            let store = kairo_store::FilesystemStore::open(store).ok()?;
+            kairo_store::BlobStore::get_blob(&store, &blob).ok()
+        })
+        .map(|bytes| {
+            let text = String::from_utf8_lossy(&bytes).into_owned();
+            let all: Vec<&str> = text.lines().collect();
+            all[all.len().saturating_sub(lines)..].join("\n")
+        })
+        .unwrap_or_default()
+}
+
 /// `kairo build <wrapper> --target x86`; on failure, panics with the
-/// end of the guest's stderr, read from the store, since the summary
-/// alone doesn't say which step failed.
+/// end of the guest's stdout and stderr, read from the store, since the
+/// summary alone doesn't say which step failed (kaem's `--verbose`
+/// trace goes to stdout).
 fn build(store: &Path, wrapper: &str, actor: &str) -> String {
     let output = Command::new(KAIRO)
         .arg("--store")
@@ -91,28 +112,16 @@ fn build(store: &Path, wrapper: &str, actor: &str) -> String {
     if output.status.success() {
         return stdout;
     }
-    let guest = stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("stderr = "))
-        .and_then(|blob| kairo_core::BlobId::new(blob).ok())
-        .and_then(|blob| {
-            let store = kairo_store::FilesystemStore::open(store).ok()?;
-            kairo_store::BlobStore::get_blob(&store, &blob).ok()
-        })
-        .map(|bytes| {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            let lines: Vec<&str> = text.lines().collect();
-            lines[lines.len().saturating_sub(80)..].join("\n")
-        })
-        .unwrap_or_default();
     let summary: String = stdout
         .lines()
         .filter(|line| !line.starts_with("  usr/") && !line.starts_with("  repo/"))
         .collect::<Vec<_>>()
         .join("\n");
     panic!(
-        "kairo build {wrapper} failed:\n{summary}\n{}\n--- guest stderr, last lines ---\n{guest}",
-        String::from_utf8_lossy(&output.stderr)
+        "kairo build {wrapper} failed:\n{summary}\n{}\n--- guest stdout, last lines ---\n{}\n--- guest stderr, last lines ---\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        guest_log(store, &stdout, "stdout", 120),
+        guest_log(store, &stdout, "stderr", 80),
     );
 }
 
@@ -146,10 +155,34 @@ fn sha256(bytes: &[u8]) -> String {
         .collect()
 }
 
+/// The test's store: removed afterwards, or kept.
+enum KeptOrTemp {
+    Temp(tempfile::TempDir),
+    Kept(std::path::PathBuf),
+}
+
+impl KeptOrTemp {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Temp(dir) => dir.path(),
+            Self::Kept(path) => path,
+        }
+    }
+}
+
 #[test]
 #[ignore = "needs the network, bubblewrap on a kernel that runs i386, and several minutes"]
 fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_engine() {
     let store_dir = tempfile::TempDir::new().expect("tempdir");
+    // KAIRO_KEEP_TEST_STORE keeps the store afterwards, to look at a
+    // failure's execution record and workspace.
+    let store_dir = if std::env::var_os("KAIRO_KEEP_TEST_STORE").is_some() {
+        let kept = store_dir.keep();
+        eprintln!("keeping the test store at {}", kept.display());
+        KeptOrTemp::Kept(kept)
+    } else {
+        KeptOrTemp::Temp(store_dir)
+    };
     let store = store_dir.path();
     let actor = field(
         &kairo(
