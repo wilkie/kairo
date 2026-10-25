@@ -1186,6 +1186,7 @@ Options:
 --environment <environment>
 --output <path>
 --plan-only
+--prefer <actor>     owners whose offers rank first (repeatable; DECISIONS.md §48)
 --reproduce
 --yes
 --format <human|json|ndjson>
@@ -1221,8 +1222,15 @@ requirements = N
 builds_first = N
   object:<id> target <name> (plan <hash>)
 alternatives:        (candidates not chosen, if any)
+  <requested> -> <chosen> (not <offer> version <v>, owner actor:<id> (<tier>): <why it lost>, ...)
 skipped:             (held objects the resolver couldn't consider)
 ```
+
+Offers rank by owner tier, then version, then kind, then the newest
+published, then object id (`DECISIONS.md` §48). An owner's tier is
+`preferred #<n>` (named by `--prefer`, then `[resolve] prefer` in
+`<store>/config.toml`), `local` (a keystore actor), `trusted` (trusted
+by one at `general` scope), or `unranked`.
 
 `--json` gives the same with the stored document under `manifest`.
 
@@ -1271,11 +1279,14 @@ kairo provider show --object <id> [--json]
 kairo provider resolve --provides <label> [--version <req>] [--json]
 ```
 
-`list` prints every label with its offers in the resolver's rank order
-(artifact providers, then content providers, by object id). `show`
-prints one object's `[[provides]]` entries and build targets. `resolve`
-prints what a requirement would pin to, the candidates a version
-requirement rejected, and the development-mode host tools from
+`list` prints every label with its offers in the index's order
+(artifact providers, then content providers, the newest published
+first, then by object id). `show` prints one object's `[[provides]]`
+entries and build targets. `resolve` prints what a requirement would
+pin to, with its candidates ranked as `kairo build` ranks them (owner
+tier first, under `[resolve] prefer` and the keystore's actors,
+`DECISIONS.md` §48), each with its owner and tier; the candidates a
+version requirement rejected; and the development-mode host tools from
 `[[runtime.host.tools]]` that would stand in.
 
 ### 17.2 `kairo search`
@@ -1293,8 +1304,9 @@ all must match; `tag:<tag>`, `provides:<label>`, and
 `provides:<kind>:*` filter; other `key:value` terms are ignored and
 printed as `ignored = ...`. Results whose name or a tag a word names
 exactly come first, then by name. Each prints its object, name, a
-child's version, summary, tags, provides labels with versions, and a
-child's `parent`; the output ends `source = local` and `validation =
+child's version, summary, tags, provides labels with versions, a
+child's `parent`, and its `owner` (the object's creator, a child's
+parent's, `DECISIONS.md` §48); the output ends `source = local` and `validation =
 unverified`, since search finds candidates and verifies nothing. There
 is no index: a query reads what the resolver's index reads.
 

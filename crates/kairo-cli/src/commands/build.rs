@@ -39,6 +39,8 @@ pub(crate) struct BuildArgs<'a> {
     pub actor: Option<&'a str>,
     pub plan_only: bool,
     pub json: bool,
+    /// `--prefer`: owners ranked before `[resolve] prefer` (§48).
+    pub prefer: &'a [String],
 }
 
 /// Held artifacts, from `BuildResult`s this node accepts: signed by a
@@ -288,6 +290,36 @@ fn host_tools(config: &kairo_config::Config) -> Vec<HostTool> {
         .collect()
 }
 
+/// Whose offers the resolver ranks first (`DECISIONS.md` §48):
+/// `--prefer` in order, then `[resolve] prefer`, then the keystore's
+/// actors and those they trust.
+fn owner_preference(
+    flags: &[String],
+    config: &kairo_config::Config,
+    local: &[kairo_core::ActorId],
+) -> Result<kairo_resolver::OwnerPreference, CliError> {
+    let mut preferred = Vec::new();
+    for flag in flags {
+        let actor =
+            kairo_core::ActorId::new(flag.clone()).map_err(|source| CliError::ParseActorId {
+                actor: flag.clone(),
+                source,
+            })?;
+        if !preferred.contains(&actor) {
+            preferred.push(actor);
+        }
+    }
+    for actor in &config.resolve.prefer {
+        if !preferred.contains(actor) {
+            preferred.push(actor.clone());
+        }
+    }
+    Ok(kairo_resolver::OwnerPreference {
+        preferred,
+        local: local.to_vec(),
+    })
+}
+
 /// Development-mode policy (`DECISIONS.md` §33 sub-decision 4): the
 /// revision's signer is an actor this node holds a key for, or one a
 /// keystore actor trusts at `general` scope.
@@ -431,10 +463,12 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     };
     let sources = CacheSources { paths };
     let accepted_sources = source_seeds(&config);
+    let owners = owner_preference(args.prefer, &config, &local)?;
     let resolve = || {
         Resolver::new(&store, &manifests, &artifacts, &host, &tools)
             .with_sources(&sources)
             .with_source_seeds(&accepted_sources)
+            .with_owner_preference(&owners)
             .resolve(&object, &selector, args.target)
             .map_err(|error| CliError::Resolve(Box::new(error)))
     };
@@ -1200,9 +1234,15 @@ pub(crate) fn run_provider_command(
             version,
             json,
         } => {
-            let offers = index.offers(&provides);
+            let mut offers = index.offers(&provides);
             let (config, _) = load_config(paths)?;
             let tools = host_tools(&config);
+            // Ranked as `kairo build` ranks them, owners first (§48).
+            let local = open_keystore(paths)?
+                .list_actors()
+                .map_err(CliError::ListKeystore)?;
+            let owners = owner_preference(&[], &config, &local)?;
+            owners.rank(&store, &mut offers);
             let mut matching = Vec::new();
             let mut rejected = Vec::new();
             for offer in offers {
@@ -1252,7 +1292,13 @@ pub(crate) fn run_provider_command(
                 let _ = writeln!(out, "chosen = {chosen}");
                 let _ = writeln!(out, "candidates = {}", matching.len());
                 for offer in &matching {
-                    let _ = writeln!(out, "  {}", describe_offer(offer));
+                    let _ = writeln!(
+                        out,
+                        "  {}, owner actor:{} ({})",
+                        describe_offer(offer),
+                        offer.owner,
+                        owners.tier(&store, &offer.owner)
+                    );
                 }
                 if !host.is_empty() {
                     let _ = writeln!(out, "host_tools = {}", host.len());
@@ -1294,6 +1340,7 @@ fn describe_offer(offer: &kairo_resolver::Offer) -> String {
 fn offer_json(offer: &kairo_resolver::Offer) -> serde_json::Value {
     serde_json::json!({
         "object": offer.object.to_string(),
+        "owner": offer.owner.to_string(),
         "snapshot": offer.snapshot.to_string(),
         "version": offer.version,
         "target": offer.artifact.as_ref().map(|(target, _)| target),

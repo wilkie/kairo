@@ -24,8 +24,10 @@
 //! An object requirement resolves to a pinned snapshot, or to the
 //! newest of the creator's version tags that meets its requirement.
 //! Labels match exactly. Among several candidates the resolver prefers
-//! artifact providers, then content providers, then host tools, and
-//! breaks ties by object id, listing the losers as diagnostics.
+//! the offers of owners this node prefers, then the highest version,
+//! then artifact providers over content providers, then the newest
+//! published, and only then object id (`DECISIONS.md` §48), listing
+//! the losers and why as diagnostics; host tools come last.
 //!
 //! The resolver reads manifests through [`ManifestSource`] and build
 //! results through [`ArtifactSource`], so the store stays the only
@@ -39,14 +41,14 @@ use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 
-use kairo_core::{BlobId, ObjectId, SnapshotId};
+use kairo_core::{ActorId, BlobId, ObjectId, SnapshotId, Timestamp};
 use kairo_object::{
     DependencyDeclaration, ObjectDependencySelector, ObjectManifest, Snapshot, SnapshotError,
 };
-use kairo_statement::{GitRevision, RevisionId};
+use kairo_statement::{GitRevision, RevisionId, TrustDecision, TrustScope};
 use kairo_store::{
     BranchResolver, FilesystemStore, ObjectStore, SourceStore, StatementStore, StoreError,
-    VersionTagResolver,
+    TrustResolver, VersionTagResolver,
 };
 use serde::{Deserialize, Serialize};
 
@@ -567,6 +569,87 @@ pub struct Candidate {
     pub snapshot: SnapshotId,
     pub revision: RevisionId,
     pub manifest: ObjectManifest,
+    /// The object's creator, whose `head` branch makes the snapshot
+    /// current, and so who vouches for its offers (§48).
+    pub owner: ActorId,
+    /// When the creator's `head` branch statement was signed.
+    pub published: Timestamp,
+}
+
+/// Whose offers this node prefers (`DECISIONS.md` §48 sub-decision 1).
+#[derive(Debug, Clone, Default)]
+pub struct OwnerPreference {
+    /// `--prefer`, then `[resolve] prefer`, most preferred first.
+    pub preferred: Vec<ActorId>,
+    /// Actors this node holds keys for.
+    pub local: Vec<ActorId>,
+}
+
+impl OwnerPreference {
+    /// Where `owner` ranks. An unreadable trust record leaves the owner
+    /// unranked, never higher.
+    pub fn tier(&self, store: &FilesystemStore, owner: &ActorId) -> OwnerTier {
+        if let Some(at) = self.preferred.iter().position(|p| p == owner) {
+            return OwnerTier::Preferred(at);
+        }
+        if self.local.contains(owner) {
+            return OwnerTier::Local;
+        }
+        let trusted = self.local.iter().any(|by_actor| {
+            store
+                .latest_trust(by_actor, owner, &TrustScope::general())
+                .ok()
+                .flatten()
+                .is_some_and(|trust| {
+                    trust.unsigned().body().decision() == Some(TrustDecision::Trusted)
+                })
+        });
+        if trusted {
+            OwnerTier::Trusted
+        } else {
+            OwnerTier::Other
+        }
+    }
+
+    /// `offers`, from [`Index::offers`], in the order the resolver
+    /// tries them: the owner's tier, then the highest version, offers
+    /// without one last; ties keep the index's order (§43, §48).
+    pub fn rank(&self, store: &FilesystemStore, offers: &mut [Offer]) {
+        offers.sort_by_cached_key(|offer| {
+            (
+                self.tier(store, &offer.owner),
+                std::cmp::Reverse(offer.version.as_deref().and_then(lenient_version)),
+            )
+        });
+    }
+}
+
+static NO_PREFERENCE: OwnerPreference = OwnerPreference {
+    preferred: Vec::new(),
+    local: Vec::new(),
+};
+
+/// Where an offer's owner ranks, best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OwnerTier {
+    /// Named by `--prefer` or `[resolve] prefer`, at this position.
+    Preferred(usize),
+    /// An actor this node holds keys for.
+    Local,
+    /// An actor a local one trusts at `general` scope.
+    Trusted,
+    Other,
+}
+
+impl fmt::Display for OwnerTier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Preferred(at) => write!(f, "preferred #{}", at + 1),
+            Self::Local => f.write_str("local"),
+            Self::Trusted => f.write_str("trusted"),
+            Self::Other => f.write_str("unranked"),
+        }
+    }
 }
 
 /// One way a candidate satisfies a provides label.
@@ -595,6 +678,10 @@ pub struct Offer {
     /// Whether other versions of the label can be installed beside this
     /// one at the same root (§46 sub-decision 5).
     pub coexists: bool,
+    /// Its object's owner, a child's being its parent's (§48).
+    pub owner: ActorId,
+    /// When its owner made the snapshot current.
+    pub published: Timestamp,
 }
 
 impl Offer {
@@ -698,6 +785,8 @@ fn child_offer(
             })
             .unwrap_or_default(),
         coexists: provide.is_some_and(kairo_object::ChildProvide::coexists),
+        owner: candidate.owner.clone(),
+        published: candidate.published,
     }
 }
 
@@ -808,26 +897,30 @@ impl Index {
         let mut candidates = Vec::new();
         let mut skipped = Vec::new();
         for object in store.list_objects().map_err(ResolveError::Store)? {
-            match current_snapshot(store, &object)? {
+            match current_head(store, &object)? {
                 None => skipped.push(Skipped {
                     object,
                     reason: "no head branch by its creator".to_owned(),
                 }),
-                Some(snapshot) => match load_manifest(manifests, &object, &snapshot)? {
-                    None => skipped.push(Skipped {
-                        object,
-                        reason: format!(
-                            "tree for revision {} is not held (kairo git fetch)",
-                            snapshot.revision().as_str()
-                        ),
-                    }),
-                    Some(manifest) => candidates.push(Candidate {
-                        object,
-                        snapshot: snapshot.snapshot_id(),
-                        revision: snapshot.revision().clone(),
-                        manifest,
-                    }),
-                },
+                Some((snapshot, owner, published)) => {
+                    match load_manifest(manifests, &object, &snapshot)? {
+                        None => skipped.push(Skipped {
+                            object,
+                            reason: format!(
+                                "tree for revision {} is not held (kairo git fetch)",
+                                snapshot.revision().as_str()
+                            ),
+                        }),
+                        Some(manifest) => candidates.push(Candidate {
+                            object,
+                            snapshot: snapshot.snapshot_id(),
+                            revision: snapshot.revision().clone(),
+                            manifest,
+                            owner,
+                            published,
+                        }),
+                    }
+                }
             }
         }
         Ok(Self {
@@ -836,8 +929,9 @@ impl Index {
         })
     }
 
-    /// Candidates offering `label`, in rank order (artifact providers
-    /// first, then by object id).
+    /// Candidates offering `label`, in the order that breaks ties after
+    /// owner and version (§48): artifact providers first, then the
+    /// newest published, then by object id.
     pub fn offers(&self, label: &str) -> Vec<Offer> {
         let mut offers: Vec<Offer> =
             self.candidates
@@ -875,6 +969,8 @@ impl Index {
                                 .map(|c| (c.provides().to_owned(), c.version().map(str::to_owned)))
                                 .collect(),
                             coexists: declaration.coexists(),
+                            owner: candidate.owner.clone(),
+                            published: candidate.published,
                         })
                 })
                 .collect();
@@ -891,6 +987,7 @@ impl Index {
         offers.sort_by(|a, b| {
             a.rank()
                 .cmp(&b.rank())
+                .then_with(|| b.published.cmp(&a.published))
                 .then_with(|| a.object.cmp(&b.object))
         });
         offers
@@ -960,6 +1057,15 @@ pub fn current_snapshot(
     store: &FilesystemStore,
     object: &ObjectId,
 ) -> Result<Option<Snapshot>, ResolveError> {
+    Ok(current_head(store, object)?.map(|(snapshot, _, _)| snapshot))
+}
+
+/// The creator's `head` snapshot of `object`, with the creator and when
+/// the branch statement making it current was signed.
+pub fn current_head(
+    store: &FilesystemStore,
+    object: &ObjectId,
+) -> Result<Option<(Snapshot, ActorId, Timestamp)>, ResolveError> {
     let genesis = store
         .get_object_genesis(object)
         .map_err(ResolveError::Store)?;
@@ -970,7 +1076,8 @@ pub fn current_snapshot(
     else {
         return Ok(None);
     };
-    snapshot_at(store, object, branch.unsigned().body().revision()).map(Some)
+    let snapshot = snapshot_at(store, object, branch.unsigned().body().revision())?;
+    Ok(Some((snapshot, creator, branch.unsigned().created_at())))
 }
 
 /// The held `Snapshot` with id `snapshot`: the creator's head or one
@@ -1107,6 +1214,7 @@ pub struct Resolver<'a> {
     host_tools: &'a [HostTool],
     sources: &'a dyn SourceHolder,
     source_seeds: &'a [SourceSeed],
+    owners: &'a OwnerPreference,
 }
 
 /// What the runtime closure settled to, or why the declared
@@ -1173,7 +1281,57 @@ impl<'a> Resolver<'a> {
             host_tools,
             sources: &NoSources,
             source_seeds: &[],
+            owners: &NO_PREFERENCE,
         }
+    }
+
+    /// Rank offers by these owners first (§48); without it every owner
+    /// ranks alike.
+    pub fn with_owner_preference(mut self, owners: &'a OwnerPreference) -> Self {
+        self.owners = owners;
+        self
+    }
+
+    /// Where `owner` ranks under this resolver's preference.
+    pub fn owner_tier(&self, owner: &ActorId) -> OwnerTier {
+        self.owners.tier(self.store, owner)
+    }
+
+    /// `offers` in the order the resolver tries them: the owner's tier
+    /// first, then the highest version, offers without one last; ties
+    /// keep the index's order (§43, §48).
+    fn rank_offers(&self, offers: &mut [Offer]) {
+        self.owners.rank(self.store, offers);
+    }
+
+    /// Why `offer` lost to `chosen` (§48 sub-decision 4): the first rank
+    /// it falls behind on.
+    fn passed_over(&self, offer: &Offer, chosen: Option<&Offer>) -> String {
+        let tier = self.owner_tier(&offer.owner);
+        let version = offer.version.as_deref().unwrap_or("unknown");
+        let described = format!(
+            "{} version {version}, owner actor:{} ({tier})",
+            offer.describe(),
+            offer.owner
+        );
+        let Some(chosen) = chosen else {
+            return described;
+        };
+        let lenient = |offer: &Offer| offer.version.as_deref().and_then(lenient_version);
+        let reason = if tier != self.owner_tier(&chosen.owner) {
+            "its owner ranks lower"
+        } else if lenient(offer) != lenient(chosen) {
+            "a lower version"
+        } else if offer.rank() != chosen.rank() {
+            "content, not an artifact"
+        } else if offer.published != chosen.published {
+            "published earlier"
+        } else if offer.object != chosen.object {
+            "after it by object id"
+        } else {
+            "another of its labels was chosen"
+        };
+        format!("{described}: {reason}")
     }
 
     /// Where source dependencies are checked for.
@@ -1724,11 +1882,7 @@ impl<'a> Resolver<'a> {
             }
             offers.push(offer);
         }
-        // Highest version first; offers without one last; ties keep the
-        // index's order (§43).
-        offers.sort_by_cached_key(|offer| {
-            std::cmp::Reverse(offer.version.as_deref().and_then(lenient_version))
-        });
+        self.rank_offers(&mut offers);
         let mut remaining: Vec<usize> = (0..constraints.len()).collect();
         let mut choices: Vec<Choice> = Vec::new();
         while !remaining.is_empty() {
@@ -1921,9 +2075,15 @@ impl<'a> Resolver<'a> {
             needed_first,
             diagnostics,
         )?;
-        // What else would have done for this requirement alone.
-        let others: Vec<String> = index
-            .offers(label)
+        // What else would have done for this requirement alone, and why
+        // it lost.
+        let chosen = match &own.picked {
+            Picked::Offer(offer) => Some(offer.as_ref()),
+            Picked::HostTool(_) => None,
+        };
+        let mut ranked = index.offers(label);
+        self.rank_offers(&mut ranked);
+        let others: Vec<String> = ranked
             .iter()
             .filter(|offer| constraints[mine].satisfied_by(offer))
             .filter(|offer| match (consumer_environment, &offer.environment) {
@@ -1935,7 +2095,7 @@ impl<'a> Resolver<'a> {
                     .iter()
                     .any(|c| c.picked == Picked::Offer(Box::new((*offer).clone())))
             })
-            .map(Offer::describe)
+            .map(|offer| self.passed_over(offer, chosen))
             .chain(
                 self.host_tools
                     .iter()
@@ -2285,19 +2445,16 @@ impl<'a> Resolver<'a> {
         // The parent: from the current manifests, or else whichever held
         // object declares the child at one of its snapshots (§44
         // sub-decision 2).
-        let parents: Vec<ObjectId> = match index.child(wanted) {
-            Some((candidate, _, _)) => vec![candidate.object.clone()],
-            None => index
-                .candidates
-                .iter()
-                .map(|candidate| candidate.object.clone())
-                .collect(),
+        let parents: Vec<&Candidate> = match index.child(wanted) {
+            Some((candidate, _, _)) => vec![candidate],
+            None => index.candidates.iter().collect(),
         };
         // Each declaration of the child, the current snapshot's first,
         // then the tagged ones', highest tag first.
         let mut considered = Vec::new();
         let mut declared: Vec<(Option<semver::Version>, Candidate, String, String)> = Vec::new();
-        for parent in &parents {
+        for candidate in &parents {
+            let parent = &candidate.object;
             let mut snapshots: Vec<Snapshot> =
                 current_snapshot(self.store, parent)?.into_iter().collect();
             for (_, tagged) in tagged_snapshots(self.store, parent)? {
@@ -2354,6 +2511,10 @@ impl<'a> Resolver<'a> {
                         snapshot: snapshot.snapshot_id(),
                         revision: snapshot.revision().clone(),
                         manifest,
+                        owner: candidate.owner.clone(),
+                        // A tagged snapshot keeps its object's head time;
+                        // it isn't ranked against other objects here.
+                        published: candidate.published,
                     },
                     target_name,
                     child_name,

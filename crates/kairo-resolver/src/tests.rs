@@ -74,6 +74,41 @@ impl World {
         (object, revision)
     }
 
+    /// An object `actor` creates and makes current at `seconds`.
+    fn object_as(&mut self, actor: &CreatedActor, manifest: &str, seconds: i64) -> CreatedObject {
+        let object = self.fixture.make_object(actor, "software");
+        self.revisions += 1;
+        let id = RevisionId::new(format!("git:sha256:r{}", self.revisions));
+        self.manifests.0.insert(
+            (object.object_id.to_string(), id.as_str().to_owned()),
+            manifest.to_owned(),
+        );
+        let revision = self
+            .fixture
+            .make_revision(actor, &object, id, manifest, Vec::new());
+        self.fixture
+            .set_branch_at(actor, &object, &revision, "head", seconds);
+        object
+    }
+
+    /// Plan `target` of `object` ranking offers by `owners`.
+    fn resolve_preferring(
+        &self,
+        owners: &OwnerPreference,
+        object: &ObjectId,
+        target: &str,
+    ) -> Result<Resolution, ResolveError> {
+        Resolver::new(
+            &self.fixture.store,
+            &self.manifests,
+            &NoArtifacts,
+            &Self::host(),
+            &[],
+        )
+        .with_owner_preference(owners)
+        .resolve(object, &SnapshotSelector::Current, target)
+    }
+
     fn revision(
         &mut self,
         object: &CreatedObject,
@@ -428,7 +463,11 @@ fn candidates_rank_artifact_then_content_then_host_tool() -> TestResult {
     assert_eq!(
         alternatives[0].others,
         [
-            format!("object:{} (content)", content.object_id),
+            format!(
+                "object:{} (content) version 4.4, owner actor:{} (unranked): \
+                 content, not an artifact",
+                content.object_id, world.actor.actor_id
+            ),
             "host tool /usr/bin/make".to_owned()
         ]
     );
@@ -1487,5 +1526,133 @@ fn a_child_named_by_id_brings_what_it_requires() -> TestResult {
     ));
     // A label confers; an id names no label, so nothing is conferred.
     assert!(resolution.plan.manifest.requires.is_empty());
+    Ok(())
+}
+
+/// The content object `resolution`'s first requirement resolved to.
+fn first_content(resolution: &Resolution) -> Option<&str> {
+    match &resolution.plan.manifest.requirements[0].resolved {
+        Resolved::Content { object, .. } => Some(object),
+        _ => None,
+    }
+}
+
+#[test]
+fn an_owners_tier_outranks_a_higher_version() -> TestResult {
+    let mut world = World::new();
+    let stranger = world.fixture.make_actor();
+    let trusted = world.fixture.make_actor();
+    let named = world.fixture.make_actor();
+    // A local actor that offers nothing itself, and trusts one owner.
+    let operator = world.fixture.make_actor();
+    world.fixture.trust(&operator, &trusted.actor_id);
+    let theirs = world.object_as(&stranger, &content_provider("tool:make", Some("9.0")), 1);
+    let trusteds = world.object_as(&trusted, &content_provider("tool:make", Some("5.0")), 1);
+    let nameds = world.object_as(&named, &content_provider("tool:make", Some("3.0")), 1);
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let (picky, _) = world.object(&app_requiring("tool:make", Some(">=6")));
+    let chosen = |owners: &OwnerPreference, app: &ObjectId| -> Result<String, ResolveError> {
+        let resolution = world.resolve_preferring(owners, app, "release")?;
+        Ok(first_content(&resolution).unwrap_or_default().to_owned())
+    };
+
+    // With no preference, the highest version, as before.
+    let none = OwnerPreference::default();
+    assert_eq!(chosen(&none, &app.object_id)?, theirs.object_id.to_string());
+    // A local actor's trust ranks its owner above a stranger.
+    let local = OwnerPreference {
+        preferred: Vec::new(),
+        local: vec![operator.actor_id.clone()],
+    };
+    assert_eq!(
+        chosen(&local, &app.object_id)?,
+        trusteds.object_id.to_string()
+    );
+    // A named owner above both, at a lower version still.
+    let prefer = OwnerPreference {
+        preferred: vec![named.actor_id.clone()],
+        local: vec![operator.actor_id.clone()],
+    };
+    assert_eq!(
+        chosen(&prefer, &app.object_id)?,
+        nameds.object_id.to_string()
+    );
+    let resolution = world.resolve_preferring(&prefer, &app.object_id, "release")?;
+    let others = &resolution.diagnostics.alternatives[0].others;
+    assert_eq!(others.len(), 2, "{others:?}");
+    assert!(
+        others[0].contains(&format!(
+            "owner actor:{} (trusted): its owner ranks lower",
+            trusted.actor_id
+        )),
+        "{others:?}"
+    );
+    assert!(
+        others[1].contains("(unranked): its owner ranks lower"),
+        "{others:?}"
+    );
+    // A stranger's offer serves when no ranked one satisfies.
+    assert_eq!(
+        chosen(&prefer, &picky.object_id)?,
+        theirs.object_id.to_string()
+    );
+    Ok(())
+}
+
+#[test]
+fn among_equals_the_newest_published_wins_then_the_object_id() -> TestResult {
+    let mut world = World::new();
+    let actor = world.actor.clone();
+    let older = world.object_as(&actor, &content_provider("tool:make", Some("4.4")), 100);
+    let newer = world.object_as(&actor, &content_provider("tool:make", Some("4.4")), 200);
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    assert_eq!(first_content(&resolution), Some(newer.object_id.as_str()));
+    let others = &resolution.diagnostics.alternatives[0].others;
+    assert_eq!(others.len(), 1);
+    assert!(
+        others[0].starts_with(&format!("object:{} (content)", older.object_id))
+            && others[0].ends_with(": published earlier"),
+        "{others:?}"
+    );
+
+    // Published together, the lower object id.
+    let mut world = World::new();
+    let actor = world.actor.clone();
+    let a = world.object_as(&actor, &content_provider("tool:make", Some("4.4")), 100);
+    let b = world.object_as(&actor, &content_provider("tool:make", Some("4.4")), 100);
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    let first = a.object_id.clone().min(b.object_id.clone());
+    assert_eq!(first_content(&resolution), Some(first.as_str()));
+    assert!(resolution.diagnostics.alternatives[0].others[0].ends_with(": after it by object id"));
+    Ok(())
+}
+
+#[test]
+fn a_release_candidate_gives_way_to_the_release() -> TestResult {
+    let mut world = World::new();
+    let actor = world.actor.clone();
+    let candidate = world.object_as(
+        &actor,
+        &content_provider("tool:gcc", Some("4.0.4-rc.1")),
+        200,
+    );
+    let (any, _) = world.object(&app_requiring("tool:gcc", None));
+    let (major, _) = world.object(&app_requiring("tool:gcc", Some("^4")));
+    let (asks_rc, _) = world.object(&app_requiring("tool:gcc", Some(">=4.0.4-rc.1")));
+    // Alone, the candidate serves what names no version, and what
+    // names a pre-release; a plain range doesn't take one.
+    let resolution = world.resolve(&any.object_id, "release")?;
+    assert_eq!(
+        first_content(&resolution),
+        Some(candidate.object_id.as_str())
+    );
+    assert!(world.resolve(&major.object_id, "release").is_err());
+    let release = world.object_as(&actor, &content_provider("tool:gcc", Some("4.0.4")), 100);
+    for app in [&any, &major, &asks_rc] {
+        let resolution = world.resolve(&app.object_id, "release")?;
+        assert_eq!(first_content(&resolution), Some(release.object_id.as_str()));
+    }
     Ok(())
 }

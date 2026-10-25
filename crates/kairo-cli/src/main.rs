@@ -184,6 +184,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
             actor,
             plan_only,
             json,
+            prefer,
         }) => commands::build::run_build(
             &commands::build::BuildArgs {
                 snapshot_ref: &snapshot_ref,
@@ -191,6 +192,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
                 actor: actor.as_deref(),
                 plan_only,
                 json,
+                prefer: &prefer,
             },
             &paths,
         ),

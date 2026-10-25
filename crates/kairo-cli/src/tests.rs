@@ -8250,6 +8250,91 @@ fn run_in_store(store_dir: &std::path::Path, command: Command) -> Result<String,
 }
 
 #[test]
+fn build_prefers_the_owners_named_by_flag_then_config() -> Result<(), Box<dyn std::error::Error>> {
+    if kairo_test_support::git::skip_if_no_git() {
+        return Ok(());
+    }
+    let store_dir = tempfile::TempDir::new()?;
+    let store = store_dir.path();
+    let make = |actor: &str, version: &str| {
+        create_held_object(
+            store,
+            actor,
+            &format!(
+                "[kairo]\nschema = 1\nkind = \"software\"\nname = \"make\"\n\n\
+                 [[provides]]\nprovides = \"tool:make\"\nversion = \"{version}\"\n"
+            ),
+        )
+    };
+    let older_owner = create_local_actor(store)?;
+    let newer_owner = create_local_actor(store)?;
+    let older = make(&older_owner, "4.3")?;
+    let newer = make(&newer_owner, "4.4")?;
+    let app = create_held_object(
+        store,
+        &older_owner,
+        r#"
+        [kairo]
+        schema = 1
+        kind = "software"
+        name = "app"
+
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:make"
+        "#,
+    )?;
+    let plan = |prefer: &[&String]| {
+        run_in_store(
+            store,
+            Command::Build {
+                snapshot_ref: format!("object:{app}"),
+                target: "release".to_owned(),
+                actor: None,
+                plan_only: true,
+                json: false,
+                prefer: prefer.iter().map(|actor| (*actor).clone()).collect(),
+            },
+        )
+    };
+    let chose = |plan: &str, object: &str| {
+        plan.contains(&format!("tool:make -> object:{object} (content)"))
+    };
+
+    // Both owners are local: the higher version.
+    let output = plan(&[])?;
+    assert!(chose(&output, &newer), "{output}");
+    assert!(
+        output.contains(&format!(
+            "owner actor:{older_owner} (local): a lower version"
+        )),
+        "{output}"
+    );
+    // Named, the lower version's owner.
+    let output = plan(&[&older_owner])?;
+    assert!(chose(&output, &older), "{output}");
+    assert!(
+        output.contains(&format!(
+            "owner actor:{newer_owner} (local): its owner ranks lower"
+        )),
+        "{output}"
+    );
+    // The config names one; a flag comes before it.
+    std::fs::write(
+        store.join("config.toml"),
+        format!("[resolve]\nprefer = [\"{older_owner}\"]\n"),
+    )?;
+    assert!(chose(&plan(&[])?, &older));
+    assert!(chose(&plan(&[&newer_owner])?, &newer));
+    let error = plan(&[&"actor:x".to_owned()]).expect_err("not a bare id");
+    assert!(matches!(error, CliError::ParseActorId { .. }), "{error}");
+    Ok(())
+}
+
+#[test]
 fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn std::error::Error>>
 {
     if kairo_test_support::git::skip_if_no_git() {
@@ -8384,6 +8469,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     let plan_hash = parse_field(&plan, "plan = ")?;
@@ -8447,6 +8533,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             actor: None,
             plan_only: true,
             json: true,
+            prefer: Vec::new(),
         },
     )?;
     let value: serde_json::Value = serde_json::from_str(&json)?;
@@ -8462,6 +8549,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     );
     assert!(
@@ -8477,6 +8565,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     );
     assert!(
@@ -8492,6 +8581,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     );
     assert!(matches!(bad_ref, Err(CliError::NotASnapshotRef { .. })));
@@ -8612,6 +8702,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     );
     assert!(
@@ -8633,6 +8724,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(built.contains("builds = 1\n"), "{built}");
@@ -8734,6 +8826,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     );
     let Err(CliError::BuildFailed { status, summary }) = failed else {
@@ -8810,6 +8903,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     );
     assert!(
@@ -8837,6 +8931,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             actor: Some(actor.clone()),
             plan_only: false,
             json: true,
+            prefer: Vec::new(),
         },
     )?;
     let value: serde_json::Value = serde_json::from_str(&allowed)?;
@@ -8944,6 +9039,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(first.contains("builds = 2\n"), "{first}");
@@ -8981,6 +9077,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(plan.contains("builds_first = 0\n"), "{plan}");
@@ -8998,6 +9095,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(second.contains("builds = 1\n"), "{second}");
@@ -9070,6 +9168,7 @@ fn reproduce_reruns_a_cited_plan_here_and_on_another_node() -> Result<(), Box<dy
                 actor: Some(actor.clone()),
                 plan_only: false,
                 json: false,
+                prefer: Vec::new(),
             },
         )
     };
@@ -9358,6 +9457,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(
@@ -9377,6 +9477,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(built.contains("status = success\n"), "{built}");
@@ -9448,6 +9549,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
             actor: Some(actor.clone()),
             plan_only: false,
             json: false,
+            prefer: Vec::new(),
         },
     );
     assert!(
@@ -9916,6 +10018,7 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
                 actor: Some(actor.clone()),
                 plan_only: false,
                 json: false,
+                prefer: Vec::new(),
             },
         )
     };
@@ -9960,6 +10063,7 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(
@@ -10236,6 +10340,7 @@ fn pulling_a_native_object_brings_the_sources_it_pins() -> Result<(), Box<dyn st
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(
@@ -10521,6 +10626,7 @@ fn file_sources_federate_directly_and_with_what_pins_them() -> Result<(), Box<dy
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(
@@ -10771,6 +10877,7 @@ fn a_pushed_wrapper_carries_the_sources_it_pins() -> Result<(), Box<dyn std::err
             actor: None,
             plan_only: true,
             json: false,
+            prefer: Vec::new(),
         },
     )?;
     assert!(

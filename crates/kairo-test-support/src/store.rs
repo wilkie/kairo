@@ -20,8 +20,9 @@ use kairo_identity::{ActorGenesisBody, ActorKind, PublicKey, SecretSigningKey};
 use kairo_keystore::{FilesystemKeystore, Keystore};
 use kairo_object::ObjectManifest;
 use kairo_statement::{
-    ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind, ObjectRevisionBody,
-    ObjectVersionTagBody, RevisionId, SemverVersion, Signature, SignedStatement, UnsignedStatement,
+    ActorTrustBody, ObjectBranchBody, ObjectGenesisBody, ObjectGenesisStatement, ObjectKind,
+    ObjectRevisionBody, ObjectVersionTagBody, RevisionId, SemverVersion, Signature,
+    SignedStatement, TrustDecision, TrustScope, UnsignedStatement,
 };
 use kairo_store::{ActorStore, BlobStore, FilesystemStore, ObjectStore, StatementStore};
 use tempfile::TempDir;
@@ -207,6 +208,18 @@ impl StoreFixture {
         revision: &CreatedRevision,
         name: &str,
     ) -> CreatedBranch {
+        self.set_branch_at(actor, object, revision, name, FIXTURE_TIMESTAMP)
+    }
+
+    /// [`StoreFixture::set_branch`], signed `seconds` after the epoch.
+    pub fn set_branch_at(
+        &self,
+        actor: &CreatedActor,
+        object: &CreatedObject,
+        revision: &CreatedRevision,
+        name: &str,
+        seconds: i64,
+    ) -> CreatedBranch {
         let body = ObjectBranchBody::new(
             object.object_id.clone(),
             name,
@@ -221,7 +234,7 @@ impl StoreFixture {
             .link_to_chain(UnsignedStatement::new(
                 actor.actor_id.clone(),
                 subject,
-                Timestamp::from_seconds(FIXTURE_TIMESTAMP),
+                Timestamp::from_seconds(seconds),
                 body,
             ))
             .expect("chain tips");
@@ -241,6 +254,41 @@ impl StoreFixture {
             statement_id,
             statement,
         }
+    }
+
+    /// Sign and persist `by`'s `general`-scope opinion that `of` is
+    /// trusted.
+    pub fn trust(&self, by: &CreatedActor, of: &ActorId) -> StatementId {
+        let body = ActorTrustBody::new(
+            of.clone(),
+            TrustScope::general(),
+            Some(TrustDecision::Trusted),
+            None,
+            None,
+        )
+        .expect("trust well-formed");
+        let subject: KairoRef = format!("actor:{of}").parse().expect("subject parse");
+        let unsigned = self
+            .store
+            .link_to_chain(UnsignedStatement::new(
+                by.actor_id.clone(),
+                subject,
+                Timestamp::from_seconds(FIXTURE_TIMESTAMP),
+                body,
+            ))
+            .expect("chain tips");
+        let signature = Signature::new(
+            by.actor_id.clone(),
+            by.signing.public_key().key_id().to_string(),
+            "ed25519",
+            by.signing
+                .sign(&unsigned.canonical_bytes())
+                .bytes()
+                .to_vec(),
+        );
+        self.store
+            .put_actor_trust(&SignedStatement::new(unsigned, signature))
+            .expect("put_actor_trust")
     }
 
     /// Sign and persist an `ObjectVersionTag` binding `version` to

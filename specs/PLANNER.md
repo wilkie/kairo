@@ -124,9 +124,15 @@ are for one architecture while labels such as `tool:kaem` are not.
 Where either side declares no environment, candidates are not filtered;
 content candidates never are.
 
-The planner ranks candidates using local policy.
+The planner ranks candidates using local policy. Today's ranking
+(`DECISIONS.md` §43, §48): the owner's tier (owners named by
+`--prefer` or `[resolve] prefer`, then the node's own actors, then
+actors they trust at `general` scope, then everyone else), then the
+highest version, then artifact providers before content providers,
+then the most recently published, then object id. Losing candidates
+are listed with the rank they fell behind on.
 
-Signals may include:
+Signals later policy may add include:
 
 ```text
 trusted actor explicitly claimed capability

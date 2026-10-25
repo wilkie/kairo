@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use kairo_core::ObjectId;
+use kairo_core::{ActorId, ObjectId};
 use kairo_resolver::Index;
 
 use crate::commands::build::CacheManifests;
@@ -64,6 +64,9 @@ pub(crate) struct Entry {
     pub(crate) version: Option<String>,
     /// A child's parent.
     pub(crate) parent: Option<ObjectId>,
+    /// The object's creator, a child's being its parent's: whose offers
+    /// these are when the resolver ranks owners (§48).
+    pub(crate) owner: ActorId,
 }
 
 /// Every object the index holds, and each of their children.
@@ -84,6 +87,7 @@ pub(crate) fn entries(index: &Index) -> Vec<Entry> {
                 .collect(),
             version: None,
             parent: None,
+            owner: candidate.owner.clone(),
         });
         for target in manifest.build_targets() {
             for child in target.children() {
@@ -105,6 +109,7 @@ pub(crate) fn entries(index: &Index) -> Vec<Entry> {
                         .collect(),
                     version: child.version().map(str::to_owned),
                     parent: Some(candidate.object.clone()),
+                    owner: candidate.owner.clone(),
                 });
             }
         }
@@ -203,6 +208,7 @@ fn format_text(results: &[Entry], query: &Query) -> String {
         if let Some(parent) = &entry.parent {
             let _ = writeln!(out, "  parent = object:{parent}");
         }
+        let _ = writeln!(out, "  owner = actor:{}", entry.owner);
     }
     for term in &query.ignored {
         let _ = writeln!(out, "ignored = {term}");
@@ -229,6 +235,7 @@ fn format_json(results: &[Entry], query: &Query) -> String {
                 })).collect::<Vec<_>>(),
                 "version": entry.version,
                 "parent": entry.parent.as_ref().map(ToString::to_string),
+                "owner": entry.owner.to_string(),
                 "source": "local",
                 "validation": "unverified",
                 "locality": "local",
@@ -262,6 +269,7 @@ mod tests {
                 .collect(),
             version: None,
             parent: parent.then(|| ObjectId::from_bytes(b"test", b"parent")),
+            owner: ActorId::from_bytes(b"test", b"owner"),
         }
     }
 

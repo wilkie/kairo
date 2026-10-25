@@ -4422,7 +4422,9 @@ Sub-decisions:
    read leniently (`2.69` as `2.69.0`). Offers whose version doesn't
    parse, or that declare none, come after every versioned one; among
    equals, the index's order stands (artifact providers before content
-   providers, then object id). Before this the choice among satisfying
+   providers, then object id). *Amended by §48:* owners rank before
+   versions, and among equals the newest published comes before object
+   id. Before this the choice among satisfying
    offers was by object id, which for live-bootstrap's nine autoconf
    children (§41 sub-decision 6) meant an arbitrary one.
 
@@ -4760,3 +4762,88 @@ Affected specs:
 - `GLOSSARY.md` "Fixity" — where fixity is checked.
 - `crates/kairo-store/AGENTS.md` — the fixity rule covers records;
   blob bytes are read as stored.
+
+---
+
+## 48. Owners Rank Offers Before Versions; the Newest Published Breaks Ties
+
+Decision: when more than one offer satisfies a requirement, the
+resolver ranks them by their **owner** first: owners the node names,
+then the node's own actors, then actors those trust, then everyone
+else. It takes the highest version only among offers whose owners rank
+alike. Among offers equal on owner and version, an artifact provider
+comes before a content provider, as before; then the offer **published
+most recently**; and only then the lower object id. A stranger's offer
+is used only when no better-ranked offer satisfies the requirement.
+Disambiguation is by owner and by version, never by the shape of an
+offer: a child is not preferred over a whole object, nor the reverse.
+
+Sub-decisions:
+
+1. **An offer's owner is its object's creator.** The resolver reads
+   only the creator's `head` branch and version tags (§33), so the
+   creator is the actor vouching for what an object offers. A child's
+   owner is its parent's creator. Owners rank in four tiers:
+   - **preferred:** actors named by `kairo build --prefer <actor>`
+     (repeatable, most preferred first), then by `[resolve] prefer` in
+     `<store>/config.toml` (bare actor ids, in file order), each by its
+     position in that combined list;
+   - **local:** actors this node holds keys for;
+   - **trusted:** actors a local actor trusts at `general` scope, the
+     rule development mode already uses for signers (§33 sub-decision
+     4). An unreadable trust record leaves the owner unranked;
+   - **unranked:** everyone else.
+   With no preference given, and no keys held, every owner is
+   unranked, and the order is §43's.
+
+2. **Owner before version.** A preference that a higher version from
+   anyone overrides would not protect anything. With owner first, an
+   object a stranger publishes as `tool:gcc 99.0` and a federation pull
+   brings in can't take over every build that names `tool:gcc`. The
+   cost is that a trusted owner's older version beats a stranger's
+   newer one; the plan's diagnostics show the newer one and why it
+   lost, and naming its owner, or pinning its object, takes it.
+
+3. **The newest published, then object id.** Among offers equal on
+   owner, version, and kind, the one whose `head` branch statement was
+   signed most recently wins. Its `created_at` is the owner's own
+   claim, and it only orders offers that owner and version can't tell
+   apart: in practice, the same owner publishing the same label twice,
+   where the later is what they mean now. Exactly equal offers fall to
+   the lower object id. This supersedes §43 sub-decision 1's
+   tie-break, "the index's order (artifact providers before content
+   providers, then object id)".
+
+4. **Diagnostics say why.** Each requirement's losing offers are listed
+   in ranking order with their version, owner, and tier, and the first
+   rank they fell behind on: `its owner ranks lower`, `a lower
+   version`, `content, not an artifact`, `published earlier`, `after it
+   by object id`. `kairo provider resolve` ranks as the resolver does,
+   with the configured preference and local actors, and shows each
+   candidate's owner and tier; `kairo search` shows each result's owner.
+
+5. **Release candidates need nothing new.** Versions order by semver
+   (§43), so `4.0.4-rc.1` sorts below `4.0.4`, and a range such as
+   `^4` doesn't match a pre-release unless it names one. An early build
+   tagged as a pre-release gives way as soon as the release is
+   published.
+
+6. **Plans pin the choice.** Owner preference is node policy, like the
+   engine, and isn't in the plan hash; a plan records what was chosen,
+   so a later change to `prefer` changes new plans, never existing
+   ones.
+
+Rationale: the duplicates that made ties matter came from one owner
+publishing the same label twice, so the ordering among equals is what
+decides them, and the most recent publication is what an owner means.
+Disambiguating between owners belongs to the person running the
+build, who knows whom they trust; versions, pre-releases included,
+belong to the owner. A rule about an offer's shape (a child against a
+whole artifact) speaks to neither.
+
+Affected specs:
+
+- `DECISIONS.md` §43 sub-decision 1 — its tie-break is superseded.
+- `PLANNER.md` §4.2 — the ranking.
+- `CLI.md` §17 — `kairo build --prefer`, the `alternatives` lines,
+  `kairo provider resolve`, and `kairo search`'s `owner`.

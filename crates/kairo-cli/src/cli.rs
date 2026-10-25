@@ -217,6 +217,11 @@ pub(crate) enum Command {
         plan_only: bool,
         #[arg(long)]
         json: bool,
+        /// An actor whose offers come before every other owner's, ahead
+        /// of `[resolve] prefer` (`specs/DECISIONS.md` §48); repeat to
+        /// name several, most preferred first.
+        #[arg(long = "prefer", value_name = "ACTOR")]
+        prefer: Vec<String>,
     },
     /// Re-run the plan a `BuildResult` cites and compare artifacts
     /// (`specs/DECISIONS.md` §33 sub-decision 9). Runs exactly what the

@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **Owner preference among offers (`DECISIONS.md` §48).** The resolver
+  ranks offers by owner before version: actors named by `kairo build
+  --prefer` or `[resolve] prefer`, then this node's own actors, then
+  those they trust at `general` scope, then everyone else. Among equal
+  offers the most recently published wins before object id. Plans list
+  each losing offer's owner, tier, and why it lost; `kairo provider
+  resolve` ranks the same way and `kairo search` shows owners.
+
 - **`kairo store verify` (`DECISIONS.md` §47).** Re-hashes every
   record and blob in the store, and the build's execution records,
   against the id each is filed under, lists every one that doesn't

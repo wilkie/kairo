@@ -8,9 +8,13 @@
 //! pinning off. Only the keys implemented so far are accepted; the
 //! other sections `DAEMON.md` §15 sketches (`[api]`, `[policy]`) are
 //! added as their features land. `[runtime]` holds the build
-//! development-mode switches (`DECISIONS.md` §33 sub-decision 4).
+//! development-mode switches (`DECISIONS.md` §33 sub-decision 4);
+//! `[resolve]` the owners whose offers the resolver prefers (§48).
 //!
 //! ```toml
+//! [resolve]
+//! prefer = ["zQm..."]
+//!
 //! [federation]
 //! enabled = true
 //!
@@ -47,6 +51,15 @@ pub fn config_path(store_root: &Path) -> PathBuf {
 pub struct Config {
     pub federation: FederationConfig,
     pub runtime: RuntimeConfig,
+    pub resolve: ResolveConfig,
+}
+
+/// `[resolve]` (`DECISIONS.md` §48): how the resolver chooses among
+/// offers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolveConfig {
+    /// Owners whose offers come before every other's, in file order.
+    pub prefer: Vec<ActorId>,
 }
 
 /// `[runtime]` (`DECISIONS.md` §33 sub-decision 4, §34 sub-decision
@@ -308,6 +321,15 @@ struct RawConfig {
     federation: Option<RawFederation>,
     #[serde(default)]
     runtime: Option<RawRuntime>,
+    #[serde(default)]
+    resolve: Option<RawResolve>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawResolve {
+    #[serde(default)]
+    prefer: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -500,10 +522,24 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
     };
 
     let runtime = parse_runtime(raw.runtime.unwrap_or_default(), &invalid)?;
+    let mut prefer = Vec::new();
+    for raw in raw.resolve.unwrap_or_default().prefer {
+        let actor = ActorId::new(raw.clone()).map_err(|error| {
+            invalid(format!(
+                "resolve.prefer: {raw:?} is not a bare actor id: {error}"
+            ))
+        })?;
+        if prefer.contains(&actor) {
+            return Err(invalid(format!("resolve.prefer: {raw} is listed twice")));
+        }
+        prefer.push(actor);
+    }
+    let resolve = ResolveConfig { prefer };
     let Some(federation) = raw.federation else {
         return Ok(Config {
             federation: FederationConfig::default(),
             runtime,
+            resolve,
         });
     };
     let limits = federation.limits.unwrap_or_default();
@@ -653,6 +689,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config, ConfigError> {
             on_demand,
         },
         runtime,
+        resolve,
     })
 }
 
@@ -806,6 +843,23 @@ mod tests {
             Ok(config) => panic!("accepted: {config:?}"),
             Err(error) => error.to_string(),
         }
+    }
+
+    #[test]
+    fn resolve_prefer_lists_bare_actor_ids_in_order() {
+        let first = ActorId::from_bytes(b"test", b"first");
+        let second = ActorId::from_bytes(b"test", b"second");
+        let config = parse_ok(&format!(
+            "[resolve]\nprefer = [\"{second}\", \"{first}\"]\n"
+        ));
+        assert_eq!(config.resolve.prefer, [second.clone(), first]);
+        assert!(parse_ok("").resolve.prefer.is_empty());
+        assert!(parse_err("[resolve]\nprefer = [\"actor:x\"]\n").contains("bare actor id"));
+        assert!(parse_err(&format!(
+            "[resolve]\nprefer = [\"{second}\", \"{second}\"]\n"
+        ))
+        .contains("listed twice"));
+        assert!(parse_err("[resolve]\nfavour = []\n").contains("favour"));
     }
 
     const ACTOR: &str = "zQmTn1mdQDA1ryQZsiqYfRbqj5DGcG8TNvYcRmBrBLAuk5t";
