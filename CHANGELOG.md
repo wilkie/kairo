@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Stalled source fetches are retried (`DECISIONS.md` §40).** `kairo
+  source fetch` runs a fetch of a source or a submodule's pinned
+  commits again, up to three attempts, when git aborts the transfer
+  itself (too slow, dropped, ended early), before counting it failed
+  or trying a mirror; wrong requests and the size and time limits fail
+  at once.
+
 - **Runtime requirements and what a build confers (`DECISIONS.md`
   §46).** A target or child declares `requires`, what its artifact
   needs beside it wherever it is installed, and a provides entry

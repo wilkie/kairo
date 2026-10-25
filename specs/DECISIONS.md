@@ -4112,7 +4112,17 @@ Sub-decisions:
    mirror; nobody is told they are upstream's. Observations without
    `via` encode as before.
 
-4. **Mirrors are named explicitly.** `--mirror <source url>=<mirror
+4. *Added:* **Retried before falling back.** A fetch, of the top source
+   or a submodule's pinned commits, that git gives up on mid-transfer
+   (the `http.lowSpeedLimit` abort, a dropped connection, a pack that
+   ends early) is run again from the start, up to three attempts, five
+   then fifteen seconds apart; only then is the source's fetch counted
+   as failed and a mirror tried. A request that is wrong rather than
+   interrupted (a missing repository, refused authentication, an
+   unknown commit) fails at once, and the size and time limits are
+   never retried.
+
+5. **Mirrors are named explicitly.** `--mirror <source url>=<mirror
    url>`, repeatable, both canonicalized as source URLs; nothing is
    guessed. The stage0-posix import names the maintainer's GitHub
    mirror of mescc-tools, whose Savannah home was unreachable during

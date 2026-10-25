@@ -466,7 +466,14 @@ impl GitCache {
         commits: &[GitRevision],
         limits: &FetchLimits,
     ) -> Result<(), GitError> {
-        self.fetch_commits_with(object_id, url, commits, limits, crate::protocol::fetch)
+        self.fetch_commits_with(
+            object_id,
+            url,
+            commits,
+            limits,
+            crate::protocol::fetch,
+            false,
+        )
     }
 
     /// Fetch `commits` by id from a source at `url` (§37 sub-decision
@@ -485,6 +492,7 @@ impl GitCache {
             commits,
             limits,
             crate::protocol::fetch_source,
+            true,
         )?;
         for commit in commits {
             self.set_ref(
@@ -503,6 +511,7 @@ impl GitCache {
         commits: &[GitRevision],
         limits: &FetchLimits,
         command: fn(&Path, &str) -> Command,
+        retry: bool,
     ) -> Result<(), GitError> {
         let Some(format) = commits.first().map(GitRevision::format) else {
             return Ok(());
@@ -537,13 +546,23 @@ impl GitCache {
             let oid = commit.oid();
             refspecs.push_str(&format!("{oid}:refs/kairo/fetched/{oid}\n"));
         }
-        run_watched(
-            command(quarantine.path(), url),
-            quarantine.path(),
-            url,
-            refspecs.as_bytes(),
-            limits,
-        )?;
+        if retry {
+            run_retrying(
+                || command(quarantine.path(), url),
+                quarantine.path(),
+                url,
+                refspecs.as_bytes(),
+                limits,
+            )?;
+        } else {
+            run_watched(
+                command(quarantine.path(), url),
+                quarantine.path(),
+                url,
+                refspecs.as_bytes(),
+                limits,
+            )?;
+        }
         admit(&pool, &quarantine, format, commits)
     }
 
@@ -737,8 +756,8 @@ impl GitCache {
         }
         let refspecs =
             format!("+refs/heads/*:{OBSERVE_PREFIX}heads/*\n+refs/tags/*:{OBSERVE_PREFIX}tags/*\n");
-        run_watched(
-            crate::protocol::fetch_source(quarantine.path(), url),
+        run_retrying(
+            || crate::protocol::fetch_source(quarantine.path(), url),
             quarantine.path(),
             url,
             refspecs.as_bytes(),
@@ -870,6 +889,87 @@ const FETCH_POLL: Duration = Duration::from_millis(50);
 /// fetch outlives `limits.timeout`. Git has no fetch-side size cap of
 /// its own (`receive.maxInputSize` is push-only), so this watches
 /// what lands on disk.
+/// How many times a source fetch is tried, and how long to wait before
+/// each retry: a stalled or dropped transfer from a public host is
+/// usually gone a few seconds later.
+const SOURCE_FETCH_ATTEMPTS: usize = 3;
+#[cfg(not(test))]
+const SOURCE_FETCH_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_secs(5),
+    std::time::Duration::from_secs(15),
+];
+#[cfg(test)]
+const SOURCE_FETCH_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_millis(10),
+    std::time::Duration::from_millis(10),
+];
+
+/// [`run_watched`] for a source fetch, run again from the start, up to
+/// [`SOURCE_FETCH_ATTEMPTS`] times, when git gave up on the transfer
+/// itself ([`is_transient_transfer_failure`]). The quarantine keeps
+/// whatever a failed attempt wrote, which the next one may reuse; only
+/// what is complete is ever admitted to the pool. Anything else, and the
+/// last failure, is returned as is, the stderr saying how many attempts
+/// were made.
+fn run_retrying(
+    command: impl Fn() -> Command,
+    quarantine: &Path,
+    url: &str,
+    refspecs: &[u8],
+    limits: &FetchLimits,
+) -> Result<(), GitError> {
+    let mut attempt = 1;
+    loop {
+        match run_watched(command(), quarantine, url, refspecs, limits) {
+            Err(GitError::CacheGitInvocation {
+                command,
+                stderr,
+                exit_code,
+            }) if is_transient_transfer_failure(&stderr) => {
+                if attempt >= SOURCE_FETCH_ATTEMPTS {
+                    return Err(GitError::CacheGitInvocation {
+                        command,
+                        stderr: format!("{stderr}(the transfer failed {attempt} times)\n"),
+                        exit_code,
+                    });
+                }
+                std::thread::sleep(SOURCE_FETCH_BACKOFF[attempt - 1]);
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether git's stderr says the transfer itself failed, a stall or a
+/// dropped connection, rather than that the request was wrong: the
+/// `http.lowSpeedLimit` abort (curl 28), a reset or closed connection,
+/// or a pack that ended early. A missing repository, refused
+/// authentication, or an unknown commit is not transient.
+pub(crate) fn is_transient_transfer_failure(stderr: &str) -> bool {
+    const PERMANENT: [&str; 4] = [
+        "repository not found",
+        "authentication failed",
+        "not our ref",
+        "couldn't find remote ref",
+    ];
+    const TRANSIENT: [&str; 10] = [
+        "operation too slow",
+        "curl 28",
+        "curl 18",
+        "curl 56",
+        "rpc failed",
+        "early eof",
+        "unexpected disconnect",
+        "connection reset",
+        "connection timed out",
+        "the remote end hung up unexpectedly",
+    ];
+    let stderr = stderr.to_ascii_lowercase();
+    !PERMANENT.iter().any(|marker| stderr.contains(marker))
+        && TRANSIENT.iter().any(|marker| stderr.contains(marker))
+}
+
 fn run_watched(
     mut command: Command,
     quarantine: &Path,
@@ -1296,6 +1396,75 @@ fn git_init_bare(path: &Path, format: GitObjectFormat) -> Result<(), GitError> {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+
+    #[test]
+    fn a_stalled_source_fetch_is_tried_again_and_a_wrong_one_is_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(dir.path().join("objects")).expect("objects");
+        let marker = dir.path().join("tried");
+        let limits = FetchLimits {
+            max_bytes: 1 << 20,
+            timeout: Duration::from_secs(30),
+        };
+        // Stalls on its first run, succeeds on its second.
+        let flaky = || {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(format!(
+                "cat >/dev/null; if [ -e {0} ]; then exit 0; fi; touch {0}; \
+                 echo 'error: RPC failed; curl 28 Operation too slow' >&2; exit 128",
+                marker.display()
+            ));
+            command
+        };
+        run_retrying(flaky, dir.path(), "https://example.com/r", b"", &limits)
+            .expect("the second attempt succeeds");
+        // Always stalls: three attempts, then the failure, counted.
+        let stalled = || {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg("cat >/dev/null; echo 'fatal: early EOF' >&2; exit 128");
+            command
+        };
+        let error = run_retrying(stalled, dir.path(), "https://example.com/r", b"", &limits)
+            .expect_err("still stalled");
+        assert!(
+            error.to_string().contains("(the transfer failed 3 times)"),
+            "{error}"
+        );
+        // A missing repository fails at once, with nothing added.
+        let missing = || {
+            let mut command = Command::new("sh");
+            command
+                .arg("-c")
+                .arg("cat >/dev/null; echo 'remote: Repository not found.' >&2; exit 128");
+            command
+        };
+        let error = run_retrying(missing, dir.path(), "https://example.com/r", b"", &limits)
+            .expect_err("not found");
+        assert!(!error.to_string().contains("times)"), "{error}");
+    }
+
+    #[test]
+    fn stalls_and_drops_are_transient_and_wrong_requests_are_not() {
+        for stderr in [
+            "error: RPC failed; curl 28 Operation too slow. Less than 1024 bytes/sec transferred the last 60 seconds\nfatal: early EOF\n",
+            "fetch-pack: unexpected disconnect while reading sideband packet\n",
+            "error: RPC failed; curl 56 GnuTLS recv error (-9): Error decoding the received TLS packet.\n",
+            "fatal: the remote end hung up unexpectedly\n",
+        ] {
+            assert!(is_transient_transfer_failure(stderr), "{stderr}");
+        }
+        for stderr in [
+            "remote: Repository not found.\nfatal: repository 'https://github.com/x/y/' not found\n",
+            "fatal: remote error: upload-pack: not our ref 0123\n",
+            "fatal: Authentication failed for 'https://example.com/r'\n",
+            "fatal: invalid refspec\n",
+        ] {
+            assert!(!is_transient_transfer_failure(stderr), "{stderr}");
+        }
+    }
+
     use super::*;
     use std::sync::Arc;
     use std::sync::Barrier;

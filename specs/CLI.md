@@ -1714,7 +1714,10 @@ its own URL fails, it is fetched through the mirror instead, filed
 under its own source id, and its observation records `via` the mirror
 (`DECISIONS.md` §40). The output shows `via = <mirror>` for the top
 source and `, via <mirror>` in a submodule's `observed:` line, and
-`kairo source show` shows the newest observation's `via`.
+`kairo source show` shows the newest observation's `via`. Before any
+mirror is tried, a fetch that git aborts mid-transfer (too slow,
+dropped, ended early) is run again, up to three attempts in all; a
+failure that persists says `(the transfer failed 3 times)`.
 
 `fetch-file` downloads one file and archives it as a file source:
 `https` only (`http` for a loopback host), at most one redirect, to a
