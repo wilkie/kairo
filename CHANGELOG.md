@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **An object that doesn't build is its own artifact (`DECISIONS.md`
+  §50).** `[content]` takes `root` (the part of the tree that is its
+  artifact) and `install` (where it is installed when required); a
+  required content object with `install` is installed as a built
+  artifact is, links and all, including through a runtime closure. A
+  content object without them is unchanged.
+
 - **live-bootstrap pass 3: to gcc 4.7.4 (`DECISIONS.md` §49).**
   `bootstrap/live-bootstrap-gcc-4.7.4/` goes on from pass 2's root
   through openssl 3.6.0, ca-certificates, curl 8.17.0, and patch 2.8 to
@@ -536,6 +543,14 @@ rather than per-commit.
   known `node` actor, its key active and unrevoked at the timestamp,
   ±300 s, and a nonce accepted once per window. Failures are the new
   `401 fed_unauthenticated`. No endpoint requires it yet; push will.
+
+### Wire format
+
+- **`[content]` `root` and `install` (`DECISIONS.md` §50)** are encoded
+  in a manifest's canonical bytes after `kind`, each only when given,
+  and a plan's `content` resolution carries them only when the object
+  declares them; manifests and plans without them keep their bytes and
+  hashes.
 
 ### Changed
 

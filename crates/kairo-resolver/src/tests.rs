@@ -612,7 +612,7 @@ fn object_dependencies_resolve_by_version_tag_or_pinned_snapshot() -> TestResult
     let resolution = world.resolve(&app.object_id, "release")?;
     assert!(matches!(
         &resolution.plan.manifest.requirements[0].resolved,
-        Resolved::Content { object, snapshot } if object == &lib.object_id.to_string()
+        Resolved::Content { object, snapshot, .. } if object == &lib.object_id.to_string()
             && snapshot == &first_snapshot.snapshot_id().to_string()
     ));
 
@@ -1654,5 +1654,77 @@ fn a_release_candidate_gives_way_to_the_release() -> TestResult {
         let resolution = world.resolve(&app.object_id, "release")?;
         assert_eq!(first_content(&resolution), Some(release.object_id.as_str()));
     }
+    Ok(())
+}
+
+#[test]
+fn a_tree_that_doesnt_build_is_installed_as_what_requires_it_needs() -> TestResult {
+    let mut world = World::new();
+    // The layout: its own tree, the part under files/, installed at /.
+    let (layout, _) = world.object(&manifest(
+        "linux-filesystem",
+        r#"
+        [content]
+        kind = "tree"
+        root = "files"
+        install = "/"
+        [[provides]]
+        provides = "data:linux-filesystem:merged-usr"
+        version = "1.0.0"
+        "#,
+    ));
+    let (_libc, _) = world.object(&manifest(
+        "libc",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "libc"
+        root = "libc"
+        version = "1.2.5"
+        requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+        provides = [{ provides = "lib:c" }]
+        "#,
+    ));
+    let (app, _) = world.object(&app_requiring("lib:c", None));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    assert_eq!(
+        runtime_labels(&resolution),
+        [(
+            "data:linux-filesystem:merged-usr".to_owned(),
+            vec![
+                "lib:c".to_owned(),
+                "data:linux-filesystem:merged-usr".to_owned()
+            ]
+        )]
+    );
+    assert!(
+        matches!(
+            &resolution.plan.manifest.runtime[0].resolved,
+            Resolved::Content { object, install, root, .. }
+                if object == &layout.object_id.to_string()
+                    && install.as_deref() == Some("/")
+                    && root.as_deref() == Some("files")
+        ),
+        "{:?}",
+        resolution.plan.manifest.runtime
+    );
+    // A tree that says neither is resolved as before, and its plan entry
+    // spells no new fields.
+    let (lib, _) = world.object(&content_provider("lib:zlib:source", Some("1.3.1")));
+    let (plain, _) = world.object(&app_requiring("lib:zlib:source", None));
+    let resolution = world.resolve(&plain.object_id, "release")?;
+    let resolved = &resolution.plan.manifest.requirements[0].resolved;
+    let Resolved::Content { snapshot, .. } = resolved else {
+        return Err(format!("not content: {resolved:?}").into());
+    };
+    assert_eq!(
+        serde_json::to_string(resolved)?,
+        format!(
+            r#"{{"kind":"content","object":"{}","snapshot":"{snapshot}"}}"#,
+            lib.object_id
+        )
+    );
     Ok(())
 }

@@ -31,7 +31,7 @@ A guest command running under this contract sees exactly:
 | `/kairo/src` | the snapshot's tree, with relative placements in it; the command runs in `/kairo/src/<workdir>` | read-write |
 | `/kairo/package` | empty; the build stages its artifact here, laid out as it wants to be installed | read-write |
 | `/kairo/artifact/<artifact id>` | each artifact whose build target declares `install = false`, unless placed | read-only |
-| `/kairo/content/<snapshot id>` | each content provider's tree, unless placed | read-only |
+| `/kairo/content/<snapshot id>` | each content provider's tree (the part under its `[content] root`), unless placed, or installed at its `[content] install` root (`DECISIONS.md` §50), as an artifact is | read-only |
 | `/kairo/source/<source id>/<oid>` | each source dependency without a `path`, at its pinned commit | read-only |
 | `/tmp` | empty | read-write |
 | `/proc` | the sandbox's own processes | — |

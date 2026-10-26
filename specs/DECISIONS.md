@@ -4924,3 +4924,76 @@ generated scripts.
 
 Affected specs: none beyond this entry; the wrappers' READMEs
 describe the layout.
+
+---
+
+## 50. An Object That Doesn't Build Is Its Own Artifact
+
+Decision: a content object, one whose `[content] kind = "tree"` and
+whose provides entries name no build target (§33 sub-decision 2), is
+its own artifact: its tree, or the part of it under `[content] root`,
+with its files, executable bits, and links. It is installed like a
+built artifact, at `[content] install`, when one of its labels is
+required, as a dependency or in a runtime closure (§46). Data objects
+and the objects a build's outputs become (children, §41) are then the
+same shape: an object whose files are what it provides.
+
+Sub-decisions:
+
+1. **`root` and `install`.** `[content]` gains the two settings
+   `[build.targets.artifact]` has (§41 sub-decision 3):
+   ```toml
+   [content]
+   kind = "tree"
+   root = "files"
+   install = "/"
+   ```
+   `root` is a relative path in the tree, default `"."`. It is needed
+   because the tree holds the object's own `kairo.toml`. `install` is an
+   absolute guest path, or `false`.
+
+2. **Not installed unless it says where.** Unlike a built artifact,
+   whose install root defaults to `/`, a tree without `install` stays
+   at `/kairo/content/<snapshot>`, as before: a tree holding its own
+   manifest can't sensibly land at `/` by default, and every content
+   object so far is read where it is, not installed. A content object
+   without `root` or `install` is resolved, placed, and hashed as
+   before; its manifest's canonical bytes and its plan entries are
+   unchanged.
+
+3. **The same install as an artifact.** In an engine's guest, the part
+   under `root` is recorded as an artifact tree (its files stored as a
+   build's outputs are, its links as links, under §39's rules) and
+   installed with the other artifacts in requirement order, copied or
+   overlaid, the first winning where two provide the same path. Placed
+   at a path, or mounted at `/kairo/content/<snapshot>`, a content
+   object is likewise the part under its `root`. Nothing runs: a
+   content object needs no environment and no engine of its own.
+
+4. **In plans.** A `content` resolution gains `install` and `root`, each
+   present only when the object declares it
+   (`schemas/canonical/resolved-manifest-v1.md`).
+
+5. **The first such object: `linux-filesystem`.** `bootstrap/linux-filesystem/`
+   holds the merged-/usr links, `bin → usr/bin`, `lib → usr/lib`, and
+   `sbin → usr/sbin`, committed as links under `files/` and installed at
+   `/`, and provides `data:linux-filesystem:merged-usr`. It depends on
+   nothing. A package that needs the layout wherever it is installed
+   requires the label, as live-bootstrap's musl will: its loader is at
+   `usr/lib/ld-musl-i386.so.1`, and what is linked against it names
+   `/lib/ld-musl-i386.so.1`. `/usr/sbin → bin` is left out: a package
+   with files under `usr/sbin/` (live-bootstrap's util-linux) would
+   collide with it.
+
+Rationale: an object that doesn't build already has exactly what a
+build would produce, its files; making those its artifact, installed
+by the same rules, lets a layout, a dataset, or a configuration be a
+small object that others require, without a build step that runs
+nothing and depends on a tool only to copy files.
+
+Affected specs:
+
+- `OBJECT.md` §4.2 — `root` and `install`.
+- `schemas/canonical/object-manifest-v1.md` — `ContentSection`.
+- `schemas/canonical/resolved-manifest-v1.md` — `content` fields.
+- `schemas/environment/linux-v1.md` — where content lands.

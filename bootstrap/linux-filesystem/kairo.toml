@@ -1,0 +1,23 @@
+# The merged-/usr layout (specs/DECISIONS.md §50): /bin, /lib, and /sbin
+# as links into /usr, as live-bootstrap's merged_usr step makes them
+# and as distributions with a merged /usr have them. It doesn't build:
+# its tree under files/ is its artifact, installed at /. A package that
+# needs the layout wherever it is installed requires the label, as
+# live-bootstrap's musl does for its loader at /lib/ld-musl-i386.so.1.
+# /usr/sbin -> bin is left out: a package with files under usr/sbin/
+# would collide with it.
+[kairo]
+schema = 1
+kind = "software"
+name = "linux-filesystem"
+summary = "The merged-/usr layout: /bin, /lib, and /sbin as links into /usr."
+tags = ["filesystem", "layout"]
+
+[content]
+kind = "tree"
+root = "files"
+install = "/"
+
+[[provides]]
+provides = "data:linux-filesystem:merged-usr"
+version = "1.0.0"

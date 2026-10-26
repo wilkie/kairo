@@ -1886,3 +1886,110 @@ fn coexisting_providers_may_not_put_a_file_at_the_same_path() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn a_tree_that_doesnt_build_is_installed_as_its_artifact() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(BUSYBOX_PROVIDER);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    // The merged-/usr links, committed as links, under files/ (§50).
+    world.object(&[
+        (
+            "kairo.toml",
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "linux-filesystem"
+            [content]
+            kind = "tree"
+            root = "files"
+            install = "/"
+            [[provides]]
+            provides = "data:linux-filesystem:merged-usr"
+            version = "1.0.0"
+            "#,
+        ),
+        ("README.md", "The layout.\n"),
+        ("files/bin", "@link:usr/bin"),
+        ("files/lib", "@link:usr/lib"),
+        ("files/sbin", "@link:usr/sbin"),
+    ]);
+    let consumer = world.object(&[(
+        "kairo.toml",
+        &format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "consumer"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "for d in /bin /lib /sbin; do busybox readlink $d; done > /kairo/package/report && busybox ls / > /kairo/package/root"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "data:linux-filesystem:merged-usr"
+            "#
+        ),
+    )]);
+    let plan = world.plan_with(&host, &consumer.object_id, "release");
+    assert!(plan
+        .manifest
+        .requirements
+        .iter()
+        .any(|requirement| matches!(
+            &requirement.resolved,
+            Resolved::Content { install, root, .. }
+                if install.as_deref() == Some("/") && root.as_deref() == Some("files")
+        )));
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        1_700_000_000,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    let artifact = execution.artifact.as_ref().expect("artifact");
+    let file = |name: &str| {
+        world.blob_text(
+            artifact
+                .entries
+                .iter()
+                .find(|entry| entry.path() == name)
+                .and_then(|entry| entry.blob())
+                .expect("a file"),
+        )
+    };
+    assert_eq!(file("report"), "usr/bin\nusr/lib\nusr/sbin\n");
+    // Only the part under its root: its kairo.toml and README stay out.
+    let root = file("root");
+    assert!(root.lines().any(|name| name == "lib"), "{root}");
+    assert!(
+        !root
+            .lines()
+            .any(|name| name == "kairo.toml" || name == "README.md" || name == "files"),
+        "{root}"
+    );
+    Ok(())
+}

@@ -46,6 +46,12 @@ pub(crate) fn format_manifest_inspection(manifest: &ObjectManifest) -> String {
 
     if let Some(content) = manifest.content() {
         output.push_str(&format!("content.kind = {}\n", content.kind()));
+        if content.root() != "." {
+            output.push_str(&format!("content.root = {}\n", content.root()));
+        }
+        if let Some(install) = content.install() {
+            output.push_str(&format!("content.install = {install}\n"));
+        }
     }
 
     output.push_str(&format!("provides = {}\n", manifest.provides().len()));

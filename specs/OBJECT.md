@@ -281,7 +281,16 @@ authority for Object identity.
 ```toml
 [content]
 kind = "tree"
+root = "files"      # optional: the part of the tree that is its artifact
+install = "/"       # optional: where that is installed when required
 ```
+
+An object that doesn't build is its own artifact (`DECISIONS.md` §50):
+its tree, or the part of it under `root`, with its files, executable
+bits, and links. With `install`, a requirement on one of its content
+labels installs that part at the root it names, as a built artifact is
+installed at its target's install root; without it, the tree is at
+`/kairo/content/<snapshot>`.
 
 ### 4.3 Provides
 

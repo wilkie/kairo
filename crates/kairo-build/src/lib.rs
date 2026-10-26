@@ -349,6 +349,24 @@ pub fn artifact_at(
     Ok((id, slice))
 }
 
+/// The artifact an exported object tree is (`DECISIONS.md` §50): its
+/// files, executables, and links under `root`, stored as a build's
+/// outputs are.
+fn tree_artifact(
+    store: &FilesystemStore,
+    tree: &Path,
+    root: &str,
+) -> Result<(BlobId, ArtifactTree), BuildError> {
+    let bad = |reason: String| BuildError::BadArtifact(format!("{}: {reason}", tree.display()));
+    let entries = collect_package(store, tree, root).map_err(bad)?;
+    let tree = ArtifactTree::new(entries);
+    tree.validate().map_err(bad)?;
+    let bytes = tree.to_bytes().map_err(BuildError::Encode)?;
+    let id = BlobId::from_bytes(ARTIFACT_TREE_DOMAIN, &bytes);
+    store.put_blob(&id, &bytes).map_err(BuildError::Store)?;
+    Ok((id, tree))
+}
+
 fn write_tree(
     store: &FilesystemStore,
     artifact: &BlobId,
@@ -972,9 +990,12 @@ fn placement_target(src: &Path, path: &str) -> Result<PathBuf, BuildError> {
 
 /// What a requirement brings into the build.
 enum Placed {
+    /// An object's own tree, or the part of it under `root` that is its
+    /// artifact (`DECISIONS.md` §50).
     Content {
         object: ObjectId,
         snapshot: SnapshotId,
+        root: Option<String>,
     },
     /// An artifact, or a child object's slice of one under a root.
     Artifact(BlobId, Option<String>),
@@ -1252,16 +1273,21 @@ pub fn run_plan(
         };
         let placed = requirement.requested.placement();
         let install_root = match &requirement.resolved {
-            Resolved::Artifact { install, .. } => install.clone(),
+            Resolved::Artifact { install, .. } | Resolved::Content { install, .. } => {
+                install.clone()
+            }
             _ => None,
         };
         let what = match &requirement.resolved {
             Resolved::Content {
                 object: provider,
                 snapshot: provider_snapshot,
+                root,
+                ..
             } => Placed::Content {
                 object: ObjectId::new(provider.clone()).map_err(BuildError::Id)?,
                 snapshot: SnapshotId::new(provider_snapshot.clone()).map_err(BuildError::Id)?,
+                root: root.clone(),
             },
             Resolved::Artifact {
                 object: provider,
@@ -1335,15 +1361,30 @@ pub fn run_plan(
             continue;
         }
         let mount = match what {
-            Placed::Content { object, snapshot } => {
-                let host = deps.join("content").join(snapshot.as_str());
-                if !host.exists() {
-                    fs::create_dir_all(&host)
-                        .map_err(|source| io_error("creating", &host, source))?;
-                    export_tree(trees, &object, &snapshot, &host)?;
+            Placed::Content {
+                object,
+                snapshot,
+                root,
+            } => {
+                let tree = deps.join("content").join(snapshot.as_str());
+                if !tree.exists() {
+                    fs::create_dir_all(&tree)
+                        .map_err(|source| io_error("creating", &tree, source))?;
+                    export_tree(trees, &object, &snapshot, &tree)?;
+                }
+                // Its tree is its artifact (§50): one with an install
+                // root is installed like a built one.
+                if let (true, Some(install)) = (isolated, &install_root) {
+                    let (artifact, tree) =
+                        tree_artifact(store, &tree, root.as_deref().unwrap_or("."))?;
+                    installs.push((install.clone(), artifact, tree, label));
+                    continue;
                 }
                 Mount {
-                    host,
+                    host: match &root {
+                        Some(root) => tree.join(root),
+                        None => tree,
+                    },
                     guest: format!("/kairo/content/{snapshot}"),
                 }
             }
@@ -1507,9 +1548,16 @@ pub fn run_plan(
                 fs::write(&file, bytes).map_err(|source| io_error("writing", &file, source))?;
                 file
             }
-            Placed::Content { object, snapshot } => {
+            Placed::Content {
+                object,
+                snapshot,
+                root,
+            } => {
                 export_tree(trees, object, snapshot, &staging)?;
-                staging.clone()
+                match root {
+                    Some(root) => staging.join(root),
+                    None => staging.clone(),
+                }
             }
             Placed::Artifact(artifact, root) => {
                 let (artifact, tree) = artifact_at(store, artifact, root.as_deref())?;

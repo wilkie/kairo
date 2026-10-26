@@ -699,20 +699,45 @@ impl CanonicalEncode for KairoManifestSection {
     }
 }
 
+/// `[content]`: the object's own tree, which is its artifact when it
+/// doesn't build (`DECISIONS.md` §50).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentSection {
     kind: String,
+    root: String,
+    install: Option<String>,
 }
 
 impl ContentSection {
     pub fn kind(&self) -> &str {
         &self.kind
     }
+
+    /// The part of the tree that is the artifact: a relative path, or
+    /// `"."` for the whole tree.
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// Where it is installed in a guest that requires it: an absolute
+    /// path, or `None` for `/kairo/content/<snapshot>`.
+    pub fn install(&self) -> Option<&str> {
+        self.install.as_deref()
+    }
 }
 
 impl CanonicalEncode for ContentSection {
     fn encode_canonical(&self, out: &mut Vec<u8>) {
         encode_str(out, &self.kind);
+        // Each only when set, so manifests without them keep their hashes.
+        if self.root != "." {
+            encode_str(out, "root");
+            encode_str(out, &self.root);
+        }
+        if let Some(install) = &self.install {
+            encode_str(out, "install");
+            encode_str(out, install);
+        }
     }
 }
 
@@ -1960,13 +1985,29 @@ impl RawKairoSection {
 #[serde(deny_unknown_fields)]
 struct RawContentSection {
     kind: String,
+    root: Option<String>,
+    install: Option<RawInstall>,
 }
 
 impl RawContentSection {
     fn validate(self) -> Result<ContentSection, ManifestError> {
         ensure_non_empty("content.kind", &self.kind)?;
-
-        Ok(ContentSection { kind: self.kind })
+        let root = match self.root {
+            None => ".".to_owned(),
+            Some(root) if root == "." => root,
+            Some(root) => ensure_relative_path("content.root", root)?,
+        };
+        // Unlike a built artifact, a tree isn't installed unless it says
+        // where: it holds its own kairo.toml (`DECISIONS.md` §50).
+        let install = match self.install {
+            None | Some(RawInstall::Off(false)) => None,
+            install => validate_install("content.install", install)?,
+        };
+        Ok(ContentSection {
+            kind: self.kind,
+            root,
+            install,
+        })
     }
 }
 
@@ -2378,6 +2419,34 @@ mod tests {
         );
 
         assert!(matches!(manifest, Err(ManifestError::InvalidObjectId(_))));
+    }
+
+    #[test]
+    fn a_content_tree_declares_its_root_and_install_root() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let parse = |content: &str| {
+            ObjectManifest::parse_toml(&format!(
+                "[kairo]\nschema = 1\nkind = \"software\"\nname = \"layout\"\n\n[content]\nkind = \"tree\"\n{content}"
+            ))
+        };
+        let plain = parse("")?;
+        let content = plain.content().ok_or("no content")?;
+        assert_eq!((content.root(), content.install()), (".", None));
+        let installed = parse("root = \"files\"\ninstall = \"/\"\n")?;
+        let content = installed.content().ok_or("no content")?;
+        assert_eq!((content.root(), content.install()), ("files", Some("/")));
+        // `install = false` is the default, and encodes as it.
+        let off = parse("install = false\n")?;
+        assert_eq!(off.manifest_hash(), plain.manifest_hash());
+        assert_ne!(installed.manifest_hash(), plain.manifest_hash());
+        for bad in [
+            "root = \"../x\"\n",
+            "install = \"relative\"\n",
+            "install = true\n",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        Ok(())
     }
 
     #[test]

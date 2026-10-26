@@ -452,8 +452,20 @@ pub enum Resolved {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root: Option<String>,
     },
-    /// A held object's own tree.
-    Content { object: String, snapshot: String },
+    /// A held object's own tree: its artifact, when it doesn't build
+    /// (`DECISIONS.md` §50).
+    Content {
+        object: String,
+        snapshot: String,
+        /// Where it lands in the guest: its `[content] install` root, or
+        /// `None` for `/kairo/content/<snapshot>`. Present only when set,
+        /// so plans without it keep their hashes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        install: Option<String>,
+        /// The part of its tree that is installed, a relative path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root: Option<String>,
+    },
     /// An environment contract; `engine` names the engine that
     /// implements it, or is `None` for the host in development mode.
     Environment {
@@ -671,6 +683,9 @@ pub struct Offer {
     pub built_by: Option<(ObjectId, String)>,
     /// A child offer's name, for its own entries in the parent's plan.
     pub child_name: Option<String>,
+    /// For a content offer with a `[content] root`: the part of its tree
+    /// that is its artifact (`DECISIONS.md` §50).
+    pub content_root: Option<String>,
     /// What resolving this label confers on the consumer's artifact
     /// (`DECISIONS.md` §46 sub-decision 2): labels, each with a version
     /// requirement or, without one, pinned to this offer's own build.
@@ -691,6 +706,19 @@ impl Offer {
         self.built_by
             .as_ref()
             .map_or(&self.object, |(parent, _)| parent)
+    }
+}
+
+/// Where an object's own tree is installed and which part of it
+/// (`DECISIONS.md` §50): its `[content] install` and `root`, each `None`
+/// when not given (`/kairo/content/<snapshot>`, the whole tree).
+fn content_placement(manifest: &ObjectManifest) -> (Option<String>, Option<String>) {
+    match manifest.content() {
+        Some(content) => (
+            content.install().map(str::to_owned),
+            (content.root() != ".").then(|| content.root().to_owned()),
+        ),
+        None => (None, None),
     }
 }
 
@@ -776,6 +804,7 @@ fn child_offer(
         install: child.install().map(str::to_owned),
         built_by: Some((candidate.object.clone(), child.root().to_owned())),
         child_name: Some(child.name().to_owned()),
+        content_root: None,
         confers: provide
             .map(|p| {
                 p.confers()
@@ -955,14 +984,19 @@ impl Index {
                                     |target| declared_environment(&candidate.manifest, target),
                                 )
                             }),
-                            install: declaration.artifact().and_then(|artifact| {
-                                candidate
+                            install: match declaration.artifact() {
+                                Some(artifact) => candidate
                                     .manifest
                                     .build_target(artifact.target())
-                                    .and_then(|target| target.install().map(str::to_owned))
-                            }),
+                                    .and_then(|target| target.install().map(str::to_owned)),
+                                None => content_placement(&candidate.manifest).0,
+                            },
                             built_by: None,
                             child_name: None,
+                            content_root: match declaration.artifact() {
+                                Some(_) => None,
+                                None => content_placement(&candidate.manifest).1,
+                            },
                             confers: declaration
                                 .confers()
                                 .iter()
@@ -2018,6 +2052,8 @@ impl<'a> Resolver<'a> {
                 None => Ok(Resolved::Content {
                     object: offer.object.to_string(),
                     snapshot: offer.snapshot.to_string(),
+                    install: offer.install.clone(),
+                    root: offer.content_root.clone(),
                 }),
                 Some((provider_target, output)) => self.artifact_for(
                     index,
@@ -2690,15 +2726,18 @@ impl<'a> Resolver<'a> {
             return Err(unsatisfied(vec![format!("object:{wanted} is not held")]));
         }
         let snapshot = self.select_object_snapshot(wanted, version, pinned, &unsatisfied)?;
-        if load_manifest(self.manifests, wanted, &snapshot)?.is_none() {
+        let Some(manifest) = load_manifest(self.manifests, wanted, &snapshot)? else {
             return Err(unsatisfied(vec![format!(
                 "tree for revision {} of object:{wanted} is not held (kairo git fetch)",
                 snapshot.revision().as_str()
             )]));
-        }
+        };
+        let (install, root) = content_placement(&manifest);
         Ok(Resolved::Content {
             object: wanted.to_string(),
             snapshot: snapshot.snapshot_id().to_string(),
+            install,
+            root,
         })
     }
 }
@@ -2725,7 +2764,22 @@ pub fn describe_resolved(resolved: &Resolved) -> String {
                 None => format!("object:{object} target {target} {part} (build first)"),
             }
         }
-        Resolved::Content { object, .. } => format!("object:{object} (content)"),
+        Resolved::Content {
+            object,
+            install,
+            root,
+            ..
+        } => {
+            let mut text = format!("object:{object}");
+            if let Some(root) = root {
+                text.push_str(&format!(" root {root}"));
+            }
+            match install {
+                Some(install) => text.push_str(&format!(" (content, installed at {install})")),
+                None => text.push_str(" (content)"),
+            }
+            text
+        }
         Resolved::Environment { contract, engine } => match engine {
             Some(engine) => format!("{contract} via engine {engine}"),
             None => format!("{contract} on this host (development mode)"),

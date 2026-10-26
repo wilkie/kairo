@@ -114,7 +114,14 @@ Every provides label, in `[[provides]]`, a child's `provides`, or a
 non-empty specifier and `kind` one of `tool`, `lib`, `doc`, `data`, and
 `environment`; any other kind is refused (`DECISIONS.md` §42).
 
-`ContentSection`: `string(kind)`.
+`ContentSection`: `string(kind)`, then `string("root") || string(root)`
+when `root` isn't `"."`, then `string("install") || string(install)`
+when `install` is given (`DECISIONS.md` §50). `root` is a relative path
+in the object's tree, the part of it that is its artifact (default
+`"."`, the whole tree); `install` is an absolute guest path where that
+artifact is installed when required, or absent (or `false`) for
+`/kairo/content/<snapshot>`. A manifest without either keeps its
+hash.
 
 `ProvideDeclaration`: `string(provides) || option(version, string)`, then
 `string("artifact") || string(target) || string(output)` when the entry
