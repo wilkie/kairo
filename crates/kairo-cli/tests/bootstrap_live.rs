@@ -8,9 +8,12 @@
 //! matches the checksums upstream publishes, read from the archived
 //! source; and `kairo reproduce` matches.
 //!
-//! With `KAIRO_LIVE_BOOTSTRAP_PERL` set, it then builds pass 2, the perl
-//! chain (`bootstrap/live-bootstrap-perl/`, `specs/DECISIONS.md` §49),
-//! from pass 1's root, and checks its packages and children too.
+//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2 or 3, it then builds the
+//! later passes (`specs/DECISIONS.md` §49), each from the previous one's
+//! root, and checks their packages and children too: pass 2, the perl
+//! chain (`bootstrap/live-bootstrap-perl/`), and pass 3, to gcc 4.7.4
+//! (`bootstrap/live-bootstrap-gcc-4.7.4/`), after which the hello
+//! consumer builds with gcc 4.7.4.
 //!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
@@ -340,9 +343,13 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     );
     assert_eq!(field(&reproduced, "reproduced_artifact"), artifact);
 
-    // Pass 2, the perl chain (DECISIONS.md §49), when asked for: it goes
-    // on from pass 1's whole root, which it doesn't build again.
-    if std::env::var_os("KAIRO_LIVE_BOOTSTRAP_PERL").is_none() {
+    // The later passes (DECISIONS.md §49), as many as asked for: each
+    // goes on from the previous pass's whole root, which it doesn't build
+    // again.
+    let passes: u32 = std::env::var("KAIRO_LIVE_BOOTSTRAP_PASSES")
+        .ok()
+        .map_or(1, |passes| passes.parse().expect("a number of passes"));
+    if passes < 2 {
         return;
     }
     let imported = import(store, &actor, "live-bootstrap-perl");
@@ -355,6 +362,36 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     // Its children are its own packages.
     assert_eq!(field(&built, "children"), "30", "{built}");
     assert!(child_paths(&built, "perl-5.42.0_0", &blob_store).contains(&"usr/bin/perl".to_owned()));
+    if passes < 3 {
+        return;
+    }
+
+    // Pass 3, to gcc 4.7.4, with C++.
+    let imported = import(store, &actor, "live-bootstrap-gcc-4.7.4");
+    let gcc = format!("object:{}", field(&imported, "wrapper"));
+    let built = build(store, &gcc, &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    assert!(!built.contains("\nbuilds = "), "{built}");
+    assert_eq!(check_packages(&built, &sums, &blob_store), 114, "{built}");
+    assert_eq!(field(&built, "children"), "7", "{built}");
+    let paths = child_paths(&built, "gcc-4.7.4_0", &blob_store);
+    for program in ["usr/bin/gcc", "usr/bin/g++"] {
+        assert!(paths.contains(&program.to_owned()), "{paths:?}");
+    }
+    // The consumer that names tool:gcc alone now gets the highest, with
+    // the binutils and musl built beside it.
+    let built = build(store, &format!("object:{consumer}"), &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    let out = built
+        .lines()
+        .find_map(|line| line.strip_prefix("  out "))
+        .expect("the out file");
+    let text = kairo_store::BlobStore::get_blob(
+        &blob_store,
+        &kairo_core::BlobId::new(out.trim()).expect("blob id"),
+    )
+    .expect("out");
+    assert_eq!(String::from_utf8_lossy(&text), "hello from gcc 4.7.4\n");
 }
 
 /// Check every package a build lists in `repo/` against upstream's

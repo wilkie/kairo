@@ -26,6 +26,8 @@ LIBRARIES = {
     "autoconf-archive": ["data:autoconf-archive"],
     # A perl module perl's own build uses.
     "perl-Devel-Tokenizer-C": ["lib:perl:Devel-Tokenizer-C"],
+    "openssl": ["lib:openssl"],
+    "ca-certificates": ["data:ca-certificates"],
 }
 # What a package needs beside it wherever it is installed, and what
 # using one of its labels confers on whatever is built with it
@@ -36,13 +38,19 @@ REQUIRES = {
 }
 CONFERS = {
     "tool:gcc": ["lib:musl"],
+    "tool:g++": ["lib:musl", "lib:stdc++"],
     "lib:musl": ["lib:musl"],
+    "lib:stdc++": ["lib:stdc++"],
 }
-# Packages whose programs go by other names.
+# More labels a package holds, by its name or its name and version:
+# programs that go by other names, and what one version adds.
 ALSO = {
     "heirloom-devtools": ["tool:yacc", "tool:lex"],
     "diffutils": ["tool:diff"],
     "findutils": ["tool:find"],
+    "openssl": ["tool:openssl"],
+    # 4.7.4 is the first gcc live-bootstrap builds with C++.
+    "gcc-4.7.4": ["tool:g++", "lib:stdc++"],
 }
 
 
@@ -77,7 +85,11 @@ def main():
             requires = ", ".join(f'{{ provides = "{label}" }}' for label in REQUIRES[name])
             print(f"requires = [{requires}]")
         if last[(name, version)] == revision:
-            labels = LIBRARIES.get(name, [f"tool:{name}"]) + ALSO.get(name, [])
+            labels = (
+                LIBRARIES.get(name, [f"tool:{name}"])
+                + ALSO.get(name, [])
+                + ALSO.get(f"{name}-{version}", [])
+            )
             entries = []
             for label in labels:
                 conferred = ", ".join(f'{{ provides = "{c}" }}' for c in CONFERS.get(label, []))

@@ -4858,9 +4858,10 @@ rather than one object whose manifest truncation moves further each
 milestone. Pass 1 (`bootstrap/live-bootstrap/`, §38) runs to
 `zlib-1.3.1`; pass 2 (`bootstrap/live-bootstrap-perl/`) runs
 upstream's perl chain, to `perl-5.42.0` and the uninstall of perl
-5.6.2 and 5.8.9. A later pass (openssl through gcc 4.7.4, binutils
-2.41, and musl rebuilt) follows the same shape. Building on a pass
-never rebuilds the passes before it.
+5.6.2 and 5.8.9; pass 3 (`bootstrap/live-bootstrap-gcc-4.7.4/`) runs
+openssl, ca-certificates, curl, and patch to gcc 4.7.4, then binutils
+2.41 and musl 1.2.5 rebuilt with it. Building on a pass never rebuilds
+the passes before it.
 
 Sub-decisions:
 
@@ -4870,10 +4871,14 @@ Sub-decisions:
    `data:live-bootstrap:x86:perl-5.42.0` for pass 2. The label names
    the step the root is after, so the next pass depends on exactly the
    state it continues from, and labels match exactly (§33). It is
-   `data`: files the next pass's scripts read (§42).
+   `data`: files the next pass's scripts read (§42). Where the last
+   step is built more than once, the label names its package instead:
+   pass 3's is `data:live-bootstrap:x86:musl-1.2.5_2`.
 
-2. **What a pass ships.** Its artifact holds the installed `usr/`;
-   every package so far in `repo/`; and in `state/` what the steps left
+2. **What a pass ships.** Its artifact holds the installed `usr/` and,
+   after the first pass, `etc/` (ca-certificates installs into
+   `/etc/ssl`; the rest of `/etc` is `finalize_fhs`'s); every package
+   so far in `repo/`; and in `state/` what the steps left
    outside the packages that the next pass needs: `/steps/env` and
    `/steps/bootstrap.cfg` as the improve steps edited them, and the
    `script-generator` the seed built and checked. Each package the pass
@@ -4892,7 +4897,10 @@ Sub-decisions:
    the scripts for upstream's manifest truncated at this pass's end, so
    pass numbers and predicates come out as in one continuous run, and
    the start script runs the generated script from the step after the
-   previous pass's last.
+   previous pass's last. Every pass after the first shares one start
+   script and one packaging script
+   (`bootstrap/live-bootstrap/pass/`); its target's command names the
+   line the previous pass ended on.
 
 4. **The checks are upstream's.** Every package a pass makes is
    checked against live-bootstrap's `SHA256SUMS.pkgs`, as in pass 1, so

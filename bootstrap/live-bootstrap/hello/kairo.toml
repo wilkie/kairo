@@ -8,7 +8,7 @@
 schema = 1
 kind = "software"
 name = "hello-from-live-bootstrap"
-summary = "A C program built and run with live-bootstrap's gcc 4.0.4."
+summary = "A C program built and run with live-bootstrap's gcc, the highest held; it prints that gcc's version."
 tags = ["example", "live-bootstrap"]
 
 [[dependencies]]
@@ -17,7 +17,7 @@ provides = "environment:linux/x86"
 
 [[build.targets]]
 name = "x86"
-command = ["/usr/bin/bash", "-c", "printf '#include <stdio.h>\\nint main(void) { puts(\"hello from gcc 4.0.4\"); return 0; }\\n' > hello.c && gcc -o /kairo/package/hello hello.c && /kairo/package/hello > /kairo/package/out"]
+command = ["/usr/bin/bash", "-c", "printf '#include <stdio.h>\\nint main(void) { puts(\"hello from gcc \" __VERSION__); return 0; }\\n' > hello.c && gcc -o /kairo/package/hello hello.c && /kairo/package/hello > /kairo/package/out"]
 [build.targets.artifact]
 install = "/opt/hello"
 

@@ -195,12 +195,13 @@ path = "/external/distfiles/gnulib-ffbb0ce.tar.gz"
 [[build.targets]]
 name = "x86"
 # Each step ends in upstream's own check of what it built.
-command = ["/usr/bin/bash", "/kairo/src/start.sh"]
-# start.sh puts pass 1's root back as its steps left it and runs the
-# generated script from the step after pass 1's last; package.sh ships
-# /usr, every package so far, and the state the next pass needs into
-# /kairo/package, and extracts each package this pass made into
-# /kairo/package/<package>/, a child object of its own.
+command = ["/usr/bin/bash", "/kairo/src/start.sh", "build zlib-1.3.1 pass1.sh"]
+# start.sh (../live-bootstrap/pass/) puts pass 1's root back as its
+# steps left it and runs the generated script from the step after pass
+# 1's last, named above; package.sh ships /usr, /etc, every package so
+# far, and the state the next pass needs into /kairo/package, and
+# extracts each package this pass made into /kairo/package/<package>/,
+# a child object of its own.
 #
 # The children below are generated: ../live-bootstrap/children.py, from
 # the packages this pass makes.

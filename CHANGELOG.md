@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap pass 3: to gcc 4.7.4 (`DECISIONS.md` §49).**
+  `bootstrap/live-bootstrap-gcc-4.7.4/` goes on from pass 2's root
+  through openssl 3.6.0, ca-certificates, curl 8.17.0, and patch 2.8 to
+  gcc 4.7.4 with C++, then binutils 2.41 and musl 1.2.5 rebuilt; its
+  gcc child provides `tool:gcc`, `tool:g++`, and `lib:stdc++`. Every
+  pass after the first shares `bootstrap/live-bootstrap/pass/start.sh`
+  and `package.sh`, which now ship `/etc` too. The hello consumer
+  prints the version of the gcc that built it.
+
 - **live-bootstrap pass 2: the perl chain (`DECISIONS.md` §49).**
   `bootstrap/live-bootstrap-perl/` goes on from pass 1's whole root,
   now provided as `data:live-bootstrap:x86:zlib-1.3.1`, through

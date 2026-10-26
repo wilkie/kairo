@@ -14,8 +14,9 @@
 #    live-bootstrap's mirrors: its maintainers' two, then archive.org.
 #    The gnulib snapshots have no upstream URL; upstream's mirror.sh
 #    makes them with `git archive`, and the mirrors serve those bytes.
-# 3. The native wrapper -- this directory's kairo.toml, start.sh,
-#    package.sh, and steps/manifest -- is committed as SHA-256 history
+# 3. The native wrapper -- this directory's kairo.toml and
+#    steps/manifest, and the start.sh and package.sh every later pass
+#    shares (../live-bootstrap/pass/) -- is committed as SHA-256 history
 #    and created as an object, or, with --wrapper, committed on top of
 #    that existing wrapper object's history as its next revision.
 #
@@ -209,7 +210,7 @@ fetch_distfiles
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/steps"
-cp "$HERE/kairo.toml" "$HERE/start.sh" "$HERE/package.sh" "$WORK/"
+cp "$HERE/kairo.toml" "$HERE/../live-bootstrap/pass/start.sh" "$HERE/../live-bootstrap/pass/package.sh" "$WORK/"
 cp "$HERE/steps/manifest" "$WORK/steps/"
 commit_wrapper "live-bootstrap b1ceced7 x86 pass 2: the perl chain" kairo.toml start.sh package.sh steps/manifest
 

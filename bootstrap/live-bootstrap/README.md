@@ -59,7 +59,7 @@ puts it, and the wrapper's own files are in `/kairo/src`:
 |---|---|
 | `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, the checked packages in `repo/`, the `state/` a later pass needs, and each package extracted as a child, 77 in all, providing `tool:bash`, `tool:gcc`, `lib:musl`, and the rest; the parent itself provides `tool:mes`, `tool:patch`, and `tool:gzip`, and the whole root as `data:live-bootstrap:x86:zlib-1.3.1`, which pass 2 goes on from. |
 | `children.py` | Writes the `[[build.targets.children]]` entries from the package names a build lists, when the milestone moves (pass 2 uses it too); gives gcc what it requires beside it (binutils, musl, the kernel headers) and what its `tool:gcc` confers on whatever it builds (musl), and musl's `lib:musl` conferring itself (`specs/DECISIONS.md` §46). |
-| `hello/` | A consumer of the children: a C program that names `tool:gcc` alone, gets binutils, musl, and the headers as what gcc requires, and links (statically) against musl. `hello/create.sh <actor id>` makes the object; the end-to-end test builds it last. |
+| `hello/` | A consumer of the children: a C program that names `tool:gcc` alone, gets binutils, musl, and the headers as what gcc requires, links (statically) against musl, and prints the version of the gcc that built it (the highest held: 4.0.4 here, 4.7.4 once pass 3 is). `hello/create.sh <actor id>` makes the object; the end-to-end test builds it last. |
 | `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: puts the wrapper's step files over upstream's, sets `kaem.run`'s variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. At the end it runs `package.sh`. |
 | `package.sh` | Run under the bash the build made: copies `/usr` and `/external/repo` into `/kairo/package`, the artifact; copies `/steps/env`, `/steps/bootstrap.cfg`, and `/script-generator` into its `state/`; and extracts each package into `/kairo/package/<package>/`. |
 | `steps/bootstrap.cfg` | What `rootfs.py --arch x86 --bwrap --external-sources` writes. |
@@ -98,7 +98,10 @@ unchanged wrapper adds nothing.
 The chain goes on in passes (`specs/DECISIONS.md` §49), each its own
 object, so a later milestone doesn't rebuild this one:
 `bootstrap/live-bootstrap-perl/` installs this pass's whole root and
-runs upstream's perl chain from the step after `zlib-1.3.1`.
+runs upstream's perl chain from the step after `zlib-1.3.1`, and
+`bootstrap/live-bootstrap-gcc-4.7.4/` goes on from that to gcc 4.7.4.
+Every pass after this one shares `pass/start.sh` and `pass/package.sh`,
+which its `import.sh` puts in its wrapper.
 
 The full flow is the ignored test
 `crates/kairo-cli/tests/bootstrap_live.rs`, which needs the network:
