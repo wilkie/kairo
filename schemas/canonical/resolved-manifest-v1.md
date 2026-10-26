@@ -79,7 +79,7 @@ both are omitted otherwise.
 | `kind` | Fields |
 |---|---|
 | `artifact` | `object`, `snapshot`, `target`, `output` (`""` for the whole artifact), `artifact` (blob id, or `null` when the build is in `builds_first`), `install` (the provider target's install root, or `null` for `/kairo/artifact/<id>`; `DECISIONS.md` §41), for a child object `root` (its part of the artifact, which is its parent's; absent otherwise), and `build_key` (the build key of the plan that makes it, when that plan could be made; `DECISIONS.md` §52) |
-| `content` | `object`, `snapshot`; `install` (the object's `[content] install` root) and `root` (its `[content] root`), each only when the object declares it (`DECISIONS.md` §50) |
+| `content` | `object`, `snapshot`; `install` (the object's `[content] install` root) and `root` (its `[content] root`), each only when the object declares it (`DECISIONS.md` §50); `tree`, what is under its root (`DECISIONS.md` §52) |
 | `environment` | `contract`, `engine` (the contract label the engine implements, or `null` for the host in development mode) |
 | `host-tool` | `provides`, `path`; `version` when the config states one |
 | `source` | `source` (id), `url`, `revision`; `path` when placed; `seed` when `true` |
@@ -107,9 +107,12 @@ when non-empty, then two fields every plan has (`DECISIONS.md` §52):
   `outputs`; `environment` and `host_dependent`; each requirement's
   `requested` and what it `resolved` to, an artifact by the `build_key`
   of the plan that makes it (or its id, when that plan can't be made)
-  with its `output`, `install`, and `root`; the runtime closure, each
-  `provides` and what it resolved to; the snapshot's top-level tree
-  entries (mode, name, id) but `kairo.toml`; and `source_date_epoch`.
+  with its `output`, `install`, and `root`, and a content object by its
+  `tree` and `install`; the runtime closure, each `provides` and what
+  it resolved to; the target's tree, by the hash of its entries (mode,
+  name, Git object id; `kairo.toml` left out of a whole tree) under the
+  domain `kairo.tree-identity.v1`; and `source_date_epoch`. A content
+  resolution's `tree` is the same hash, of the tree under its root.
   A held build whose plan has the same key is this plan's artifact.
 
 `requires` and `runtime`:

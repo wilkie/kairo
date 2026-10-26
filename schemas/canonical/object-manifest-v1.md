@@ -200,6 +200,7 @@ encoded as written.
 | `children` | present only when there is at least one: `string("children") \|\| list<ChildDeclaration>` |
 | `requires` | present only when there is at least one: `string("requires") \|\| list<Requirement>`, what the artifact needs beside it wherever it is installed (`DECISIONS.md` §46, §51) |
 | `source_date_epoch` | present only when given: `string("source_date_epoch") \|\| u64(seconds)`, `SOURCE_DATE_EPOCH` in its builds' guest, 315532800 (1980-01-01) when not given (`DECISIONS.md` §52) |
+| `tree` | present only when not `"."`: `string("tree") \|\| string(path)`, the relative path of the part of the object's tree its builds see as `/kairo/src` (`DECISIONS.md` §52 sub-decision 7) |
 
 `artifact_root` and `install` come from `[build.targets.artifact]`
 (`DECISIONS.md` §41 sub-decision 3); a target without one, or with the

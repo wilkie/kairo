@@ -5115,8 +5115,8 @@ Sub-decisions:
    resolved to by content (an artifact as the build key of the plan
    that makes it, with the output, install root, and child root used;
    a source's commit; a file's SHA-256; a host tool's path; a content
-   object by its snapshot, for now); the runtime closure; the
-   snapshot's top-level tree entries but `kairo.toml`; and
+   object by what is under its `[content] root`, with its install root);
+   the runtime closure; the target's tree (sub-decision 7); and
    `SOURCE_DATE_EPOCH`. The object and snapshot ids are not in it, nor
    anything only read after the build.
 
@@ -5157,6 +5157,23 @@ Sub-decisions:
    `source_date_epoch`, so every plan hash is new, and every held build
    is built once more under the new rules.
 
+7. **What of a tree is normative is a root.** A build target may name
+   `tree = "<path>"`, the part of its object's tree that is
+   `/kairo/src`; its workdir, outputs, and relative placements are then
+   within that part. Without it, `/kairo/src` is the whole tree but
+   `kairo.toml`. A content object's normative part is its
+   `[content] root` (§50), the part that is installed. A build key
+   covers each by the hash of that tree's entries (mode, name, and Git
+   object id, which names everything under an entry), with `kairo.toml`
+   left out at the top of a whole tree; so an edit beside the root, to a
+   README or documentation, changes no key, and the guest can't see it
+   either. A root says what is normative in one path; an exclude list
+   would say what isn't, and a file added later would reach a build
+   unless someone remembered to list it. Plans record a content
+   resolution's `tree`. *Added after §52 was first implemented:* a
+   content object was keyed by its snapshot, and a build by its whole
+   tree but `kairo.toml`.
+
 Rationale: identical inputs make the same build; whether they make the
 same bytes is a separate question, about determinism, which `kairo
 reproduce` answers. Keying artifacts by inputs and keeping everything
@@ -5167,7 +5184,8 @@ Affected specs:
 
 - `schemas/canonical/resolved-manifest-v1.md` — `build_key`,
   `source_date_epoch`, an artifact's `build_key`.
-- `schemas/canonical/object-manifest-v1.md` — `source_date_epoch`.
+- `schemas/canonical/object-manifest-v1.md` — `source_date_epoch`,
+  `tree`.
 - `schemas/environment/linux-v1.md` — `/kairo/src` and
   `SOURCE_DATE_EPOCH`.
 - `CLI.md` §17 — `status = held`.

@@ -26,16 +26,21 @@ impl ManifestSource for Manifests {
             .transpose()
     }
 
-    /// These trees hold their kairo.toml alone.
+    /// These trees hold their kairo.toml alone; any other path in them
+    /// is an empty directory.
     fn tree_entries(
         &self,
         object: &ObjectId,
         revision: &RevisionId,
+        path: &str,
     ) -> Result<Option<Vec<TreeEntry>>, SourceError> {
         Ok(self
             .0
             .contains_key(&(object.to_string(), revision.as_str().to_owned()))
-            .then(|| vec![("100644".to_owned(), "kairo.toml".to_owned(), String::new())]))
+            .then(|| match path {
+                "." => vec![("100644".to_owned(), "kairo.toml".to_owned(), String::new())],
+                _ => Vec::new(),
+            }))
     }
 }
 
@@ -1726,19 +1731,24 @@ fn a_tree_that_doesnt_build_is_installed_as_what_requires_it_needs() -> TestResu
         "{:?}",
         resolution.plan.manifest.runtime
     );
-    // A tree that says neither is resolved as before, and its plan entry
-    // spells no new fields.
+    // A tree that says neither is resolved as before, its plan entry
+    // spelling no install or root, only what it holds (§52).
     let (lib, _) = world.object(&content_provider("lib:zlib:source", Some("1.3.1")));
     let (plain, _) = world.object(&app_requiring("lib:zlib:source", None));
     let resolution = world.resolve(&plain.object_id, "release")?;
     let resolved = &resolution.plan.manifest.requirements[0].resolved;
-    let Resolved::Content { snapshot, .. } = resolved else {
+    let Resolved::Content {
+        snapshot,
+        tree: Some(tree),
+        ..
+    } = resolved
+    else {
         return Err(format!("not content: {resolved:?}").into());
     };
     assert_eq!(
         serde_json::to_string(resolved)?,
         format!(
-            r#"{{"kind":"content","object":"{}","snapshot":"{snapshot}"}}"#,
+            r#"{{"kind":"content","object":"{}","snapshot":"{snapshot}","tree":"{tree}"}}"#,
             lib.object_id
         )
     );

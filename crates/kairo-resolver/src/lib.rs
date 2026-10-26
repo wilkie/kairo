@@ -76,15 +76,17 @@ pub trait ManifestSource {
         revision: &RevisionId,
     ) -> Result<Option<ObjectManifest>, SourceError>;
 
-    /// The top-level entries of `revision`'s tree, each its mode, name,
-    /// and object id, or `None` when this node doesn't hold the tree:
-    /// what a build's own tree is, for its build key (`DECISIONS.md`
-    /// §52). `kairo.toml` among them is left out of the key, as it is
-    /// out of the guest's tree.
+    /// The entries of the tree at `path` in `revision`'s tree (`"."` for
+    /// the whole), each its mode, name, and object id, or `None` when
+    /// this node doesn't hold the tree or `path` isn't one: what a
+    /// build's tree or a content object's artifact is, for a build key
+    /// (`DECISIONS.md` §52). At `"."`, `kairo.toml` among them is left
+    /// out of the key, as it is out of the guest's tree.
     fn tree_entries(
         &self,
         object: &ObjectId,
         revision: &RevisionId,
+        path: &str,
     ) -> Result<Option<Vec<TreeEntry>>, SourceError>;
 }
 
@@ -528,6 +530,10 @@ pub enum Resolved {
         /// The part of its tree that is installed, a relative path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root: Option<String>,
+        /// What that part holds, for build keys (§52): a hash of its
+        /// tree's entries, so an edit outside it changes nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tree: Option<String>,
     },
     /// An environment contract; `engine` names the engine that
     /// implements it, or is `None` for the host in development mode.
@@ -807,6 +813,8 @@ fn declared_requirement(
 
 /// Domain separator for a plan's build key (`DECISIONS.md` §52).
 pub const BUILD_KEY_DOMAIN: &[u8] = b"kairo.build-key.v1";
+/// Domain separator for what a tree holds, in a build key (§52).
+pub const TREE_IDENTITY_DOMAIN: &[u8] = b"kairo.tree-identity.v1";
 
 /// What a resolved requirement is in a build key: by what the guest
 /// gets, not by which object or snapshot it came from where content
@@ -829,6 +837,12 @@ fn key_identity(resolved: &Resolved) -> Result<serde_json::Value, ResolveError> 
             "install": install,
             "root": root,
         }),
+        // By what it installs, not which snapshot it came from.
+        Resolved::Content { install, tree, .. } => serde_json::json!({
+            "kind": "content",
+            "tree": tree,
+            "install": install,
+        }),
         other => serde_json::to_value(other).map_err(ResolveError::Encode)?,
     })
 }
@@ -845,7 +859,7 @@ fn build_key(
     host_dependent: bool,
     requirements: &[Requirement],
     runtime: &[RuntimeRequirement],
-    tree: &[TreeEntry],
+    tree: &str,
     source_date_epoch: u64,
 ) -> Result<BlobId, ResolveError> {
     use kairo_core::canonical::CanonicalEncode as _;
@@ -876,10 +890,6 @@ fn build_key(
             }))
         })
         .collect::<Result<Vec<_>, ResolveError>>()?;
-    let tree: Vec<&TreeEntry> = tree
-        .iter()
-        .filter(|(_, name, _)| name != "kairo.toml")
-        .collect();
     let key = serde_json::json!({
         "command": target.command(),
         "workdir": target.workdir(),
@@ -2006,18 +2016,7 @@ impl<'a> Resolver<'a> {
 
         stack.pop();
         let source_date_epoch = target.source_date_epoch();
-        let tree = self
-            .manifests
-            .tree_entries(object, snapshot.revision())
-            .map_err(|source| ResolveError::ManifestSource {
-                object: object.clone(),
-                revision: snapshot.revision().clone(),
-                source,
-            })?
-            .ok_or_else(|| ResolveError::ManifestUnavailable {
-                object: object.clone(),
-                revision: snapshot.revision().clone(),
-            })?;
+        let tree = self.tree_identity(object, snapshot.revision(), target.tree())?;
         let build_key = build_key(
             target,
             &environment,
@@ -2041,6 +2040,53 @@ impl<'a> Resolver<'a> {
             source_date_epoch,
             build_key: build_key.to_string(),
         })
+    }
+
+    /// What the tree at `path` in `revision` holds (§52): a hash of its
+    /// entries, `kairo.toml` left out at the top. The plan can't be made
+    /// without it.
+    fn tree_identity(
+        &self,
+        object: &ObjectId,
+        revision: &RevisionId,
+        path: &str,
+    ) -> Result<String, ResolveError> {
+        let entries = self
+            .manifests
+            .tree_entries(object, revision, path)
+            .map_err(|source| ResolveError::ManifestSource {
+                object: object.clone(),
+                revision: revision.clone(),
+                source,
+            })?
+            .ok_or_else(|| ResolveError::TreeMissing {
+                object: object.clone(),
+                revision: revision.clone(),
+                path: path.to_owned(),
+            })?;
+        let entries: Vec<&TreeEntry> = entries
+            .iter()
+            .filter(|(_, name, _)| path != "." || name != "kairo.toml")
+            .collect();
+        let bytes = serde_json::to_vec(&entries).map_err(ResolveError::Encode)?;
+        Ok(BlobId::from_bytes(TREE_IDENTITY_DOMAIN, &bytes).to_string())
+    }
+
+    /// A content object's artifact, for build keys: the tree under its
+    /// `[content] root` at `snapshot` (§50, §52).
+    fn content_tree(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        root: Option<&str>,
+    ) -> Result<String, ResolveError> {
+        let held = find_snapshot(self.store, object, snapshot)?.ok_or_else(|| {
+            ResolveError::SnapshotNotHeld {
+                object: object.clone(),
+                snapshot: snapshot.clone(),
+            }
+        })?;
+        self.tree_identity(object, held.revision(), root.unwrap_or("."))
     }
 
     fn select_snapshot(
@@ -2268,6 +2314,11 @@ impl<'a> Resolver<'a> {
                     snapshot: offer.snapshot.to_string(),
                     install: offer.install.clone(),
                     root: offer.content_root.clone(),
+                    tree: Some(self.content_tree(
+                        &offer.object,
+                        &offer.snapshot,
+                        offer.content_root.as_deref(),
+                    )?),
                 }),
                 Some((provider_target, output)) => self.artifact_for(
                     index,
@@ -2996,11 +3047,13 @@ impl<'a> Resolver<'a> {
             )]));
         };
         let (install, root) = content_placement(&manifest);
+        let tree = self.content_tree(wanted, &snapshot.snapshot_id(), root.as_deref())?;
         Ok(Resolved::Content {
             object: wanted.to_string(),
             snapshot: snapshot.snapshot_id().to_string(),
             install,
             root,
+            tree: Some(tree),
         })
     }
 }
@@ -3097,6 +3150,13 @@ pub enum ResolveError {
         object: ObjectId,
         revision: RevisionId,
     },
+    /// A build target's `tree` or a content object's `root` isn't a
+    /// tree in the object's revision (§52).
+    TreeMissing {
+        object: ObjectId,
+        revision: RevisionId,
+        path: String,
+    },
     /// The tree's `kairo.toml` doesn't hash to what the revision
     /// signed.
     ManifestMismatch {
@@ -3173,6 +3233,15 @@ impl fmt::Display for ResolveError {
             } => write!(
                 f,
                 "reading kairo.toml of object:{object} at {}: {source}",
+                revision.as_str()
+            ),
+            Self::TreeMissing {
+                object,
+                revision,
+                path,
+            } => write!(
+                f,
+                "object:{object} at revision {}: {path} is not a directory in its tree",
                 revision.as_str()
             ),
             Self::ManifestUnavailable { object, revision } => write!(
@@ -3292,6 +3361,7 @@ impl Error for ResolveError {
             Self::SourceHolder { error, .. } => Some(error),
             Self::Encode(error) => Some(error),
             Self::ManifestUnavailable { .. }
+            | Self::TreeMissing { .. }
             | Self::ManifestMismatch { .. }
             | Self::NoHead { .. }
             | Self::SnapshotNotHeld { .. }

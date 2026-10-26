@@ -207,6 +207,7 @@ impl ManifestSource for CacheManifests<'_> {
         &self,
         object: &ObjectId,
         revision: &RevisionId,
+        path: &str,
     ) -> Result<Option<Vec<kairo_resolver::TreeEntry>>, SourceError> {
         let Some(repo) = crate::try_cache_repo_for_revision(self.paths, object.as_str(), revision)
             .map_err(|error| SourceError(error.to_string()))?
@@ -219,7 +220,7 @@ impl ManifestSource for CacheManifests<'_> {
         else {
             return Ok(None);
         };
-        repo.root_entries(&commit)
+        repo.tree_entries(&commit, path)
             .map_err(|error| SourceError(error.to_string()))
     }
 

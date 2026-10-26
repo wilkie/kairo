@@ -23,7 +23,10 @@ rather than per-commit.
   a held build with the same key, at any snapshot, is its artifact, so
   edits to summaries, tags, children, and what an artifact requires or
   confers no longer rebuild it. `kairo build` says `status = held` for a
-  target whose key is held. A target may set `source_date_epoch`.
+  target whose key is held. A target may set `source_date_epoch`, and
+  `tree`, the part of its object's tree that is `/kairo/src`; a key
+  covers only that part, and a content object only what is under its
+  root, so edits beside them, to a README, change no key.
 
 - **Conferring from what a build chooses, and `one_of` (`DECISIONS.md`
   §51).** Only a build's direct dependencies confer runtime

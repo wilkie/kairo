@@ -36,18 +36,27 @@ impl ManifestSource for Trees {
             .transpose()
     }
 
-    /// Each top-level name, standing for what is under it by the hash
-    /// of its paths and contents.
+    /// Each name directly under `path`, standing for what is under it by
+    /// the hash of its paths and contents.
     fn tree_entries(
         &self,
         object: &ObjectId,
         _revision: &RevisionId,
+        path: &str,
     ) -> Result<Option<Vec<kairo_resolver::TreeEntry>>, SourceError> {
         let Some(files) = self.0.get(&object.to_string()) else {
             return Ok(None);
         };
+        let prefix = if path == "." {
+            String::new()
+        } else {
+            format!("{path}/")
+        };
         let mut top: BTreeMap<String, Vec<u8>> = BTreeMap::new();
         for (name, contents) in files {
+            let Some(name) = name.strip_prefix(&prefix) else {
+                continue;
+            };
             let first = name.split('/').next().unwrap_or(name).to_owned();
             let bytes = top.entry(first).or_default();
             bytes.extend(name.as_bytes());
@@ -2078,5 +2087,174 @@ fn the_guest_tree_lacks_the_manifest_and_the_key_follows_the_tree() -> TestResul
     let key = |object: &ObjectId| world.plan_with(&host, object, "release").manifest.build_key;
     assert_eq!(key(&same.object_id), plan.manifest.build_key);
     assert_ne!(key(&other.object_id), plan.manifest.build_key);
+    Ok(())
+}
+
+#[test]
+fn keys_cover_a_targets_tree_and_a_contents_root_and_nothing_beside() -> TestResult {
+    let mut world = World::new();
+    let host = Host {
+        system: "linux".to_owned(),
+        arch: "x86-64".to_owned(),
+        engines: vec!["environment:linux/x86-64".to_owned()],
+    };
+    // A layout whose artifact is files/, and a build that sees src/
+    // alone, each with a README beside it (§52).
+    let layout = |readme: &str, link: &str| {
+        vec![
+            (
+                "kairo.toml".to_owned(),
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "layout"
+                [content]
+                kind = "tree"
+                root = "files"
+                install = "/"
+                [[provides]]
+                provides = "data:layout"
+                "#
+                .to_owned(),
+            ),
+            ("README.md".to_owned(), readme.to_owned()),
+            ("files/lib".to_owned(), format!("@link:{link}")),
+        ]
+    };
+    let app = |readme: &str, script: &str| {
+        vec![
+            (
+                "kairo.toml".to_owned(),
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "app"
+                [[dependencies]]
+                kind = "provides"
+                provides = "environment:linux/x86-64"
+                [[build.targets]]
+                name = "release"
+                tree = "src"
+                command = ["sh", "build.sh"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "data:layout"
+                "#
+                .to_owned(),
+            ),
+            ("README.md".to_owned(), readme.to_owned()),
+            ("src/build.sh".to_owned(), script.to_owned()),
+        ]
+    };
+    let object = |world: &mut World, files: Vec<(String, String)>| {
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(n, c)| (n.as_str(), c.as_str()))
+            .collect();
+        world.object(&files).object_id
+    };
+    let key = |world: &mut World,
+               layout_files: Vec<(String, String)>,
+               app_files: Vec<(String, String)>| {
+        let mut world = std::mem::replace(world, World::new());
+        object(&mut world, layout_files);
+        let app = object(&mut world, app_files);
+        world.plan_with(&host, &app, "release").manifest.build_key
+    };
+    let base = key(
+        &mut world,
+        layout("one", "usr/lib"),
+        app("one", "echo built\n"),
+    );
+    // Edits beside the content root and the target's tree keep the key.
+    assert_eq!(
+        key(
+            &mut world,
+            layout("two", "usr/lib"),
+            app("two", "echo built\n")
+        ),
+        base
+    );
+    // Edits inside them change it.
+    assert_ne!(
+        key(
+            &mut world,
+            layout("one", "usr/lib64"),
+            app("one", "echo built\n")
+        ),
+        base
+    );
+    assert_ne!(
+        key(
+            &mut world,
+            layout("one", "usr/lib"),
+            app("one", "echo other\n")
+        ),
+        base
+    );
+    Ok(())
+}
+
+#[test]
+fn a_target_with_a_tree_sees_only_that_part_of_its_object() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(BUSYBOX_PROVIDER);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    let object = world.object(&[
+        (
+            "kairo.toml",
+            &format!(
+                r#"
+                [kairo]
+                schema = 1
+                kind = "software"
+                name = "lister"
+                [[dependencies]]
+                kind = "provides"
+                provides = "{contract}"
+                [[build.targets]]
+                name = "release"
+                tree = "src"
+                command = ["sh", "-c", "busybox ls -R /kairo/src > /kairo/package/ls"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "tool:sh"
+                "#
+            ),
+        ),
+        ("README.md", "not for the build\n"),
+        ("src/build.sh", "true\n"),
+        ("src/lib/util.sh", "true\n"),
+    ]);
+    let plan = world.plan_with(&host, &object.object_id, "release");
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    let artifact = execution.artifact.as_ref().expect("artifact");
+    let listed = artifact.entries[0].blob().expect("ls");
+    assert_eq!(
+        world.blob_text(listed),
+        "/kairo/src:\nbuild.sh\nlib\n\n/kairo/src/lib:\nutil.sh\n"
+    );
     Ok(())
 }

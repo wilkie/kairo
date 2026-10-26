@@ -1198,7 +1198,8 @@ pub fn run_plan(
     // The guest's writable `/`, and where it stages its artifact (§41).
     let root = workspace.path().join("root");
     let package = workspace.path().join("package");
-    for dir in [&src, &deps, &home, &log, &root, &package] {
+    let snapshot_tree = workspace.path().join("tree");
+    for dir in [&snapshot_tree, &deps, &home, &log, &root, &package] {
         fs::create_dir(dir).map_err(|source| io_error("creating", dir, source))?;
     }
     // What a path is called where the command runs.
@@ -1212,7 +1213,7 @@ pub fn run_plan(
 
     // The snapshot's tree, and the target it declares.
     if !trees
-        .export(&object, &snapshot, &src)
+        .export(&object, &snapshot, &snapshot_tree)
         .map_err(|source| BuildError::TreeSource {
             object: object.clone(),
             snapshot: snapshot.clone(),
@@ -1221,7 +1222,7 @@ pub fn run_plan(
     {
         return Err(BuildError::TreeNotHeld { object, snapshot });
     }
-    let manifest_path = src.join("kairo.toml");
+    let manifest_path = snapshot_tree.join("kairo.toml");
     let manifest_text = fs::read_to_string(&manifest_path)
         .map_err(|source| io_error("reading", &manifest_path, source))?;
     let object_manifest =
@@ -1237,6 +1238,20 @@ pub fn run_plan(
             object: object.clone(),
             target: manifest.target.clone(),
         })?;
+    // `/kairo/src` is the part of the tree the target names, or all of
+    // it but the manifest (§52).
+    let guest_tree = match target.tree() {
+        "." => snapshot_tree.clone(),
+        tree => snapshot_tree.join(tree),
+    };
+    if !fs::symlink_metadata(&guest_tree).is_ok_and(|meta| meta.is_dir()) {
+        return Err(BuildError::Environment(format!(
+            "build target {}'s tree {} is not a directory in object:{object}",
+            manifest.target,
+            target.tree()
+        )));
+    }
+    fs::rename(&guest_tree, &src).map_err(|source| io_error("moving", &guest_tree, source))?;
 
     // Providers: installed at their install roots in the guest's `/`
     // (§41 sub-decision 3), at paths named by what they are (§35

@@ -1199,6 +1199,7 @@ pub struct BuildTarget {
     children: Vec<ChildDeclaration>,
     requires: Vec<Requirement>,
     source_date_epoch: Option<u64>,
+    tree: String,
 }
 
 /// `SOURCE_DATE_EPOCH` in a build's guest when its target names none
@@ -1216,6 +1217,13 @@ impl BuildTarget {
     /// build key; the revision's time isn't (`DECISIONS.md` §52).
     pub fn source_date_epoch(&self) -> u64 {
         self.source_date_epoch.unwrap_or(DEFAULT_SOURCE_DATE_EPOCH)
+    }
+
+    /// The part of the object's tree its builds see as `/kairo/src`, a
+    /// relative path, or `"."` for the whole tree but `kairo.toml`
+    /// (`DECISIONS.md` §52): what its build key covers of the tree.
+    pub fn tree(&self) -> &str {
+        &self.tree
     }
 
     /// The program and its arguments, run without a shell.
@@ -1303,6 +1311,10 @@ impl CanonicalEncode for BuildTarget {
         if let Some(epoch) = self.source_date_epoch {
             encode_str(out, "source_date_epoch");
             kairo_core::canonical::encode_u64(out, epoch);
+        }
+        if self.tree != "." {
+            encode_str(out, "tree");
+            encode_str(out, &self.tree);
         }
     }
 }
@@ -1702,6 +1714,7 @@ struct RawBuildTarget {
     command: Vec<String>,
     workdir: Option<String>,
     source_date_epoch: Option<u64>,
+    tree: Option<String>,
     #[serde(default)]
     dependencies: Vec<RawDependencyDeclaration>,
     #[serde(default)]
@@ -2020,6 +2033,11 @@ impl RawBuildTarget {
             children,
             requires: validate_requirements("build.targets.requires", self.requires)?,
             source_date_epoch: self.source_date_epoch,
+            tree: match self.tree {
+                None => ".".to_owned(),
+                Some(tree) if tree == "." => tree,
+                Some(tree) => ensure_relative_path("build.targets.tree", tree)?,
+            },
         })
     }
 }
@@ -3418,6 +3436,39 @@ mod tests {
             ObjectManifest::parse_toml(&manifest("version = \"\"")),
             Err(ManifestError::EmptyField("build.targets.children.version"))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn a_target_names_its_tree_and_epoch() -> Result<(), Box<dyn std::error::Error>> {
+        let manifest = |extra: &str| {
+            ObjectManifest::parse_toml(&format!(
+                "[kairo]\nschema = 1\nkind = \"software\"\nname = \"x\"\n\
+                 [[build.targets]]\nname = \"release\"\ncommand = [\"make\"]\n{extra}\n"
+            ))
+        };
+        let plain = manifest("")?;
+        let target = plain.build_target("release").ok_or("target")?;
+        assert_eq!(
+            (target.tree(), target.source_date_epoch()),
+            (".", DEFAULT_SOURCE_DATE_EPOCH)
+        );
+        let named = manifest("tree = \"src\"\nsource_date_epoch = 0")?;
+        let target = named.build_target("release").ok_or("target")?;
+        assert_eq!((target.tree(), target.source_date_epoch()), ("src", 0));
+        assert_ne!(named.manifest_hash(), plain.manifest_hash());
+        // `.` is the default, and hashes as it.
+        assert_eq!(
+            manifest("tree = \".\"")?.manifest_hash(),
+            plain.manifest_hash()
+        );
+        for bad in [
+            "tree = \"../x\"",
+            "tree = \"/src\"",
+            "source_date_epoch = -1",
+        ] {
+            assert!(manifest(bad).is_err(), "{bad}");
+        }
         Ok(())
     }
 
