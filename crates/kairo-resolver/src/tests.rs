@@ -1150,12 +1150,12 @@ fn toolchain() -> String {
         root = "g++"
         version = "11.4.0"
         requires = [{ provides = "tool:binutils" }]
-        provides = [{ provides = "tool:g++", confers = [{ provides = "lib:stdc++" }] }]
+        provides = [{ provides = "tool:g++" }]
         [[build.targets.children]]
         name = "libstdc++"
         root = "libstdc++"
         version = "11.4.0"
-        provides = [{ provides = "lib:stdc++" }]
+        provides = [{ provides = "lib:stdc++", confers = [{ provides = "lib:stdc++" }] }]
         "#,
     )
 }
@@ -1178,8 +1178,10 @@ fn a_build_dependency_requires_and_confers_through_the_plan() -> TestResult {
     let child = |name: &str| {
         kairo_object::ChildGenesis::new(toolchain.object_id.clone(), "release", name).object_id()
     };
-    // The app builds with g++: binutils joins its build environment,
-    // and its artifact will require the toolchain's own libstdc++.
+    // The app builds with g++ and links libstdc++, which it names
+    // itself: binutils joins its build environment as what g++ needs,
+    // and its artifact will require the libstdc++ it chose, pinned to
+    // that one, since libstdc++ confers itself without a version (§51).
     let (app, _) = world.object(&manifest(
         "app",
         r#"
@@ -1192,6 +1194,9 @@ fn a_build_dependency_requires_and_confers_through_the_plan() -> TestResult {
         [[build.targets.dependencies]]
         kind = "provides"
         provides = "tool:g++"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "lib:stdc++"
         "#,
     ));
     let resolution = world.resolve(&app.object_id, "release")?;
@@ -1216,7 +1221,7 @@ fn a_build_dependency_requires_and_confers_through_the_plan() -> TestResult {
     );
     assert_eq!(
         required.via,
-        format!("conferred by tool:g++ from object:{}", child("g++"))
+        format!("conferred by lib:stdc++ from object:{}", child("libstdc++"))
     );
     // The binutils build is needed first, as the toolchain's is.
     let first: Vec<&str> = resolution
@@ -1410,20 +1415,18 @@ fn a_closure_constraint_re_chooses_a_declared_requirement() -> TestResult {
 fn pins_that_no_one_offer_satisfies_conflict_unless_they_coexist() -> TestResult {
     for coexists in [false, true] {
         let mut world = World::new();
-        // baz confers its own libstdc++ (11); bar wants >=13.
+        // The app links libstdc++ 11, which confers itself, pinned;
+        // bar wants >=13.
         world.object(&stdcxx("13.2.0", coexists));
         let (baz, _) = world.object(&manifest(
             "baz",
             &format!(
                 r#"
                 [[provides]]
-                provides = "tool:baz"
-                target = "release"
-                confers = [{{ provides = "lib:stdc++" }}]
-                [[provides]]
                 provides = "lib:stdc++"
                 version = "11.0.0"
                 target = "release"
+                confers = [{{ provides = "lib:stdc++" }}]
                 coexists = {coexists}
                 {RELEASE_TARGET}
                 "#
@@ -1441,7 +1444,8 @@ fn pins_that_no_one_offer_satisfies_conflict_unless_they_coexist() -> TestResult
             command = ["make"]
             [[build.targets.dependencies]]
             kind = "provides"
-            provides = "tool:baz"
+            provides = "lib:stdc++"
+            version = "<12"
             [[build.targets.dependencies]]
             kind = "provides"
             provides = "tool:bar"
@@ -1725,6 +1729,134 @@ fn a_tree_that_doesnt_build_is_installed_as_what_requires_it_needs() -> TestResu
             r#"{{"kind":"content","object":"{}","snapshot":"{snapshot}"}}"#,
             lib.object_id
         )
+    );
+    Ok(())
+}
+
+#[test]
+fn one_of_obliges_the_build_and_only_its_own_choices_confer() -> TestResult {
+    let mut world = World::new();
+    // A libc in three parts, only the shared one conferring itself, as
+    // a range (§51); and a compiler that needs its headers and one of
+    // the other two, chosen by whatever builds with it.
+    world.object(&manifest(
+        "libc",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "headers"
+        root = "headers"
+        version = "1.2.5"
+        provides = [{ provides = "lib:c:headers" }]
+        [[build.targets.children]]
+        name = "static"
+        root = "static"
+        version = "1.2.5"
+        provides = [{ provides = "lib:c:static" }]
+        [[build.targets.children]]
+        name = "shared"
+        root = "shared"
+        version = "1.2.5"
+        provides = [{ provides = "lib:c:shared", confers = [{ provides = "lib:c:shared", version = "^1.2.5" }] }]
+        "#,
+    ));
+    world.object(&manifest(
+        "cc",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "cc"
+        root = "cc"
+        version = "4.7.4"
+        requires = [{ provides = "lib:c:headers" }, { one_of = [{ provides = "lib:c:static" }, { provides = "lib:c:shared" }] }]
+        provides = [{ provides = "tool:cc" }]
+        "#,
+    ));
+    let app = |world: &mut World, libc: &str| {
+        world
+            .object(&manifest(
+                "app",
+                &format!(
+                    r#"
+                    [[build.targets]]
+                    name = "release"
+                    command = ["make"]
+                    [[build.targets.dependencies]]
+                    kind = "provides"
+                    provides = "tool:cc"
+                    {libc}
+                    "#
+                ),
+            ))
+            .0
+            .object_id
+    };
+    let dependency = |label: &str, extra: &str| {
+        format!(
+            "[[build.targets.dependencies]]\nkind = \"provides\"\nprovides = \"{label}\"\n{extra}"
+        )
+    };
+    let requires = |resolution: &Resolution| -> Vec<(String, Option<String>, bool)> {
+        resolution
+            .plan
+            .manifest
+            .requires
+            .iter()
+            .map(|entry| {
+                (
+                    entry.provides.clone(),
+                    entry.version.clone(),
+                    entry.pin.is_some(),
+                )
+            })
+            .collect()
+    };
+
+    // Naming neither: the compiler's obligation is unmet.
+    let neither = app(&mut world, "");
+    let error = world.resolve(&neither, "release").expect_err("unmet");
+    assert!(
+        matches!(&error, ResolveError::ObligationUnmet { alternatives, .. }
+            if alternatives == &["lib:c:static".to_owned(), "lib:c:shared".to_owned()]),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains(
+            "tool:cc needs this build to require one of lib:c:static, lib:c:shared itself"
+        ),
+        "{error}"
+    );
+
+    // Shared: the build gets the headers through the compiler, and the
+    // artifact requires the shared libc at the range it gives.
+    let shared = app(&mut world, &dependency("lib:c:shared", ""));
+    let resolution = world.resolve(&shared, "release")?;
+    assert_eq!(
+        runtime_labels(&resolution),
+        [(
+            "lib:c:headers".to_owned(),
+            vec!["tool:cc".to_owned(), "lib:c:headers".to_owned()]
+        )]
+    );
+    assert_eq!(
+        requires(&resolution),
+        [("lib:c:shared".to_owned(), Some("^1.2.5".to_owned()), false)]
+    );
+    // The compiler confers nothing; static linking needs nothing later.
+    let static_ = app(&mut world, &dependency("lib:c:static", ""));
+    assert!(requires(&world.resolve(&static_, "release")?).is_empty());
+    // The build may refuse what a dependency would confer, or confer
+    // what it wouldn't: pinned to what it resolved, having no range.
+    let refused = app(&mut world, &dependency("lib:c:shared", "confer = false"));
+    assert!(requires(&world.resolve(&refused, "release")?).is_empty());
+    let kept = app(&mut world, &dependency("lib:c:static", "confer = true"));
+    assert_eq!(
+        requires(&world.resolve(&kept, "release")?),
+        [("lib:c:static".to_owned(), None, true)]
     );
     Ok(())
 }

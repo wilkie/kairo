@@ -199,8 +199,8 @@ root = "gcc-4.7.4_0"
 summary = "gcc 4.7.4, as live-bootstrap builds it (package gcc-4.7.4_0)."
 tags = ["live-bootstrap"]
 version = "4.7.4"
-requires = [{ provides = "tool:binutils" }, { provides = "lib:musl" }, { provides = "lib:linux:headers" }]
-provides = [{ provides = "tool:gcc", confers = [{ provides = "lib:musl" }] }, { provides = "tool:g++", confers = [{ provides = "lib:musl" }, { provides = "lib:stdc++" }] }, { provides = "lib:stdc++", confers = [{ provides = "lib:stdc++" }] }]
+requires = [{ provides = "tool:binutils" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }]
 
 [[build.targets.children]]
 name = "binutils-2.41_0"
@@ -211,12 +211,29 @@ version = "2.41"
 provides = [{ provides = "tool:binutils" }]
 
 [[build.targets.children]]
-name = "musl-1.2.5_2"
-root = "musl-1.2.5_2"
-summary = "musl 1.2.5, as live-bootstrap builds it (package musl-1.2.5_2)."
+name = "musl-1.2.5_2-headers"
+root = "musl-1.2.5_2-headers"
+summary = "musl 1.2.5's headers part, as live-bootstrap builds it (package musl-1.2.5_2)."
 tags = ["live-bootstrap"]
 version = "1.2.5"
-provides = [{ provides = "lib:musl", confers = [{ provides = "lib:musl" }] }]
+provides = [{ provides = "lib:musl:headers" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5_2-static"
+root = "musl-1.2.5_2-static"
+summary = "musl 1.2.5's static part, as live-bootstrap builds it (package musl-1.2.5_2)."
+tags = ["live-bootstrap"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:static" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5_2-shared"
+root = "musl-1.2.5_2-shared"
+summary = "musl 1.2.5's shared part, as live-bootstrap builds it (package musl-1.2.5_2)."
+tags = ["live-bootstrap"]
+version = "1.2.5"
+requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+provides = [{ provides = "lib:musl:shared", confers = [{ provides = "lib:musl:shared", version = "^1.2.5" }] }]
 
 # The whole root after this pass, for the pass that goes on from it;
 # musl-1.2.5 is built three times, so the label names the package.

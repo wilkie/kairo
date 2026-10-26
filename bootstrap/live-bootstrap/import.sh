@@ -12,8 +12,9 @@
 #    source with `kairo source fetch-file`, from the first of its
 #    upstream mirrors that serves the bytes live-bootstrap's checksum
 #    names.
-# 3. The native wrapper -- this directory's kairo.toml, start.kaem, package.sh, and
-#    steps/ (bootstrap.cfg and the truncated manifest) -- is committed as
+# 3. The native wrapper -- this directory's kairo.toml, start.kaem,
+#    package.sh, split-musl.sh, and steps/ (bootstrap.cfg and the
+#    truncated manifest) -- is committed as
 #    SHA-256 history and created as an object, or, with --wrapper,
 #    committed on top of that existing wrapper object's history as its
 #    next revision.
@@ -273,9 +274,9 @@ fetch_distfiles
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/steps"
-cp "$HERE/kairo.toml" "$HERE/start.kaem" "$HERE/package.sh" "$WORK/"
+cp "$HERE/kairo.toml" "$HERE/start.kaem" "$HERE/package.sh" "$HERE/split-musl.sh" "$WORK/"
 cp "$HERE/steps/bootstrap.cfg" "$HERE/steps/manifest" "$WORK/steps/"
-commit_wrapper "live-bootstrap b1ceced7 x86 to zlib in CI pass 2" kairo.toml start.kaem package.sh steps/bootstrap.cfg steps/manifest
+commit_wrapper "live-bootstrap b1ceced7 x86 to zlib in CI pass 2" kairo.toml start.kaem package.sh split-musl.sh steps/bootstrap.cfg steps/manifest
 
 cat <<OUT
 wrapper = $WRAPPER

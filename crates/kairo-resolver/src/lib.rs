@@ -251,7 +251,13 @@ pub struct Pin {
 /// A runtime requirement of the artifact a plan builds (§46).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRequirement {
+    /// The label; empty for a `one_of` entry.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub provides: String,
+    /// For a `one_of` entry (`DECISIONS.md` §51): the alternatives, one
+    /// of which a build using this artifact must request itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub one_of: Vec<OneOfAlternative>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,6 +268,23 @@ pub struct ArtifactRequirement {
     pub child: Option<String>,
     /// `declared`, or `conferred by <label> from object:<id>`.
     pub via: String,
+}
+
+/// One alternative of a `one_of` requirement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OneOfAlternative {
+    pub provides: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl fmt::Display for OneOfAlternative {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.version {
+            Some(version) => write!(f, "{} {version}", self.provides),
+            None => f.write_str(&self.provides),
+        }
+    }
 }
 
 /// A requirement of the build environment that the runtime closure of
@@ -707,6 +730,54 @@ impl Offer {
             .as_ref()
             .map_or(&self.object, |(parent, _)| parent)
     }
+}
+
+/// A declared `requires` entry as a plan records it.
+fn declared_requirement(
+    required: &kairo_object::Requirement,
+    child: Option<&str>,
+) -> ArtifactRequirement {
+    let (provides, version, one_of) = match required {
+        kairo_object::Requirement::Label(label) => (
+            label.provides().to_owned(),
+            label.version().map(str::to_owned),
+            Vec::new(),
+        ),
+        kairo_object::Requirement::OneOf(alternatives) => (
+            String::new(),
+            None,
+            alternatives
+                .iter()
+                .map(|alternative| OneOfAlternative {
+                    provides: alternative.provides().to_owned(),
+                    version: alternative.version().map(str::to_owned),
+                })
+                .collect(),
+        ),
+    };
+    ArtifactRequirement {
+        provides,
+        one_of,
+        version,
+        pin: None,
+        child: child.map(str::to_owned),
+        via: "declared".to_owned(),
+    }
+}
+
+/// A pin read from a plan, as the ids it names.
+fn held_pin(pin: Option<Pin>) -> Result<Option<(ObjectId, SnapshotId)>, ResolveError> {
+    let Some(pin) = pin else {
+        return Ok(None);
+    };
+    Ok(Some((
+        ObjectId::new(pin.object).map_err(|_| {
+            ResolveError::UnsupportedSchema("a pin in a held plan isn't an object id".to_owned())
+        })?,
+        SnapshotId::new(pin.snapshot).map_err(|_| {
+            ResolveError::UnsupportedSchema("a pin in a held plan isn't a snapshot id".to_owned())
+        })?,
+    )))
 }
 
 /// Where an object's own tree is installed and which part of it
@@ -1495,24 +1566,12 @@ impl<'a> Resolver<'a> {
             let mut requires: Vec<ArtifactRequirement> = target
                 .requires()
                 .iter()
-                .map(|required| ArtifactRequirement {
-                    provides: required.provides().to_owned(),
-                    version: required.version().map(str::to_owned),
-                    pin: None,
-                    child: None,
-                    via: "declared".to_owned(),
-                })
+                .map(|required| declared_requirement(required, None))
                 .chain(target.children().iter().flat_map(|child| {
                     child
                         .requires()
                         .iter()
-                        .map(move |required| ArtifactRequirement {
-                            provides: required.provides().to_owned(),
-                            version: required.version().map(str::to_owned),
-                            pin: None,
-                            child: Some(child.name().to_owned()),
-                            via: "declared".to_owned(),
-                        })
+                        .map(move |required| declared_requirement(required, Some(child.name())))
                 }))
                 .collect();
             // Every choice made for a label, and the co-existing extra ones
@@ -1606,7 +1665,7 @@ impl<'a> Resolver<'a> {
                                 }
                                 let serves_own = choice.serves.iter().any(|&i| i < own_count);
                                 if let (Picked::Offer(offer), true) = (&choice.picked, serves_own) {
-                                    for entry in self.conferred(index, object, label, offer)? {
+                                    for entry in self.conferred(label, offer, dependency) {
                                         if !requires.contains(&entry) {
                                             requires.push(entry);
                                         }
@@ -2155,44 +2214,51 @@ impl<'a> Resolver<'a> {
     /// What resolving `offer` confers on the consumer's artifact (§46
     /// sub-decision 2), as the plan records it: each label pinned to the
     /// provider's own build when it gives no version.
+    /// What resolving `offer` for this build's own dependency on `label`
+    /// confers on the artifact (`DECISIONS.md` §46, §51), as the plan
+    /// records it. Only the build's direct dependencies confer. A label
+    /// conferring itself without a version is pinned to the offer this
+    /// build resolved; another label carries the range its provider
+    /// gives. `confer = false` on the dependency passes on nothing;
+    /// `confer = true` passes on the label even when its provider
+    /// doesn't, at the dependency's version requirement or pinned to the
+    /// offer.
     fn conferred(
         &self,
-        index: &Index,
-        object: &ObjectId,
         label: &str,
         offer: &Offer,
-    ) -> Result<Vec<ArtifactRequirement>, ResolveError> {
-        let mut entries = Vec::new();
-        for (conferred, version) in &offer.confers {
-            let pin = if version.is_some() {
-                None
-            } else {
-                // The sibling providing it at the same build.
-                let sibling = index.offers(conferred).into_iter().find(|candidate| {
-                    candidate.builder() == offer.builder() && candidate.snapshot == offer.snapshot
-                });
-                let Some(sibling) = sibling else {
-                    return Err(ResolveError::ConferralUnsatisfied {
-                        object: object.clone(),
-                        provider: offer.object.clone(),
-                        label: label.to_owned(),
-                        conferred: conferred.clone(),
-                    });
-                };
-                Some(Pin {
-                    object: sibling.object.to_string(),
-                    snapshot: sibling.snapshot.to_string(),
-                })
-            };
-            entries.push(ArtifactRequirement {
-                provides: conferred.clone(),
-                version: version.clone(),
-                pin,
-                child: None,
-                via: format!("conferred by {label} from object:{}", offer.object),
-            });
+        dependency: &kairo_object::ProvidesDependency,
+    ) -> Vec<ArtifactRequirement> {
+        if dependency.confer() == Some(false) {
+            return Vec::new();
         }
-        Ok(entries)
+        let resolved = || Pin {
+            object: offer.object.to_string(),
+            snapshot: offer.snapshot.to_string(),
+        };
+        let mut confers = offer.confers.clone();
+        if dependency.confer() == Some(true) && !confers.iter().any(|(c, _)| c == label) {
+            confers.insert(
+                0,
+                (label.to_owned(), dependency.version().map(str::to_owned)),
+            );
+        }
+        confers
+            .into_iter()
+            .map(|(conferred, version)| {
+                // Another label without a version isn't a manifest's to
+                // give (§51); pinned, it is pinned to what was resolved.
+                let pin = version.is_none().then(resolved);
+                ArtifactRequirement {
+                    provides: conferred,
+                    one_of: Vec::new(),
+                    version,
+                    pin,
+                    child: None,
+                    via: format!("conferred by {label} from object:{}", offer.object),
+                }
+            })
+            .collect()
     }
 
     /// What the artifact `offer` resolves to requires at run time (§46
@@ -2301,21 +2367,38 @@ impl<'a> Resolver<'a> {
                 for entry in
                     self.artifact_requires(index, offer, stack, prerequisites, diagnostics)?
                 {
-                    let pin = match entry.pin {
-                        None => None,
-                        Some(pin) => Some((
-                            ObjectId::new(pin.object).map_err(|_| {
-                                ResolveError::UnsupportedSchema(
-                                    "a pin in a held plan isn't an object id".to_owned(),
-                                )
-                            })?,
-                            SnapshotId::new(pin.snapshot).map_err(|_| {
-                                ResolveError::UnsupportedSchema(
-                                    "a pin in a held plan isn't a snapshot id".to_owned(),
-                                )
-                            })?,
-                        )),
-                    };
+                    // An obligation on this build, not something to install
+                    // for it (§51): one of the alternatives must be among
+                    // what it requests itself.
+                    if !entry.one_of.is_empty() {
+                        let met = entry.one_of.iter().any(|alternative| {
+                            declared.get(&alternative.provides).is_some_and(|picks| {
+                                picks.iter().any(|pick| match pick {
+                                    Picked::Offer(offer) => version_matches(
+                                        alternative.version.as_deref(),
+                                        offer.version.as_deref(),
+                                    ),
+                                    Picked::HostTool(tool) => version_matches(
+                                        alternative.version.as_deref(),
+                                        tool.version.as_deref(),
+                                    ),
+                                })
+                            })
+                        });
+                        if !met {
+                            return Err(ResolveError::ObligationUnmet {
+                                object: object.clone(),
+                                target: target_name.to_owned(),
+                                via: via.clone(),
+                                alternatives: entry
+                                    .one_of
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect(),
+                            });
+                        }
+                        continue;
+                    }
                     let mut chain = via.clone();
                     chain.push(entry.provides.clone());
                     gathered
@@ -2323,7 +2406,7 @@ impl<'a> Resolver<'a> {
                         .or_default()
                         .push(Constraint {
                             version: entry.version,
-                            pin,
+                            pin: held_pin(entry.pin)?,
                             via: chain,
                         });
                 }
@@ -2877,13 +2960,16 @@ pub enum ResolveError {
         unmet: Vec<String>,
         considered: Vec<String>,
     },
-    /// A provider confers a label from its own build, but nothing at
-    /// that build provides it.
-    ConferralUnsatisfied {
+    /// Something this build uses requires `one_of` several labels, and
+    /// this build requests none of them itself (`DECISIONS.md` §51).
+    ObligationUnmet {
         object: ObjectId,
-        provider: ObjectId,
-        label: String,
-        conferred: String,
+        target: String,
+        /// The labels it brought the obligation through, ending with the
+        /// one whose artifact declares it.
+        via: Vec<String>,
+        /// Each alternative, with its version requirement.
+        alternatives: Vec<String>,
     },
     /// The runtime closure kept changing what it asked of the declared
     /// requirements.
@@ -2992,14 +3078,16 @@ impl fmt::Display for ResolveError {
                 }
                 Ok(())
             }
-            Self::ConferralUnsatisfied {
+            Self::ObligationUnmet {
                 object,
-                provider,
-                label,
-                conferred,
+                target,
+                via,
+                alternatives,
             } => write!(
                 f,
-                "planning object:{object}: {label} from object:{provider} confers {conferred} from its own build, but nothing built with it provides {conferred}"
+                "object:{object} target {target}: {} needs this build to require one of {} itself",
+                via.join(" > "),
+                alternatives.join(", ")
             ),
             Self::NoConvergence { object, target } => write!(
                 f,
@@ -3031,7 +3119,7 @@ impl Error for ResolveError {
             | Self::Unsatisfied(_)
             | Self::Cycle { .. }
             | Self::Conflict { .. }
-            | Self::ConferralUnsatisfied { .. }
+            | Self::ObligationUnmet { .. }
             | Self::NoConvergence { .. }
             | Self::UnsupportedSchema(_) => None,
         }

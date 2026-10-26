@@ -132,17 +132,25 @@ anything, and `string("coexists")` when `coexists = true`
 (`DECISIONS.md` §46). A child's provides entries carry the same two,
 after their version.
 
-`LabelRequirement`, one `requires` or `confers` entry: `string(provides)
-|| option<string>(version)`, the label a registered kind (§42) and the
-version a requirement in Cargo's syntax. In `requires` no version means
-any; in `confers` it means the provider's own build (§46 sub-decision
-2).
+`LabelRequirement`, one `confers` entry or `one_of` alternative:
+`string(provides) || option<string>(version)`, the label a registered
+kind (§42) and the version a requirement in Cargo's syntax. In
+`confers` no version means a pin to the offer the build resolved for
+the label, which only a label conferring itself may say; a conferral of
+any other label gives a version (`DECISIONS.md` §51).
+
+`Requirement`, one `requires` entry: a `LabelRequirement`, encoded as
+above, where no version means any; or `{ one_of = [...] }`, at least two
+alternatives, encoded `string("one_of") || list<LabelRequirement>`: an
+obligation on whatever builds with this artifact to request one of them
+itself (`DECISIONS.md` §51). No label is `one_of`, so the two can't be
+confused.
 
 `DependencyDeclaration` variants:
 
 | Variant | Encoding |
 |---|---|
-| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given, then `placement` when placed |
+| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given, then `placement` when placed, then `string("confer") \|\| u8(confer)` when `confer` is given (`DECISIONS.md` §51) |
 | `Object` | `string("object") \|\| string(object_id) \|\| selector`, then `placement` when placed |
 | `Source` | `string("source") \|\| string(canonical url) \|\| string(git revision) \|\| option<string>(path) \|\| u8(seed)`, then `placement options` when placed |
 | `File` | `string("file") \|\| string(lowercase hex sha256) \|\| string(path)`, then `string("overlay")` when it overlays |
@@ -190,7 +198,7 @@ encoded as written.
 | `artifact_root` | present only when not `"."`: `string("artifact_root") \|\| string(root)`, a relative path under `/kairo/package` |
 | `install` | present only when not `"/"`: `string("install") \|\| option<string>(install)`, an absolute guest path, or none for `install = false` |
 | `children` | present only when there is at least one: `string("children") \|\| list<ChildDeclaration>` |
-| `requires` | present only when there is at least one: `string("requires") \|\| list<LabelRequirement>`, what the artifact needs beside it wherever it is installed (`DECISIONS.md` §46) |
+| `requires` | present only when there is at least one: `string("requires") \|\| list<Requirement>`, what the artifact needs beside it wherever it is installed (`DECISIONS.md` §46, §51) |
 
 `artifact_root` and `install` come from `[build.targets.artifact]`
 (`DECISIONS.md` §41 sub-decision 3); a target without one, or with the
@@ -208,7 +216,7 @@ defaults spelled out, encodes as it did before they existed.
 | `summary` | present only when given: `string("summary") \|\| string(summary)` |
 | `tags` | present only when there is at least one: `string("tags") \|\| list<string>` |
 | `version` | present only when given: `string("version") \|\| string(version)`, the version of the software the child holds (`DECISIONS.md` §44) |
-| `requires` | present only when there is at least one: `string("requires") \|\| list<LabelRequirement>` (`DECISIONS.md` §46) |
+| `requires` | present only when there is at least one: `string("requires") \|\| list<Requirement>` (`DECISIONS.md` §46, §51) |
 
 ```toml
 [[build.targets.children]]

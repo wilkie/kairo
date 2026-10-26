@@ -945,7 +945,7 @@ root = "gcc-4.0.4_0"
 summary = "gcc 4.0.4, as live-bootstrap builds it (package gcc-4.0.4_0)."
 tags = ["live-bootstrap"]
 version = "4.0.4"
-requires = [{ provides = "tool:binutils" }, { provides = "lib:musl" }, { provides = "lib:linux:headers" }]
+requires = [{ provides = "tool:binutils" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
 
 [[build.targets.children]]
 name = "gcc-4.0.4_1"
@@ -953,8 +953,8 @@ root = "gcc-4.0.4_1"
 summary = "gcc 4.0.4, as live-bootstrap builds it (package gcc-4.0.4_1)."
 tags = ["live-bootstrap"]
 version = "4.0.4"
-requires = [{ provides = "tool:binutils" }, { provides = "lib:musl" }, { provides = "lib:linux:headers" }]
-provides = [{ provides = "tool:gcc", confers = [{ provides = "lib:musl" }] }]
+requires = [{ provides = "tool:binutils" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+provides = [{ provides = "tool:gcc" }]
 
 [[build.targets.children]]
 name = "gmp-6.2.1_0"
@@ -1061,48 +1061,92 @@ version = "4.1.0"
 provides = [{ provides = "lib:mpfr" }]
 
 [[build.targets.children]]
-name = "musl-1.1.24_0"
-root = "musl-1.1.24_0"
-summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_0)."
+name = "musl-1.1.24_0-headers"
+root = "musl-1.1.24_0-headers"
+summary = "musl 1.1.24's headers part, as live-bootstrap builds it (package musl-1.1.24_0)."
 tags = ["live-bootstrap"]
 version = "1.1.24"
 
 [[build.targets.children]]
-name = "musl-1.1.24_1"
-root = "musl-1.1.24_1"
-summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_1)."
+name = "musl-1.1.24_0-static"
+root = "musl-1.1.24_0-static"
+summary = "musl 1.1.24's static part, as live-bootstrap builds it (package musl-1.1.24_0)."
 tags = ["live-bootstrap"]
 version = "1.1.24"
 
 [[build.targets.children]]
-name = "musl-1.1.24_2"
-root = "musl-1.1.24_2"
-summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_2)."
+name = "musl-1.1.24_1-headers"
+root = "musl-1.1.24_1-headers"
+summary = "musl 1.1.24's headers part, as live-bootstrap builds it (package musl-1.1.24_1)."
 tags = ["live-bootstrap"]
 version = "1.1.24"
 
 [[build.targets.children]]
-name = "musl-1.1.24_3"
-root = "musl-1.1.24_3"
-summary = "musl 1.1.24, as live-bootstrap builds it (package musl-1.1.24_3)."
+name = "musl-1.1.24_1-static"
+root = "musl-1.1.24_1-static"
+summary = "musl 1.1.24's static part, as live-bootstrap builds it (package musl-1.1.24_1)."
 tags = ["live-bootstrap"]
 version = "1.1.24"
-provides = [{ provides = "lib:musl", confers = [{ provides = "lib:musl" }] }]
 
 [[build.targets.children]]
-name = "musl-1.2.5_0"
-root = "musl-1.2.5_0"
-summary = "musl 1.2.5, as live-bootstrap builds it (package musl-1.2.5_0)."
+name = "musl-1.1.24_2-headers"
+root = "musl-1.1.24_2-headers"
+summary = "musl 1.1.24's headers part, as live-bootstrap builds it (package musl-1.1.24_2)."
+tags = ["live-bootstrap"]
+version = "1.1.24"
+
+[[build.targets.children]]
+name = "musl-1.1.24_2-static"
+root = "musl-1.1.24_2-static"
+summary = "musl 1.1.24's static part, as live-bootstrap builds it (package musl-1.1.24_2)."
+tags = ["live-bootstrap"]
+version = "1.1.24"
+
+[[build.targets.children]]
+name = "musl-1.1.24_3-headers"
+root = "musl-1.1.24_3-headers"
+summary = "musl 1.1.24's headers part, as live-bootstrap builds it (package musl-1.1.24_3)."
+tags = ["live-bootstrap"]
+version = "1.1.24"
+provides = [{ provides = "lib:musl:headers" }]
+
+[[build.targets.children]]
+name = "musl-1.1.24_3-static"
+root = "musl-1.1.24_3-static"
+summary = "musl 1.1.24's static part, as live-bootstrap builds it (package musl-1.1.24_3)."
+tags = ["live-bootstrap"]
+version = "1.1.24"
+provides = [{ provides = "lib:musl:static" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5_0-headers"
+root = "musl-1.2.5_0-headers"
+summary = "musl 1.2.5's headers part, as live-bootstrap builds it (package musl-1.2.5_0)."
 tags = ["live-bootstrap"]
 version = "1.2.5"
 
 [[build.targets.children]]
-name = "musl-1.2.5_1"
-root = "musl-1.2.5_1"
-summary = "musl 1.2.5, as live-bootstrap builds it (package musl-1.2.5_1)."
+name = "musl-1.2.5_0-static"
+root = "musl-1.2.5_0-static"
+summary = "musl 1.2.5's static part, as live-bootstrap builds it (package musl-1.2.5_0)."
 tags = ["live-bootstrap"]
 version = "1.2.5"
-provides = [{ provides = "lib:musl", confers = [{ provides = "lib:musl" }] }]
+
+[[build.targets.children]]
+name = "musl-1.2.5_1-headers"
+root = "musl-1.2.5_1-headers"
+summary = "musl 1.2.5's headers part, as live-bootstrap builds it (package musl-1.2.5_1)."
+tags = ["live-bootstrap"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:headers" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5_1-static"
+root = "musl-1.2.5_1-static"
+summary = "musl 1.2.5's static part, as live-bootstrap builds it (package musl-1.2.5_1)."
+tags = ["live-bootstrap"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:static" }]
 
 [[build.targets.children]]
 name = "perl-5.000_0"

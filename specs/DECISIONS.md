@@ -4628,6 +4628,11 @@ Sub-decisions:
      that provides that label, exactly what the artifact was linked
      against. A provider whose library doesn't promise compatibility
      across versions says nothing more.
+     *Amended by §51:* only a label conferring itself may omit the
+     version, and the pin is to the offer the build resolved for it; a
+     conferral of another label gives a range. Only the build's own
+     direct dependencies confer, and the build may say otherwise with
+     `confer`.
    - **A version means a range.** `version = ">=11.4"` says any
      offer satisfying it will do, which is how a provider states the
      forward compatibility the gcc runtime libraries and glibc keep;
@@ -4979,9 +4984,9 @@ Sub-decisions:
    `sbin → usr/sbin`, committed as links under `files/` and installed at
    `/`, and provides `data:linux-filesystem:merged-usr`. It depends on
    nothing. A package that needs the layout wherever it is installed
-   requires the label, as live-bootstrap's musl will: its loader is at
-   `usr/lib/ld-musl-i386.so.1`, and what is linked against it names
-   `/lib/ld-musl-i386.so.1`. `/usr/sbin → bin` is left out: a package
+   requires the label; live-bootstrap's shared musl does (§51), since
+   its loader is at `usr/lib/ld-musl-i386.so.1` and what is linked
+   against it names `/lib/ld-musl-i386.so.1`. `/usr/sbin → bin` is left out: a package
    with files under `usr/sbin/` (live-bootstrap's util-linux) would
    collide with it.
 
@@ -4997,3 +5002,92 @@ Affected specs:
 - `schemas/canonical/object-manifest-v1.md` — `ContentSection`.
 - `schemas/canonical/resolved-manifest-v1.md` — `content` fields.
 - `schemas/environment/linux-v1.md` — where content lands.
+
+---
+
+## 51. Conferring from What a Build Chooses, `one_of`, and musl in Parts
+
+Decision: a runtime requirement is conferred on an artifact only by
+what its own build chose, its **direct dependencies**: through the
+provider's declaration of what using its label passes on, which a
+label states about itself, or through the building object's own
+`confer` flag on the dependency. Nothing passes on because a build
+dependency needed it. A provider that needs its builder to choose
+among alternatives says so with **`one_of`**, an obligation the builder
+meets by requesting one itself. live-bootstrap's musl is split into the
+parts linking needs of it, so a build chooses static or shared musl
+and only the shared one is required later.
+
+Sub-decisions:
+
+1. **Only direct dependencies confer.** What a build's dependencies
+   require in its build environment (§46 sub-decision 7) is theirs, not
+   the artifact's; a build dependency of a build dependency confers
+   nothing on it. The conferral is computed from the offer the build
+   resolved for its own dependency on the label, so it describes what
+   the build used.
+
+2. **A label confers itself; another label carries a range.** A
+   provides entry's `confers` naming its own label without a version is
+   pinned to the offer the build resolved; with a version, it is that
+   range: `lib:musl:shared` confers `lib:musl:shared` `^1.2.5`, since a
+   later musl 1.x runs what 1.2.5 linked. The range is the provider's to
+   give, by its own compatibility: a caret for musl, `>=` for
+   libstdc++, whose ABI has been the same since gcc 3.4. A `confers`
+   entry naming another label must give a version; a pin to some
+   sibling could name a different offer than the one the build
+   resolved, which is how a gcc conferring its own musl came to require
+   a musl the build hadn't linked against. Amends §46 sub-decision 2.
+
+3. **`confer` on a dependency.** A `kind = "provides"` dependency may
+   say `confer = true` or `confer = false`. `false` passes on nothing
+   from it, for a dependency used only while building. `true` passes
+   on its label even when its provider doesn't: at the provider's own
+   conferral of the label if it gives one, else the dependency's
+   version requirement, else pinned to the offer resolved. Without the
+   flag, the provider's declaration stands. Only a provides dependency
+   takes it.
+
+4. **`one_of`.** A `requires` entry may be
+   `{ one_of = [{ provides, version? }, ...] }`, at least two
+   alternatives. It isn't installed beside the artifact; it obliges any
+   build that uses the artifact, as a dependency or in its runtime
+   closure, to request one of the alternatives itself, among its own
+   dependencies, satisfying the alternative's version. A build that
+   requests none is refused at plan time, naming the chain and the
+   alternatives. Plans record the obligation in `requires` as a
+   `one_of` entry.
+
+5. **musl in parts.** Each live-bootstrap musl package is laid out as
+   the children its uses need (`bootstrap/live-bootstrap/split-musl.sh`):
+   `<package>-headers` (`lib:musl:headers`: the headers, startup files,
+   and empty stub archives, needed to link either way),
+   `<package>-static` (`lib:musl:static`: `libc.a`), and, for the one
+   package built with a shared libc, `musl-1.2.5_2`, `<package>-shared`
+   (`lib:musl:shared`: `libc.so`, the loader, `ldd`, and
+   `etc/ld-musl-i386.path`; conferring itself `^1.2.5` and requiring
+   `data:linux-filesystem:merged-usr`, §50). The packages are still
+   checked against upstream's checksums; the children are their files,
+   laid out by use.
+
+6. **gcc requires a choice and confers nothing.** live-bootstrap's gcc
+   children require binutils, `lib:musl:headers`, `one_of`
+   `lib:musl:static` or `lib:musl:shared`, and the kernel headers, and
+   confer nothing: whether what is built needs a libc at run time
+   depends on which the builder chose. gcc 4.7.4's libstdc++ is static
+   only, so its label is `lib:stdc++:static`, conferring nothing. A gcc
+   is built for one C library; another libc (glibc) is another gcc,
+   requiring its own libc's parts, as different targets are different
+   gccs.
+
+Rationale: the object being built knows how it links; a compiler
+doesn't. Making the builder choose, and conferring only from what it
+chose, keeps an artifact's runtime requirements to what it really
+needs, at the compatibility its libraries promise, and says why: the
+builder asked for it.
+
+Affected specs:
+
+- `DECISIONS.md` §46 sub-decision 2 — conferral without a version.
+- `schemas/canonical/object-manifest-v1.md` — `Requirement`, `confer`.
+- `schemas/canonical/resolved-manifest-v1.md` — `one_of` entries.

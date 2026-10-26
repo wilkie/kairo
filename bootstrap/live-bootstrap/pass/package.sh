@@ -20,3 +20,9 @@ for archive in /repo/*.tar.bz2; do
     mkdir "/kairo/package/$package"
     bzip2 -dc "$archive" | tar -C "/kairo/package/$package" --no-same-owner -xf -
 done
+# Each musl package as its headers, static, and shared parts (§51).
+. /kairo/src/split-musl.sh
+for dir in /kairo/package/musl-*; do
+    [ -d "$dir" ] || continue
+    split_musl "$dir"
+done

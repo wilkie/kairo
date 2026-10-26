@@ -11,16 +11,19 @@ with it. It runs under the bubblewrap engine, as the earlier passes do,
 with no host tool taking part.
 
 Each step packages what it installed and checks the package against
-live-bootstrap's `SHA256SUMS.pkgs`. The 7 packages are this pass's
-children (`specs/DECISIONS.md` §41 sub-decision 6): `tool:gcc`,
-`tool:g++`, and `lib:stdc++` 4.7.4, which require binutils, musl, and
-the kernel headers beside them, `tool:g++` conferring `lib:stdc++` and
-both conferring `lib:musl` (§46); `tool:binutils` 2.41; `lib:musl`
-1.2.5, rebuilt; `lib:openssl` and `tool:openssl` 3.6.0;
+live-bootstrap's `SHA256SUMS.pkgs`. The 7 packages are this pass's 9
+children (`specs/DECISIONS.md` §41 sub-decision 6, §51): `tool:gcc`,
+`tool:g++`, and `lib:stdc++:static` 4.7.4, which require binutils,
+musl's headers, the kernel headers, and `one_of` static or shared musl,
+chosen by whatever builds with them, and confer nothing;
+`tool:binutils` 2.41; musl 1.2.5, rebuilt, as `lib:musl:headers`,
+`lib:musl:static`, and the first `lib:musl:shared`, which confers
+itself `^1.2.5` and brings the merged-/usr layout its loader is reached
+through (§50); `lib:openssl` and `tool:openssl` 3.6.0;
 `data:ca-certificates`; `tool:curl` 8.17.0; and `tool:patch` 2.8. Where
 an earlier pass offers the same label at the same version (curl 8.17.0,
-musl 1.2.5), this pass's, published later, is the one the resolver
-takes (§48).
+musl 1.2.5's headers and static libc), the owner and version tie, and
+§48's tie-break decides.
 
 ## How it's put together
 
@@ -53,4 +56,5 @@ Unicode data files upstream names on `ftp.unicode.org` are fetched from
 
 The ignored test `crates/kairo-cli/tests/bootstrap_live.rs` builds this
 pass after the first two when `KAIRO_LIVE_BOOTSTRAP_PASSES` is 3, then
-builds the hello consumer again, which now compiles with gcc 4.7.4.
+builds the hello consumer's dynamic target, which links with gcc 4.7.4
+against this pass's shared musl.

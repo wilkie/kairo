@@ -2,7 +2,8 @@
 # run at the end by start.kaem under the bash and tools the build made:
 # the installed /usr; the checked packages, as built; the state a later
 # pass starts from; and each package extracted into a directory of its
-# own, the root of its child object.
+# own, the root of its child object, musl's split into the parts linking
+# needs of it.
 set -eu -o pipefail
 PATH=/usr/bin
 cp -a /usr /kairo/package/usr
@@ -16,4 +17,9 @@ for archive in /external/repo/*.tar.bz2; do
     package=$(basename "$archive" .tar.bz2)
     mkdir "/kairo/package/$package"
     bzip2 -dc "$archive" | tar -C "/kairo/package/$package" --no-same-owner -xf -
+done
+# Each musl package as its headers, static, and shared parts (§51).
+. /kairo/src/split-musl.sh
+for dir in /kairo/package/musl-*; do
+    split_musl "$dir"
 done

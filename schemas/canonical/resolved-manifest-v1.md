@@ -102,11 +102,14 @@ so a plan without them is as before:
 - `requires`: what the artifact this plan builds, and each of its
   children, will require at run time. Each entry: `provides`; `version`
   (a requirement) or `pin` (`{ object, snapshot }`, one provider, for a
-  conferred label without a version); `child`, the child it applies to,
-  or absent for the target's artifact and every child; `via`, either
-  `declared` or `conferred by <label> from object:<id>`. A consumer
-  whose requirement resolves to this artifact reads these from the plan
-  the build result cites.
+  conferred label without a version: the offer the build resolved); or,
+  for a `one_of` entry, `one_of` (a list of `{ provides, version? }`)
+  instead of `provides` (`DECISIONS.md` §51), an obligation on whatever
+  builds with this artifact rather than something installed beside it;
+  `child`, the child it applies to, or absent for the target's artifact
+  and every child; `via`, either `declared` or `conferred by <label>
+  from object:<id>`. A consumer whose requirement resolves to this
+  artifact reads these from the plan the build result cites.
 - `runtime`: the runtime closure of the build dependencies, installed
   in the build environment after the declared requirements. Each entry:
   `provides`, `version`, `pin` (the provider chosen), `via` (the labels

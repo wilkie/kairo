@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **Conferring from what a build chooses, and `one_of` (`DECISIONS.md`
+  §51).** Only a build's direct dependencies confer runtime
+  requirements on its artifact; a label conferring itself without a
+  version is pinned to the offer the build resolved, and a conferral of
+  another label must give a range. A provides dependency takes
+  `confer = true` or `false`. A `requires` entry may be `one_of`
+  several labels, an obligation on whatever builds with the artifact to
+  request one itself, refused at plan time when it doesn't.
+  live-bootstrap's musl is split into headers, static, and shared
+  children; gcc requires one of static or shared musl and confers
+  nothing; the hello consumer has a dynamic and a static target.
+
 - **An object that doesn't build is its own artifact (`DECISIONS.md`
   §50).** `[content]` takes `root` (the part of the tree that is its
   artifact) and `install` (where it is installed when required); a
@@ -546,6 +558,11 @@ rather than per-commit.
 
 ### Wire format
 
+- **`one_of` and `confer` (`DECISIONS.md` §51)** are encoded only where
+  given: a `one_of` requirement as `string("one_of")` and its
+  alternatives, a provides dependency's `confer` after its placement;
+  plans carry `one_of` entries in `requires`. Manifests and plans
+  without them keep their bytes and hashes.
 - **`[content]` `root` and `install` (`DECISIONS.md` §50)** are encoded
   in a manifest's canonical bytes after `kind`, each only when given,
   and a plan's `content` resolution carries them only when the object
@@ -553,6 +570,12 @@ rather than per-commit.
   hashes.
 
 ### Changed
+
+- **A conferral of another label needs a version (`DECISIONS.md`
+  §51).** A `confers` entry naming a label other than the provider's own
+  without a version, which §46 pinned to a sibling of the provider, is
+  refused; give its range. A label conferring itself without a version
+  is pinned to the offer the build resolved.
 
 - **A file source's bytes are read as stored (`DECISIONS.md` §47).**
   They were checked against their hash when put; the read no longer

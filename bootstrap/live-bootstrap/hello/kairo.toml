@@ -1,20 +1,38 @@
 # A C program built with live-bootstrap's gcc, as a consumer of its
-# child objects: it names tool:gcc, and binutils, musl, and the kernel
-# headers come as what gcc requires (specs/DECISIONS.md §46), and
-# tool:gcc confers musl on this artifact. live-bootstrap's gcc links
-# statically by default, so this program doesn't need musl to run, but
-# a library built the same way would.
+# child objects: it names tool:gcc and the musl it links against, and
+# binutils, musl's headers, and the kernel headers come as what gcc
+# requires (specs/DECISIONS.md §46). gcc requires its builder to choose
+# a static or shared musl itself (one_of, §51); each target here makes
+# one choice. Only the shared musl confers itself on what is built, and
+# brings the merged-/usr layout its loader is reached through
+# (linux-filesystem, §50).
 [kairo]
 schema = 1
 kind = "software"
 name = "hello-from-live-bootstrap"
-summary = "A C program built and run with live-bootstrap's gcc, the highest held; it prints that gcc's version."
+summary = "A C program built and run with live-bootstrap's gcc, the highest held, linked statically or dynamically against musl; it prints that gcc's version."
 tags = ["example", "live-bootstrap"]
 
 [[dependencies]]
 kind = "provides"
 provides = "environment:linux/x86"
 
+[[dependencies]]
+kind = "provides"
+provides = "tool:bash"
+version = "^5"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:coreutils"
+version = "^9"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gcc"
+
+# Linked against musl's shared libc, at /lib/ld-musl-i386.so.1: its
+# artifact requires lib:musl:shared at run time.
 [[build.targets]]
 name = "x86"
 command = ["/usr/bin/bash", "-c", "printf '#include <stdio.h>\\nint main(void) { puts(\"hello from gcc \" __VERSION__); return 0; }\\n' > hello.c && gcc -o /kairo/package/hello hello.c && /kairo/package/hello > /kairo/package/out"]
@@ -23,14 +41,16 @@ install = "/opt/hello"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "tool:bash"
-version = "^5"
+provides = "lib:musl:shared"
+
+# Linked statically: its artifact requires nothing at run time. Pass 1's
+# musl is static only, so this is the target pass 1's gcc can build.
+[[build.targets]]
+name = "x86-static"
+command = ["/usr/bin/bash", "-c", "printf '#include <stdio.h>\\nint main(void) { puts(\"hello from gcc \" __VERSION__); return 0; }\\n' > hello.c && gcc -static -o /kairo/package/hello hello.c && /kairo/package/hello > /kairo/package/out"]
+[build.targets.artifact]
+install = "/opt/hello"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "tool:coreutils"
-version = "^9"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:gcc"
+provides = "lib:musl:static"

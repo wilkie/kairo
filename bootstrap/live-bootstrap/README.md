@@ -24,7 +24,10 @@ extracted under `<package>/`, the root of a **child object**
 (`specs/DECISIONS.md` §41 sub-decision 6). A consumer that needs only
 live-bootstrap's bash depends on `tool:bash` and gets the bash package,
 installed at `/usr/bin/bash`, not the whole system; one that needs its
-compiler takes `tool:gcc`, `tool:binutils`, and `lib:musl` side by side.
+compiler takes `tool:gcc` and, as gcc requires of it, the musl it links
+against, `lib:musl:static` or `lib:musl:shared` (`specs/DECISIONS.md`
+§51), and gets binutils and the headers beside them. Each musl package
+is split into those parts and its headers, children of their own.
 The last revision of each package provides its name's label with its
 version (`tool:autoconf` 2.52 through 2.69 are nine children); earlier
 revisions that later steps rebuilt, such as `tcc-0.9.27_0` through
@@ -57,11 +60,12 @@ puts it, and the wrapper's own files are in `/kairo/src`:
 
 | File | What it is |
 |---|---|
-| `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, the checked packages in `repo/`, the `state/` a later pass needs, and each package extracted as a child, 77 in all, providing `tool:bash`, `tool:gcc`, `lib:musl`, and the rest; the parent itself provides `tool:mes`, `tool:patch`, and `tool:gzip`, and the whole root as `data:live-bootstrap:x86:zlib-1.3.1`, which pass 2 goes on from. |
-| `children.py` | Writes the `[[build.targets.children]]` entries from the package names a build lists, when the milestone moves (pass 2 uses it too); gives gcc what it requires beside it (binutils, musl, the kernel headers) and what its `tool:gcc` confers on whatever it builds (musl), and musl's `lib:musl` conferring itself (`specs/DECISIONS.md` §46). |
-| `hello/` | A consumer of the children: a C program that names `tool:gcc` alone, gets binutils, musl, and the headers as what gcc requires, links (statically) against musl, and prints the version of the gcc that built it (the highest held: 4.0.4 here, 4.7.4 once pass 3 is). `hello/create.sh <actor id>` makes the object; the end-to-end test builds it last. |
+| `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, the checked packages in `repo/`, the `state/` a later pass needs, and each package extracted as a child, 83 in all (each musl package as two), providing `tool:bash`, `tool:gcc`, `lib:musl:static`, and the rest; the parent itself provides `tool:mes`, `tool:patch`, and `tool:gzip`, and the whole root as `data:live-bootstrap:x86:zlib-1.3.1`, which pass 2 goes on from. |
+| `children.py` | Writes the `[[build.targets.children]]` entries from the package names a build lists, when the milestone moves (the later passes use it too); gives gcc what it requires beside it (binutils, musl's headers, the kernel headers, and `one_of` static or shared musl, chosen by whatever builds with it) and makes each musl package its headers, static, and shared children, only the shared one conferring itself (`specs/DECISIONS.md` §46, §51). |
+| `hello/` | A consumer of the children: a C program that names `tool:gcc` and the musl it links against, gets binutils and the headers as what gcc requires, and prints the version of the gcc that built it (the highest held: 4.0.4 here, 4.7.4 once pass 3 is). Its `x86-static` target links against `lib:musl:static` and requires nothing at run time; its `x86` target links against `lib:musl:shared`, which pass 3 builds, and requires it. `hello/create.sh <actor id>` makes the object; the end-to-end test builds it last. |
 | `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: puts the wrapper's step files over upstream's, sets `kaem.run`'s variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. At the end it runs `package.sh`. |
-| `package.sh` | Run under the bash the build made: copies `/usr` and `/external/repo` into `/kairo/package`, the artifact; copies `/steps/env`, `/steps/bootstrap.cfg`, and `/script-generator` into its `state/`; and extracts each package into `/kairo/package/<package>/`. |
+| `package.sh` | Run under the bash the build made: copies `/usr` and `/external/repo` into `/kairo/package`, the artifact; copies `/steps/env`, `/steps/bootstrap.cfg`, and `/script-generator` into its `state/`; and extracts each package into `/kairo/package/<package>/`, musl's split by `split-musl.sh` into `<package>-headers`, `-static`, and `-shared`. |
+| `split-musl.sh` | Lays out a musl package as the children linking needs of it (`specs/DECISIONS.md` §51); every pass's `package.sh` uses it. |
 | `steps/bootstrap.cfg` | What `rootfs.py --arch x86 --bwrap --external-sources` writes. |
 | `steps/manifest` | live-bootstrap's manifest, truncated after `zlib-1.3.1`, before the perl chain of upstream's CI pass 2. |
 | `import.sh` | Archives live-bootstrap and the distfiles, and creates the wrapper. |

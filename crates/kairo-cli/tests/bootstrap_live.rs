@@ -13,7 +13,8 @@
 //! root, and checks their packages and children too: pass 2, the perl
 //! chain (`bootstrap/live-bootstrap-perl/`), and pass 3, to gcc 4.7.4
 //! (`bootstrap/live-bootstrap-gcc-4.7.4/`), after which the hello
-//! consumer builds with gcc 4.7.4.
+//! consumer's dynamic target builds with gcc 4.7.4 against the shared
+//! musl.
 //!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
@@ -104,15 +105,20 @@ fn guest_log(store: &Path, output: &str, field: &str, lines: usize) -> String {
         .unwrap_or_default()
 }
 
-/// `kairo build <wrapper> --target x86`; on failure, panics with the
-/// end of the guest's stdout and stderr, read from the store, since the
-/// summary alone doesn't say which step failed (kaem's `--verbose`
-/// trace goes to stdout).
+/// `kairo build <wrapper> --target x86`.
 fn build(store: &Path, wrapper: &str, actor: &str) -> String {
+    build_target(store, wrapper, "x86", actor)
+}
+
+/// `kairo build <wrapper> --target <target>`; on failure, panics with
+/// the end of the guest's stdout and stderr, read from the store, since
+/// the summary alone doesn't say which step failed (kaem's `--verbose`
+/// trace goes to stdout).
+fn build_target(store: &Path, wrapper: &str, target: &str, actor: &str) -> String {
     let output = Command::new(KAIRO)
         .arg("--store")
         .arg(store)
-        .args(["build", wrapper, "--target", "x86", "--actor", actor])
+        .args(["build", wrapper, "--target", target, "--actor", actor])
         .output()
         .expect("run kairo");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -270,15 +276,19 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
 
     // Each package is a child object, its artifact the package's own
     // files (DECISIONS.md §41 sub-decision 6): bash's is bash alone.
-    assert_eq!(field(&built, "children"), "77", "{built}");
+    // musl's packages are split into the parts linking needs (§51).
+    assert_eq!(field(&built, "children"), "83", "{built}");
     assert_eq!(
         child_paths(&built, "bash-5.2.15_0", &blob_store),
         ["usr/bin/bash", "usr/bin/sh"]
     );
 
-    // A consumer names tool:gcc alone: binutils, musl, and the kernel
-    // headers come as what gcc requires (DECISIONS.md §46), and the
-    // program it builds runs.
+    // A consumer names tool:gcc and, as gcc obliges it to (DECISIONS.md
+    // §51), the musl it links against: binutils and musl's and the
+    // kernel's headers come as what gcc requires (§46), and the program
+    // it builds runs. Pass 1's musl is static only, so the static target.
+    let filesystem = import(store, &actor, "linux-filesystem");
+    let filesystem = field(&filesystem, "object").to_owned();
     let hello = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bootstrap/live-bootstrap/hello");
     let created = Command::new("bash")
         .arg(hello.join("create.sh"))
@@ -295,25 +305,34 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         String::from_utf8_lossy(&created.stderr)
     );
     let consumer = field(&String::from_utf8_lossy(&created.stdout), "object").to_owned();
-    let built = build(store, &format!("object:{consumer}"), &actor);
+    let built = build_target(store, &format!("object:{consumer}"), "x86-static", &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     assert_eq!(field(&built, "provisioning"), "overlay", "{built}");
-    let plan = kairo(
-        store,
-        &[
-            "build",
-            &format!("object:{consumer}"),
-            "--target",
-            "x86",
-            "--plan-only",
-        ],
-    );
-    for label in ["tool:binutils", "lib:musl 1.2.5", "lib:linux:headers"] {
+    let plan = |target: &str| {
+        kairo(
+            store,
+            &[
+                "build",
+                &format!("object:{consumer}"),
+                "--target",
+                target,
+                "--plan-only",
+            ],
+        )
+    };
+    let planned = plan("x86-static");
+    for label in [
+        "tool:binutils",
+        "lib:musl:headers 1.2.5",
+        "lib:linux:headers",
+    ] {
         assert!(
-            plan.contains(&format!("  {label}")) && plan.contains("via tool:gcc"),
-            "{plan}"
+            planned.contains(&format!("  {label}")) && planned.contains("via tool:gcc"),
+            "{planned}"
         );
     }
+    // Linked statically, it requires nothing at run time.
+    assert!(!planned.contains("\nrequires = "), "{planned}");
     let out = built
         .lines()
         .find_map(|line| line.strip_prefix("  out "))
@@ -373,13 +392,28 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     assert_eq!(field(&built, "status"), "success", "{built}");
     assert!(!built.contains("\nbuilds = "), "{built}");
     assert_eq!(check_packages(&built, &sums, &blob_store), 114, "{built}");
-    assert_eq!(field(&built, "children"), "7", "{built}");
+    assert_eq!(field(&built, "children"), "9", "{built}");
     let paths = child_paths(&built, "gcc-4.7.4_0", &blob_store);
     for program in ["usr/bin/gcc", "usr/bin/g++"] {
         assert!(paths.contains(&program.to_owned()), "{paths:?}");
     }
-    // The consumer that names tool:gcc alone now gets the highest, with
-    // the binutils and musl built beside it.
+    // The consumer's dynamic target, now that a shared musl is held: it
+    // gets the highest gcc, with the binutils built beside it, the shared
+    // musl brings the merged-/usr layout its loader is reached through
+    // (§50), and the artifact requires that musl at its range.
+    let planned = plan("x86");
+    assert!(
+        planned.contains(&format!(
+            "  data:linux-filesystem:merged-usr 1.0.0 via lib:musl:shared > data:linux-filesystem:merged-usr -> object:{filesystem} root files (content, installed at /)"
+        )),
+        "{planned}"
+    );
+    assert!(
+        planned.contains(
+            "\nrequires = 1\n  lib:musl:shared ^1.2.5 (conferred by lib:musl:shared from object:"
+        ),
+        "{planned}"
+    );
     let built = build(store, &format!("object:{consumer}"), &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     let out = built

@@ -958,7 +958,20 @@ fn format_resolution(resolution: &Resolution) -> String {
                     .as_deref()
                     .map(|child| format!("{child}: "))
                     .unwrap_or_default(),
-                entry.provides,
+                if entry.one_of.is_empty() {
+                    entry.provides.clone()
+                } else {
+                    // An obligation on whatever builds with it (§51).
+                    format!(
+                        "one of {}",
+                        entry
+                            .one_of
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
                 entry
                     .version
                     .as_deref()
