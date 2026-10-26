@@ -28,6 +28,11 @@ LIBRARIES = {
     "perl-Devel-Tokenizer-C": ["lib:perl:Devel-Tokenizer-C"],
     "openssl": ["lib:openssl"],
     "ca-certificates": ["data:ca-certificates"],
+    "libffi": ["lib:ffi"],
+    "gc": ["lib:gc"],
+    "libunistring": ["lib:unistring"],
+    # A perl module texinfo's build uses.
+    "perl-Text-CSV": ["lib:perl:Text-CSV"],
 }
 # What a package needs beside it wherever it is installed
 # (specs/DECISIONS.md §46): gcc runs binutils and compiles against
@@ -50,6 +55,9 @@ ALSO = {
     "diffutils": ["tool:diff"],
     "findutils": ["tool:find"],
     "openssl": ["tool:openssl"],
+    "guile": ["lib:guile"],
+    "gettext": ["lib:intl"],
+    "texinfo": ["tool:makeinfo"],
     # 4.7.4 is the first gcc live-bootstrap builds with C++; its
     # libstdc++ is static only, so it confers nothing.
     "gcc-4.7.4": ["tool:g++", "lib:stdc++:static"],

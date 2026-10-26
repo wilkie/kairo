@@ -102,8 +102,10 @@ unchanged wrapper adds nothing.
 The chain goes on in passes (`specs/DECISIONS.md` §49), each its own
 object, so a later milestone doesn't rebuild this one:
 `bootstrap/live-bootstrap-perl/` installs this pass's whole root and
-runs upstream's perl chain from the step after `zlib-1.3.1`, and
-`bootstrap/live-bootstrap-gcc-4.7.4/` goes on from that to gcc 4.7.4.
+runs upstream's perl chain from the step after `zlib-1.3.1`,
+`bootstrap/live-bootstrap-gcc-4.7.4/` goes on from that to gcc 4.7.4,
+and `bootstrap/live-bootstrap-python/` from that through the python
+chain, guile, and autogen.
 Every pass after this one shares `pass/start.sh` and `pass/package.sh`,
 which its `import.sh` puts in its wrapper.
 

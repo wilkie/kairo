@@ -4866,8 +4866,9 @@ milestone. Pass 1 (`bootstrap/live-bootstrap/`, §38) runs to
 upstream's perl chain, to `perl-5.42.0` and the uninstall of perl
 5.6.2 and 5.8.9; pass 3 (`bootstrap/live-bootstrap-gcc-4.7.4/`) runs
 openssl, ca-certificates, curl, and patch to gcc 4.7.4, then binutils
-2.41 and musl 1.2.5 rebuilt with it. Building on a pass never rebuilds
-the passes before it.
+2.41 and musl 1.2.5 rebuilt with it; pass 4
+(`bootstrap/live-bootstrap-python/`) runs the python chain, guile, and
+autogen. Building on a pass never rebuilds the passes before it.
 
 Sub-decisions:
 
@@ -4906,7 +4907,13 @@ Sub-decisions:
    previous pass's last. Every pass after the first shares one start
    script and one packaging script
    (`bootstrap/live-bootstrap/pass/`); its target's command names the
-   line the previous pass ended on.
+   line the previous pass ended on. The generated script runs with
+   upstream's environment, as `rootfs.py` runs it (`env -i` and
+   `PATH=/usr/bin`), not the guest's: musl takes an unset `LANG` as
+   `C.UTF-8` and the guest's `LANG=C` as ASCII, and python 3.1's codec
+   generation in pass 4 can't write its tables in ASCII. *Found when
+   pass 4 first failed; passes 2 and 3 had run with the guest's
+   environment, and their packages matched upstream's anyway.*
 
 4. **The checks are upstream's.** Every package a pass makes is
    checked against live-bootstrap's `SHA256SUMS.pkgs`, as in pass 1, so

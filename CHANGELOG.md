@@ -18,6 +18,19 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap's later passes run upstream's scripts in upstream's
+  environment (`DECISIONS.md` §49).** The shared start runs the
+  generated script under `env -i PATH=/usr/bin`, as upstream's
+  `rootfs.py` does, so musl's locale is `C.UTF-8` rather than the
+  guest's `LANG=C`, which python 3.1's codec generation can't write.
+
+- **live-bootstrap pass 4: python and guile (`DECISIONS.md` §49).**
+  `bootstrap/live-bootstrap-python/` goes on from pass 3's root through
+  upstream's python chain, python 2.0.1 to 3.11.1, with gperf, gettext,
+  texinfo, and libffi, then libunistring, the Boehm GC, guile 3.0.11,
+  which, grep 3.12, sed 4.8, and autogen 5.18.16; its 23 packages are
+  checked against upstream and are its children.
+
 - **Artifacts found by what a build consumes (`DECISIONS.md` §52).** A
   plan carries a `build_key`, the hash of what its guest sees and runs;
   a held build with the same key, at any snapshot, is its artifact, so

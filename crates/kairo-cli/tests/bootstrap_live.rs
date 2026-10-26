@@ -8,13 +8,14 @@
 //! matches the checksums upstream publishes, read from the archived
 //! source; and `kairo reproduce` matches.
 //!
-//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2 or 3, it then builds the
+//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2, 3, or 4, it then builds the
 //! later passes (`specs/DECISIONS.md` §49), each from the previous one's
 //! root, and checks their packages and children too: pass 2, the perl
 //! chain (`bootstrap/live-bootstrap-perl/`), and pass 3, to gcc 4.7.4
 //! (`bootstrap/live-bootstrap-gcc-4.7.4/`), after which the hello
 //! consumer's dynamic target builds with gcc 4.7.4 against the shared
-//! musl.
+//! musl; and at 4, pass 4, python and guile
+//! (`bootstrap/live-bootstrap-python/`).
 //!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
@@ -426,6 +427,26 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     )
     .expect("out");
     assert_eq!(String::from_utf8_lossy(&text), "hello from gcc 4.7.4\n");
+    if passes < 4 {
+        return;
+    }
+
+    // Pass 4: the python chain, guile, and autogen.
+    let imported = import(store, &actor, "live-bootstrap-python");
+    let python = format!("object:{}", field(&imported, "wrapper"));
+    let built = build(store, &python, &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    assert!(!built.contains("\nbuilds = "), "{built}");
+    assert_eq!(check_packages(&built, &sums, &blob_store), 137, "{built}");
+    assert_eq!(field(&built, "children"), "23", "{built}");
+    for (child, program) in [
+        ("python-3.11.1_0", "usr/bin/python3.11"),
+        ("guile-3.0.11_0", "usr/bin/guile"),
+        ("autogen-5.18.16_0", "usr/bin/autogen"),
+    ] {
+        let paths = child_paths(&built, child, &blob_store);
+        assert!(paths.contains(&program.to_owned()), "{child}: {paths:?}");
+    }
 }
 
 /// Check every package a build lists in `repo/` against upstream's

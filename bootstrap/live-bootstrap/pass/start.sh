@@ -60,6 +60,9 @@ awk -v last="$PREVIOUS_LAST" '
     resumed { print }
     begun && $0 == last { resumed = 1 }
 ' "${scripts[0]}" >/steps/continue.sh
-bash /steps/continue.sh
+# With upstream's environment, as rootfs.py runs it (`env -i`, PATH alone),
+# not the guest's: musl takes an unset LANG as C.UTF-8, and an explicit
+# LANG=C as ASCII, which python's codec generation, for one, can't write.
+env -i PATH=/usr/bin bash /steps/continue.sh
 
 bash /kairo/src/package.sh

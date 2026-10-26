@@ -57,4 +57,5 @@ Unicode data files upstream names on `ftp.unicode.org` are fetched from
 The ignored test `crates/kairo-cli/tests/bootstrap_live.rs` builds this
 pass after the first two when `KAIRO_LIVE_BOOTSTRAP_PASSES` is 3, then
 builds the hello consumer's dynamic target, which links with gcc 4.7.4
-against this pass's shared musl.
+against this pass's shared musl. Pass 4
+(`bootstrap/live-bootstrap-python/`) goes on from this pass's root.

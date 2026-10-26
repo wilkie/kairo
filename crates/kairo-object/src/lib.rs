@@ -3384,6 +3384,9 @@ mod tests {
             "../../../bootstrap/live-bootstrap-gcc-4.7.4/kairo.toml"
         ))?;
         ObjectManifest::parse_toml(include_str!(
+            "../../../bootstrap/live-bootstrap-python/kairo.toml"
+        ))?;
+        ObjectManifest::parse_toml(include_str!(
             "../../../bootstrap/linux-filesystem/kairo.toml"
         ))?;
         assert!(children.iter().any(|child| child.name() == "bash-5.2.15_0"
