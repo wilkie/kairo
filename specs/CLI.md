@@ -1234,6 +1234,20 @@ by one at `general` scope), or `unranked`.
 
 `--json` gives the same with the stored document under `manifest`.
 
+A target whose build key (`DECISIONS.md` §52) a held, accepted build
+already has, at this snapshot or any other, isn't built again; nothing
+runs and nothing is signed:
+
+```text
+status = held
+plan = <this plan's hash>
+build_key = <key>
+artifact = <artifact id>
+result = <the BuildResult that built it>
+result_snapshot = <the snapshot it was built at>
+result_plan = <the plan it cites>
+```
+
 Build output:
 
 ```text

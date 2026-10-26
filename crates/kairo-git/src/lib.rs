@@ -434,6 +434,41 @@ impl Repository {
     }
 }
 
+/// One entry of a tree: its mode (in octal), name, and object id.
+pub type TreeEntry = (String, String, String);
+
+impl Repository {
+    /// The top-level entries of `revision`'s tree, each as its mode (in
+    /// octal), name, and object id, in the tree's order, or `None` when
+    /// the commit isn't held. What a build's tree is, for its build key
+    /// (`specs/DECISIONS.md` §52): an entry's id names its whole subtree
+    /// or contents.
+    pub fn root_entries(&self, revision: &GitRevision) -> Result<Option<Vec<TreeEntry>>, GitError> {
+        let oid = self.revision_oid(revision)?;
+        let object = match self.inner.try_find_object(oid) {
+            Ok(Some(object)) => object,
+            Ok(None) => return Ok(None),
+            Err(error) => return Err(GitError::Operation(Box::new(error))),
+        };
+        let commit = object
+            .try_into_commit()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let tree = commit
+            .tree()
+            .map_err(|error| GitError::Operation(Box::new(error)))?;
+        let mut entries = Vec::new();
+        for entry in tree.iter() {
+            let entry = entry.map_err(|error| GitError::Operation(Box::new(error)))?;
+            entries.push((
+                format!("{:o}", entry.mode().value()),
+                String::from_utf8_lossy(entry.filename()).into_owned(),
+                entry.oid().to_string(),
+            ));
+        }
+        Ok(Some(entries))
+    }
+}
+
 fn export_tree_into(tree: &gix::Tree<'_>, dest: &Path) -> Result<(), GitError> {
     for entry in tree.iter() {
         let entry = entry.map_err(|error| GitError::Operation(Box::new(error)))?;
@@ -767,6 +802,16 @@ mod tests {
         .expect("revision");
 
         let repo = discover(dir.path()).expect("discover");
+        // The top-level entries, each by mode, name, and id.
+        let entries = repo.root_entries(&head).expect("entries").expect("held");
+        let names: Vec<&str> = entries.iter().map(|(_, name, _)| name.as_str()).collect();
+        assert!(
+            names.contains(&"kairo.toml") && names.contains(&"sub"),
+            "{names:?}"
+        );
+        assert!(entries
+            .iter()
+            .any(|(mode, name, _)| name == "sub" && mode == "40000"));
         let out = TempDir::new().expect("tempdir");
         assert!(repo.export_tree(&head, out.path()).expect("export"));
         assert_eq!(

@@ -35,6 +35,35 @@ impl ManifestSource for Trees {
             })
             .transpose()
     }
+
+    /// Each top-level name, standing for what is under it by the hash
+    /// of its paths and contents.
+    fn tree_entries(
+        &self,
+        object: &ObjectId,
+        _revision: &RevisionId,
+    ) -> Result<Option<Vec<kairo_resolver::TreeEntry>>, SourceError> {
+        let Some(files) = self.0.get(&object.to_string()) else {
+            return Ok(None);
+        };
+        let mut top: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        for (name, contents) in files {
+            let first = name.split('/').next().unwrap_or(name).to_owned();
+            let bytes = top.entry(first).or_default();
+            bytes.extend(name.as_bytes());
+            bytes.push(0);
+            bytes.extend(contents.as_bytes());
+            bytes.push(0);
+        }
+        Ok(Some(
+            top.into_iter()
+                .map(|(name, bytes)| {
+                    let id = BlobId::from_bytes(b"test", &bytes).to_string();
+                    ("100644".to_owned(), name, id)
+                })
+                .collect(),
+        ))
+    }
 }
 
 impl TreeSource for Trees {
@@ -157,7 +186,6 @@ impl World {
             &self.fixture.store,
             &self.trees,
             plan,
-            1_700_000_000,
             &Limits { timeout },
             &Engine::Native,
         )
@@ -276,9 +304,10 @@ fn a_build_collects_outputs_into_an_artifact_tree() -> TestResult {
         world.blob_text(tree.entries[2].blob().expect("a file")),
         "hello"
     );
+    // The default epoch, not the revision's time (§52).
     assert_eq!(
         world.blob_text(tree.entries[3].blob().expect("a file")),
-        "1700000000\n"
+        "315532800\n"
     );
     let env = world.blob_text(tree.entries[1].blob().expect("a file"));
     assert!(env.contains("LANG=C\n"), "{env}");
@@ -797,7 +826,6 @@ fn the_bubblewrap_engine_runs_with_providers_and_nothing_from_the_host() -> Test
             &world.fixture.store,
             &world.trees,
             &plan,
-            1,
             &Limits {
                 timeout: Duration::from_secs(5)
             },
@@ -810,7 +838,6 @@ fn the_bubblewrap_engine_runs_with_providers_and_nothing_from_the_host() -> Test
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &Limits {
             timeout: Duration::from_secs(30),
         },
@@ -858,7 +885,6 @@ fn the_bubblewrap_engine_runs_with_providers_and_nothing_from_the_host() -> Test
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &Limits {
             timeout: Duration::from_secs(30),
         },
@@ -1077,7 +1103,6 @@ fn artifacts_land_at_their_install_roots_and_builds_stage_into_the_package() -> 
             &world.fixture.store,
             &world.trees,
             &plan,
-            1_700_000_000,
             &Limits {
                 timeout: Duration::from_secs(30),
             },
@@ -1150,7 +1175,6 @@ fn artifacts_land_at_their_install_roots_and_builds_stage_into_the_package() -> 
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &Limits {
             timeout: Duration::from_secs(30),
         },
@@ -1282,7 +1306,6 @@ fn a_build_slices_its_children_and_a_consumer_installs_one() -> TestResult {
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &Limits {
             timeout: Duration::from_secs(30),
         },
@@ -1358,7 +1381,6 @@ fn a_build_slices_its_children_and_a_consumer_installs_one() -> TestResult {
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &Limits {
             timeout: Duration::from_secs(30),
         },
@@ -1451,7 +1473,6 @@ fn overlaid_and_copied_dependencies_give_the_guest_the_same_tree() -> TestResult
             &world.fixture.store,
             &world.trees,
             &plan,
-            1_700_000_000,
             &limits,
             &Engine::Bubblewrap(bwrap.clone()),
         )?;
@@ -1527,7 +1548,6 @@ fn overlaid_and_copied_dependencies_give_the_guest_the_same_tree() -> TestResult
             &world.fixture.store,
             &world.trees,
             &plan,
-            1_700_000_000,
             &limits,
             &Engine::Bubblewrap(engine.clone()),
         )
@@ -1707,7 +1727,6 @@ fn what_a_dependency_requires_is_installed_beside_it() -> TestResult {
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &limits,
         &Engine::Bubblewrap(bwrap.clone()),
     )?;
@@ -1763,7 +1782,6 @@ fn what_a_dependency_requires_is_installed_beside_it() -> TestResult {
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &limits,
         &Engine::Bubblewrap(bwrap),
     )?;
@@ -1830,7 +1848,6 @@ fn coexisting_providers_may_not_put_a_file_at_the_same_path() -> TestResult {
             &world.fixture.store,
             &world.trees,
             &plan,
-            1_700_000_000,
             &limits,
             &Engine::Bubblewrap(bwrap.clone()),
         )?;
@@ -1878,7 +1895,6 @@ fn coexisting_providers_may_not_put_a_file_at_the_same_path() -> TestResult {
             &world.fixture.store,
             &world.trees,
             &plan,
-            1_700_000_000,
             &limits,
             &Engine::Bubblewrap(bwrap),
         ),
@@ -1957,7 +1973,6 @@ fn a_tree_that_doesnt_build_is_installed_as_its_artifact() -> TestResult {
         &world.fixture.store,
         &world.trees,
         &plan,
-        1_700_000_000,
         &Limits {
             timeout: Duration::from_secs(30),
         },
@@ -1991,5 +2006,77 @@ fn a_tree_that_doesnt_build_is_installed_as_its_artifact() -> TestResult {
             .any(|name| name == "kairo.toml" || name == "README.md" || name == "files"),
         "{root}"
     );
+    Ok(())
+}
+
+#[test]
+fn the_guest_tree_lacks_the_manifest_and_the_key_follows_the_tree() -> TestResult {
+    let Some(bwrap) = engine_fixture() else {
+        return Ok(());
+    };
+    let mut world = World::new();
+    world.object(BUSYBOX_PROVIDER);
+    let contract = Host::detect().contract();
+    let mut host = Host::detect();
+    host.engines.push(contract.clone());
+    let manifest = |summary: &str| {
+        format!(
+            r#"
+            [kairo]
+            schema = 1
+            kind = "software"
+            name = "lister"
+            summary = "{summary}"
+            [[dependencies]]
+            kind = "provides"
+            provides = "{contract}"
+            [[build.targets]]
+            name = "release"
+            command = ["sh", "-c", "busybox ls /kairo/src > /kairo/package/ls && sh build.sh"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:sh"
+            "#
+        )
+    };
+    let script = "busybox echo built > /kairo/package/built\n";
+    let first = world.object(&[("kairo.toml", &manifest("one")), ("build.sh", script)]);
+    let plan = world.plan_with(&host, &first.object_id, "release");
+    let execution = run_plan(
+        &world.fixture.store,
+        &world.trees,
+        &plan,
+        &Limits {
+            timeout: Duration::from_secs(30),
+        },
+        &Engine::Bubblewrap(bwrap),
+    )?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?} {}",
+        execution.record.diagnostics,
+        world.blob_text(&execution.record.logs.stderr)
+    );
+    let artifact = execution.artifact.as_ref().expect("artifact");
+    let listed = artifact
+        .entries
+        .iter()
+        .find(|entry| entry.path() == "ls")
+        .and_then(|entry| entry.blob())
+        .expect("ls");
+    // What the build key leaves out of the manifest can't reach the build.
+    assert_eq!(world.blob_text(listed), "build.sh\n");
+
+    // Another object with the same build and another summary has the same
+    // key; one whose script differs has another (§52).
+    let same = world.object(&[("kairo.toml", &manifest("two")), ("build.sh", script)]);
+    let other = world.object(&[
+        ("kairo.toml", &manifest("one")),
+        ("build.sh", "busybox echo other > /kairo/package/built\n"),
+    ]);
+    let key = |object: &ObjectId| world.plan_with(&host, object, "release").manifest.build_key;
+    assert_eq!(key(&same.object_id), plan.manifest.build_key);
+    assert_ne!(key(&other.object_id), plan.manifest.build_key);
     Ok(())
 }

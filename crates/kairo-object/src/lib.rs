@@ -1198,11 +1198,24 @@ pub struct BuildTarget {
     install: Option<String>,
     children: Vec<ChildDeclaration>,
     requires: Vec<Requirement>,
+    source_date_epoch: Option<u64>,
 }
+
+/// `SOURCE_DATE_EPOCH` in a build's guest when its target names none
+/// (`DECISIONS.md` §52): 1980-01-01T00:00:00Z, the earliest time a ZIP
+/// archive can hold.
+pub const DEFAULT_SOURCE_DATE_EPOCH: u64 = 315_532_800;
 
 impl BuildTarget {
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// `SOURCE_DATE_EPOCH` for its builds: what the target says, or
+    /// [`DEFAULT_SOURCE_DATE_EPOCH`]. It is an input, so part of the
+    /// build key; the revision's time isn't (`DECISIONS.md` §52).
+    pub fn source_date_epoch(&self) -> u64 {
+        self.source_date_epoch.unwrap_or(DEFAULT_SOURCE_DATE_EPOCH)
     }
 
     /// The program and its arguments, run without a shell.
@@ -1286,6 +1299,10 @@ impl CanonicalEncode for BuildTarget {
             encode_list(out, &self.requires, |out, required| {
                 required.encode_canonical(out);
             });
+        }
+        if let Some(epoch) = self.source_date_epoch {
+            encode_str(out, "source_date_epoch");
+            kairo_core::canonical::encode_u64(out, epoch);
         }
     }
 }
@@ -1684,6 +1701,7 @@ struct RawBuildTarget {
     name: String,
     command: Vec<String>,
     workdir: Option<String>,
+    source_date_epoch: Option<u64>,
     #[serde(default)]
     dependencies: Vec<RawDependencyDeclaration>,
     #[serde(default)]
@@ -2001,6 +2019,7 @@ impl RawBuildTarget {
             install,
             children,
             requires: validate_requirements("build.targets.requires", self.requires)?,
+            source_date_epoch: self.source_date_epoch,
         })
     }
 }

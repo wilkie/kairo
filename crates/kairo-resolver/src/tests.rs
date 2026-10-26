@@ -25,6 +25,18 @@ impl ManifestSource for Manifests {
             .map(|text| ObjectManifest::parse_toml(text).map_err(|e| SourceError(e.to_string())))
             .transpose()
     }
+
+    /// These trees hold their kairo.toml alone.
+    fn tree_entries(
+        &self,
+        object: &ObjectId,
+        revision: &RevisionId,
+    ) -> Result<Option<Vec<TreeEntry>>, SourceError> {
+        Ok(self
+            .0
+            .contains_key(&(object.to_string(), revision.as_str().to_owned()))
+            .then(|| vec![("100644".to_owned(), "kairo.toml".to_owned(), String::new())]))
+    }
 }
 
 struct Held(Vec<(String, String, BlobId)>);
@@ -1857,6 +1869,124 @@ fn one_of_obliges_the_build_and_only_its_own_choices_confer() -> TestResult {
     assert_eq!(
         requires(&world.resolve(&kept, "release")?),
         [("lib:c:static".to_owned(), None, true)]
+    );
+    Ok(())
+}
+
+/// Builds known only by their build key (§52), at no snapshot.
+struct ByKey(Vec<(String, String, BlobId)>);
+
+impl ArtifactSource for ByKey {
+    fn artifact(
+        &self,
+        _object: &ObjectId,
+        _snapshot: &SnapshotId,
+        _target: &str,
+    ) -> Result<Option<BlobId>, SourceError> {
+        Ok(None)
+    }
+
+    fn artifact_by_key(
+        &self,
+        object: &ObjectId,
+        _target: &str,
+        build_key: &BlobId,
+    ) -> Result<Option<BlobId>, SourceError> {
+        Ok(self
+            .0
+            .iter()
+            .find(|(o, k, _)| o == &object.to_string() && k == build_key.as_str())
+            .map(|(_, _, id)| id.clone()))
+    }
+}
+
+#[test]
+fn a_build_key_is_what_the_build_consumes_and_finds_a_held_build() -> TestResult {
+    let mut world = World::new();
+    let first = artifact_provider("tool:make", "");
+    let (make, revision) = world.object(&first);
+    let key = |world: &World| -> Result<String, ResolveError> {
+        Ok(world
+            .resolve(&make.object_id, "release")?
+            .plan
+            .manifest
+            .build_key)
+    };
+    let held = key(&world)?;
+    let actor = world.actor.clone();
+    // Each head signed later than the one before, so it is current.
+    let mut signed_at = 1_800_000_000;
+    let mut revise = |world: &mut World, text: &str, parent: &CreatedRevision| {
+        let next = world.revision(
+            &make,
+            text,
+            vec![parent.statement.unsigned().body().revision().clone()],
+        );
+        signed_at += 1;
+        world
+            .fixture
+            .set_branch_at(&actor, &make, &next, "head", signed_at);
+        next
+    };
+
+    // A new revision that changes only metadata keeps the key.
+    let tagged = first.replace(
+        "name = \"tool\"",
+        "name = \"tool\"\nsummary = \"make, again\"\ntags = [\"build\"]",
+    );
+    let before = world
+        .resolve(&make.object_id, "release")?
+        .plan
+        .manifest
+        .snapshot;
+    let second = revise(&mut world, &tagged, &revision);
+    let after = world
+        .resolve(&make.object_id, "release")?
+        .plan
+        .manifest
+        .snapshot;
+    assert_ne!(before, after, "the new revision is current");
+    assert_eq!(key(&world)?, held);
+    let plan = world.resolve(&make.object_id, "release")?.plan;
+    assert_eq!(plan.manifest.source_date_epoch, 315_532_800);
+
+    // A consumer finds the build made at the first revision by its key.
+    let artifact = BlobId::from_bytes(b"test", b"make");
+    let built = ByKey(vec![(
+        make.object_id.to_string(),
+        held.clone(),
+        artifact.clone(),
+    )]);
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let resolution = world.resolve_with(&built, &World::host(), &[], &app.object_id, "release")?;
+    assert!(resolution.plan.manifest.builds_first.is_empty());
+    assert!(matches!(
+        &resolution.plan.manifest.requirements[0].resolved,
+        Resolved::Artifact { artifact: Some(id), build_key: Some(key), .. }
+            if id == &artifact.to_string() && key == &held
+    ));
+
+    // What the guest runs, or the epoch it gets, is a new key.
+    let changed = tagged.replace("command = [\"make\"]", "command = [\"make\", \"-j2\"]");
+    assert_ne!(changed, tagged);
+    let third = revise(&mut world, &changed, &second);
+    assert_ne!(key(&world)?, held);
+    revise(
+        &mut world,
+        &tagged.replace(
+            "command = [\"make\"]",
+            "command = [\"make\"]\nsource_date_epoch = 0",
+        ),
+        &third,
+    );
+    assert_ne!(key(&world)?, held);
+    assert_eq!(
+        world
+            .resolve(&make.object_id, "release")?
+            .plan
+            .manifest
+            .source_date_epoch,
+        0
     );
     Ok(())
 }

@@ -64,6 +64,9 @@ const ENVIRONMENT_PREFIX: &str = "environment:";
 /// Where the resolver reads a snapshot's `kairo.toml` from. The
 /// manifest's canonical hash must equal the revision's
 /// `manifest_hash`; the resolver checks.
+/// One entry of a tree: its mode, name, and object id (§52).
+pub type TreeEntry = (String, String, String);
+
 pub trait ManifestSource {
     /// The manifest at `revision`, or `None` when this node doesn't
     /// hold the revision's tree.
@@ -72,6 +75,17 @@ pub trait ManifestSource {
         object: &ObjectId,
         revision: &RevisionId,
     ) -> Result<Option<ObjectManifest>, SourceError>;
+
+    /// The top-level entries of `revision`'s tree, each its mode, name,
+    /// and object id, or `None` when this node doesn't hold the tree:
+    /// what a build's own tree is, for its build key (`DECISIONS.md`
+    /// §52). `kairo.toml` among them is left out of the key, as it is
+    /// out of the guest's tree.
+    fn tree_entries(
+        &self,
+        object: &ObjectId,
+        revision: &RevisionId,
+    ) -> Result<Option<Vec<TreeEntry>>, SourceError>;
 }
 
 /// Where the resolver asks whether a build output's artifact is held.
@@ -96,6 +110,18 @@ pub trait ArtifactSource {
         _snapshot: &SnapshotId,
         _target: &str,
     ) -> Result<Option<Vec<u8>>, SourceError> {
+        Ok(None)
+    }
+
+    /// The artifact of a successful, accepted build of `object`'s
+    /// `target` whose plan has `build_key`, at any snapshot, if held
+    /// (`DECISIONS.md` §52): what any build with those inputs makes.
+    fn artifact_by_key(
+        &self,
+        _object: &ObjectId,
+        _target: &str,
+        _build_key: &BlobId,
+    ) -> Result<Option<BlobId>, SourceError> {
         Ok(None)
     }
 }
@@ -238,6 +264,16 @@ pub struct ResolvedManifest {
     /// sub-decision 7).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime: Vec<RuntimeRequirement>,
+    /// `SOURCE_DATE_EPOCH` in the guest: the target's, or the default
+    /// (`DECISIONS.md` §52). Absent from a plan made before §52, which
+    /// is read as 0.
+    #[serde(default)]
+    pub source_date_epoch: u64,
+    /// The hash of exactly what the guest sees and runs (§52): a held
+    /// build with the same key is this build's artifact. Empty in a plan
+    /// made before §52, which no key matches.
+    #[serde(default)]
+    pub build_key: String,
 }
 
 /// One provider, pinned (`DECISIONS.md` §46 sub-decision 2): an object
@@ -474,6 +510,10 @@ pub enum Resolved {
         /// building object's artifact, a relative path within it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root: Option<String>,
+        /// The build key of the plan that makes it (§52), when it could
+        /// be planned here: what it is in this plan's own key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build_key: Option<String>,
     },
     /// A held object's own tree: its artifact, when it doesn't build
     /// (`DECISIONS.md` §50).
@@ -763,6 +803,97 @@ fn declared_requirement(
         child: child.map(str::to_owned),
         via: "declared".to_owned(),
     }
+}
+
+/// Domain separator for a plan's build key (`DECISIONS.md` §52).
+pub const BUILD_KEY_DOMAIN: &[u8] = b"kairo.build-key.v1";
+
+/// What a resolved requirement is in a build key: by what the guest
+/// gets, not by which object or snapshot it came from where content
+/// says that. An artifact is the build key of the plan that makes it
+/// (or, when that plan couldn't be made here, its id), with the part
+/// and install root used.
+fn key_identity(resolved: &Resolved) -> Result<serde_json::Value, ResolveError> {
+    Ok(match resolved {
+        Resolved::Artifact {
+            output,
+            artifact,
+            install,
+            root,
+            build_key,
+            ..
+        } => serde_json::json!({
+            "kind": "artifact",
+            "built": build_key.as_ref().or(artifact.as_ref()),
+            "output": output,
+            "install": install,
+            "root": root,
+        }),
+        other => serde_json::to_value(other).map_err(ResolveError::Encode)?,
+    })
+}
+
+/// The hash of exactly what a build's guest sees and runs
+/// (`DECISIONS.md` §52): the target's command, workdir, and what it
+/// collects; its environment; each requirement as requested and what it
+/// resolved to; the runtime closure; its own tree but `kairo.toml`; and
+/// `SOURCE_DATE_EPOCH`. Metadata (summary, tags, versions, children,
+/// what the artifact requires or confers) isn't in it.
+fn build_key(
+    target: &kairo_object::BuildTarget,
+    environment: &str,
+    host_dependent: bool,
+    requirements: &[Requirement],
+    runtime: &[RuntimeRequirement],
+    tree: &[TreeEntry],
+    source_date_epoch: u64,
+) -> Result<BlobId, ResolveError> {
+    use kairo_core::canonical::CanonicalEncode as _;
+    let outputs: Vec<String> = target
+        .outputs()
+        .iter()
+        .map(|output| {
+            let mut bytes = Vec::new();
+            output.encode_canonical(&mut bytes);
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        })
+        .collect();
+    let requirements = requirements
+        .iter()
+        .map(|requirement| {
+            Ok(serde_json::json!({
+                "requested": requirement.requested,
+                "resolved": key_identity(&requirement.resolved)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, ResolveError>>()?;
+    let runtime = runtime
+        .iter()
+        .map(|entry| {
+            Ok(serde_json::json!({
+                "provides": entry.provides,
+                "resolved": key_identity(&entry.resolved)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, ResolveError>>()?;
+    let tree: Vec<&TreeEntry> = tree
+        .iter()
+        .filter(|(_, name, _)| name != "kairo.toml")
+        .collect();
+    let key = serde_json::json!({
+        "command": target.command(),
+        "workdir": target.workdir(),
+        "artifact_root": target.artifact_root(),
+        "outputs": outputs,
+        "environment": environment,
+        "host_dependent": host_dependent,
+        "requirements": requirements,
+        "runtime": runtime,
+        "tree": tree,
+        "source_date_epoch": source_date_epoch,
+    });
+    let bytes = serde_json::to_vec(&key).map_err(ResolveError::Encode)?;
+    Ok(BlobId::from_bytes(BUILD_KEY_DOMAIN, &bytes))
 }
 
 /// A pin read from a plan, as the ids it names.
@@ -1874,6 +2005,28 @@ impl<'a> Resolver<'a> {
         };
 
         stack.pop();
+        let source_date_epoch = target.source_date_epoch();
+        let tree = self
+            .manifests
+            .tree_entries(object, snapshot.revision())
+            .map_err(|source| ResolveError::ManifestSource {
+                object: object.clone(),
+                revision: snapshot.revision().clone(),
+                source,
+            })?
+            .ok_or_else(|| ResolveError::ManifestUnavailable {
+                object: object.clone(),
+                revision: snapshot.revision().clone(),
+            })?;
+        let build_key = build_key(
+            target,
+            &environment,
+            host_dependent,
+            &requirements,
+            &runtime,
+            &tree,
+            source_date_epoch,
+        )?;
         PlanDocument::new(ResolvedManifest {
             schema: RESOLVED_MANIFEST_SCHEMA.to_owned(),
             object: object.to_string(),
@@ -1885,6 +2038,8 @@ impl<'a> Resolver<'a> {
             builds_first: needed_first,
             requires,
             runtime,
+            source_date_epoch,
+            build_key: build_key.to_string(),
         })
     }
 
@@ -2488,24 +2643,48 @@ impl<'a> Resolver<'a> {
             .built_by
             .as_ref()
             .map_or(&offer.object, |(parent, _)| parent);
-        let artifact = self
+        let source_error = |source| ResolveError::ArtifactSource {
+            object: builder.clone(),
+            target: provider_target.to_owned(),
+            source,
+        };
+        // A build of this very snapshot, as before; else one whose plan
+        // had the same build key, at any snapshot (§52). Planning the
+        // provider is what says its key; a provider held but not
+        // plannable here (its tree or sources not held) is used as held.
+        let held = self
             .artifacts
             .artifact(builder, &offer.snapshot, provider_target)
-            .map_err(|source| ResolveError::ArtifactSource {
-                object: builder.clone(),
-                target: provider_target.to_owned(),
-                source,
-            })?;
-        if artifact.is_none() {
-            let plan = self.resolve_target(
-                index,
-                builder,
-                &SnapshotSelector::Pinned(offer.snapshot.clone()),
-                provider_target,
-                stack,
-                prerequisites,
-                diagnostics,
-            )?;
+            .map_err(source_error)?;
+        let planned = match self.resolve_target(
+            index,
+            builder,
+            &SnapshotSelector::Pinned(offer.snapshot.clone()),
+            provider_target,
+            stack,
+            prerequisites,
+            diagnostics,
+        ) {
+            Ok(plan) => Some(plan),
+            Err(_) if held.is_some() => None,
+            Err(error) => return Err(error),
+        };
+        let build_key = planned.as_ref().map(|plan| plan.manifest.build_key.clone());
+        let artifact = match (held, &build_key) {
+            (Some(held), _) => Some(held),
+            (None, Some(key)) => self
+                .artifacts
+                .artifact_by_key(
+                    builder,
+                    provider_target,
+                    &BlobId::new(key.clone()).map_err(|_| {
+                        ResolveError::UnsupportedSchema(format!("{key} is not a build key"))
+                    })?,
+                )
+                .map_err(source_error)?,
+            (None, None) => None,
+        };
+        if let (None, Some(plan)) = (&artifact, planned) {
             let own = BuildFirst {
                 object: builder.to_string(),
                 snapshot: offer.snapshot.to_string(),
@@ -2532,6 +2711,7 @@ impl<'a> Resolver<'a> {
             artifact: artifact.map(|id| id.to_string()),
             install: offer.install.clone(),
             root: offer.built_by.as_ref().map(|(_, root)| root.clone()),
+            build_key,
         })
     }
 

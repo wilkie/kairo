@@ -3071,7 +3071,8 @@ Sub-decisions:
    temporary directory that holds a copy of the snapshot's tree;
    providers are materialized beside it under `deps/<object>`. The
    environment is scrubbed to `HOME` (the temp dir), `LANG=C`,
-   `SOURCE_DATE_EPOCH` (the revision's timestamp), `KAIRO_SRC` and
+   `SOURCE_DATE_EPOCH` (the revision's timestamp; *amended by §52:*
+   the target's, or 1980-01-01), `KAIRO_SRC` and
    one `KAIRO_PROVIDER_<LABEL>` per requirement naming the provider's
    path (or the host tool's), and a `PATH` made of the artifact
    providers' `bin/` directories followed by the directories of the
@@ -5091,3 +5092,82 @@ Affected specs:
 - `DECISIONS.md` §46 sub-decision 2 — conferral without a version.
 - `schemas/canonical/object-manifest-v1.md` — `Requirement`, `confer`.
 - `schemas/canonical/resolved-manifest-v1.md` — `one_of` entries.
+
+---
+
+## 52. Artifacts Found by What a Build Consumes
+
+Decision: a plan carries a **build key**, the hash of exactly what its
+build's guest sees and runs, and a held build whose plan has the same
+key is this plan's artifact, at whatever snapshot it was built. Edits
+to what the key leaves out (an object's summary, tags, versions, its
+children's declarations, what its artifact requires or confers) no
+longer rebuild it. For the key to be a proof, what it leaves out is
+kept from the guest: `/kairo/src` doesn't hold `kairo.toml`, and
+`SOURCE_DATE_EPOCH` is no longer the revision's time.
+
+Sub-decisions:
+
+1. **What the key is.** A `BlobId` under `kairo.build-key.v1` over: the
+   target's command, workdir, artifact root, and declared outputs; the
+   environment contract and `host_dependent`; each requirement as
+   requested (label, version requirement, placement) and what it
+   resolved to by content (an artifact as the build key of the plan
+   that makes it, with the output, install root, and child root used;
+   a source's commit; a file's SHA-256; a host tool's path; a content
+   object by its snapshot, for now); the runtime closure; the
+   snapshot's top-level tree entries but `kairo.toml`; and
+   `SOURCE_DATE_EPOCH`. The object and snapshot ids are not in it, nor
+   anything only read after the build.
+
+2. **The guest doesn't see `kairo.toml`.** The executor reads the
+   target from it and removes it before the command runs. A build that
+   needs a value its manifest holds declares it as an input another
+   way, such as a file in its tree.
+
+3. **`SOURCE_DATE_EPOCH` is an input.** It is the target's
+   `source_date_epoch`, or 315532800 (1980-01-01T00:00:00Z, the earliest
+   time a ZIP archive holds) when the target names none. It was the
+   revision's `created_at`, which made every revision a new input. What
+   a build embeds from it is now fixed until the target says otherwise;
+   when things happened is still in the signed revision and result. The
+   `linux` contract is amended in place: nothing built under it is held
+   anywhere that must keep its old meaning, and every plan's key is new
+   anyway.
+
+4. **Lookup.** A dependency's artifact is found first, as before, by a
+   build of the very snapshot; else the provider is planned, which
+   gives its key, and a held, accepted, successful build of the same
+   object's target whose plan has that key is used; else it is built
+   first. A provider held but not plannable here (its tree or sources
+   not held) is used as held, and its artifact id stands in for its key
+   in a consumer's key. `kairo build` on a target whose key is held
+   runs nothing and says `status = held`, naming the result it found.
+
+5. **Nothing new is signed.** A `BuildResult` says that its plan's
+   inputs produced its artifact; that stays true for every snapshot
+   whose plan has the same key, so reuse needs no new statement, and no
+   record says a build ran after the update it serves. The new
+   snapshot's plan is stored as usual; its `requires` and children are
+   read from it, and its children are slices of the held artifact.
+   Signing a result for the new snapshot that cites the earlier
+   execution, marked as reuse, is left for later.
+
+6. **Plans change once.** Every plan gains `build_key` and
+   `source_date_epoch`, so every plan hash is new, and every held build
+   is built once more under the new rules.
+
+Rationale: identical inputs make the same build; whether they make the
+same bytes is a separate question, about determinism, which `kairo
+reproduce` answers. Keying artifacts by inputs and keeping everything
+else out of the guest's reach turns a metadata edit from a rebuild into
+a lookup, without any statement claiming more than it did.
+
+Affected specs:
+
+- `schemas/canonical/resolved-manifest-v1.md` — `build_key`,
+  `source_date_epoch`, an artifact's `build_key`.
+- `schemas/canonical/object-manifest-v1.md` — `source_date_epoch`.
+- `schemas/environment/linux-v1.md` — `/kairo/src` and
+  `SOURCE_DATE_EPOCH`.
+- `CLI.md` §17 — `status = held`.

@@ -199,6 +199,7 @@ encoded as written.
 | `install` | present only when not `"/"`: `string("install") \|\| option<string>(install)`, an absolute guest path, or none for `install = false` |
 | `children` | present only when there is at least one: `string("children") \|\| list<ChildDeclaration>` |
 | `requires` | present only when there is at least one: `string("requires") \|\| list<Requirement>`, what the artifact needs beside it wherever it is installed (`DECISIONS.md` §46, §51) |
+| `source_date_epoch` | present only when given: `string("source_date_epoch") \|\| u64(seconds)`, `SOURCE_DATE_EPOCH` in its builds' guest, 315532800 (1980-01-01) when not given (`DECISIONS.md` §52) |
 
 `artifact_root` and `install` come from `[build.targets.artifact]`
 (`DECISIONS.md` §41 sub-decision 3); a target without one, or with the

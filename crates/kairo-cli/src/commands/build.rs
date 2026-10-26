@@ -69,6 +69,44 @@ impl StoreArtifacts<'_> {
 }
 
 impl StoreArtifacts<'_> {
+    /// The newest accepted, successful build of `object`'s `target`,
+    /// at any snapshot, whose plan has `build_key` and whose artifact
+    /// is held (`DECISIONS.md` §52).
+    fn head_by_key(
+        &self,
+        object: &ObjectId,
+        target: &str,
+        build_key: &BlobId,
+    ) -> Result<Option<kairo_store::BuildResultHead>, SourceError> {
+        let heads = self
+            .store
+            .list_build_results(object)
+            .map_err(|error| SourceError(error.to_string()))?;
+        for head in heads {
+            if head.target != target || head.artifact.is_none() || !self.accepts(&head.actor) {
+                continue;
+            }
+            let plan = match self.store.get_blob(&head.resolved_manifest) {
+                Ok(bytes) => kairo_resolver::PlanDocument::from_bytes(bytes)
+                    .map_err(|error| SourceError(error.to_string()))?,
+                Err(kairo_store::StoreError::Missing) => continue,
+                Err(error) => return Err(SourceError(error.to_string())),
+            };
+            if plan.manifest.build_key != build_key.as_str() {
+                continue;
+            }
+            let Some(artifact) = &head.artifact else {
+                continue;
+            };
+            match self.store.get_blob(artifact) {
+                Ok(_) => return Ok(Some(head)),
+                Err(kairo_store::StoreError::Missing) => continue,
+                Err(error) => return Err(SourceError(error.to_string())),
+            }
+        }
+        Ok(None)
+    }
+
     /// The newest accepted, successful build of `target` at `snapshot`
     /// whose artifact is held.
     fn head(
@@ -102,6 +140,17 @@ impl StoreArtifacts<'_> {
 }
 
 impl ArtifactSource for StoreArtifacts<'_> {
+    fn artifact_by_key(
+        &self,
+        object: &ObjectId,
+        target: &str,
+        build_key: &BlobId,
+    ) -> Result<Option<BlobId>, SourceError> {
+        Ok(self
+            .head_by_key(object, target, build_key)?
+            .and_then(|head| head.artifact))
+    }
+
     fn build_plan(
         &self,
         object: &ObjectId,
@@ -154,6 +203,26 @@ pub(crate) struct CacheManifests<'a> {
 }
 
 impl ManifestSource for CacheManifests<'_> {
+    fn tree_entries(
+        &self,
+        object: &ObjectId,
+        revision: &RevisionId,
+    ) -> Result<Option<Vec<kairo_resolver::TreeEntry>>, SourceError> {
+        let Some(repo) = crate::try_cache_repo_for_revision(self.paths, object.as_str(), revision)
+            .map_err(|error| SourceError(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let Some(commit) = revision
+            .git()
+            .map_err(|error| SourceError(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        repo.root_entries(&commit)
+            .map_err(|error| SourceError(error.to_string()))
+    }
+
     fn manifest(
         &self,
         object: &ObjectId,
@@ -499,6 +568,22 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
             format_resolution(&resolution)
         });
     }
+    // A build with the same build key is this build's artifact (§52):
+    // nothing runs, and nothing new is signed.
+    let key = BlobId::new(resolution.plan.manifest.build_key.clone())
+        .map_err(|error| CliError::Build(Box::new(kairo_build::BuildError::Id(error))))?;
+    if let Some(head) = artifacts
+        .head_by_key(&object, args.target, &key)
+        .map_err(|error| {
+            CliError::Resolve(Box::new(kairo_resolver::ResolveError::ArtifactSource {
+                object: object.clone(),
+                target: args.target.to_owned(),
+                source: error,
+            }))
+        })?
+    {
+        return Ok(format_held(&resolution, &head, args.json));
+    }
 
     let actor = args.actor.ok_or(CliError::BuildActorRequired)?;
     let actor_id =
@@ -604,15 +689,8 @@ fn build_one(
         check_signer(store, local, &object, revision.unsigned().actor())?;
     }
 
-    let execution = run_plan(
-        store,
-        trees,
-        plan,
-        revision.unsigned().created_at().seconds(),
-        limits,
-        &engine,
-    )
-    .map_err(|error| CliError::Build(Box::new(error)))?;
+    let execution = run_plan(store, trees, plan, limits, &engine)
+        .map_err(|error| CliError::Build(Box::new(error)))?;
 
     let record = &execution.record;
     let outcome = match record.status {
@@ -864,6 +942,39 @@ pub(crate) fn run_reproduce(
     out.push_str(&format_execution(&store, &one.execution));
     let _ = writeln!(out, "result = {}", one.result);
     Ok(out)
+}
+
+/// What `kairo build` says of a target whose build key is held (§52).
+fn format_held(resolution: &Resolution, head: &kairo_store::BuildResultHead, json: bool) -> String {
+    let artifact = head
+        .artifact
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    if json {
+        return format!(
+            "{}\n",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "status": "held",
+                "plan": resolution.plan.hash.to_string(),
+                "build_key": resolution.plan.manifest.build_key,
+                "artifact": artifact,
+                "result": head.statement_id.to_string(),
+                "result_snapshot": head.snapshot.to_string(),
+                "result_plan": head.resolved_manifest.to_string(),
+            }))
+            .unwrap_or_default()
+        );
+    }
+    let mut out = String::new();
+    let _ = writeln!(out, "status = held");
+    let _ = writeln!(out, "plan = {}", resolution.plan.hash);
+    let _ = writeln!(out, "build_key = {}", resolution.plan.manifest.build_key);
+    let _ = writeln!(out, "artifact = {artifact}");
+    let _ = writeln!(out, "result = {}", head.statement_id);
+    let _ = writeln!(out, "result_snapshot = {}", head.snapshot);
+    let _ = writeln!(out, "result_plan = {}", head.resolved_manifest);
+    out
 }
 
 fn format_built(store: &FilesystemStore, built: &[Built]) -> String {

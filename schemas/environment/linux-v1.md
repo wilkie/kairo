@@ -28,7 +28,7 @@ A guest command running under this contract sees exactly:
 | Path | Contents | Access |
 |---|---|---|
 | `/` | the dependencies' artifacts at their install roots, each copied (or overlaid, §41 sub-decision 5) in requirement order, the first listed winning where two provide the same path; and absolute placements; over a writable layer of the build's own | read-write |
-| `/kairo/src` | the snapshot's tree, with relative placements in it; the command runs in `/kairo/src/<workdir>` | read-write |
+| `/kairo/src` | the snapshot's tree without its `kairo.toml` (`DECISIONS.md` §52), with relative placements in it; the command runs in `/kairo/src/<workdir>` | read-write |
 | `/kairo/package` | empty; the build stages its artifact here, laid out as it wants to be installed | read-write |
 | `/kairo/artifact/<artifact id>` | each artifact whose build target declares `install = false`, unless placed | read-only |
 | `/kairo/content/<snapshot id>` | each content provider's tree (the part under its `[content] root`), unless placed, or installed at its `[content] install` root (`DECISIONS.md` §50), as an artifact is | read-only |
@@ -63,7 +63,9 @@ And:
   Software needing those belongs to a contract a VM engine implements.
 - **Environment**, and nothing else:
   - `HOME=/tmp`, `LANG=C`, `TZ=UTC`;
-  - `SOURCE_DATE_EPOCH`: the revision's `created_at`, in epoch seconds;
+  - `SOURCE_DATE_EPOCH`: the plan's, the target's `source_date_epoch`
+    or 315532800 (1980-01-01T00:00:00Z), in epoch seconds
+    (`DECISIONS.md` §52; it was the revision's `created_at`);
   - `KAIRO_SRC=/kairo/src`, `KAIRO_PACKAGE=/kairo/package`;
   - `KAIRO_PROVIDER_<LABEL>`: each requirement's location in the guest,
     with the label upper-cased and every other character as `_`

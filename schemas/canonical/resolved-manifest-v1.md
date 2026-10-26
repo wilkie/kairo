@@ -78,7 +78,7 @@ both are omitted otherwise.
 
 | `kind` | Fields |
 |---|---|
-| `artifact` | `object`, `snapshot`, `target`, `output` (`""` for the whole artifact), `artifact` (blob id, or `null` when the build is in `builds_first`), `install` (the provider target's install root, or `null` for `/kairo/artifact/<id>`; `DECISIONS.md` §41), and for a child object `root` (its part of the artifact, which is its parent's; absent otherwise) |
+| `artifact` | `object`, `snapshot`, `target`, `output` (`""` for the whole artifact), `artifact` (blob id, or `null` when the build is in `builds_first`), `install` (the provider target's install root, or `null` for `/kairo/artifact/<id>`; `DECISIONS.md` §41), for a child object `root` (its part of the artifact, which is its parent's; absent otherwise), and `build_key` (the build key of the plan that makes it, when that plan could be made; `DECISIONS.md` §52) |
 | `content` | `object`, `snapshot`; `install` (the object's `[content] install` root) and `root` (its `[content] root`), each only when the object declares it (`DECISIONS.md` §50) |
 | `environment` | `contract`, `engine` (the contract label the engine implements, or `null` for the host in development mode) |
 | `host-tool` | `provides`, `path`; `version` when the config states one |
@@ -96,8 +96,23 @@ where `plan` is that build's own plan hash.
 
 ## Runtime requirements (`DECISIONS.md` §46)
 
-Two sections follow `builds_first`, each present only when non-empty,
-so a plan without them is as before:
+After `builds_first` come `requires` and `runtime`, each present only
+when non-empty, then two fields every plan has (`DECISIONS.md` §52):
+
+- `source_date_epoch`: `SOURCE_DATE_EPOCH` in the guest, the target's
+  or 315532800 (1980-01-01).
+- `build_key`: a `BlobId` under the domain `kairo.build-key.v1` over the
+  compact JSON of exactly what the guest sees and runs: the target's
+  `command`, `workdir`, `artifact_root`, and canonically encoded
+  `outputs`; `environment` and `host_dependent`; each requirement's
+  `requested` and what it `resolved` to, an artifact by the `build_key`
+  of the plan that makes it (or its id, when that plan can't be made)
+  with its `output`, `install`, and `root`; the runtime closure, each
+  `provides` and what it resolved to; the snapshot's top-level tree
+  entries (mode, name, id) but `kairo.toml`; and `source_date_epoch`.
+  A held build whose plan has the same key is this plan's artifact.
+
+`requires` and `runtime`:
 
 - `requires`: what the artifact this plan builds, and each of its
   children, will require at run time. Each entry: `provides`; `version`

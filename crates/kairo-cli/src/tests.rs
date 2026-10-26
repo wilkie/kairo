@@ -8779,13 +8779,13 @@ fn build_runs_the_target_in_development_mode_and_records_it(
     );
 
     // The artifact's files are blobs in the store, with the build's
-    // SOURCE_DATE_EPOCH taken from the revision.
+    // SOURCE_DATE_EPOCH the default, 1980-01-01 (§52).
     let tree = kairo_build::load_artifact(&store, &kairo_core::BlobId::new(artifact)?)?;
     let app_bytes = kairo_store::BlobStore::get_blob(
         &store,
         &kairo_core::BlobId::new(tree.entries[0].blob().expect("a file").to_owned())?,
     )?;
-    assert!(String::from_utf8(app_bytes)?.starts_with("built at 1"));
+    assert!(String::from_utf8(app_bytes)?.starts_with("built at 315532800\n"));
     let header = kairo_store::BlobStore::get_blob(
         &store,
         &kairo_core::BlobId::new(tree.entries[1].blob().expect("a file").to_owned())?,
@@ -9068,7 +9068,8 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
     assert_eq!(bytes, b"made with make\n");
 
     // Now `make`'s result pins its artifact: the plan needs nothing
-    // first, and the second build runs the target alone.
+    // first, and the app, whose build key is held, isn't built again
+    // (§52).
     let plan = run_in_store(
         store_dir.path(),
         Command::Build {
@@ -9098,7 +9099,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             prefer: Vec::new(),
         },
     )?;
-    assert!(second.contains("builds = 1\n"), "{second}");
+    assert!(second.contains("status = held\n"), "{second}");
     assert_eq!(
         kairo_store::BuildResultResolver::list_build_results(
             &store,

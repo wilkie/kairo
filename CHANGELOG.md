@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **Artifacts found by what a build consumes (`DECISIONS.md` §52).** A
+  plan carries a `build_key`, the hash of what its guest sees and runs;
+  a held build with the same key, at any snapshot, is its artifact, so
+  edits to summaries, tags, children, and what an artifact requires or
+  confers no longer rebuild it. `kairo build` says `status = held` for a
+  target whose key is held. A target may set `source_date_epoch`.
+
 - **Conferring from what a build chooses, and `one_of` (`DECISIONS.md`
   §51).** Only a build's direct dependencies confer runtime
   requirements on its artifact; a label conferring itself without a
@@ -558,6 +565,10 @@ rather than per-commit.
 
 ### Wire format
 
+- **Plans gain `build_key` and `source_date_epoch` (`DECISIONS.md`
+  §52)**, and an artifact resolution its provider's `build_key`, so
+  every plan hash changes and every held build is built once more. A
+  target's `source_date_epoch` is encoded only when given.
 - **`one_of` and `confer` (`DECISIONS.md` §51)** are encoded only where
   given: a `one_of` requirement as `string("one_of")` and its
   alternatives, a provides dependency's `confer` after its placement;
@@ -570,6 +581,11 @@ rather than per-commit.
   hashes.
 
 ### Changed
+
+- **The guest's tree lacks `kairo.toml`, and `SOURCE_DATE_EPOCH` is
+  fixed (`DECISIONS.md` §52).** `/kairo/src` no longer holds the
+  manifest, and `SOURCE_DATE_EPOCH` is the target's `source_date_epoch`
+  or 315532800 (1980-01-01) rather than the revision's time.
 
 - **A conferral of another label needs a version (`DECISIONS.md`
   §51).** A `confers` entry naming a label other than the provider's own

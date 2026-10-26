@@ -23,7 +23,7 @@
 //! ```
 //!
 //! The environment is `HOME`, `LANG=C`, `SOURCE_DATE_EPOCH` (the
-//! revision's timestamp), `KAIRO_SRC`, one `KAIRO_PROVIDER_<LABEL>`
+//! plan's: the target's, or 1980-01-01), `KAIRO_SRC`, one `KAIRO_PROVIDER_<LABEL>`
 //! per requirement (the provider's path, or the host tool's), and a
 //! `PATH` of the artifact providers' `bin/` directories followed by
 //! the declared host tools' directories — never the host's own.
@@ -1153,13 +1153,12 @@ struct Mount {
 /// Run `plan`'s target once with `engine`, which must suit the plan:
 /// `Native` for a plan with environment `none`, an engine for one with
 /// a contract. The plan's `builds_first` must be empty and every
-/// artifact provider's artifact held; `source_epoch` is the revision's
-/// timestamp, for `SOURCE_DATE_EPOCH`.
+/// artifact provider's artifact held. `SOURCE_DATE_EPOCH` is the
+/// plan's, part of its build key (`DECISIONS.md` §52).
 pub fn run_plan(
     store: &FilesystemStore,
     trees: &dyn TreeSource,
     plan: &PlanDocument,
-    source_epoch: i64,
     limits: &Limits,
     engine: &Engine,
 ) -> Result<Execution, BuildError> {
@@ -1227,6 +1226,11 @@ pub fn run_plan(
         .map_err(|source| io_error("reading", &manifest_path, source))?;
     let object_manifest =
         ObjectManifest::parse_toml(&manifest_text).map_err(BuildError::Manifest)?;
+    // The guest's tree is the snapshot's without its manifest, so what
+    // the build key leaves out of a manifest can't reach the build
+    // (§52).
+    fs::remove_file(&manifest_path)
+        .map_err(|source| io_error("removing", &manifest_path, source))?;
     let target = object_manifest
         .build_target(&manifest.target)
         .ok_or_else(|| BuildError::NoTarget {
@@ -1658,7 +1662,10 @@ pub fn run_plan(
     env.insert("HOME".to_owned(), seen(&home_mount));
     env.insert("KAIRO_PACKAGE".to_owned(), seen(&package_mount));
     env.insert("LANG".to_owned(), "C".to_owned());
-    env.insert("SOURCE_DATE_EPOCH".to_owned(), source_epoch.to_string());
+    env.insert(
+        "SOURCE_DATE_EPOCH".to_owned(),
+        manifest.source_date_epoch.to_string(),
+    );
     env.insert("KAIRO_SRC".to_owned(), seen(&src_mount));
     env.insert("PATH".to_owned(), path_dirs.join(":"));
     if isolated {
