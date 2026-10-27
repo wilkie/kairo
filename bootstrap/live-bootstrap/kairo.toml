@@ -787,7 +787,7 @@ root = "binutils-2.30_0"
 summary = "binutils 2.30, as live-bootstrap builds it (package binutils-2.30_0)."
 tags = ["live-bootstrap"]
 version = "2.30"
-provides = [{ provides = "tool:binutils" }]
+provides = [{ provides = "tool:binutils" }, { provides = "tool:binutils:i686-linux-musl" }]
 
 [[build.targets.children]]
 name = "bison-2.3_0"
@@ -937,7 +937,7 @@ root = "gawk-3.0.4_0"
 summary = "gawk 3.0.4, as live-bootstrap builds it (package gawk-3.0.4_0)."
 tags = ["live-bootstrap"]
 version = "3.0.4"
-provides = [{ provides = "tool:gawk" }]
+provides = [{ provides = "tool:gawk" }, { provides = "tool:awk" }]
 
 [[build.targets.children]]
 name = "gcc-4.0.4_0"
@@ -945,7 +945,7 @@ root = "gcc-4.0.4_0"
 summary = "gcc 4.0.4, as live-bootstrap builds it (package gcc-4.0.4_0)."
 tags = ["live-bootstrap"]
 version = "4.0.4"
-requires = [{ provides = "tool:binutils" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
 
 [[build.targets.children]]
 name = "gcc-4.0.4_1"
@@ -953,8 +953,8 @@ root = "gcc-4.0.4_1"
 summary = "gcc 4.0.4, as live-bootstrap builds it (package gcc-4.0.4_1)."
 tags = ["live-bootstrap"]
 version = "4.0.4"
-requires = [{ provides = "tool:binutils" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
-provides = [{ provides = "tool:gcc" }]
+requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:gcc:i686-linux-musl" }]
 
 [[build.targets.children]]
 name = "gmp-6.2.1_0"

@@ -343,6 +343,29 @@ version (§43).
 A provides dependency may give a `version` requirement. Version requirements
 use Cargo's syntax (`">=4, <5"`, `"^4.1.0"`).
 
+An environment dependency (`environment:<os>/<arch>`) at the top level
+says what the object's artifacts run in. A build target may name its own,
+and its build runs there instead (`DECISIONS.md` §53):
+
+```toml
+# A 64-bit program, built by a 32-bit environment.
+[[dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets]]
+name = "cross"
+command = ["sh", "build.sh"]
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+```
+
+A compiler or binutils labels what it produces code for with its target
+triple, without the vendor field (`tool:gcc:x86_64-linux-musl`); a native
+one also offers the plain label (`tool:gcc`).
+
 A **source** dependency names a source object (`DECISIONS.md` §37) by its
 repository URL, pinned to an exact upstream commit, and never by version:
 using a newer upstream is an edit of the pin.

@@ -127,8 +127,8 @@ root = "gcc-15.2.0_0"
 summary = "gcc 15.2.0, as live-bootstrap builds it (package gcc-15.2.0_0)."
 tags = ["live-bootstrap"]
 version = "15.2.0"
-requires = [{ provides = "tool:binutils" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
-provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=15.2.0" }] }, { provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=15.2.0" }] }]
+requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=15.2.0" }] }, { provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=15.2.0" }] }, { provides = "tool:gcc:i686-linux-musl" }, { provides = "tool:g++:i686-linux-musl" }]
 
 [[build.targets.children]]
 name = "libmd-1.1.0_0"

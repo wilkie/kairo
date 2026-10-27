@@ -934,24 +934,56 @@ fn content_placement(manifest: &ObjectManifest) -> (Option<String>, Option<Strin
     }
 }
 
-/// The environment contract a target declares, among its own and its
-/// manifest's dependencies.
-pub fn declared_environment(
+/// The first environment contract among `dependencies`.
+fn environment_in(dependencies: &[DependencyDeclaration]) -> Option<String> {
+    dependencies.iter().find_map(|dependency| match dependency {
+        DependencyDeclaration::Provides(dependency)
+            if dependency.provides().starts_with(ENVIRONMENT_PREFIX) =>
+        {
+            Some(dependency.provides().to_owned())
+        }
+        _ => None,
+    })
+}
+
+/// The environment a target's artifacts run in (`DECISIONS.md` §53): the
+/// object's own, its top-level environment dependency, or else the
+/// target's. Offers are matched to consumers by it.
+pub fn artifact_environment(
     manifest: &ObjectManifest,
     target: &kairo_object::BuildTarget,
 ) -> Option<String> {
+    environment_in(manifest.dependencies()).or_else(|| environment_in(target.dependencies()))
+}
+
+/// The environment a target is built in (`DECISIONS.md` §53): its own
+/// environment dependency, which overrides the object's, or else the
+/// object's. The build's engine and its dependencies' architecture
+/// follow it.
+pub fn build_environment(
+    manifest: &ObjectManifest,
+    target: &kairo_object::BuildTarget,
+) -> Option<String> {
+    environment_in(target.dependencies()).or_else(|| environment_in(manifest.dependencies()))
+}
+
+/// What a target's build requires: the object's dependencies and the
+/// target's, but the object's environment when the target names its
+/// own build environment instead (§53).
+fn build_dependencies<'a>(
+    manifest: &'a ObjectManifest,
+    target: &'a kairo_object::BuildTarget,
+) -> impl Iterator<Item = &'a DependencyDeclaration> {
+    let overridden = environment_in(target.dependencies()).is_some();
     manifest
         .dependencies()
         .iter()
-        .chain(target.dependencies())
-        .find_map(|dependency| match dependency {
-            DependencyDeclaration::Provides(dependency)
-                if dependency.provides().starts_with(ENVIRONMENT_PREFIX) =>
-            {
-                Some(dependency.provides().to_owned())
-            }
-            _ => None,
+        .filter(move |dependency| {
+            !(overridden
+                && matches!(dependency, DependencyDeclaration::Provides(dependency)
+                    if dependency.provides().starts_with(ENVIRONMENT_PREFIX)))
         })
+        .chain(target.dependencies())
 }
 
 /// The object whose build makes the child `id` (`DECISIONS.md` §44
@@ -1012,7 +1044,7 @@ fn child_offer(
             .or(child.version())
             .map(str::to_owned),
         artifact: Some((target.name().to_owned(), String::new())),
-        environment: declared_environment(&candidate.manifest, target),
+        environment: artifact_environment(&candidate.manifest, target),
         install: child.install().map(str::to_owned),
         built_by: Some((candidate.object.clone(), child.root().to_owned())),
         child_name: Some(child.name().to_owned()),
@@ -1193,7 +1225,7 @@ impl Index {
                             }),
                             environment: declaration.artifact().and_then(|artifact| {
                                 candidate.manifest.build_target(artifact.target()).and_then(
-                                    |target| declared_environment(&candidate.manifest, target),
+                                    |target| artifact_environment(&candidate.manifest, target),
                                 )
                             }),
                             install: match declaration.artifact() {
@@ -1722,25 +1754,13 @@ impl<'a> Resolver<'a> {
             let mut seen_labels: BTreeMap<String, usize> = BTreeMap::new();
             // Under an engine, host tools are not candidates (§35
             // sub-decision 4), so the environment is settled first.
-            let consumer_environment = declared_environment(&manifest, target);
-            let isolated = manifest
-                .dependencies()
-                .iter()
-                .chain(target.dependencies())
-                .any(|dependency| match dependency {
-                    DependencyDeclaration::Provides(dependency) => {
-                        dependency.provides().starts_with(ENVIRONMENT_PREFIX)
-                            && self
-                                .host
-                                .engines
-                                .iter()
-                                .any(|contract| contract == dependency.provides())
-                    }
-                    DependencyDeclaration::Object(_)
-                    | DependencyDeclaration::Source(_)
-                    | DependencyDeclaration::File(_) => false,
-                });
-            for dependency in manifest.dependencies().iter().chain(target.dependencies()) {
+            // The build's environment, which may not be the one its
+            // artifacts run in (§53).
+            let consumer_environment = build_environment(&manifest, target);
+            let isolated = consumer_environment
+                .as_ref()
+                .is_some_and(|contract| self.host.engines.contains(contract));
+            for dependency in build_dependencies(&manifest, target) {
                 let (requested, resolved) = match dependency {
                     DependencyDeclaration::Provides(dependency) => {
                         let (path, from, overlay) = placement_fields(dependency.placement());
@@ -2167,7 +2187,7 @@ impl<'a> Resolver<'a> {
             if let (Some(wanted), Some(built)) = (consumer_environment, &offer.environment) {
                 if contract_arch(wanted) != contract_arch(built) {
                     considered.push(format!(
-                        "{} is built for {built}, not {}",
+                        "{} runs in {built}, not {}",
                         offer.describe(),
                         contract_arch(wanted)
                     ));

@@ -43,9 +43,14 @@ LIBRARIES = {
 # static or shared libc, which whatever builds with it chooses itself
 # (§51). gcc confers nothing: what is built with it needs a libc at run
 # time only if it chose the shared one, which confers itself.
+# What every compiler and binutils here produces code for (§53): a
+# triple without its vendor field, the one spelling labels use. A
+# native tool offers its plain label too; live-bootstrap's are native.
+TRIPLE = "i686-linux-musl"
+TARGETED = ["tool:gcc", "tool:g++", "tool:binutils"]
 REQUIRES = {
     "gcc": [
-        "tool:binutils",
+        f"tool:binutils:{TRIPLE}",
         "lib:musl:headers",
         ("lib:musl:static", "lib:musl:shared"),
         "lib:linux:headers",
@@ -166,6 +171,7 @@ def main():
             + ALSO.get(name, [])
             + ALSO.get(f"{name}-{version}", [])
         )
+        labels += [f"{label}:{TRIPLE}" for label in TARGETED if label in labels]
         child(
             package,
             package,

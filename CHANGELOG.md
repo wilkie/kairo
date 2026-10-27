@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **What an object runs in apart from what it is built in, and target
+  triples (`DECISIONS.md` §53).** An object's top-level environment
+  dependency says what its artifacts run in, and a build target may name
+  its own build environment, so a 64-bit program can be built by a
+  32-bit environment and be offered to 64-bit builds. Compilers and
+  binutils carry their target triple (`tool:gcc:i686-linux-musl`), and
+  only native ones the plain label; live-bootstrap's gcc and binutils
+  children gain theirs, and gcc requires binutils by triple.
+
 - **live-bootstrap pass 6: gcc 15.2.0 and the end (`DECISIONS.md`
   §49).** `bootstrap/live-bootstrap-gcc-15.2.0/` goes on from pass 5's
   root through gcc 15.2.0, bootstrapped with C++, and libmd, libbsd,

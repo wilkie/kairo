@@ -821,7 +821,7 @@ fn artifact_offers_must_be_built_for_the_consumers_architecture() -> TestResult 
     let unsatisfied = world.resolve_with(&NoArtifacts, &host, &[], &app.object_id, "release");
     assert!(
         matches!(&unsatisfied, Err(ResolveError::Unsatisfied(details))
-            if details.considered.iter().any(|line| line.contains("built for environment:linux/x86-64, not x86"))),
+            if details.considered.iter().any(|line| line.contains("runs in environment:linux/x86-64, not x86"))),
         "{unsatisfied:?}"
     );
     Ok(())
@@ -1997,6 +1997,100 @@ fn a_build_key_is_what_the_build_consumes_and_finds_a_held_build() -> TestResult
             .manifest
             .source_date_epoch,
         0
+    );
+    Ok(())
+}
+
+#[test]
+fn an_object_built_in_one_environment_can_run_in_another() -> TestResult {
+    let mut world = World::new();
+    let host = Host {
+        system: "linux".to_owned(),
+        arch: "x86-64".to_owned(),
+        engines: vec![
+            "environment:linux/x86".to_owned(),
+            "environment:linux/x86-64".to_owned(),
+        ],
+    };
+    // A 64-bit program built by a 32-bit environment (§53): the object
+    // says what it runs in, its target where it is built.
+    let (cross_built, _) = world.object(&manifest(
+        "cross-built",
+        &format!(
+            r#"
+            [[dependencies]]
+            kind = "provides"
+            provides = "environment:linux/x86-64"
+            [[provides]]
+            provides = "tool:x"
+            target = "release"
+            output = "bin"
+            {RELEASE_TARGET}
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "environment:linux/x86"
+            "#
+        ),
+    ));
+    let plan = world
+        .resolve_with(&NoArtifacts, &host, &[], &cross_built.object_id, "release")?
+        .plan;
+    assert_eq!(plan.manifest.environment, "environment:linux/x86");
+    let environments: Vec<&Resolved> = plan
+        .manifest
+        .requirements
+        .iter()
+        .map(|requirement| &requirement.resolved)
+        .filter(|resolved| matches!(resolved, Resolved::Environment { .. }))
+        .collect();
+    assert!(
+        matches!(environments.as_slice(), [Resolved::Environment { contract, .. }] if contract == "environment:linux/x86"),
+        "{environments:?}"
+    );
+
+    // It is a 64-bit program: a build in the 64-bit environment can run
+    // it, and one in the 32-bit environment can't.
+    let consumer = |world: &mut World, environment: &str| {
+        world
+            .object(&manifest(
+                "consumer",
+                &format!(
+                    r#"
+                    [[build.targets]]
+                    name = "release"
+                    command = ["x"]
+                    [[build.targets.dependencies]]
+                    kind = "provides"
+                    provides = "{environment}"
+                    [[build.targets.dependencies]]
+                    kind = "provides"
+                    provides = "tool:x"
+                    "#
+                ),
+            ))
+            .0
+            .object_id
+    };
+    let wide = consumer(&mut world, "environment:linux/x86-64");
+    let resolution = world.resolve_with(&NoArtifacts, &host, &[], &wide, "release")?;
+    assert!(resolution
+        .plan
+        .manifest
+        .requirements
+        .iter()
+        .any(|requirement| matches!(
+            &requirement.resolved,
+            Resolved::Artifact { object, .. } if object == &cross_built.object_id.to_string()
+        )));
+    let narrow = consumer(&mut world, "environment:linux/x86");
+    let error = world
+        .resolve_with(&NoArtifacts, &host, &[], &narrow, "release")
+        .expect_err("a 64-bit program in a 32-bit build");
+    assert!(
+        error
+            .to_string()
+            .contains("runs in environment:linux/x86-64, not x86"),
+        "{error}"
     );
     Ok(())
 }

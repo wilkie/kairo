@@ -3843,7 +3843,10 @@ Sub-decisions:
    after `/`) as the environment the consuming target declares. Where
    either declares none (development mode), offers are not filtered.
    Content offers are never filtered. Rejected offers are listed among
-   what the resolver considered.
+   what the resolver considered. *Amended by §53:* the offer's side is
+   the environment its artifacts run in, the object's, and the
+   consumer's the one its build runs in, which a target may name apart
+   from its object's.
 
 9. **File sources federate like Git sources** (§37 sub-decision 9).
    *Added when built:* a held file source can be published; its
@@ -5200,3 +5203,68 @@ Affected specs:
 - `schemas/environment/linux-v1.md` — `/kairo/src` and
   `SOURCE_DATE_EPOCH`.
 - `CLI.md` §17 — `status = held`.
+
+---
+
+## 53. What an Object Runs In, What It Is Built In, and Target Triples
+
+Decision: an object's top-level environment dependency says what its
+artifacts **run in**; a build target may name its own environment
+dependency, which says what its build **runs in** instead. A 64-bit
+program built by a 32-bit environment declares
+`environment:linux/x86-64` at the top and `environment:linux/x86` on its
+target. Every tool that produces code for a target, a compiler or
+binutils, carries that **target triple** in a label of its own; only a
+native tool, whose target is the architecture it runs on, offers the
+plain label too. This is what cross-compiling needs, from the x86
+bootstrap to x86-64 first.
+
+Sub-decisions:
+
+1. **Two environments, one by default.** A target's build environment
+   is its own environment dependency, or else its object's; its
+   artifacts' environment is its object's, or else the target's. With
+   one environment declared anywhere, as every object before this one,
+   both are it, and nothing changes. A target that names its own
+   environment doesn't resolve its object's as a build requirement:
+   the plan's `environment` is the build's, and the engine is chosen
+   by it.
+
+2. **Offers by where they run, builds by where they run.** An artifact
+   offer is matched to a consumer by its artifacts' environment against
+   the consumer's build environment (§38 sub-decision 8): a 64-bit
+   program is offered to builds in a 64-bit environment, where it can
+   run, whatever built it. So a cross build's dependencies are tools
+   that run where it is built; the target's libraries come with its
+   cross toolchain, as its sysroot, not by label.
+
+3. **Target triples.** A compiler or binutils for `<arch>-<os>-<abi>`
+   provides `tool:gcc:<triple>`, `tool:g++:<triple>`, and
+   `tool:binutils:<triple>`, the triple spelled without its vendor
+   field (`i686-linux-musl`, `x86_64-linux-musl`), one spelling since
+   labels match exactly. A native one also provides the plain
+   `tool:gcc`, `tool:g++`, `tool:binutils`, "the compiler for the
+   machine this build runs on", so a consumer that names `tool:gcc`
+   never gets a cross compiler. A cross compiler and a native one for
+   the same target share the triple label and are told apart by where
+   they run: in a 32-bit build, `tool:gcc:x86_64-linux-musl` is the
+   cross compiler; in a 64-bit one, the native. A gcc requires the
+   binutils for its own target by triple. Tools that make no code
+   (bash, make) have no target, only the environment they run in.
+
+4. **live-bootstrap's tools.** Every gcc and binutils child of the
+   passes now also provides its `i686-linux-musl` label, and gcc
+   requires `tool:binutils:i686-linux-musl`. A change to children
+   alone, it keeps every pass's build key (§52).
+
+Rationale: what a program runs in is a fact about the program, and
+where it was built is a fact about one way of building it; keeping both,
+with the first by default, lets a cross build say exactly what it is.
+Naming every compiler's target, not only a cross compiler's, makes the
+label say what the tool produces, and leaves where it runs to the
+environment, which the resolver already matches.
+
+Affected specs:
+
+- `DECISIONS.md` §38 sub-decision 8 — whose environment is matched.
+- `OBJECT.md` — environments of objects and targets.
