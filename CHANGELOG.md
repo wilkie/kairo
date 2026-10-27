@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap pass 6: gcc 15.2.0 and the end (`DECISIONS.md`
+  §49).** `bootstrap/live-bootstrap-gcc-15.2.0/` goes on from pass 5's
+  root through gcc 15.2.0, bootstrapped with C++, and libmd, libbsd,
+  shadow, opendoas, gzip, diffutils, gawk, m4, and libarchive, to the end
+  of upstream's CI pass 2: all 149 packages built and checked against
+  upstream. The end-to-end test's timeout is 8 hours.
+
 - **live-bootstrap pass 5: gcc 10.5.0 (`DECISIONS.md` §49).**
   `bootstrap/live-bootstrap-gcc-10.5.0/` goes on from pass 4's root to
   gcc 10.5.0 with C++ and binutils 2.41 rebuilt; its gcc child also

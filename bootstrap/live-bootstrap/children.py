@@ -33,6 +33,9 @@ LIBRARIES = {
     "libunistring": ["lib:unistring"],
     # A perl module texinfo's build uses.
     "perl-Text-CSV": ["lib:perl:Text-CSV"],
+    "libmd": ["lib:md"],
+    "libbsd": ["lib:bsd"],
+    "libarchive": ["lib:archive"],
 }
 # What a package needs beside it wherever it is installed
 # (specs/DECISIONS.md §46): gcc runs binutils and compiles against
@@ -58,11 +61,15 @@ ALSO = {
     "guile": ["lib:guile"],
     "gettext": ["lib:intl"],
     "texinfo": ["tool:makeinfo"],
+    "gawk": ["tool:awk"],
+    "opendoas": ["tool:doas"],
+    "libarchive": ["tool:bsdtar"],
     # 4.7.4 is the first gcc live-bootstrap builds with C++; its
     # libstdc++ is static only, so it confers nothing.
     "gcc-4.7.4": ["tool:g++", "lib:stdc++:static"],
     # 10.5.0 also builds its runtime libraries shared.
     "gcc-10.5.0": ["tool:g++", "lib:stdc++:static", "lib:stdc++:shared", "lib:gcc:shared"],
+    "gcc-15.2.0": ["tool:g++", "lib:stdc++:static", "lib:stdc++:shared", "lib:gcc:shared"],
 }
 # Shared libraries confer themselves on what links against them, as a
 # range from the version linked (§46, §51): musl keeps its ABI across a

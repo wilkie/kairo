@@ -105,8 +105,9 @@ object, so a later milestone doesn't rebuild this one:
 runs upstream's perl chain from the step after `zlib-1.3.1`,
 `bootstrap/live-bootstrap-gcc-4.7.4/` goes on from that to gcc 4.7.4,
 `bootstrap/live-bootstrap-python/` from that through the python chain,
-guile, and autogen, and `bootstrap/live-bootstrap-gcc-10.5.0/` from that
-to gcc 10.5.0.
+guile, and autogen, `bootstrap/live-bootstrap-gcc-10.5.0/` from that
+to gcc 10.5.0, and `bootstrap/live-bootstrap-gcc-15.2.0/` from that to
+gcc 15.2.0 and the end of upstream's CI pass 2.
 Every pass after this one shares `pass/start.sh` and `pass/package.sh`,
 which its `import.sh` puts in its wrapper.
 

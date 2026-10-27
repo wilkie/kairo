@@ -51,4 +51,5 @@ artifacts aren't held.
 The ignored test `crates/kairo-cli/tests/bootstrap_live.rs` builds this
 pass after the first four when `KAIRO_LIVE_BOOTSTRAP_PASSES` is 5, then
 builds the hello consumer's dynamic target again, which now compiles
-with gcc 10.5.0.
+with gcc 10.5.0. Pass 6 (`bootstrap/live-bootstrap-gcc-15.2.0/`) goes
+on from this pass's root.

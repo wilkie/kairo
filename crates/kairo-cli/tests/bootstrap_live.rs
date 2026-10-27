@@ -8,7 +8,7 @@
 //! matches the checksums upstream publishes, read from the archived
 //! source; and `kairo reproduce` matches.
 //!
-//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2 to 5, it then builds the
+//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2 to 6, it then builds the
 //! later passes (`specs/DECISIONS.md` §49), each from the previous one's
 //! root, and checks their packages and children too: pass 2, the perl
 //! chain (`bootstrap/live-bootstrap-perl/`), and pass 3, to gcc 4.7.4
@@ -17,7 +17,8 @@
 //! musl; at 4, pass 4, python and guile
 //! (`bootstrap/live-bootstrap-python/`); and at 5, pass 5, gcc 10.5.0
 //! (`bootstrap/live-bootstrap-gcc-10.5.0/`), with which hello builds
-//! again.
+//! again; and at 6, pass 6, gcc 15.2.0 to the end of upstream's CI pass
+//! 2 (`bootstrap/live-bootstrap-gcc-15.2.0/`), and hello with it.
 //!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
@@ -218,12 +219,13 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     // stage0-posix's x86 tools, this build's input.
     let stage0 = import(store, &actor, "stage0-posix");
     let config = &stage0[stage0.find("[[runtime.seeds]]").expect("config lines")..];
-    // The full chain runs longer than the default hour, and the Linux
+    // The longest pass runs longer than the default hour (gcc 15.2.0's
+    // three-stage bootstrap, in pass 6, for hours), and the Linux
     // tarball can take longer than the default half hour to download.
     std::fs::write(
         store.join("config.toml"),
         format!(
-            "[runtime]\ntimeout_secs = 14400\n\n\
+            "[runtime]\ntimeout_secs = 28800\n\n\
              [federation.limits]\nfile_timeout_secs = 7200\n\n{config}"
         ),
     )
@@ -478,6 +480,30 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     )
     .expect("out");
     assert_eq!(String::from_utf8_lossy(&text), "hello from gcc 10.5.0\n");
+    if passes < 6 {
+        return;
+    }
+
+    // Pass 6, the last: gcc 15.2.0 and the rest of upstream's CI pass 2.
+    let imported = import(store, &actor, "live-bootstrap-gcc-15.2.0");
+    let last = format!("object:{}", field(&imported, "wrapper"));
+    let built = build(store, &last, &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    assert!(!built.contains("\nbuilds = "), "{built}");
+    assert_eq!(check_packages(&built, &sums, &blob_store), 149, "{built}");
+    assert_eq!(field(&built, "children"), "10", "{built}");
+    let built = build(store, &format!("object:{consumer}"), &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    let out = built
+        .lines()
+        .find_map(|line| line.strip_prefix("  out "))
+        .expect("the out file");
+    let text = kairo_store::BlobStore::get_blob(
+        &blob_store,
+        &kairo_core::BlobId::new(out.trim()).expect("blob id"),
+    )
+    .expect("out");
+    assert_eq!(String::from_utf8_lossy(&text), "hello from gcc 15.2.0\n");
 }
 
 /// Check every package a build lists in `repo/` against upstream's

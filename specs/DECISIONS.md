@@ -4869,8 +4869,10 @@ openssl, ca-certificates, curl, and patch to gcc 4.7.4, then binutils
 2.41 and musl 1.2.5 rebuilt with it; pass 4
 (`bootstrap/live-bootstrap-python/`) runs the python chain, guile, and
 autogen; pass 5 (`bootstrap/live-bootstrap-gcc-10.5.0/`) runs gcc 10.5.0
-and binutils 2.41 rebuilt with it. Building on a pass never rebuilds the
-passes before it.
+and binutils 2.41 rebuilt with it; and pass 6
+(`bootstrap/live-bootstrap-gcc-15.2.0/`), the last, runs gcc 15.2.0 and
+the rest of upstream's manifest, whole. Building on a pass never
+rebuilds the passes before it.
 
 Sub-decisions:
 
