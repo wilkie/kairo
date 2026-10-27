@@ -1,0 +1,70 @@
+# A cross toolchain for x86_64-linux-musl that runs on x86 (DECISIONS.md
+# §53): binutils 2.41, gcc 15.2.0 with C and C++, musl 1.2.5 for x86_64 as
+# its sysroot, and the Linux 4.14 headers, built on live-bootstrap's
+# finished x86 root. The first stage of the 64-bit bootstrap
+# (bootstrap/amd64/README.md): the next builds a 64-bit root with it.
+[kairo]
+schema = 1
+kind = "software"
+name = "amd64-cross"
+summary = "A cross toolchain for x86_64-linux-musl running on x86: binutils 2.41, gcc 15.2.0 with C and C++, and musl 1.2.5 and the Linux 4.14 headers as its sysroot."
+tags = ["bootstrap", "amd64", "toolchain", "cross"]
+
+# A 32-bit program: it runs, and is built, in the x86 environment.
+[[dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh"]
+
+# live-bootstrap's finished x86 root, at /: the compilers, make, and
+# tools it builds with, and the gmp, mpfr, and mpc gcc needs.
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:live-bootstrap:x86:libarchive-3.5.2"
+
+# /bin/sh and the rest, which configure scripts expect (§50).
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:linux-filesystem:merged-usr"
+
+[[build.targets.dependencies]]
+kind = "file"
+sha256 = "ae9a5789e23459e59606e6714723f2d3ffc31c03174191ef0d015bdf06007450"
+path = "distfiles/binutils-2.41.tar.xz"
+
+[[build.targets.dependencies]]
+kind = "file"
+sha256 = "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
+path = "distfiles/gcc-15.2.0.tar.xz"
+
+[[build.targets.dependencies]]
+kind = "file"
+sha256 = "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+path = "distfiles/musl-1.2.5.tar.gz"
+
+[[build.targets.dependencies]]
+kind = "file"
+sha256 = "0820fdb7971c6974338081c11fbf2dc869870501e7bdcac4d0ed58ba1f57b61c"
+path = "distfiles/linux-4.14.336.tar.xz"
+
+# The whole toolchain: the compilers need their binutils and sysroot
+# beside them, so they are one artifact, installed at /, every path in
+# it named by the target.
+[[provides]]
+provides = "tool:gcc:x86_64-linux-musl"
+version = "15.2.0"
+target = "x86"
+
+[[provides]]
+provides = "tool:g++:x86_64-linux-musl"
+version = "15.2.0"
+target = "x86"
+
+[[provides]]
+provides = "tool:binutils:x86_64-linux-musl"
+version = "2.41"
+target = "x86"
