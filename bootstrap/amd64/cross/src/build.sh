@@ -40,7 +40,11 @@ make ARCH=x86_64 HOSTCC="gcc -std=gnu11" INSTALL_HDR_PATH="$OUT$SYSROOT" headers
 make ARCH=x86_64 HOSTCC="gcc -std=gnu11" INSTALL_HDR_PATH="$SYSROOT" headers_install
 
 # 3. A C-only gcc, with no libc yet, to build musl with; not shipped.
+# Its libraries go in the sysroot's lib, beside musl's, not lib64: musl's
+# loader doesn't search lib64, and what this gcc builds for stage 2's
+# root installs where this gcc says.
 unpack gcc-15.2.0.tar.xz
+sed -i '/m64=/s/lib64/lib/' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
 gcc_configure() {
     ../gcc-15.2.0/configure --prefix=/usr --target="$TARGET" \
         --with-sysroot="$SYSROOT" --with-native-system-header-dir=/include \

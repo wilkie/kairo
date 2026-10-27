@@ -8,8 +8,8 @@ goes on from the one before it.
 | Stage | Directory | Runs in | Built in | What |
 |---|---|---|---|---|
 | 1 | `cross/` | `linux/x86` | `linux/x86` | binutils 2.41 and gcc 15.2.0 for `x86_64-linux-musl`, with musl 1.2.5 and the Linux 4.14 headers as their sysroot |
-| 2 | (next) | `linux/x86-64` | `linux/x86` | a minimal 64-bit root, cross-built with stage 1: gcc, binutils, musl, a userland, perl, and python |
-| 3 | (next) | `linux/x86-64` | `linux/x86-64` | the same root, rebuilt natively by stage 2's, gcc bootstrapping itself |
+| 2 | `cross-root/` | `linux/x86-64` | `linux/x86` | a minimal 64-bit root, cross-built with stage 1: musl, binutils, gcc, and a GNU userland |
+| 3 | (next) | `linux/x86-64` | `linux/x86-64` | the same root, rebuilt natively by stage 2's, gcc bootstrapping itself, with perl and python |
 | 4 | (next) | `linux/x86-64` | `linux/x86-64` | stage 3 rebuilt by itself, which must give the same bytes: the fixed point |
 
 A stage that runs in one environment and is built in another says so
