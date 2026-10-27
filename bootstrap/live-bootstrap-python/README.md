@@ -53,4 +53,6 @@ upstream URL, and the mirrors serve them, as they do the snapshots
 Savannah's cgit makes on request.
 
 The ignored test `crates/kairo-cli/tests/bootstrap_live.rs` builds this
-pass after the first three when `KAIRO_LIVE_BOOTSTRAP_PASSES` is 4.
+pass after the first three when `KAIRO_LIVE_BOOTSTRAP_PASSES` is 4 or
+more. Pass 5 (`bootstrap/live-bootstrap-gcc-10.5.0/`) goes on from this
+pass's root.

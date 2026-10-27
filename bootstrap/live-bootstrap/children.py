@@ -61,6 +61,17 @@ ALSO = {
     # 4.7.4 is the first gcc live-bootstrap builds with C++; its
     # libstdc++ is static only, so it confers nothing.
     "gcc-4.7.4": ["tool:g++", "lib:stdc++:static"],
+    # 10.5.0 also builds its runtime libraries shared.
+    "gcc-10.5.0": ["tool:g++", "lib:stdc++:static", "lib:stdc++:shared", "lib:gcc:shared"],
+}
+# Shared libraries confer themselves on what links against them, as a
+# range from the version linked (§46, §51): musl keeps its ABI across a
+# major version, and libstdc++ and libgcc_s have kept theirs since gcc
+# 3.4, so a later one runs what an earlier one linked.
+SELF_CONFERS = {
+    "lib:musl:shared": "^{version}",
+    "lib:stdc++:shared": ">={version}",
+    "lib:gcc:shared": ">={version}",
 }
 # The musl packages that hold a shared libc, as built: the earlier
 # ones are built static only. A wrong guess fails the build, since the
@@ -85,6 +96,17 @@ def requirement(entry):
         alternatives = ", ".join(f'{{ provides = "{label}" }}' for label in entry)
         return f"{{ one_of = [{alternatives}] }}"
     return f'{{ provides = "{entry}" }}'
+
+
+def provide(label, version):
+    """A provides entry, conferring itself when the label does."""
+    if label in SELF_CONFERS:
+        conferred = SELF_CONFERS[label].format(version=version)
+        return (
+            f'{{ provides = "{label}", confers = '
+            f'[{{ provides = "{label}", version = "{conferred}" }}] }}'
+        )
+    return f'{{ provides = "{label}" }}'
 
 
 def child(name, root, summary, version, requires, provides):
@@ -119,16 +141,8 @@ def main():
                 provides = None
                 requires = []
                 if labelled:
-                    label = f"lib:musl:{part}"
-                    provides = [f'{{ provides = "{label}" }}']
-                    if part == "shared":
-                        # Linking against it means needing it, at this
-                        # version or a later 1.x; its loader is reached
-                        # through /lib (§50).
-                        provides = [
-                            f'{{ provides = "{label}", confers = '
-                            f'[{{ provides = "{label}", version = "^{version}" }}] }}'
-                        ]
+                    provides = [provide(f"lib:musl:{part}", version)]
+                # Its loader is reached through /lib (§50).
                 if part == "shared":
                     requires = ["data:linux-filesystem:merged-usr"]
                 child(
@@ -151,7 +165,7 @@ def main():
             f"{name} {version}, as live-bootstrap builds it (package {package}).",
             version,
             REQUIRES.get(name, []),
-            [f'{{ provides = "{label}" }}' for label in labels] if labelled else None,
+            [provide(label, version) for label in labels] if labelled else None,
         )
 
 

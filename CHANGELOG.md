@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap pass 5: gcc 10.5.0 (`DECISIONS.md` §49).**
+  `bootstrap/live-bootstrap-gcc-10.5.0/` goes on from pass 4's root to
+  gcc 10.5.0 with C++ and binutils 2.41 rebuilt; its gcc child also
+  provides `lib:stdc++:shared` and `lib:gcc:shared`, each conferring
+  itself `>=10.5.0`, and `children.py` keeps such self-conferrals in one
+  table, musl's shared part's among them.
+
 - **live-bootstrap's later passes run upstream's scripts in upstream's
   environment (`DECISIONS.md` §49).** The shared start runs the
   generated script under `env -i PATH=/usr/bin`, as upstream's

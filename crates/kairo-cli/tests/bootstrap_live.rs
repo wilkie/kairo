@@ -8,14 +8,16 @@
 //! matches the checksums upstream publishes, read from the archived
 //! source; and `kairo reproduce` matches.
 //!
-//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2, 3, or 4, it then builds the
+//! With `KAIRO_LIVE_BOOTSTRAP_PASSES` set to 2 to 5, it then builds the
 //! later passes (`specs/DECISIONS.md` §49), each from the previous one's
 //! root, and checks their packages and children too: pass 2, the perl
 //! chain (`bootstrap/live-bootstrap-perl/`), and pass 3, to gcc 4.7.4
 //! (`bootstrap/live-bootstrap-gcc-4.7.4/`), after which the hello
 //! consumer's dynamic target builds with gcc 4.7.4 against the shared
-//! musl; and at 4, pass 4, python and guile
-//! (`bootstrap/live-bootstrap-python/`).
+//! musl; at 4, pass 4, python and guile
+//! (`bootstrap/live-bootstrap-python/`); and at 5, pass 5, gcc 10.5.0
+//! (`bootstrap/live-bootstrap-gcc-10.5.0/`), with which hello builds
+//! again.
 //!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
@@ -447,6 +449,35 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         let paths = child_paths(&built, child, &blob_store);
         assert!(paths.contains(&program.to_owned()), "{child}: {paths:?}");
     }
+    if passes < 5 {
+        return;
+    }
+
+    // Pass 5: gcc 10.5.0, and binutils 2.41 rebuilt with it.
+    let imported = import(store, &actor, "live-bootstrap-gcc-10.5.0");
+    let gcc = format!("object:{}", field(&imported, "wrapper"));
+    let built = build(store, &gcc, &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    assert!(!built.contains("\nbuilds = "), "{built}");
+    assert_eq!(check_packages(&built, &sums, &blob_store), 139, "{built}");
+    assert_eq!(field(&built, "children"), "2", "{built}");
+    let paths = child_paths(&built, "gcc-10.5.0_0", &blob_store);
+    for program in ["usr/bin/gcc", "usr/bin/g++"] {
+        assert!(paths.contains(&program.to_owned()), "{paths:?}");
+    }
+    // hello's dynamic target now builds with gcc 10.5.0.
+    let built = build(store, &format!("object:{consumer}"), &actor);
+    assert_eq!(field(&built, "status"), "success", "{built}");
+    let out = built
+        .lines()
+        .find_map(|line| line.strip_prefix("  out "))
+        .expect("the out file");
+    let text = kairo_store::BlobStore::get_blob(
+        &blob_store,
+        &kairo_core::BlobId::new(out.trim()).expect("blob id"),
+    )
+    .expect("out");
+    assert_eq!(String::from_utf8_lossy(&text), "hello from gcc 10.5.0\n");
 }
 
 /// Check every package a build lists in `repo/` against upstream's
