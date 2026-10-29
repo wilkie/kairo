@@ -1,0 +1,177 @@
+# The 64-bit bootstrap's third and fourth stages
+# (bootstrap/amd64/README.md): an x86_64 root built natively, in x86-64,
+# by the one before it. The x86-64 target builds it on stage 2's
+# cross-built root (bootstrap/amd64/cross-root/); the fixed-point target
+# builds it again on the x86-64 target's own, and fails unless what it
+# makes is that root, file for file. It holds musl, the Linux headers,
+# binutils, gcc with C and C++, a GNU userland, zlib, libffi, perl, and
+# python.
+[kairo]
+schema = 1
+kind = "software"
+name = "amd64-root"
+summary = "A minimal x86_64 root built natively: musl 1.2.5, binutils 2.41, gcc 15.2.0 with C and C++, a GNU userland, perl 5.42.0, and Python 3.11.1."
+tags = ["bootstrap", "amd64", "root"]
+
+[[dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+# The sources both targets build.
+
+[[dependencies]]
+kind = "file"
+sha256 = "ae9a5789e23459e59606e6714723f2d3ffc31c03174191ef0d015bdf06007450"
+path = "distfiles/binutils-2.41.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
+path = "distfiles/gcc-15.2.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2"
+path = "distfiles/gmp-6.2.1.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f"
+path = "distfiles/mpfr-4.1.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
+path = "distfiles/mpc-1.2.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+path = "distfiles/musl-1.2.5.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "0820fdb7971c6974338081c11fbf2dc869870501e7bdcac4d0ed58ba1f57b61c"
+path = "distfiles/linux-4.14.336.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "13720965b5f4fc3a0d4b61dd37e7565c741da9a5be24edc2ae00182fc1b3588c"
+path = "distfiles/bash-5.2.15.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ea613a4cf44612326e917201bbbcdfbd301de21ffc3b59b6e5c07e040b275e52"
+path = "distfiles/coreutils-9.4.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "e40b8f018c1da64edd1cc9a6fce5fa63b2e707e404e20cad91fbae337c98a5b7"
+path = "distfiles/make-4.2.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "f79b0cfea71b37a8eeec8490db6c5f7ae7719c35587f21edb0617f370eeff633"
+path = "distfiles/sed-4.8.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "2649b27c0e90e632eadcd757be06c6e9a4f48d941de51e7c0f83ff76408a07b9"
+path = "distfiles/grep-3.12.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ca9c16d3d11d0ff8c69d79dc0b47267e1329a69b39b799895604ed447d3ca90b"
+path = "distfiles/gawk-5.3.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "63bebd26879c5e1eea4352f0d03c991f966aeb3ddeb3c7445c902568d5411d28"
+path = "distfiles/tar-1.34.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "176d510c30d80a23b8050bbc048f2ecaacb823ae48b6821727ed6591f0df9200"
+path = "distfiles/xz-5.6.4.tar.bz2"
+
+[[dependencies]]
+kind = "file"
+sha256 = "7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057"
+path = "distfiles/gzip-1.13.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+path = "distfiles/bzip2-1.0.8.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "90e5e93cc724e4ebe12ede80df1634063c7a855692685919bfe60b556c9bd09e"
+path = "distfiles/diffutils-3.10.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "f87cee69eec2b4fcbf60a396b030ad6aa3415f192aa5f7ee84cad5e11f7f5ae3"
+path = "distfiles/patch-2.8.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
+path = "distfiles/m4-1.4.19.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
+path = "distfiles/findutils-4.10.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "73cf6cc1ea2b2b1c110a18c14bbbc73a362073003893ffcedc26d22ebdbdd0c3"
+path = "distfiles/perl-5.42.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "85879192f2cffd56cb16c092905949ebf3e5e394b7f764723529637901dfb58f"
+path = "distfiles/Python-3.11.1.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+path = "distfiles/zlib-1.3.1.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc"
+path = "distfiles/libffi-3.5.2.tar.gz"
+
+# Stage 3: built by stage 2's root, the build's first package after
+# binutils a gcc that bootstraps itself, and the rest built by that
+# gcc.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh"]
+# Its programs find musl's loader at /lib/ld-musl-x86_64.so.1, and its
+# scripts /bin/sh, through the merged-/usr links (§46, §50).
+requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:amd64-bootstrap:x86-64:cross-root"
+
+# Stage 4: the same build, by stage 3's root; build.sh --fixed-point
+# checks that it makes that root again.
+[[build.targets]]
+name = "fixed-point"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "--fixed-point"]
+requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:amd64-bootstrap:x86-64:root"
+
+# The whole root, installed at /.
+[[provides]]
+provides = "data:amd64-bootstrap:x86-64:root"
+target = "x86-64"
