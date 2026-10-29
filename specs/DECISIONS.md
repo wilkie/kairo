@@ -5150,7 +5150,8 @@ Sub-decisions:
    anyway.
 
 4. **Lookup.** A dependency's artifact is found first, as before, by a
-   build of the very snapshot; else the provider is planned, which
+   build of the very snapshot (*amended by §54:* if that build's plan
+   has the key the provider plans to); else the provider is planned, which
    gives its key, and a held, accepted, successful build of the same
    object's target whose plan has that key is used; else it is built
    first. A provider held but not plannable here (its tree or sources
@@ -5357,7 +5358,13 @@ Sub-decisions:
    build built once more; that is the price of a key that determines an
    artifact's whole content rather than most of it. Artifacts are still
    cited by id, so a consumer's key, which names a provider by its key,
-   changes only with it.
+   changes only with it. For that to reach dependencies, a dependency's
+   build of the very snapshot, which §52 sub-decision 4 looks for
+   first, is its artifact only if the plan it cites has the key the
+   provider plans to now; one whose plan has another key is passed
+   over, and the provider is found by key or built first. A build whose
+   plan isn't held can't be told apart, and stands, as does any build of
+   a provider not plannable here.
 
 9. **Comparing two roots.** Whether one build reproduces another, as
    the 64-bit bootstrap's fixed point asks (`bootstrap/amd64/`), is a

@@ -2002,6 +2002,39 @@ fn a_build_key_is_what_the_build_consumes_and_finds_a_held_build() -> TestResult
 }
 
 #[test]
+fn a_build_of_the_snapshot_under_another_key_isnt_this_plans_artifact() -> TestResult {
+    let mut world = World::new();
+    let (make, _) = world.object(&artifact_provider("tool:make", ""));
+    let plan = world.resolve(&make.object_id, "release")?.plan;
+    let key = plan.manifest.build_key.clone();
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let artifact = BlobId::from_bytes(b"test", b"make");
+    let held_with = |bytes: Vec<u8>| HeldWithPlans {
+        artifacts: vec![(
+            make.object_id.to_string(),
+            "release".to_owned(),
+            artifact.clone(),
+        )],
+        plans: vec![(make.object_id.to_string(), "release".to_owned(), bytes)],
+    };
+
+    // Built at this snapshot under this plan's key: it is the artifact.
+    let same = held_with(plan.bytes.clone());
+    let resolution = world.resolve_with(&same, &World::host(), &[], &app.object_id, "release")?;
+    assert!(resolution.plan.manifest.builds_first.is_empty());
+
+    // Built at this snapshot under another key, as by older rules
+    // (§54 sub-decision 8): it is built again.
+    let other = BlobId::from_bytes(b"test", b"older rules").to_string();
+    let older = String::from_utf8(plan.bytes.clone())?.replace(&key, &other);
+    assert_ne!(older.as_bytes(), plan.bytes.as_slice());
+    let stale = held_with(older.into_bytes());
+    let resolution = world.resolve_with(&stale, &World::host(), &[], &app.object_id, "release")?;
+    assert_eq!(resolution.plan.manifest.builds_first.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn an_object_built_in_one_environment_can_run_in_another() -> TestResult {
     let mut world = World::new();
     let host = Host {

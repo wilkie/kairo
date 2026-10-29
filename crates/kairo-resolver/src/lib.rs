@@ -2725,10 +2725,14 @@ impl<'a> Resolver<'a> {
             target: provider_target.to_owned(),
             source,
         };
-        // A build of this very snapshot, as before; else one whose plan
-        // had the same build key, at any snapshot (§52). Planning the
-        // provider is what says its key; a provider held but not
-        // plannable here (its tree or sources not held) is used as held.
+        // A build of this very snapshot whose plan had this plan's key,
+        // as before; else one whose plan had the same build key, at any
+        // snapshot (§52). Planning the provider is what says its key; a
+        // provider held but not plannable here (its tree or sources not
+        // held) is used as held. A build of the snapshot whose plan had
+        // another key, made under other rules, isn't this plan's
+        // artifact (§54 sub-decision 8); one whose plan isn't held can't
+        // be told apart, and stands.
         let held = self
             .artifacts
             .artifact(builder, &offer.snapshot, provider_target)
@@ -2747,6 +2751,20 @@ impl<'a> Resolver<'a> {
             Err(error) => return Err(error),
         };
         let build_key = planned.as_ref().map(|plan| plan.manifest.build_key.clone());
+        let held = match (held, &build_key) {
+            (Some(held), Some(key)) => {
+                let plan = self
+                    .artifacts
+                    .build_plan(builder, &offer.snapshot, provider_target)
+                    .map_err(source_error)?;
+                let other_key = match plan {
+                    Some(bytes) => &PlanDocument::from_bytes(bytes)?.manifest.build_key != key,
+                    None => false,
+                };
+                (!other_key).then_some(held)
+            }
+            (held, _) => held,
+        };
         let artifact = match (held, &build_key) {
             (Some(held), _) => Some(held),
             (None, Some(key)) => self
