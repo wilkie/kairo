@@ -138,6 +138,11 @@ Properties:
 
 Outputs are named projections of this artifact.
 
+An artifact keeps each file's contents and permission bits, its
+symbolic and hard links, and directories that are empty or not `0755`;
+not owners or times (`DECISIONS.md` §54,
+`schemas/canonical/artifact-tree-v1.md`).
+
 ---
 
 ## 7. Referencing Outputs

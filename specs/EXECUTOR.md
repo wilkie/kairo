@@ -607,6 +607,11 @@ Declared outputs are defined by the plan.
 If a declared output is missing at completion, execution should fail unless the
 plan marks it optional.
 
+Collected outputs keep each file's permission bits, symbolic and hard
+links, and directories that are empty or not `0755`, but not owners or
+times; materializing an artifact for a guest applies every bit but
+setuid and setgid (`DECISIONS.md` §54).
+
 ### 14.2 Discovered outputs
 
 Discovered outputs may be recorded as supplemental artifacts.

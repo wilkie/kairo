@@ -5268,3 +5268,117 @@ Affected specs:
 
 - `DECISIONS.md` §38 sub-decision 8 — whose environment is matched.
 - `OBJECT.md` — environments of objects and targets.
+
+---
+
+## 54. Artifacts Keep What a Build Made: Modes, Directories, and Hard Links
+
+Decision: an artifact keeps every file's **permission bits**, its
+**directories** where they say something, and its **hard links**, not
+only whether each file is executable. An artifact is Kairo's own blob
+tree (§33 sub-decision 6), not a Git tree, and nothing about it needs
+Git's three modes; recording only the executable bit dropped what
+software installs on purpose: perl's read-only modules, setuid
+programs (shadow's `passwd`, `doas`), `/tmp`'s sticky bit, `/root`'s
+`0700`, empty directories a program expects, and the links between
+files that are one file. The new fields are present only where they
+differ from what a tree without them means, so a tree that has none of
+them encodes as before.
+
+Sub-decisions:
+
+1. **`mode` on a file.** A file entry gains `mode`, its permission
+   bits as four octal digits (`"0444"`, `"4755"`): read, write, and
+   execute for owner, group, and others, and setuid, setgid, and
+   sticky. It is present only when the bits are neither `0644` nor
+   `0755`; without it a file is `0755` if `executable`, else `0644`, as
+   before. `executable` stays, and says whether any execute bit is set;
+   a tree whose `mode` and `executable` disagree is malformed.
+
+2. **Directory entries.** An entry may be a directory:
+   `{ "path", "directory": true, "mode"? }`, sorted with the rest by
+   `path`. It is present only for a directory that is empty or whose
+   bits aren't `0755`; every other directory is implied by the paths
+   under it, as before, and is `0755`. A directory entry's path is no
+   other entry's, and like any entry it lies under no link.
+
+3. **Hard links.** A file that is another file of the same artifact,
+   the same inode when the build ended, is `{ "path", "hardlink":
+   "<path>" }`, naming the first of them by path; that one is a file
+   entry with its blob and mode, and the others share them. A
+   `hardlink` names a file entry earlier in the tree, never a link, a
+   directory, or another `hardlink`. A child's slice (§41 sub-decision
+   4) whose file is linked to one outside the slice holds it as a file
+   entry with that file's blob and mode, since the slice stands alone.
+
+4. **Not kept: owners, times, and special files.** The guest is root
+   in its own namespace, and the bubblewrap engine maps that one id;
+   every file a build makes is root's, and a build that tries another
+   owner fails (live-bootstrap's tarballs had to be unpacked with
+   `--no-same-owner`). Owners are left out until an engine maps more
+   ids, which is when a decision can say what they mean. Times are left
+   out because a build's inputs fix them (`SOURCE_DATE_EPOCH`, §52) and
+   anything else would make an artifact depend on when it was built.
+   A device, FIFO, or socket still fails collection.
+
+5. **The command's umask is `022`.** Whoever runs Kairo, and whatever
+   umask they run it with, a build's command starts with `022`, in
+   every engine; under the executable-bit rule a umask couldn't change
+   an artifact, since it never adds execute bits, but under these rules
+   it would. The `linux` contract says so.
+
+6. **A Git tree keeps what Git does.** An object that doesn't build is
+   its own artifact (§50), collected from its tree as Kairo exports it
+   on the host, where the host's umask decides every bit but execute and
+   Git holds no directories. Such an artifact keeps only the executable
+   bit, as before, and no directory or hard link entries; its id
+   doesn't depend on who exported it.
+
+7. **Applied in guests; setuid and setgid nowhere else.** Materializing
+   an artifact for a guest, by copy into its root or as a cached layer,
+   sets each file's and directory's bits, but never setuid or setgid:
+   the guest is root, so neither means anything inside it, and on the
+   host, under a store any local user can read, a setuid file owned by
+   the store's owner would run as that owner for anyone. Every other
+   bit is applied, a directory's once everything is placed in it, so a
+   read-only one keeps no later dependency out; where dependencies
+   share a directory, the first's bits stand, as its files do. Nothing
+   writes an artifact out for use as a system root yet, which is where
+   the two bits mean something; what does will apply them only when
+   asked. Kairo makes a directory writable to its owner before removing
+   it, so a read-only directory, an artifact's or one a guest left in
+   its workspace, never strands a tree.
+
+8. **Builds are collected again once.** A build key gains `collect`,
+   the version of the rules its outputs are collected by: `2` from this
+   decision; a key without it was collected by rules `1`. A held build
+   that predates it lacks what these rules record, so its key no longer
+   matches and it is built once more, as §52 sub-decision 6 had every
+   build built once more; that is the price of a key that determines an
+   artifact's whole content rather than most of it. Artifacts are still
+   cited by id, so a consumer's key, which names a provider by its key,
+   changes only with it.
+
+9. **Comparing two roots.** Whether one build reproduces another, as
+   the 64-bit bootstrap's fixed point asks (`bootstrap/amd64/`), is a
+   comparison of artifact trees, which now include modes, directories,
+   and hard links; a checker inside a guest sees the installed root
+   with setuid and setgid stripped (sub-decision 7) and must compare
+   those bits from the tree, not from the files.
+
+Rationale: an artifact is what a build made, and a build makes files
+with modes, directories, and links between them; recording all of
+what can't vary between two runs of the same build, and none of what
+can, keeps an artifact's id a statement about its content while
+dropping nothing software depends on. Present-only-when-unusual fields
+keep every artifact that has nothing unusual exactly as it was.
+
+Affected specs:
+
+- `schemas/canonical/artifact-tree-v1.md` — `mode`, directory entries,
+  `hardlink`, and the rules for each.
+- `schemas/canonical/resolved-manifest-v1.md` — the build key's
+  `collect`.
+- `BUILD.md` §6 — what an artifact keeps.
+- `EXECUTOR.md` §14 — collection and materialization.
+- `schemas/environment/linux-v1.md` — the umask.

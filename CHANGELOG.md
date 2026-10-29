@@ -18,6 +18,24 @@ rather than per-commit.
 
 ### Added
 
+- **Artifacts keep modes, directories, and hard links (`DECISIONS.md`
+  §54).** An artifact tree records a file's permission bits where they
+  are neither `0644` nor `0755`, directories that are empty or not
+  `0755`, and files that are one inode as hard links to the first.
+  Materializing applies every bit but setuid and setgid, a directory's
+  once everything is placed in it. A build's command starts with the
+  umask `022`. An object's own Git tree keeps only the executable bit.
+  Kairo restores write permission before removing a tree, so a
+  read-only directory no longer strands a workspace.
+
+- **The 64-bit bootstrap (`bootstrap/amd64/`).** From live-bootstrap's
+  finished x86 root, without any 64-bit binary from outside: an
+  x86_64-linux-musl cross toolchain (stage 1); a minimal x86_64 root
+  cross-built under x86 (stage 2); the root built natively in x86-64,
+  gcc bootstrapping itself, with zlib, libffi, perl 5.42.0, and Python
+  3.11.1 (stage 3); and its fixed point, the same build on stage 3's
+  root, which makes stage 3's artifact again (stage 4).
+
 - **What an object runs in apart from what it is built in, and target
   triples (`DECISIONS.md` §53).** An object's top-level environment
   dependency says what its artifacts run in, and a build target may name
@@ -604,6 +622,11 @@ rather than per-commit.
 
 ### Wire format
 
+- **Artifact trees gain `mode`, directory entries, and `hardlink`
+  entries (`DECISIONS.md` §54)**, each only where it says something, so
+  a tree with none of them keeps its bytes and id. Build keys gain
+  `collect` (`2`), so every key changes and every held build is built
+  once more.
 - **Plans gain `build_key` and `source_date_epoch` (`DECISIONS.md`
   §52)**, and an artifact resolution its provider's `build_key`, so
   every plan hash changes and every held build is built once more. A

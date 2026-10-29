@@ -111,7 +111,9 @@ when non-empty, then two fields every plan has (`DECISIONS.md` §52):
   `tree` and `install`; the runtime closure, each `provides` and what
   it resolved to; the target's tree, by the hash of its entries (mode,
   name, Git object id; `kairo.toml` left out of a whole tree) under the
-  domain `kairo.tree-identity.v1`; and `source_date_epoch`. A content
+  domain `kairo.tree-identity.v1`; `source_date_epoch`; and `collect`,
+  the version of the rules the build's outputs are collected by, `2`
+  (`DECISIONS.md` §54: modes, directories, and hard links). A content
   resolution's `tree` is the same hash, of the tree under its root.
   A held build whose plan has the same key is this plan's artifact.
 

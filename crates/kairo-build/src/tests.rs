@@ -550,6 +550,7 @@ fn artifact_trees_refuse_links_that_escape_or_hold_entries() {
         path: "bin/app".to_owned(),
         blob: blob.to_string(),
         executable: true,
+        mode: None,
     })]);
     assert_eq!(
         String::from_utf8(files.to_bytes().expect("bytes")).expect("utf8"),
@@ -557,6 +558,186 @@ fn artifact_trees_refuse_links_that_escape_or_hold_entries() {
             r#"{{"schema":"kairo.artifact-tree.v1","entries":[{{"path":"bin/app","blob":"{blob}","executable":true}}]}}"#
         )
     );
+}
+
+#[test]
+fn trees_keep_modes_directories_and_hard_links_only_where_they_say_something() {
+    let file = |path: &str, executable: bool, mode: Option<&str>| {
+        ArtifactEntry::File(FileEntry {
+            path: path.to_owned(),
+            blob: "zQm".to_owned(),
+            executable,
+            mode: mode.map(str::to_owned),
+        })
+    };
+    let directory = |path: &str, mode: Option<&str>| {
+        ArtifactEntry::Directory(DirectoryEntry {
+            path: path.to_owned(),
+            directory: true,
+            mode: mode.map(str::to_owned),
+        })
+    };
+    let hardlink = |path: &str, to: &str| {
+        ArtifactEntry::Hardlink(HardlinkEntry {
+            path: path.to_owned(),
+            hardlink: to.to_owned(),
+        })
+    };
+    let tree = ArtifactTree::new(vec![
+        file("bin/passwd", true, Some("4755")),
+        file("lib/strict.pm", false, Some("0444")),
+        hardlink("lib/strict2.pm", "lib/strict.pm"),
+        directory("tmp", Some("1777")),
+        directory("var/empty", None),
+    ]);
+    assert_eq!(tree.validate(), Ok(()));
+    assert_eq!(
+        String::from_utf8(tree.to_bytes().expect("bytes")).expect("utf8"),
+        r#"{"schema":"kairo.artifact-tree.v1","entries":[{"path":"bin/passwd","blob":"zQm","executable":true,"mode":"4755"},{"path":"lib/strict.pm","blob":"zQm","executable":false,"mode":"0444"},{"path":"lib/strict2.pm","hardlink":"lib/strict.pm"},{"path":"tmp","directory":true,"mode":"1777"},{"path":"var/empty","directory":true}]}"#
+    );
+    // It reads back as each kind of entry.
+    let reread = ArtifactTree::from_bytes(&tree.to_bytes().expect("bytes")).expect("reread");
+    assert_eq!(reread, tree);
+    assert_eq!(reread.entries[0].mode(), Some(0o4755));
+    assert_eq!(reread.entries[2].mode(), None);
+    assert_eq!(reread.entries[4].mode(), Some(0o755));
+
+    for (entries, expected) in [
+        (vec![file("a", false, Some("644"))], "has the mode"),
+        (vec![file("a", false, Some("0844"))], "has the mode"),
+        (vec![file("a", false, Some("0755"))], "disagrees"),
+        (vec![file("a", true, Some("0755"))], "default mode"),
+        (vec![directory("a", Some("0755"))], "default mode"),
+        (
+            vec![hardlink("a", "b"), file("b", false, None)],
+            "not an earlier file",
+        ),
+        (
+            vec![
+                ArtifactEntry::Link(LinkEntry {
+                    path: "a".to_owned(),
+                    link: "b".to_owned(),
+                }),
+                hardlink("c", "a"),
+            ],
+            "not an earlier file",
+        ),
+    ] {
+        let tree = ArtifactTree::new(entries);
+        let result = tree.validate();
+        assert!(
+            matches!(&result, Err(error) if error.contains(expected)),
+            "{expected}: {result:?}"
+        );
+    }
+
+    // A slice holds a hard link to a file outside it as that file.
+    let tree = ArtifactTree::new(vec![
+        file("perl/lib/strict.pm", false, Some("0444")),
+        hardlink("perl/lib/strict2.pm", "perl/lib/strict.pm"),
+        hardlink("tools/strict.pm", "perl/lib/strict.pm"),
+    ]);
+    let perl = slice_artifact(&tree, "perl").expect("perl");
+    assert_eq!(perl.entries[1], hardlink("lib/strict2.pm", "lib/strict.pm"));
+    let tools = slice_artifact(&tree, "tools").expect("tools");
+    assert_eq!(tools.entries, [file("strict.pm", false, Some("0444"))]);
+}
+
+#[test]
+fn a_build_keeps_modes_directories_and_hard_links_and_applies_them_but_set_id() -> TestResult {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let mut world = World::new();
+    let app = world.object(&[
+        (
+            "kairo.toml",
+            &app_manifest(
+                r#"["sh", "build.sh"]"#,
+                r#"
+                [[build.targets.outputs]]
+                name = "share"
+                path = "out"
+                artifact_path = "share"
+                kind = "directory"
+                "#,
+                "",
+            ),
+        ),
+        (
+            "build.sh",
+            "set -e\n\
+             mkdir -p out/empty out/private out/sealed\n\
+             umask > out/umask\n\
+             echo plain > out/plain\n\
+             echo ro > out/ro && chmod 444 out/ro && ln out/ro out/ro2\n\
+             echo s > out/suid && chmod 4755 out/suid\n\
+             echo p > out/private/p && chmod 700 out/private\n\
+             echo s > out/sealed/s && chmod 555 out/sealed\n",
+        ),
+    ]);
+    let plan = world.plan(&app.object_id, "release");
+    let execution = world.run(&plan, Duration::from_secs(30))?;
+    assert_eq!(
+        execution.record.status,
+        Status::Success,
+        "{:?}",
+        execution.record.diagnostics
+    );
+    let tree = execution.artifact.as_ref().expect("artifact");
+    let missing = ArtifactEntry::Link(LinkEntry {
+        path: "missing".to_owned(),
+        link: "missing".to_owned(),
+    });
+    let entry = |path: &str| {
+        tree.entries
+            .iter()
+            .find(|entry| entry.path() == path)
+            .unwrap_or(&missing)
+    };
+    // The command ran with the umask 022, whoever ran Kairo.
+    assert_eq!(
+        world
+            .blob_text(entry("share/umask").blob().expect("a file"))
+            .trim(),
+        "0022"
+    );
+    assert_eq!(entry("share/plain").mode(), Some(0o644));
+    assert!(matches!(entry("share/plain"), ArtifactEntry::File(file) if file.mode.is_none()));
+    assert_eq!(entry("share/ro").mode(), Some(0o444));
+    assert!(matches!(
+        entry("share/ro2"),
+        ArtifactEntry::Hardlink(link) if link.hardlink == "share/ro"
+    ));
+    assert_eq!(entry("share/suid").mode(), Some(0o4755));
+    assert!(matches!(entry("share/empty"), ArtifactEntry::Directory(_)));
+    assert_eq!(entry("share/private").mode(), Some(0o700));
+    assert_eq!(entry("share/sealed").mode(), Some(0o555));
+    // A plain directory is implied, as before.
+    assert!(!tree.entries.iter().any(|entry| entry.path() == "share"));
+    // The workspace went, read-only directory and all.
+    let workspaces = world.fixture.store.root().join(WORKSPACES_DIR);
+    assert_eq!(fs::read_dir(&workspaces)?.count(), 0);
+
+    // Materialized: every bit but setuid, the hard link a hard link.
+    let artifact = BlobId::new(execution.record.artifact.clone().expect("artifact id"))?;
+    let out = tempfile::TempDir::new()?;
+    materialize_artifact(&world.fixture.store, &artifact, out.path())?;
+    let bits = |path: &str| -> std::io::Result<u32> {
+        Ok(fs::symlink_metadata(out.path().join(path))?
+            .permissions()
+            .mode()
+            & 0o7777)
+    };
+    assert_eq!(bits("share/ro")?, 0o444);
+    assert_eq!(bits("share/suid")?, 0o755);
+    assert_eq!(bits("share/private")?, 0o700);
+    assert_eq!(bits("share/sealed")?, 0o555);
+    assert!(out.path().join("share/empty").is_dir());
+    assert_eq!(
+        fs::metadata(out.path().join("share/ro"))?.ino(),
+        fs::metadata(out.path().join("share/ro2"))?.ino()
+    );
+    make_removable(out.path());
+    Ok(())
 }
 
 #[test]
@@ -1221,6 +1402,7 @@ fn a_slice_is_the_part_under_its_root_and_stands_alone() {
             path: path.to_owned(),
             blob: "zQm".to_owned(),
             executable: false,
+            mode: None,
         })
     };
     let link = |path: &str, link: &str| {

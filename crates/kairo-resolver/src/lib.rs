@@ -813,6 +813,11 @@ fn declared_requirement(
 
 /// Domain separator for a plan's build key (`DECISIONS.md` §52).
 pub const BUILD_KEY_DOMAIN: &[u8] = b"kairo.build-key.v1";
+
+/// The version of the rules a build's outputs are collected by, in its
+/// key (`DECISIONS.md` §54 sub-decision 8): 2 keeps modes, directories,
+/// and hard links; a key without it was collected by 1.
+pub const COLLECT_RULES: u32 = 2;
 /// Domain separator for what a tree holds, in a build key (§52).
 pub const TREE_IDENTITY_DOMAIN: &[u8] = b"kairo.tree-identity.v1";
 
@@ -901,6 +906,7 @@ fn build_key(
         "runtime": runtime,
         "tree": tree,
         "source_date_epoch": source_date_epoch,
+        "collect": COLLECT_RULES,
     });
     let bytes = serde_json::to_vec(&key).map_err(ResolveError::Encode)?;
     Ok(BlobId::from_bytes(BUILD_KEY_DOMAIN, &bytes))

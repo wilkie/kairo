@@ -61,6 +61,9 @@ And:
   mounted inside the guest's own mount namespace; device nodes can't be
   created (`mknod` of a device fails), and no id but 0 can own a file.
   Software needing those belongs to a contract a VM engine implements.
+- **umask**: `022`, whoever runs Kairo: an artifact keeps its files'
+  permission bits (`DECISIONS.md` §54), so they mustn't be the invoking
+  user's.
 - **Environment**, and nothing else:
   - `HOME=/tmp`, `LANG=C`, `TZ=UTC`;
   - `SOURCE_DATE_EPOCH`: the plan's, the target's `source_date_epoch`

@@ -1220,13 +1220,30 @@ fn format_execution(store: &FilesystemStore, execution: &Execution) -> String {
             let _ = match entry {
                 kairo_build::ArtifactEntry::File(file) => writeln!(
                     out,
-                    "  {}{} {}",
+                    "  {}{} {}{}",
                     file.path,
                     if file.executable { "*" } else { "" },
-                    file.blob
+                    file.blob,
+                    file.mode
+                        .as_deref()
+                        .map(|mode| format!(" mode {mode}"))
+                        .unwrap_or_default()
                 ),
                 kairo_build::ArtifactEntry::Link(link) => {
                     writeln!(out, "  {} -> {}", link.path, link.link)
+                }
+                kairo_build::ArtifactEntry::Directory(directory) => writeln!(
+                    out,
+                    "  {}/{}",
+                    directory.path,
+                    directory
+                        .mode
+                        .as_deref()
+                        .map(|mode| format!(" mode {mode}"))
+                        .unwrap_or_default()
+                ),
+                kairo_build::ArtifactEntry::Hardlink(hardlink) => {
+                    writeln!(out, "  {} => {}", hardlink.path, hardlink.hardlink)
                 }
             };
         }

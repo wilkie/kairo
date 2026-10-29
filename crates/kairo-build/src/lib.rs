@@ -135,13 +135,15 @@ pub struct ArtifactTree {
     pub entries: Vec<ArtifactEntry>,
 }
 
-/// One entry of an artifact: a file, or a symbolic link
-/// (`DECISIONS.md` §39).
+/// One entry of an artifact: a file, a symbolic link (`DECISIONS.md`
+/// §39), or a directory or hard link (§54).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ArtifactEntry {
     File(FileEntry),
     Link(LinkEntry),
+    Directory(DirectoryEntry),
+    Hardlink(HardlinkEntry),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,8 +152,65 @@ pub struct FileEntry {
     /// `/`-separated, relative.
     pub path: String,
     pub blob: String,
+    /// Whether any execute bit is set.
     pub executable: bool,
+    /// The permission bits, four octal digits, only when they are
+    /// neither `0644` nor `0755` (§54 sub-decision 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
+
+/// A directory that is empty or isn't `0755`; any other is implied by
+/// the paths under it (§54 sub-decision 2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryEntry {
+    pub path: String,
+    /// Always `true`: what tells a directory from the other entries.
+    pub directory: bool,
+    /// Only when not `0755`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+}
+
+/// A file that is an earlier file entry of the same artifact, the same
+/// inode when the build ended (§54 sub-decision 3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HardlinkEntry {
+    pub path: String,
+    pub hardlink: String,
+}
+
+/// The bits a file has without a `mode`.
+fn default_file_mode(executable: bool) -> u32 {
+    if executable {
+        0o755
+    } else {
+        0o644
+    }
+}
+
+/// The bits a directory has without a `mode`.
+const DEFAULT_DIRECTORY_MODE: u32 = 0o755;
+
+/// The bits a `mode` spells, if it is four octal digits.
+fn parse_mode(mode: &str) -> Option<u32> {
+    (mode.len() == 4 && mode.bytes().all(|byte| (b'0'..=b'7').contains(&byte)))
+        .then(|| u32::from_str_radix(mode, 8).ok())
+        .flatten()
+}
+
+/// The `mode` an entry records for `bits`: none when they are the
+/// default.
+fn mode_field(bits: u32, default: u32) -> Option<String> {
+    let bits = bits & 0o7777;
+    (bits != default).then(|| format!("{bits:04o}"))
+}
+
+/// setuid and setgid, which materializing never sets (§54
+/// sub-decision 5).
+const SET_ID_BITS: u32 = 0o6000;
 
 /// A symbolic link: its target, relative and confined to the artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,27 +225,60 @@ impl ArtifactEntry {
         match self {
             Self::File(file) => &file.path,
             Self::Link(link) => &link.path,
+            Self::Directory(directory) => &directory.path,
+            Self::Hardlink(hardlink) => &hardlink.path,
         }
     }
 
-    /// The file's blob; `None` for a link.
+    fn path_mut(&mut self) -> &mut String {
+        match self {
+            Self::File(file) => &mut file.path,
+            Self::Link(link) => &mut link.path,
+            Self::Directory(directory) => &mut directory.path,
+            Self::Hardlink(hardlink) => &mut hardlink.path,
+        }
+    }
+
+    /// The file's blob; `None` for anything else. A hard link's is its
+    /// file's, which the tree holds.
     pub fn blob(&self) -> Option<&str> {
         match self {
             Self::File(file) => Some(&file.blob),
-            Self::Link(_) => None,
+            _ => None,
         }
     }
 
-    /// The link's target; `None` for a file.
+    /// The link's target; `None` for anything else.
     pub fn link(&self) -> Option<&str> {
         match self {
-            Self::File(_) => None,
             Self::Link(link) => Some(&link.link),
+            _ => None,
         }
     }
 
     pub fn executable(&self) -> bool {
         matches!(self, Self::File(file) if file.executable)
+    }
+
+    /// A file's or a directory's permission bits, its `mode` or the
+    /// default; `None` for a link or a hard link.
+    pub fn mode(&self) -> Option<u32> {
+        match self {
+            Self::File(file) => Some(
+                file.mode
+                    .as_deref()
+                    .and_then(parse_mode)
+                    .unwrap_or_else(|| default_file_mode(file.executable)),
+            ),
+            Self::Directory(directory) => Some(
+                directory
+                    .mode
+                    .as_deref()
+                    .and_then(parse_mode)
+                    .unwrap_or(DEFAULT_DIRECTORY_MODE),
+            ),
+            Self::Link(_) | Self::Hardlink(_) => None,
+        }
     }
 }
 
@@ -233,11 +325,14 @@ impl ArtifactTree {
         }
     }
 
-    /// The shape rules a tree must keep (`DECISIONS.md` §39): safe,
-    /// unique paths in order; links' targets confined; and no entry
-    /// under a link, so nothing is ever written through one.
+    /// The shape rules a tree must keep (`DECISIONS.md` §39, §54):
+    /// safe, unique paths in order; links' targets confined; no entry
+    /// under a link, so nothing is ever written through one; modes
+    /// spelled, agreeing, and only where they aren't the default; and
+    /// each hard link naming an earlier file.
     pub fn validate(&self) -> Result<(), String> {
         let mut links: Vec<&str> = Vec::new();
+        let mut files: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let mut previous: Option<&str> = None;
         for entry in &self.entries {
             let path = entry.path();
@@ -259,6 +354,44 @@ impl ArtifactTree {
                     return Err(format!("link {path:?} -> {target:?} {problem}"));
                 }
                 links.push(path);
+            }
+            match entry {
+                ArtifactEntry::File(file) => {
+                    if let Some(mode) = &file.mode {
+                        let bits = parse_mode(mode)
+                            .ok_or_else(|| format!("{path:?} has the mode {mode:?}"))?;
+                        if (bits & 0o111 != 0) != file.executable {
+                            return Err(format!(
+                                "{path:?}'s mode {mode} disagrees with its executable"
+                            ));
+                        }
+                        if bits == default_file_mode(file.executable) {
+                            return Err(format!("{path:?} spells its default mode {mode}"));
+                        }
+                    }
+                    files.insert(path);
+                }
+                ArtifactEntry::Directory(directory) => {
+                    if !directory.directory {
+                        return Err(format!("{path:?} has directory false"));
+                    }
+                    if let Some(mode) = &directory.mode {
+                        let bits = parse_mode(mode)
+                            .ok_or_else(|| format!("{path:?} has the mode {mode:?}"))?;
+                        if bits == DEFAULT_DIRECTORY_MODE {
+                            return Err(format!("{path:?} spells its default mode {mode}"));
+                        }
+                    }
+                }
+                ArtifactEntry::Hardlink(hardlink) => {
+                    if !files.contains(hardlink.hardlink.as_str()) {
+                        return Err(format!(
+                            "{path:?} is a hard link to {:?}, not an earlier file",
+                            hardlink.hardlink
+                        ));
+                    }
+                }
+                ArtifactEntry::Link(_) => {}
             }
         }
         Ok(())
@@ -301,23 +434,53 @@ pub fn materialize_artifact(
 ) -> Result<ArtifactTree, BuildError> {
     let tree = load_artifact(store, artifact)?;
     write_tree(store, artifact, &tree, dest)?;
+    set_directory_modes(&tree, dest)?;
     Ok(tree)
 }
 
 /// The part of `tree` under `root`, re-rooted there: a child object's
 /// artifact (`DECISIONS.md` §41 sub-decision 4). It must hold something
-/// and stand alone, no relative link climbing out of it.
+/// and stand alone, no relative link climbing out of it, and a hard link
+/// to a file outside it holding that file itself (§54 sub-decision 3).
 pub fn slice_artifact(tree: &ArtifactTree, root: &str) -> Result<ArtifactTree, String> {
+    let under = |path: &str| -> Option<String> {
+        path.strip_prefix(root)?
+            .strip_prefix('/')
+            .map(str::to_owned)
+    };
+    let files: std::collections::HashMap<&str, &FileEntry> = tree
+        .entries
+        .iter()
+        .filter_map(|entry| match entry {
+            ArtifactEntry::File(file) => Some((file.path.as_str(), file)),
+            _ => None,
+        })
+        .collect();
     let entries: Vec<ArtifactEntry> = tree
         .entries
         .iter()
         .filter_map(|entry| {
-            let rest = entry.path().strip_prefix(root)?.strip_prefix('/')?;
-            let mut entry = entry.clone();
-            match &mut entry {
-                ArtifactEntry::File(file) => rest.clone_into(&mut file.path),
-                ArtifactEntry::Link(link) => rest.clone_into(&mut link.path),
-            }
+            let rest = under(entry.path())?;
+            let entry = match entry {
+                ArtifactEntry::Hardlink(hardlink) => match under(&hardlink.hardlink) {
+                    Some(file) => ArtifactEntry::Hardlink(HardlinkEntry {
+                        path: rest,
+                        hardlink: file,
+                    }),
+                    None => {
+                        let file = files.get(hardlink.hardlink.as_str())?;
+                        ArtifactEntry::File(FileEntry {
+                            path: rest,
+                            ..(*file).clone()
+                        })
+                    }
+                },
+                other => {
+                    let mut entry = other.clone();
+                    *entry.path_mut() = rest;
+                    entry
+                }
+            };
             Some(entry)
         })
         .collect();
@@ -358,7 +521,8 @@ fn tree_artifact(
     root: &str,
 ) -> Result<(BlobId, ArtifactTree), BuildError> {
     let bad = |reason: String| BuildError::BadArtifact(format!("{}: {reason}", tree.display()));
-    let entries = collect_package(store, tree, root).map_err(bad)?;
+    let mut collector = Collector::new(store, CollectRules::GitTree);
+    let entries = collect_package(&mut collector, tree, root).map_err(bad)?;
     let tree = ArtifactTree::new(entries);
     tree.validate().map_err(bad)?;
     let bytes = tree.to_bytes().map_err(BuildError::Encode)?;
@@ -387,15 +551,104 @@ fn write_tree(
                 let blob = BlobId::new(file.blob.clone()).map_err(|_| unsafe_path())?;
                 let bytes = store.get_blob(&blob).map_err(BuildError::Store)?;
                 fs::write(&path, bytes).map_err(|source| io_error("writing", &path, source))?;
-                set_executable(&path, file.executable)?;
+                let mode = entry
+                    .mode()
+                    .unwrap_or_else(|| default_file_mode(file.executable));
+                set_mode(&path, mode & !SET_ID_BITS)?;
             }
             ArtifactEntry::Link(link) => {
                 std::os::unix::fs::symlink(&link.link, &path)
                     .map_err(|source| io_error("linking", &path, source))?;
             }
+            // Its bits are set once everything is in place
+            // (`set_directory_modes`), so nothing is kept from writing
+            // into it before then.
+            ArtifactEntry::Directory(_) => {
+                fs::create_dir_all(&path).map_err(|source| io_error("creating", &path, source))?;
+            }
+            ArtifactEntry::Hardlink(hardlink) => {
+                let file = safe_join(dest, &hardlink.hardlink).ok_or_else(unsafe_path)?;
+                fs::hard_link(&file, &path).map_err(|source| io_error("linking", &path, source))?;
+            }
         }
     }
     Ok(())
+}
+
+/// Set the bits of each directory `tree` names under `dest`, but
+/// setuid and setgid (§54 sub-decision 7), once nothing more is to be
+/// written into them; the deepest first, so a directory made read-only
+/// never stands in the way of one under it.
+fn set_directory_modes(tree: &ArtifactTree, dest: &Path) -> Result<(), BuildError> {
+    apply_directory_modes(dest, &directory_modes(tree, None))
+}
+
+/// The directories of `tree` whose bits aren't `0755`, by path, the
+/// deepest last; with `under`, only those beneath it, relative to it.
+fn directory_modes(tree: &ArtifactTree, under: Option<&str>) -> Vec<(String, u32)> {
+    tree.entries
+        .iter()
+        .filter(|entry| matches!(entry, ArtifactEntry::Directory(_)))
+        .filter_map(|entry| {
+            let path = match under {
+                None => entry.path().to_owned(),
+                Some(under) => entry
+                    .path()
+                    .strip_prefix(under)?
+                    .strip_prefix('/')?
+                    .to_owned(),
+            };
+            let mode = entry.mode().unwrap_or(DEFAULT_DIRECTORY_MODE);
+            (mode != DEFAULT_DIRECTORY_MODE).then_some((path, mode))
+        })
+        .collect()
+}
+
+fn apply_directory_modes(dest: &Path, modes: &[(String, u32)]) -> Result<(), BuildError> {
+    for (path, mode) in modes.iter().rev() {
+        if let Some(path) = safe_join(dest, path) {
+            set_mode(&path, mode & !SET_ID_BITS)?;
+        }
+    }
+    Ok(())
+}
+
+/// Give the owner back every directory under `path`, so that a tree
+/// holding read-only directories, as an artifact or a guest may leave
+/// one, can be removed (§54 sub-decision 7). Links are never followed.
+fn make_removable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode | 0o700));
+    }
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            make_removable(&entry.path());
+        }
+    }
+}
+
+/// A workspace, removed when dropped even if it holds read-only
+/// directories.
+struct Workspace(tempfile::TempDir);
+
+impl Workspace {
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+impl Drop for Workspace {
+    fn drop(&mut self) {
+        make_removable(self.0.path());
+    }
 }
 
 fn safe_join(root: &Path, relative: &str) -> Option<PathBuf> {
@@ -411,8 +664,11 @@ fn safe_join(root: &Path, relative: &str) -> Option<PathBuf> {
 }
 
 fn set_executable(path: &Path, executable: bool) -> Result<(), BuildError> {
+    set_mode(path, default_file_mode(executable))
+}
+
+fn set_mode(path: &Path, mode: u32) -> Result<(), BuildError> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = if executable { 0o755 } else { 0o644 };
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
         .map_err(|source| io_error("setting permissions on", path, source))
 }
@@ -771,11 +1027,13 @@ fn cached_layer(
     let at = guest_target(staging.path(), install)?;
     fs::create_dir_all(&at).map_err(|source| io_error("creating", &at, source))?;
     write_tree(store, artifact, tree, &at)?;
+    set_directory_modes(tree, &at)?;
     let staged = staging.keep();
     match fs::rename(&staged, &layer) {
         Ok(()) => Ok(layer),
         // Another build cached it first.
         Err(_) if layer.is_dir() => {
+            make_removable(&staged);
             let _ = fs::remove_dir_all(&staged);
             Ok(layer)
         }
@@ -1187,10 +1445,12 @@ pub fn run_plan(
 
     let workspaces = store.root().join(WORKSPACES_DIR);
     fs::create_dir_all(&workspaces).map_err(|source| io_error("creating", &workspaces, source))?;
-    let workspace = tempfile::Builder::new()
-        .prefix("ws-")
-        .tempdir_in(&workspaces)
-        .map_err(|source| io_error("creating a workspace under", &workspaces, source))?;
+    let workspace = Workspace(
+        tempfile::Builder::new()
+            .prefix("ws-")
+            .tempdir_in(&workspaces)
+            .map_err(|source| io_error("creating a workspace under", &workspaces, source))?,
+    );
     let src = workspace.path().join("src");
     let deps = workspace.path().join("deps");
     let home = workspace.path().join("home");
@@ -1421,6 +1681,7 @@ pub fn run_plan(
                     fs::create_dir_all(&host)
                         .map_err(|source| io_error("creating", &host, source))?;
                     write_tree(store, &artifact, &tree, &host)?;
+                    set_directory_modes(&tree, &host)?;
                 }
                 Mount {
                     host,
@@ -1520,6 +1781,10 @@ pub fn run_plan(
             }
         }
     }
+    // Directories' bits, set once every dependency is in place, so a
+    // read-only one keeps none from being placed in it; the first
+    // dependency's last, as its files win (§54 sub-decision 7).
+    let mut directory_bits: Vec<(PathBuf, Vec<(String, u32)>)> = Vec::new();
     for (index, (install, artifact, tree, label)) in installs.into_iter().enumerate() {
         if !overlaid {
             let staging = deps.join("installed").join(index.to_string());
@@ -1533,6 +1798,7 @@ pub fn run_plan(
                 },
                 PlaceError::Io(error) => error,
             })?;
+            directory_bits.push((inside, directory_modes(&tree, None)));
         }
         env.insert(provider_var(&label), install);
     }
@@ -1555,6 +1821,7 @@ pub fn run_plan(
         };
         let staging = deps.join("placed").join(index.to_string());
         fs::create_dir_all(&staging).map_err(|source| io_error("creating", &staging, source))?;
+        let mut placed_modes = Vec::new();
         let tree = match &placement.what {
             Placed::File(source) => {
                 let bytes = store.get_file_source_bytes(source).map_err(|error| {
@@ -1581,6 +1848,7 @@ pub fn run_plan(
             Placed::Artifact(artifact, root) => {
                 let (artifact, tree) = artifact_at(store, artifact, root.as_deref())?;
                 write_tree(store, &artifact, &tree, &staging)?;
+                placed_modes = directory_modes(&tree, placement.from.as_deref());
                 staging.clone()
             }
             Placed::Source {
@@ -1636,6 +1904,7 @@ pub fn run_plan(
                 PlaceError::Occupied => occupied(),
                 PlaceError::Io(error) => error,
             })?;
+            directory_bits.push((inside.clone(), placed_modes));
         }
         let mount = Mount {
             host: inside,
@@ -1657,6 +1926,9 @@ pub fn run_plan(
         if !matches!(placement.what, Placed::File(_)) {
             env.insert(provider_var(&placement.label), seen(&mount));
         }
+    }
+    for (base, modes) in directory_bits.iter().rev() {
+        apply_directory_modes(base, modes)?;
     }
     path_dirs.extend(host_tool_dirs);
     if isolated {
@@ -1770,12 +2042,17 @@ pub fn run_plan(
     let started_at = Timestamp::now();
     let started = Instant::now();
     let mut diagnostics = Vec::new();
+    // The command starts with the umask 022, whoever runs Kairo: an
+    // artifact keeps its files' bits (§54), so they mustn't be the
+    // invoking user's. A child takes its umask at spawn.
+    let umask = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o022));
     let mut child = process
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .process_group(0)
         .spawn();
+    nix::sys::stat::umask(umask);
     let (status, exit_code) = match &mut child {
         Err(error) => {
             diagnostics.push(format!("cannot start {:?}: {error}", command[0]));
@@ -1815,11 +2092,18 @@ pub fn run_plan(
     // Outputs, only after a successful exit.
     let mut outputs = Vec::new();
     let mut entries = Vec::new();
+    let mut collector = Collector::new(store, CollectRules::Build);
     let mut status = status;
     if status == Status::Success {
         for output in target.outputs() {
             let path = workdir.join(output.path());
-            match collect_output(store, &src, &path, output.artifact_path(), output.kind()) {
+            match collect_output(
+                &mut collector,
+                &src,
+                &path,
+                output.artifact_path(),
+                output.kind(),
+            ) {
                 Ok(collected) => {
                     outputs.push(OutputRecord {
                         name: output.name().to_owned(),
@@ -1841,7 +2125,7 @@ pub fn run_plan(
     // And what the build staged under /kairo/package, from the
     // target's artifact root (§41 sub-decision 2).
     if status == Status::Success {
-        match collect_package(store, &package, target.artifact_root()) {
+        match collect_package(&mut collector, &package, target.artifact_root()) {
             Ok(collected) => {
                 if !collected.is_empty() {
                     outputs.push(OutputRecord {
@@ -1858,6 +2142,9 @@ pub fn run_plan(
             }
         }
     }
+    // Files that are one inode, wherever the outputs put them, are one
+    // file and hard links to it.
+    collector.link_hard(&mut entries);
     // The outputs together must make a well-formed tree: no two at one
     // path, and nothing under a link (`DECISIONS.md` §39).
     if status == Status::Success {
@@ -1994,7 +2281,7 @@ fn kill_group(pid: u32) {
 /// The files of one declared output as artifact entries. Paths are
 /// confined to the source tree, so a symlink can't reach outside it.
 fn collect_output(
-    store: &FilesystemStore,
+    collector: &mut Collector<'_>,
     src: &Path,
     path: &Path,
     artifact_path: &str,
@@ -2024,20 +2311,20 @@ fn collect_output(
             if !metadata.is_file() {
                 return Err(format!("{} is not a regular file", path.display()));
             }
-            entries.push(store_file(store, &actual, artifact_path)?);
+            entries.push(collector.file(&actual, artifact_path)?);
         }
         OutputKind::Directory => {
             if !metadata.is_dir() {
                 return Err(format!("{} is not a directory", path.display()));
             }
-            walk_dir(store, &root, &actual, artifact_path, &mut entries)?;
+            walk_dir(collector, &root, &actual, artifact_path, &mut entries)?;
         }
     }
     Ok(entries)
 }
 
 fn walk_dir(
-    store: &FilesystemStore,
+    collector: &mut Collector<'_>,
     root: &Path,
     dir: &Path,
     artifact_path: &str,
@@ -2048,6 +2335,7 @@ fn walk_dir(
         .collect::<Result<_, _>>()
         .map_err(|error| error.to_string())?;
     children.sort_by_key(|entry| entry.file_name());
+    entries.extend(collector.directory(dir, artifact_path, children.is_empty()));
     for child in children {
         let name = child
             .file_name()
@@ -2071,9 +2359,9 @@ fn walk_dir(
             ));
         }
         if metadata.is_dir() {
-            walk_dir(store, root, &actual, &child_artifact, entries)?;
+            walk_dir(collector, root, &actual, &child_artifact, entries)?;
         } else if metadata.is_file() {
-            entries.push(store_file(store, &actual, &child_artifact)?);
+            entries.push(collector.file(&actual, &child_artifact)?);
         } else {
             return Err(format!(
                 "{} is neither a file nor a directory",
@@ -2087,7 +2375,7 @@ fn walk_dir(
 /// The artifact staged under `package`, from `root` within it (`"."`
 /// for all of it), as entries at their paths relative to `root`.
 fn collect_package(
-    store: &FilesystemStore,
+    collector: &mut Collector<'_>,
     package: &Path,
     root: &str,
 ) -> Result<Vec<ArtifactEntry>, String> {
@@ -2119,9 +2407,9 @@ fn collect_package(
         if kind.is_symlink() {
             entries.push(link_entry(&path, &name)?);
         } else if kind.is_dir() {
-            walk_dir(store, &top, &path, &name, &mut entries)?;
+            walk_dir(collector, &top, &path, &name, &mut entries)?;
         } else if kind.is_file() {
-            entries.push(store_file(store, &path, &name)?);
+            entries.push(collector.file(&path, &name)?);
         } else {
             return Err(format!(
                 "{} is neither a file nor a directory",
@@ -2162,28 +2450,104 @@ fn link_entry(path: &Path, artifact_path: &str) -> Result<ArtifactEntry, String>
     }))
 }
 
-fn store_file(
-    store: &FilesystemStore,
-    path: &Path,
-    artifact_path: &str,
-) -> Result<ArtifactEntry, String> {
-    use std::os::unix::fs::PermissionsExt;
-    let bytes = fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))?;
-    let executable = fs::metadata(path)
-        .map_err(|error| error.to_string())?
-        .permissions()
-        .mode()
-        & 0o111
-        != 0;
-    let blob = BlobId::from_bytes(ARTIFACT_BLOB_DOMAIN, &bytes);
-    store
-        .put_blob(&blob, &bytes)
-        .map_err(|error| format!("storing {}: {error}", path.display()))?;
-    Ok(ArtifactEntry::File(FileEntry {
-        path: artifact_path.to_owned(),
-        blob: blob.to_string(),
-        executable,
-    }))
+/// What collecting keeps, and what it has seen. A build's outputs keep
+/// their bits, directories, and hard links (§54); a Git tree exported
+/// on the host keeps only what Git does, the executable bit, since its
+/// other bits and its directories are the host's umask, not the tree's.
+struct Collector<'a> {
+    store: &'a FilesystemStore,
+    rules: CollectRules,
+    /// The paths of each file with more than one link, by device and
+    /// inode, to make all but the first hard links.
+    inodes: std::collections::HashMap<(u64, u64), Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CollectRules {
+    /// A build's outputs (`DECISIONS.md` §54).
+    Build,
+    /// A Git tree, a content object's (§50).
+    GitTree,
+}
+
+impl<'a> Collector<'a> {
+    fn new(store: &'a FilesystemStore, rules: CollectRules) -> Self {
+        Self {
+            store,
+            rules,
+            inodes: std::collections::HashMap::new(),
+        }
+    }
+
+    fn file(&mut self, path: &Path, artifact_path: &str) -> Result<ArtifactEntry, String> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let bytes =
+            fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))?;
+        let meta = fs::metadata(path).map_err(|error| error.to_string())?;
+        let bits = meta.permissions().mode() & 0o7777;
+        let executable = bits & 0o111 != 0;
+        let mode = match self.rules {
+            CollectRules::Build => mode_field(bits, default_file_mode(executable)),
+            CollectRules::GitTree => None,
+        };
+        if self.rules == CollectRules::Build && meta.nlink() > 1 {
+            self.inodes
+                .entry((meta.dev(), meta.ino()))
+                .or_default()
+                .push(artifact_path.to_owned());
+        }
+        let blob = BlobId::from_bytes(ARTIFACT_BLOB_DOMAIN, &bytes);
+        self.store
+            .put_blob(&blob, &bytes)
+            .map_err(|error| format!("storing {}: {error}", path.display()))?;
+        Ok(ArtifactEntry::File(FileEntry {
+            path: artifact_path.to_owned(),
+            blob: blob.to_string(),
+            executable,
+            mode,
+        }))
+    }
+
+    /// A directory's entry, if it is empty or isn't `0755`.
+    fn directory(&self, path: &Path, artifact_path: &str, empty: bool) -> Option<ArtifactEntry> {
+        use std::os::unix::fs::PermissionsExt;
+        if self.rules != CollectRules::Build {
+            return None;
+        }
+        let bits = fs::metadata(path).ok()?.permissions().mode() & 0o7777;
+        let mode = mode_field(bits, DEFAULT_DIRECTORY_MODE);
+        (empty || mode.is_some()).then(|| {
+            ArtifactEntry::Directory(DirectoryEntry {
+                path: artifact_path.to_owned(),
+                directory: true,
+                mode,
+            })
+        })
+    }
+
+    /// Make every file that shares an inode with one before it by path
+    /// a hard link to that one (§54 sub-decision 3).
+    fn link_hard(&self, entries: &mut [ArtifactEntry]) {
+        let mut first: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for paths in self.inodes.values() {
+            let Some(earliest) = paths.iter().min().filter(|_| paths.len() > 1) else {
+                continue;
+            };
+            for path in paths {
+                if path != earliest {
+                    first.insert(path, earliest);
+                }
+            }
+        }
+        for entry in entries.iter_mut() {
+            if let Some(file) = first.get(entry.path()) {
+                *entry = ArtifactEntry::Hardlink(HardlinkEntry {
+                    path: entry.path().to_owned(),
+                    hardlink: (*file).to_owned(),
+                });
+            }
+        }
+    }
 }
 
 fn store_log(store: &FilesystemStore, path: &Path) -> Result<BlobId, BuildError> {
