@@ -20,7 +20,7 @@ One recipe, `src/build.sh`, serves two targets:
 | Target | Stage | Built on | What it checks |
 |---|---|---|---|
 | `x86-64` | 3 | stage 2's cross-built root (`../cross-root/`, `data:amd64-bootstrap:x86-64:cross-root`) | that C, static and dynamic, and C++ compile and run, and perl and python run with the modules the libraries serve |
-| `fixed-point` | 4 | stage 3's root (`data:amd64-bootstrap:x86-64:root`) | the same, and that it makes stage 3's root again: every link to the same target, every other file the same contents and executable or not, which is all an artifact keeps of a mode; it shows how each text file that differs differs |
+| `fixed-point` | 4 | stage 3's root (`data:amd64-bootstrap:x86-64:root`) | the same, and that it makes stage 3's root again: every link to the same target, every other file the same contents and executable or not; it shows how each text file that differs differs. Its artifact is stage 3's, the same id, which compares modes, directories, and hard links too (`specs/DECISIONS.md` §54) |
 
 When stage 4 holds, the root makes itself: stage 3's root depends on
 what built it only through the source it was given.

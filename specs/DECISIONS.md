@@ -5389,3 +5389,78 @@ Affected specs:
 - `BUILD.md` §6 — what an artifact keeps.
 - `EXECUTOR.md` §14 — collection and materialization.
 - `schemas/environment/linux-v1.md` — the umask.
+
+---
+
+## 55. Packages Apart from the Bootstraps, a Target per Environment
+
+Decision: software Kairo keeps as artifacts for builds to choose from,
+apart from what a bootstrap needs to reach its next stage, is a
+**package**: an object under `packages/`, one per release, built on a
+finished root. A package built for more than one environment has **a
+target for each and no environment of its own**, so each target's
+artifacts run where they were built (§53 sub-decision 1). The first is
+gcc 7.5.0, for x86 and x86-64, the start of the gcc versions a build
+can choose its compiler from.
+
+Sub-decisions:
+
+1. **Where packages live.** `packages/<name>-<version>/` holds a
+   package's manifest, its recipe in `src/`, and an `import.sh` that
+   archives its sources and creates its object with
+   `bootstrap/wrapper.sh`, as the bootstraps' stages do. A bootstrap
+   stage builds what the next stage needs, in the order it needs it;
+   a package is built from a root that is already finished, and nothing
+   in a bootstrap depends on one.
+
+2. **One object per release.** Each release is its own object
+   (`gcc-7.5.0`), not a version tag on one object's history: two
+   releases are offered side by side, chosen by the version a consumer
+   asks for (§43), and each release's recipe differs from the next's in
+   ways a history of one object would only hide. A fix to a release's
+   recipe is a revision of its object.
+
+3. **A target per environment.** A package built for x86 and x86-64
+   names `environment:linux/x86` on one target and
+   `environment:linux/x86-64` on the other, and none at the top. Both
+   targets offer the same labels by `[[provides]]` entries naming their
+   target; an offer is matched to a consumer by its target's
+   environment (§53 sub-decision 2), so a build in x86 gets the x86 one.
+   Each target builds on its environment's root as a target
+   dependency, and says what it runs with in its own `requires` (§46).
+
+4. **Beside another of its kind.** A package that the root it is used
+   with also has, as a gcc is, keeps every file but its programs in a
+   directory named by its version, so that in an overlay of both (§41)
+   only the program names are shared, and the first-listed dependency's
+   programs are the ones that run. Its recipe checks it. A gcc's runtime
+   libraries go in its versioned directory
+   (`--enable-version-specific-runtime-libs`), never over the root's.
+   For a gcc older than the root's, the root's shared `libstdc++` and
+   `libgcc_s` are newer and keep their ABI, so the package offers
+   `lib:stdc++:static` and not the shared libraries, which a consumer
+   takes from the root; a gcc newer than the root's will have to offer
+   its own.
+
+5. **A compiler bootstraps itself.** A packaged gcc bootstraps, its
+   later stages built by its earlier ones and compared, so what it is
+   doesn't depend on which gcc the root had. Its first stage is built
+   as the language standards its sources were written to.
+
+6. **The 64-bit root as a whole, for now.** The 64-bit bootstrap's root
+   offers only itself, `data:amd64-bootstrap:x86-64:root`, not labels
+   for binutils, musl, or the kernel's headers as live-bootstrap's
+   children do. A package's x86-64 target requires that root whole
+   until it does; its x86 target requires the parts by label.
+
+Rationale: a bootstrap's stages are ordered by what each needs to make
+the next, and a package by nothing but its own release, so they are
+kept apart; that keeps the bootstrap small and lets packages be added,
+in any number of versions, without touching it. A target per
+environment keeps one release's recipe in one place for every
+architecture, as §53 already lets an object say per target where its
+artifacts run.
+
+Affected specs:
+
+- `PROJECT_LAYOUT.md` — `packages/`.

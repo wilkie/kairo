@@ -1,0 +1,131 @@
+# gcc 7.5.0, with C and C++, for musl, as a package of its own outside
+# the bootstraps (specs/DECISIONS.md §55): one object, a target for each
+# environment it is built for. The x86 target builds it on
+# live-bootstrap's finished x86 root, the x86-64 target on the 64-bit
+# bootstrap's root (bootstrap/amd64/). Each gcc bootstraps, built by the
+# root's gcc 15 and then by itself, so what it is doesn't depend on that
+# gcc. Its runtime libraries stay in its own versioned directory, so it
+# can sit beside another gcc in one environment.
+[kairo]
+schema = 1
+kind = "software"
+name = "gcc-7.5.0"
+summary = "gcc 7.5.0 with C and C++ for musl, built for x86 and x86-64."
+tags = ["toolchain", "gcc", "compiler"]
+
+# The sources both targets build: gcc, and gmp, mpfr, and mpc, built in
+# its tree.
+
+[[dependencies]]
+kind = "file"
+sha256 = "b81946e7f01f90528a1f7352ab08cc602b9ccc05d4e44da4bd501c5a189ee661"
+path = "distfiles/gcc-7.5.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2"
+path = "distfiles/gmp-6.2.1.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "0c98a3f1732ff6ca4ea690552079da9c597872d30e96ec28414ee23c95558a7f"
+path = "distfiles/mpfr-4.1.0.tar.xz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
+path = "distfiles/mpc-1.2.1.tar.gz"
+
+# For x86: built, and run, in the x86 environment, on live-bootstrap's
+# finished root. The gcc needs what live-bootstrap's own gcc children
+# do: binutils for its target, musl, and the kernel's headers.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:live-bootstrap:x86:libarchive-3.5.2"
+
+# /bin/sh and the rest, which configure scripts expect (§50).
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:linux-filesystem:merged-usr"
+
+# For x86-64: built, and run, in the x86-64 environment, on the 64-bit
+# bootstrap's root. That root offers no binutils, musl, or headers of
+# its own yet, only itself, so the gcc requires it whole.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+requires = [{ provides = "data:amd64-bootstrap:x86-64:root" }]
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:amd64-bootstrap:x86-64:root"
+
+# Each target's gcc, installed at /: the compiler for the machine it
+# runs on, by the plain labels and its triple's (§53), with its static
+# C++ library. The two targets offer the same labels; each is offered to
+# builds in its own environment.
+
+[[provides]]
+provides = "tool:gcc"
+version = "7.5.0"
+target = "x86"
+
+[[provides]]
+provides = "tool:g++"
+version = "7.5.0"
+target = "x86"
+
+[[provides]]
+provides = "tool:gcc:i686-linux-musl"
+version = "7.5.0"
+target = "x86"
+
+[[provides]]
+provides = "tool:g++:i686-linux-musl"
+version = "7.5.0"
+target = "x86"
+
+[[provides]]
+provides = "lib:stdc++:static"
+version = "7.5.0"
+target = "x86"
+
+[[provides]]
+provides = "tool:gcc"
+version = "7.5.0"
+target = "x86-64"
+
+[[provides]]
+provides = "tool:g++"
+version = "7.5.0"
+target = "x86-64"
+
+[[provides]]
+provides = "tool:gcc:x86_64-linux-musl"
+version = "7.5.0"
+target = "x86-64"
+
+[[provides]]
+provides = "tool:g++:x86_64-linux-musl"
+version = "7.5.0"
+target = "x86-64"
+
+[[provides]]
+provides = "lib:stdc++:static"
+version = "7.5.0"
+target = "x86-64"

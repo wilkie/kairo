@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **Packages, starting with gcc 7.5.0 (`DECISIONS.md` §55,
+  `packages/`).** Software kept as artifacts apart from the bootstraps,
+  one object per release, built on a finished root. gcc 7.5.0, with C
+  and C++, for musl, has an `x86` target built on live-bootstrap's root
+  and an `x86-64` target built on the 64-bit bootstrap's, each offering
+  `tool:gcc` 7.5.0 to builds in its own environment. It bootstraps
+  itself, and keeps all but its programs in directories named by its
+  version, so it sits beside the root's gcc.
+
 - **Artifacts keep modes, directories, and hard links (`DECISIONS.md`
   §54).** An artifact tree records a file's permission bits where they
   are neither `0644` nor `0755`, directories that are empty or not

@@ -47,6 +47,9 @@ kairo/
   bootstrap/          # archived bootstrap chains as Kairo objects (DECISIONS.md §36)
     stage0-posix/
 
+  packages/           # software built on a finished root, one object per release (DECISIONS.md §55)
+    gcc-7.5.0/
+
   crates/
     kairo-core/
     kairo-identity/
