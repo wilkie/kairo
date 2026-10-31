@@ -62,6 +62,10 @@ Rules:
 
 - a target's requirements are the manifest's top-level `[[dependencies]]`
   plus its own
+- an object that doesn't build, chosen for one of them, brings its own
+  dependencies, which the target takes as its own requirements, after
+  it; a label the target names itself replaces a brought requirement on
+  it (`DECISIONS.md` §57)
 - version requirements use Cargo's syntax
 - dependencies express requirements only
 - resolution is performed by the planner

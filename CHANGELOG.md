@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **An object that doesn't build brings its dependencies
+  (`DECISIONS.md` §57).** A build that depends on an object without a
+  build, by label or by id, takes that object's `[[dependencies]]` as
+  its own requirements, after it; a label the build names itself
+  replaces a brought one, and such objects nest. So a shared build
+  environment is an object holding only a list of dependencies:
+  `packages/build-base/` (`data:build-base`) brings a shell, the GNU
+  userland, make, the archivers, m4, binutils, gcc with C++ and its
+  runtime libraries, musl, and the kernel's headers, and serves x86 and
+  x86-64 builds alike. gcc 7.5.0 builds with it. `kairo build` shows
+  each brought requirement and what brought it.
+
 - **No whole roots: every package a child, runtime libraries apart
   (`DECISIONS.md` §56).** The 64-bit bootstrap's stage 3 ships each of
   its packages as a child object with labels of its own, and its whole
@@ -643,6 +655,9 @@ rather than per-commit.
 
 ### Wire format
 
+- **A plan's requirement gains `brought_by` (`DECISIONS.md` §57)**,
+  only on a requirement an object that doesn't build brought, so a plan
+  with nothing brought keeps its bytes. Build keys don't read it.
 - **Artifact trees gain `mode`, directory entries, and `hardlink`
   entries (`DECISIONS.md` §54)**, each only where it says something, so
   a tree with none of them keeps its bytes and id. Build keys gain

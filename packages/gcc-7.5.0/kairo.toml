@@ -37,12 +37,13 @@ kind = "file"
 sha256 = "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
 path = "distfiles/mpc-1.2.1.tar.gz"
 
-# Each target builds in its environment with the packages a gcc build
-# runs: a shell and the GNU userland, m4 for gmp, binutils, the gcc 15
-# that builds the first stage and its runtime libraries, which that
-# stage's programs load, musl, static too for the checks, and the
-# kernel's headers. Each is a package by label, live-bootstrap's on x86,
-# the 64-bit bootstrap's on x86-64; neither target takes a whole root.
+# Each target builds in its environment with what a typical C or C++
+# package does, data:build-base (../build-base/, DECISIONS.md §57),
+# whose dependencies it takes as its own: live-bootstrap's packages on
+# x86, the 64-bit bootstrap's on x86-64; neither target takes a whole
+# root. Beyond that, it names the gcc 15 that builds its first stage,
+# which replaces build-base's gcc of any version, and static musl, for
+# its checks.
 #
 # Each target's artifact is its children, the compiler and each shared
 # runtime library, and the whole is nobody's to install. The compiler
@@ -67,55 +68,7 @@ provides = "environment:linux/x86"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "tool:bash"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:coreutils"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:make"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:sed"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:grep"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:gawk"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:tar"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:xz"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:gzip"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:diffutils"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:findutils"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:m4"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:binutils:i686-linux-musl"
+provides = "data:build-base"
 
 [[build.targets.dependencies]]
 kind = "provides"
@@ -129,27 +82,7 @@ version = "^15.2.0"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "lib:stdc++:shared"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:gcc:shared"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:musl:headers"
-
-[[build.targets.dependencies]]
-kind = "provides"
 provides = "lib:musl:static"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:musl:shared"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:linux:headers"
 
 [[build.targets.children]]
 name = "gcc-7.5.0"
@@ -229,55 +162,7 @@ provides = "environment:linux/x86-64"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "tool:bash"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:coreutils"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:make"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:sed"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:grep"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:gawk"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:tar"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:xz"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:gzip"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:diffutils"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:findutils"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:m4"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "tool:binutils:x86_64-linux-musl"
+provides = "data:build-base"
 
 [[build.targets.dependencies]]
 kind = "provides"
@@ -291,27 +176,7 @@ version = "^15.2.0"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "lib:stdc++:shared"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:gcc:shared"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:musl:headers"
-
-[[build.targets.dependencies]]
-kind = "provides"
 provides = "lib:musl:static"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:musl:shared"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:linux:headers"
 
 [[build.targets.children]]
 name = "gcc-7.5.0"

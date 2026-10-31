@@ -1035,9 +1035,16 @@ fn format_resolution(resolution: &Resolution) -> String {
     );
     let _ = writeln!(out, "requirements = {}", plan.requirements.len());
     for requirement in &plan.requirements {
+        // A requirement an object that doesn't build brought (§57) says
+        // which.
+        let brought = requirement
+            .brought_by
+            .as_ref()
+            .map(|by| format!(" (brought by {by})"))
+            .unwrap_or_default();
         let _ = writeln!(
             out,
-            "  {} -> {}",
+            "  {}{brought} -> {}",
             requirement.requested,
             describe_resolved(&requirement.resolved)
         );

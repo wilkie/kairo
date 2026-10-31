@@ -271,7 +271,7 @@ fn a_content_provider_resolves_and_the_plan_hash_is_stable() -> TestResult {
     assert!(plan.builds_first.is_empty());
     assert!(matches!(
         plan.requirements.as_slice(),
-        [Requirement { requested: Requested::Provides { provides, version: Some(version), .. }, resolved: Resolved::Content { object, .. } }]
+        [Requirement { requested: Requested::Provides { provides, version: Some(version), .. }, resolved: Resolved::Content { object, .. }, .. }]
             if provides == "lib:zlib:source" && version == ">=1.3, <2" && object == &lib.object_id.to_string()
     ));
 
@@ -1879,6 +1879,304 @@ fn one_of_obliges_the_build_and_only_its_own_choices_confer() -> TestResult {
     assert_eq!(
         requires(&world.resolve(&kept, "release")?),
         [("lib:c:static".to_owned(), None, true)]
+    );
+    Ok(())
+}
+
+/// An object that doesn't build, providing `label`, with `dependencies`
+/// (TOML `[[dependencies]]` entries) for a build that depends on it to
+/// take as its own (§57).
+fn environment_object(name: &str, label: &str, dependencies: &str) -> String {
+    manifest(
+        name,
+        &format!(
+            r#"
+            [[provides]]
+            provides = "{label}"
+            version = "1.0.0"
+            {dependencies}
+            "#
+        ),
+    )
+}
+
+fn top_dependency(label: &str, version: Option<&str>) -> String {
+    let version = version
+        .map(|v| format!("version = \"{v}\"\n"))
+        .unwrap_or_default();
+    format!("[[dependencies]]\nkind = \"provides\"\nprovides = \"{label}\"\n{version}")
+}
+
+/// Each requirement's label, or `object:<id>` for an object dependency,
+/// what it resolved to, and who brought it.
+fn requirement_summary(resolution: &Resolution) -> Vec<(String, String, Option<String>)> {
+    resolution
+        .plan
+        .manifest
+        .requirements
+        .iter()
+        .map(|requirement| {
+            let requested = match &requirement.requested {
+                Requested::Provides { provides, .. } => provides.clone(),
+                Requested::Object { object, .. } => format!("object:{object}"),
+                other => format!("{other:?}"),
+            };
+            let resolved = match &requirement.resolved {
+                Resolved::Content { object, .. } | Resolved::Artifact { object, .. } => {
+                    object.clone()
+                }
+                other => format!("{other:?}"),
+            };
+            (requested, resolved, requirement.brought_by.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn an_object_that_doesnt_build_brings_its_dependencies_as_the_builds_own() -> TestResult {
+    let mut world = World::new();
+    let (a, _) = world.object(&content_provider("lib:a", Some("1.0.0")));
+    let (b, _) = world.object(&content_provider("lib:b", Some("1.0.0")));
+    let (env, _) = world.object(&environment_object(
+        "build-base",
+        "data:build-base",
+        &format!(
+            "{}{}",
+            top_dependency("lib:a", None),
+            top_dependency("lib:b", None)
+        ),
+    ));
+    let (app, _) = world.object(&app_requiring("data:build-base", None));
+
+    let resolution = world.resolve(&app.object_id, "release")?;
+    let by = Some(format!("object:{}", env.object_id));
+    assert_eq!(
+        requirement_summary(&resolution),
+        [
+            (
+                "data:build-base".to_owned(),
+                env.object_id.to_string(),
+                None
+            ),
+            ("lib:a".to_owned(), a.object_id.to_string(), by.clone()),
+            ("lib:b".to_owned(), b.object_id.to_string(), by),
+        ]
+    );
+    // The same plan every time, and it reads back.
+    let again = world.resolve(&app.object_id, "release")?;
+    assert_eq!(again.plan.bytes, resolution.plan.bytes);
+    assert_eq!(
+        PlanDocument::from_bytes(resolution.plan.bytes.clone())?,
+        resolution.plan
+    );
+    // A plan with nothing brought has no brought_by.
+    let (plain, _) = world.object(&app_requiring("lib:a", None));
+    let plain = world.resolve(&plain.object_id, "release")?;
+    assert!(!String::from_utf8(plain.plan.bytes.clone())?.contains("brought_by"));
+    Ok(())
+}
+
+#[test]
+fn a_label_the_build_names_itself_replaces_what_is_brought() -> TestResult {
+    let mut world = World::new();
+    world.object(&content_provider("lib:a", Some("1.0.0")));
+    let (newer, _) = world.object(&content_provider("lib:a", Some("2.0.0")));
+    let (b, _) = world.object(&content_provider("lib:b", Some("1.0.0")));
+    let (env, _) = world.object(&environment_object(
+        "build-base",
+        "data:build-base",
+        &format!(
+            "{}{}",
+            top_dependency("lib:a", Some("^1")),
+            top_dependency("lib:b", None)
+        ),
+    ));
+    // The build asks for lib:a 2, after the environment, which asks for 1.
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "data:build-base"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "lib:a"
+        version = "^2"
+        "#,
+    ));
+
+    let resolution = world.resolve(&app.object_id, "release")?;
+    assert_eq!(
+        requirement_summary(&resolution),
+        [
+            (
+                "data:build-base".to_owned(),
+                env.object_id.to_string(),
+                None
+            ),
+            (
+                "lib:b".to_owned(),
+                b.object_id.to_string(),
+                Some(format!("object:{}", env.object_id))
+            ),
+            ("lib:a".to_owned(), newer.object_id.to_string(), None),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn objects_that_dont_build_bring_one_another_by_label_and_by_id() -> TestResult {
+    let mut world = World::new();
+    let (a, _) = world.object(&content_provider("lib:a", Some("1.0.0")));
+    let (b, _) = world.object(&content_provider("lib:b", Some("1.0.0")));
+    let (inner, inner_revision) = world.object(&environment_object(
+        "inner",
+        "data:inner",
+        &top_dependency("lib:a", None),
+    ));
+    let inner_snapshot =
+        Snapshot::from_object_revision(&inner.object_id, &inner_revision.statement)?;
+    let (outer, _) = world.object(&environment_object(
+        "outer",
+        "data:outer",
+        &format!(
+            "{}{}",
+            top_dependency("data:inner", None),
+            top_dependency("lib:b", None)
+        ),
+    ));
+    // By label: the outer brings the inner, which brings lib:a.
+    let (app, _) = world.object(&app_requiring("data:outer", None));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    let by_outer = Some(format!("object:{}", outer.object_id));
+    let by_inner = Some(format!("object:{}", inner.object_id));
+    assert_eq!(
+        requirement_summary(&resolution),
+        [
+            ("data:outer".to_owned(), outer.object_id.to_string(), None),
+            (
+                "data:inner".to_owned(),
+                inner.object_id.to_string(),
+                by_outer.clone()
+            ),
+            ("lib:a".to_owned(), a.object_id.to_string(), by_inner),
+            ("lib:b".to_owned(), b.object_id.to_string(), by_outer),
+        ]
+    );
+
+    // By id: an object dependency on the inner brings lib:a too.
+    let (by_id, _) = world.object(&manifest(
+        "app",
+        &format!(
+            r#"
+            [[build.targets]]
+            name = "release"
+            command = ["make"]
+            [[build.targets.dependencies]]
+            kind = "object"
+            object = "{}"
+            snapshot = "{}"
+            "#,
+            inner.object_id,
+            inner_snapshot.snapshot_id()
+        ),
+    ));
+    let resolution = world.resolve(&by_id.object_id, "release")?;
+    assert_eq!(
+        requirement_summary(&resolution)[1..],
+        [(
+            "lib:a".to_owned(),
+            a.object_id.to_string(),
+            Some(format!("object:{}", inner.object_id))
+        )]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_object_that_doesnt_build_cant_bring_an_environment() -> TestResult {
+    let mut world = World::new();
+    world.object(&environment_object(
+        "build-base",
+        "data:build-base",
+        &top_dependency("environment:linux/x86-64", None),
+    ));
+    let (app, _) = world.object(&app_requiring("data:build-base", None));
+    let error = world
+        .resolve(&app.object_id, "release")
+        .expect_err("refused");
+    assert!(
+        matches!(&error, ResolveError::BroughtUnsupported { dependency, .. }
+            if dependency == "environment:linux/x86-64"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn what_is_brought_meets_obligations_and_confers_as_the_builds_own() -> TestResult {
+    let mut world = World::new();
+    world.object(&manifest(
+        "libc",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "headers"
+        root = "headers"
+        version = "1.2.5"
+        provides = [{ provides = "lib:c:headers" }]
+        [[build.targets.children]]
+        name = "shared"
+        root = "shared"
+        version = "1.2.5"
+        provides = [{ provides = "lib:c:shared", confers = [{ provides = "lib:c:shared", version = "^1.2.5" }] }]
+        "#,
+    ));
+    world.object(&manifest(
+        "cc",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "cc"
+        root = "cc"
+        version = "4.7.4"
+        requires = [{ provides = "lib:c:headers" }, { one_of = [{ provides = "lib:c:static" }, { provides = "lib:c:shared" }] }]
+        provides = [{ provides = "tool:cc" }]
+        "#,
+    ));
+    world.object(&environment_object(
+        "build-base",
+        "data:build-base",
+        &format!(
+            "{}{}",
+            top_dependency("tool:cc", None),
+            top_dependency("lib:c:shared", None)
+        ),
+    ));
+    let (app, _) = world.object(&app_requiring("data:build-base", None));
+
+    // The compiler's obligation is met by the shared libc the
+    // environment brought, which the artifact then requires, as if the
+    // build had named it.
+    let resolution = world.resolve(&app.object_id, "release")?;
+    let requires: Vec<(String, Option<String>)> = resolution
+        .plan
+        .manifest
+        .requires
+        .iter()
+        .map(|entry| (entry.provides.clone(), entry.version.clone()))
+        .collect();
+    assert_eq!(
+        requires,
+        [("lib:c:shared".to_owned(), Some("^1.2.5".to_owned()))]
     );
     Ok(())
 }

@@ -56,10 +56,15 @@ below, and optional fields omitted when absent. `serde_json` with the
 | 4 | `target` | the build target's name |
 | 5 | `environment` | the contract label an engine will provide, or `"none"` |
 | 6 | `host_dependent` | `true` when a host tool or the host standing in for a contract was used |
-| 7 | `requirements` | list of requirement objects, in manifest order (top-level `[[dependencies]]`, then the target's) |
+| 7 | `requirements` | list of requirement objects, in manifest order (top-level `[[dependencies]]`, then the target's), each followed by what it brought (`DECISIONS.md` §57) |
 | 8 | `builds_first` | list of builds this plan needs first, dependencies before dependents |
 
-A requirement is `{"requested": ..., "resolved": ...}`.
+A requirement is `{"requested": ..., "resolved": ...}`, and
+`"brought_by": "object:<id>"` when it is a dependency of an object that
+doesn't build, chosen for an earlier requirement, which the build took
+as its own (`DECISIONS.md` §57); absent otherwise, so a plan with
+nothing brought is unchanged. The build key reads `requested` and
+`resolved` only.
 
 `requested`, by `kind`:
 

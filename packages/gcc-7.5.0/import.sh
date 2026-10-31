@@ -12,11 +12,12 @@
 #    history and created as an object, or, with --wrapper, committed on
 #    top of that existing object's history as its next revision.
 #
-# What the targets build from must be imported: live-bootstrap's six
-# passes and linux-filesystem for x86, the 64-bit bootstrap's stage 3
-# for x86-64 (bootstrap/amd64/). Extra arguments go before the command
-# in every `kairo` call, e.g. `--store <path>`. KAIRO names the kairo
-# binary (default: kairo on PATH). Prints the object's id.
+# What the targets build from must be imported: packages/build-base/,
+# and live-bootstrap's six passes and linux-filesystem for x86, the
+# 64-bit bootstrap's stage 3 for x86-64 (bootstrap/amd64/). Extra
+# arguments go before the command in every `kairo` call, e.g. `--store
+# <path>`. KAIRO names the kairo binary (default: kairo on PATH). Prints
+# the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 

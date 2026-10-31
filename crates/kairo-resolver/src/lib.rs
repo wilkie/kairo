@@ -36,7 +36,7 @@
 //! The plan hash covers the whole closure and never the engine (§34
 //! sub-decision 4).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
@@ -343,6 +343,10 @@ pub struct RuntimeRequirement {
 pub struct Requirement {
     pub requested: Requested,
     pub resolved: Resolved,
+    /// The object that doesn't build whose dependency this is, which
+    /// the build took as its own (`DECISIONS.md` §57): `object:<id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brought_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -992,6 +996,118 @@ fn build_dependencies<'a>(
         .chain(target.dependencies())
 }
 
+/// What an object that doesn't build brings to a build that depends on
+/// it (`DECISIONS.md` §57): its own dependencies, and who brought them.
+#[derive(Debug, Clone)]
+struct Brought {
+    by: String,
+    dependencies: Vec<DependencyDeclaration>,
+}
+
+/// The dependency a brought list is filed under: a label at its version
+/// requirement, or an object.
+fn brought_key(dependency: &DependencyDeclaration) -> String {
+    match dependency {
+        DependencyDeclaration::Provides(provides) => format!(
+            "provides {} {}",
+            provides.provides(),
+            provides.version().unwrap_or("")
+        ),
+        DependencyDeclaration::Object(object) => format!("object {}", object.object()),
+        DependencyDeclaration::Source(source) => format!("source {}", source.url()),
+        DependencyDeclaration::File(file) => format!("file {}", file.sha256()),
+    }
+}
+
+/// What `by`, an object chosen for a build's dependency, brings it: its
+/// dependencies, when it doesn't build and has any (§57). They are
+/// labels and objects; an environment would change where the build
+/// runs, and a file or source where its tree is, which an object that
+/// doesn't build can't decide for the builds that use it.
+fn brings(
+    object: &ObjectId,
+    target: &str,
+    by: &ObjectId,
+    manifest: &ObjectManifest,
+) -> Result<Option<Brought>, ResolveError> {
+    if !manifest.build_targets().is_empty() || manifest.dependencies().is_empty() {
+        return Ok(None);
+    }
+    for dependency in manifest.dependencies() {
+        let unsupported = match dependency {
+            DependencyDeclaration::Provides(provides)
+                if provides.provides().starts_with(ENVIRONMENT_PREFIX) =>
+            {
+                Some(provides.provides().to_owned())
+            }
+            DependencyDeclaration::Provides(_) | DependencyDeclaration::Object(_) => None,
+            DependencyDeclaration::Source(source) => Some(format!("source {}", source.url())),
+            DependencyDeclaration::File(file) => Some(format!("file sha256:{}", file.sha256())),
+        };
+        if let Some(dependency) = unsupported {
+            return Err(ResolveError::BroughtUnsupported {
+                object: object.clone(),
+                target: target.to_owned(),
+                by: by.clone(),
+                dependency,
+            });
+        }
+    }
+    Ok(Some(Brought {
+        by: format!("object:{by}"),
+        dependencies: manifest.dependencies().to_vec(),
+    }))
+}
+
+/// A build's dependencies with what objects that don't build brought
+/// spliced in after each (§57), each brought one with who brought it.
+/// A label the build declares itself replaces any brought requirement
+/// on it, and an object brought twice brings its dependencies once.
+fn effective_dependencies<'a>(
+    declared: impl Iterator<Item = &'a DependencyDeclaration>,
+    brought: &BTreeMap<String, Brought>,
+) -> Vec<(DependencyDeclaration, Option<String>)> {
+    fn splice(
+        dependency: &DependencyDeclaration,
+        brought: &BTreeMap<String, Brought>,
+        own: &BTreeSet<String>,
+        taken: &mut BTreeSet<String>,
+        out: &mut Vec<(DependencyDeclaration, Option<String>)>,
+    ) {
+        let key = brought_key(dependency);
+        let Some(bringing) = brought.get(&key) else {
+            return;
+        };
+        if !taken.insert(key) {
+            return;
+        }
+        for more in &bringing.dependencies {
+            if let DependencyDeclaration::Provides(provides) = more {
+                if own.contains(provides.provides()) {
+                    continue;
+                }
+            }
+            out.push((more.clone(), Some(bringing.by.clone())));
+            splice(more, brought, own, taken, out);
+        }
+    }
+    let declared: Vec<&DependencyDeclaration> = declared.collect();
+    let own: BTreeSet<String> = declared
+        .iter()
+        .filter_map(|dependency| match dependency {
+            DependencyDeclaration::Provides(provides) => Some(provides.provides().to_owned()),
+            _ => None,
+        })
+        .collect();
+    let mut taken = BTreeSet::new();
+    let mut out = Vec::new();
+    for dependency in declared {
+        out.push((dependency.clone(), None));
+        splice(dependency, brought, &own, &mut taken, &mut out);
+    }
+    out
+}
+
 /// The object whose build makes the child `id` (`DECISIONS.md` §44
 /// sub-decision 2): found in the current manifests `index` holds, or
 /// else in the manifests at each held object's version-tagged
@@ -1131,6 +1247,9 @@ struct Conflict {
 /// the runtime closure asks of them, and how many rounds the closure
 /// gets to settle, before the resolver gives up (§46 sub-decision 4).
 const CLOSURE_PASSES: usize = 8;
+/// How deep objects that don't build may bring one another's
+/// dependencies (§57).
+const BROUGHT_DEPTH: usize = 16;
 const CLOSURE_ROUNDS: usize = 32;
 
 /// A contract label's architecture: what follows its `/`.
@@ -1734,8 +1853,16 @@ impl<'a> Resolver<'a> {
         let alternatives_before = diagnostics.alternatives.len();
         let mut extras: BTreeMap<String, Vec<Constraint>> = BTreeMap::new();
         let mut passes = 0;
+        // What each object that doesn't build, chosen for one of this
+        // build's dependencies, brings: its own dependencies, which this
+        // build takes as its own (§57). Found in one pass, taken in the
+        // next.
+        let mut brought: BTreeMap<String, Brought> = BTreeMap::new();
+        let mut expansions = 0;
         let (requirements, environment, host_dependent, needed_first, requires, runtime) = loop {
             diagnostics.alternatives.truncate(alternatives_before);
+            let effective = effective_dependencies(build_dependencies(&manifest, target), &brought);
+            let mut found = false;
             let mut requirements = Vec::new();
             let mut environment = "none".to_owned();
             let mut host_dependent = false;
@@ -1766,8 +1893,8 @@ impl<'a> Resolver<'a> {
             let isolated = consumer_environment
                 .as_ref()
                 .is_some_and(|contract| self.host.engines.contains(contract));
-            for dependency in build_dependencies(&manifest, target) {
-                let (requested, resolved) = match dependency {
+            for (declaration, brought_by) in &effective {
+                let (requested, resolved) = match declaration {
                     DependencyDeclaration::Provides(dependency) => {
                         let (path, from, overlay) = placement_fields(dependency.placement());
                         let requested = Requested::Provides {
@@ -1788,10 +1915,9 @@ impl<'a> Resolver<'a> {
                             // Every requirement on the label: this target's own,
                             // then what the runtime closure asked of it (§46).
                             let label = dependency.provides();
-                            let own: Vec<Constraint> = manifest
-                                .dependencies()
+                            let own: Vec<Constraint> = effective
                                 .iter()
-                                .chain(target.dependencies())
+                                .map(|(other, _)| other)
                                 .filter_map(|other| match other {
                                     DependencyDeclaration::Provides(other)
                                         if other.provides() == label =>
@@ -1825,6 +1951,31 @@ impl<'a> Resolver<'a> {
                                 &mut needed_first,
                                 diagnostics,
                             )?;
+                            if let Some(offer) =
+                                choices.iter().find_map(|choice| match &choice.picked {
+                                    Picked::Offer(offer) if choice.serves.contains(&mine) => {
+                                        Some(offer)
+                                    }
+                                    _ => None,
+                                })
+                            {
+                                let key = brought_key(declaration);
+                                if offer.artifact.is_none() && !brought.contains_key(&key) {
+                                    if let Some(candidate) = index.candidates.iter().find(|c| {
+                                        c.object == offer.object && c.snapshot == offer.snapshot
+                                    }) {
+                                        if let Some(more) = brings(
+                                            object,
+                                            target_name,
+                                            &candidate.object,
+                                            &candidate.manifest,
+                                        )? {
+                                            brought.insert(key, more);
+                                            found = true;
+                                        }
+                                    }
+                                }
+                            }
                             for choice in choices {
                                 let picks = chosen.entry(label.to_owned()).or_default();
                                 if !picks.contains(&choice.picked) {
@@ -1898,14 +2049,25 @@ impl<'a> Resolver<'a> {
                                     .push(Picked::Offer(Box::new(offer)));
                                 resolved
                             } else {
-                                self.resolve_object(
+                                let (resolved, wanted) = self.resolve_object(
                                     object,
                                     target_name,
                                     &requested,
                                     dependency.object(),
                                     version.as_deref(),
                                     pinned.as_ref(),
-                                )?
+                                )?;
+                                if let std::collections::btree_map::Entry::Vacant(entry) =
+                                    brought.entry(brought_key(declaration))
+                                {
+                                    if let Some(more) =
+                                        brings(object, target_name, dependency.object(), &wanted)?
+                                    {
+                                        entry.insert(more);
+                                        found = true;
+                                    }
+                                }
+                                resolved
                             };
                         (requested, resolved)
                     }
@@ -1970,7 +2132,20 @@ impl<'a> Resolver<'a> {
                 requirements.push(Requirement {
                     requested,
                     resolved,
+                    brought_by: brought_by.clone(),
                 });
+            }
+            // An object that doesn't build brought dependencies not yet
+            // taken: the pass is made again with them.
+            if found {
+                expansions += 1;
+                if expansions > BROUGHT_DEPTH {
+                    return Err(ResolveError::BroughtTooDeep {
+                        object: object.clone(),
+                        target: target_name.to_owned(),
+                    });
+                }
+                continue;
             }
             // The runtime closure of what was chosen (§46 sub-decisions 4
             // and 7), installed after the declared requirements.
@@ -3066,7 +3241,7 @@ impl<'a> Resolver<'a> {
         wanted: &ObjectId,
         version: Option<&str>,
         pinned: Option<&SnapshotId>,
-    ) -> Result<Resolved, ResolveError> {
+    ) -> Result<(Resolved, ObjectManifest), ResolveError> {
         let unsatisfied = |considered: Vec<String>| {
             ResolveError::Unsatisfied(Box::new(Unsatisfied {
                 object: object.clone(),
@@ -3092,13 +3267,16 @@ impl<'a> Resolver<'a> {
         };
         let (install, root) = content_placement(&manifest);
         let tree = self.content_tree(wanted, &snapshot.snapshot_id(), root.as_deref())?;
-        Ok(Resolved::Content {
-            object: wanted.to_string(),
-            snapshot: snapshot.snapshot_id().to_string(),
-            install,
-            root,
-            tree: Some(tree),
-        })
+        Ok((
+            Resolved::Content {
+                object: wanted.to_string(),
+                snapshot: snapshot.snapshot_id().to_string(),
+                install,
+                root,
+                tree: Some(tree),
+            },
+            manifest,
+        ))
     }
 }
 
@@ -3246,6 +3424,19 @@ pub enum ResolveError {
     },
     /// Something this build uses requires `one_of` several labels, and
     /// this build requests none of them itself (`DECISIONS.md` §51).
+    /// An object that doesn't build, chosen for a dependency, has a
+    /// dependency it can't bring (§57).
+    BroughtUnsupported {
+        object: ObjectId,
+        target: String,
+        by: ObjectId,
+        dependency: String,
+    },
+    /// Objects that don't build kept bringing one another's dependencies.
+    BroughtTooDeep {
+        object: ObjectId,
+        target: String,
+    },
     ObligationUnmet {
         object: ObjectId,
         target: String,
@@ -3386,6 +3577,19 @@ impl fmt::Display for ResolveError {
                 f,
                 "object:{object} target {target}: the runtime closure didn't settle after {CLOSURE_PASSES} passes"
             ),
+            Self::BroughtUnsupported {
+                object,
+                target,
+                by,
+                dependency,
+            } => write!(
+                f,
+                "object:{object} target {target}: object:{by} doesn't build, so its dependencies are this build's, but it depends on {dependency}, which only a build's own manifest can name"
+            ),
+            Self::BroughtTooDeep { object, target } => write!(
+                f,
+                "object:{object} target {target}: objects that don't build brought one another's dependencies more than {BROUGHT_DEPTH} levels deep"
+            ),
             Self::Encode(error) => write!(f, "encoding the resolved manifest: {error}"),
             Self::UnsupportedSchema(schema) => {
                 write!(f, "unsupported resolved manifest schema {schema}")
@@ -3414,6 +3618,8 @@ impl Error for ResolveError {
             | Self::Cycle { .. }
             | Self::Conflict { .. }
             | Self::ObligationUnmet { .. }
+            | Self::BroughtUnsupported { .. }
+            | Self::BroughtTooDeep { .. }
             | Self::NoConvergence { .. }
             | Self::UnsupportedSchema(_) => None,
         }

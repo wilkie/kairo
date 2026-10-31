@@ -1,0 +1,115 @@
+# The packages a typical C or C++ package builds with (DECISIONS.md
+# §57): a shell and the GNU userland, make, the archivers and
+# compressors, m4, the native binutils and gcc with C++ and the runtime
+# libraries what it builds loads, musl, and the kernel's headers. It
+# doesn't build: an object that depends on it takes these as its own
+# dependencies, so it needn't name each. It names no environment, so
+# one object serves every one: each label resolves to the package for
+# the environment the build runs in. A build that wants another version
+# of one names that label itself, which replaces this one's.
+[kairo]
+schema = 1
+kind = "software"
+name = "build-base"
+summary = "What a typical C or C++ package builds with: a shell, the GNU userland, make, gcc, binutils, and musl."
+tags = ["build-environment", "toolchain"]
+
+[[provides]]
+provides = "data:build-base"
+version = "1.0.0"
+
+# A shell, and the GNU userland that configure scripts and makefiles run.
+[[dependencies]]
+kind = "provides"
+provides = "tool:bash"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:coreutils"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:sed"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:grep"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gawk"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:make"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:diffutils"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:findutils"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:patch"
+
+# The archivers and compressors source tarballs come in, and m4, which
+# autoconf's output and gmp's build run.
+[[dependencies]]
+kind = "provides"
+provides = "tool:tar"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gzip"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:xz"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:bzip2"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:m4"
+
+# The native toolchain: binutils and gcc with C++, for the machine the
+# build runs on (§53), and the runtime libraries the programs gcc builds
+# load, which gcc's own programs load too.
+[[dependencies]]
+kind = "provides"
+provides = "tool:binutils"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gcc"
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:g++"
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:stdc++:shared"
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:gcc:shared"
+
+# musl, its headers and shared libc, which gcc requires a build to
+# choose (§51), and the kernel's headers.
+[[dependencies]]
+kind = "provides"
+provides = "lib:musl:headers"
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:musl:shared"
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:linux:headers"

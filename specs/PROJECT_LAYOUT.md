@@ -48,6 +48,7 @@ kairo/
     stage0-posix/
 
   packages/           # software built on a finished root, one object per release (DECISIONS.md §55)
+    build-base/       # what a typical C or C++ package builds with, a list of dependencies (§57)
     gcc-7.5.0/
 
   crates/

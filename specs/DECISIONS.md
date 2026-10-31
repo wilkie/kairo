@@ -5562,3 +5562,77 @@ compatibility promises.
 Affected specs:
 
 - `DECISIONS.md` §55 sub-decisions 4 and 6.
+
+---
+
+## 57. An Object That Doesn't Build Brings Its Dependencies
+
+Decision: an object that doesn't build is its own artifact (§50), and
+its **dependencies are the dependencies of any build that depends on
+it**. A build that depends on such an object, by label or by id, takes
+that object's `[[dependencies]]` as its own requirements, as if its
+manifest named each. So a **build environment** many objects share is
+an object holding only a list of dependencies, as Occam had it, and a
+build names that one object instead of each tool.
+
+Sub-decisions:
+
+1. **Taken as the build's own.** Each brought dependency is a
+   requirement of the build, after the object that brought it, in that
+   object's order. It is resolved, chosen, and conferred as the build's
+   own are: its version requirement constrains the label, it meets a
+   `one_of` obligation (§51), and a label it brings confers what that
+   label's provider confers (§46). It is not a runtime requirement of
+   the object that brought it: an object that doesn't build holds no
+   program that needs them; the build does.
+
+2. **The build's own labels win.** A label the build names itself, at
+   any position, replaces every brought requirement on it. A build that
+   wants gcc 7 names `tool:gcc` with `^7` and still takes the rest of
+   its environment from the object. Between brought requirements
+   nothing is replaced: two objects that bring one label both
+   constrain it, as two of a build's own dependencies on one label do.
+
+3. **Nested.** A brought dependency that is itself an object that
+   doesn't build brings its own, after it. An object brought twice
+   brings its dependencies once. Nesting stops at 16 levels.
+
+4. **What can be brought.** Labels and objects. An environment label
+   would change where the build runs, and a file or source where its
+   tree is, which only the build's own manifest decides; an object that
+   doesn't build and depends on one is refused when a build chooses it.
+   A build environment therefore names no environment, and each of its
+   labels resolves to the package for the environment the build runs in
+   (§53): one object serves builds in x86 and in x86-64. It names
+   native tools by their plain labels (`tool:binutils`), not by a
+   triple.
+
+5. **In plans.** A brought requirement records `brought_by`, the
+   `object:<id>` that brought it (`resolved-manifest-v1`), present only
+   then, so a plan with nothing brought is the same bytes as before.
+   The build key reads only what was requested and resolved (§52), so
+   naming the tools directly or through an object that brings the same
+   ones differs only by the object's own requirement. `kairo build`
+   shows `(brought by object:<id>)`.
+
+6. **The first: `build-base`.** `packages/build-base/` brings what a
+   typical C or C++ package builds with: a shell and the GNU userland,
+   make, the archivers and compressors, m4, the native binutils and gcc
+   with C++ and their shared runtime libraries, musl's headers and
+   shared libc, and the kernel's headers, as `data:build-base` 1.0.0.
+   gcc 7.5.0 builds with it in x86 and x86-64, naming beyond it the gcc
+   15 its first stage is built by and static musl.
+
+Rationale: a list of what builds need is information about builds, so
+it belongs in an object others depend on, versioned and signed like
+any other, not copied into every manifest; and since an object that
+doesn't build has no build of its own to need its dependencies, they
+can only mean what its consumers need. Taking them as the build's own,
+rather than as what an artifact requires at run time, keeps the build
+in charge: it chooses, it confers, and it can replace any one of them.
+
+Affected specs:
+
+- `BUILD.md` §3 — what a target's requirements are.
+- `schemas/canonical/resolved-manifest-v1.md` — `brought_by`.
+- `PROJECT_LAYOUT.md` — `packages/build-base/`.

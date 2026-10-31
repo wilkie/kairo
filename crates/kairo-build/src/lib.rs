@@ -1538,6 +1538,7 @@ pub fn run_plan(
                 overlay: false,
             },
             resolved: entry.resolved.clone(),
+            brought_by: None,
         })
         .collect();
     for requirement in manifest.requirements.iter().chain(&runtime) {

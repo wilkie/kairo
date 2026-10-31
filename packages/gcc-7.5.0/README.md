@@ -15,10 +15,13 @@ environment of its own: each target's artifact runs where it was built
 | `x86` | `linux/x86` | live-bootstrap's packages, its children | `i686-pc-linux-musl` |
 | `x86-64` | `linux/x86-64` | the 64-bit bootstrap's packages, stage 3's children (`bootstrap/amd64/native-root/`) | `x86_64-pc-linux-musl` |
 
-Neither builds on a whole root (§56): each asks, by label, for a shell
-and the GNU userland, m4 for gmp, binutils for its target, gcc 15 and
-the runtime libraries its programs load, musl, static too for the
-checks, and the kernel's headers.
+Neither builds on a whole root (§56). Each depends on `data:build-base`
+(`../build-base/`, §57), which brings a shell, the GNU userland, make,
+the archivers, m4 for gmp, binutils, gcc and its runtime libraries,
+musl, and the kernel's headers, each the package for the target's
+environment. Beyond that, each names the gcc 15 its first stage is
+built by (`^15.2.0`), which replaces build-base's gcc of any version,
+and static musl, for its checks.
 
 Each gcc bootstraps: gcc 15 builds the first stage, which
 builds the second, which builds the third, and the last two are
@@ -84,9 +87,9 @@ has its own stack protector, so they and libssp are left out.
 
 ## Running it
 
-Import what the targets build from: live-bootstrap's six passes and
-linux-filesystem for `x86`, the 64-bit bootstrap through stage 3 for
-`x86-64`. Then:
+Import what the targets build from: `../build-base/`, and
+live-bootstrap's six passes and linux-filesystem for `x86`, the 64-bit
+bootstrap through stage 3 for `x86-64`. Then:
 
 ```sh
 packages/gcc-7.5.0/import.sh <your actor id>
