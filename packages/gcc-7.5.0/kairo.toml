@@ -1,11 +1,12 @@
 # gcc 7.5.0, with C and C++, for musl, as a package of its own outside
 # the bootstraps (specs/DECISIONS.md §55): one object, a target for each
 # environment it is built for. The x86 target builds it on
-# live-bootstrap's finished x86 root, the x86-64 target on the 64-bit
-# bootstrap's root (bootstrap/amd64/). Each gcc bootstraps, built by the
-# root's gcc 15 and then by itself, so what it is doesn't depend on that
-# gcc. Its runtime libraries stay in its own versioned directory, so it
-# can sit beside another gcc in one environment.
+# live-bootstrap's x86 packages, the x86-64 target on the 64-bit
+# bootstrap's (bootstrap/amd64/), each from their packages by label.
+# Each gcc bootstraps, built by the root's gcc 15 and then by itself, so
+# what it is doesn't depend on that gcc. Each target's compiler is a
+# child that can sit beside another gcc, and each of its shared runtime
+# libraries a child of its own (DECISIONS.md §56).
 [kairo]
 schema = 1
 kind = "software"
@@ -36,14 +37,29 @@ kind = "file"
 sha256 = "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
 path = "distfiles/mpc-1.2.1.tar.gz"
 
-# For x86: built, and run, in the x86 environment, on live-bootstrap's
-# finished root. The gcc needs what live-bootstrap's own gcc children
-# do: binutils for its target, musl, and the kernel's headers.
+# Each target builds in its environment with the packages a gcc build
+# runs: a shell and the GNU userland, m4 for gmp, binutils, the gcc 15
+# that builds the first stage and its runtime libraries, which that
+# stage's programs load, musl, static too for the checks, and the
+# kernel's headers. Each is a package by label, live-bootstrap's on x86,
+# the 64-bit bootstrap's on x86-64; neither target takes a whole root.
+#
+# Each target's artifact is its children, the compiler and each shared
+# runtime library, and the whole is nobody's to install. The compiler
+# needs what a gcc needs beside it: binutils for its target, musl's
+# headers, a musl to link against, chosen by what builds with it (§51),
+# the kernel's headers, and the shared musl and libgcc_s its own
+# programs load. The libraries confer themselves as a range, so a
+# program runs with the newest any gcc offers (§56).
+
+# For x86, built and run in the x86 environment.
 [[build.targets]]
 name = "x86"
 tree = "src"
 command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
-requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
+
+[build.targets.artifact]
+install = false
 
 [[build.targets.dependencies]]
 kind = "provides"
@@ -51,21 +67,161 @@ provides = "environment:linux/x86"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "data:live-bootstrap:x86:libarchive-3.5.2"
+provides = "tool:bash"
 
-# /bin/sh and the rest, which configure scripts expect (§50).
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "data:linux-filesystem:merged-usr"
+provides = "tool:coreutils"
 
-# For x86-64: built, and run, in the x86-64 environment, on the 64-bit
-# bootstrap's root. That root offers no binutils, musl, or headers of
-# its own yet, only itself, so the gcc requires it whole.
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:make"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:sed"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:grep"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gawk"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:tar"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:xz"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gzip"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:diffutils"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:findutils"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:m4"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:binutils:i686-linux-musl"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gcc"
+version = "^15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:g++"
+version = "^15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:stdc++:shared"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:gcc:shared"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:headers"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:shared"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:linux:headers"
+
+[[build.targets.children]]
+name = "gcc-7.5.0"
+root = "gcc-7.5.0"
+summary = "gcc 7.5.0 with C and C++ for x86, without its shared runtime libraries, which are children of their own."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }, { provides = "lib:musl:shared" }, { provides = "lib:gcc:shared" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "tool:gcc:i686-linux-musl" }, { provides = "tool:g++:i686-linux-musl" }]
+
+[[build.targets.children]]
+name = "libstdc++-7.5.0"
+root = "libstdc++-7.5.0"
+summary = "gcc 7.5.0's shared libstdc++, for x86."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libgcc_s-7.5.0"
+root = "libgcc_s-7.5.0"
+summary = "gcc 7.5.0's shared libgcc_s, for x86."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libgomp-7.5.0"
+root = "libgomp-7.5.0"
+summary = "gcc 7.5.0's shared libgomp, for x86."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gomp:shared", confers = [{ provides = "lib:gomp:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libatomic-7.5.0"
+root = "libatomic-7.5.0"
+summary = "gcc 7.5.0's shared libatomic, for x86."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:atomic:shared", confers = [{ provides = "lib:atomic:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libitm-7.5.0"
+root = "libitm-7.5.0"
+summary = "gcc 7.5.0's shared libitm, for x86."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:itm:shared", confers = [{ provides = "lib:itm:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libquadmath-7.5.0"
+root = "libquadmath-7.5.0"
+summary = "gcc 7.5.0's shared libquadmath, for x86."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:quadmath:shared", confers = [{ provides = "lib:quadmath:shared", version = ">=7.5.0" }] }]
+
+# For x86-64, built and run in the x86-64 environment.
 [[build.targets]]
 name = "x86-64"
 tree = "src"
 command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
-requires = [{ provides = "data:amd64-bootstrap:x86-64:root" }]
+
+[build.targets.artifact]
+install = false
 
 [[build.targets.dependencies]]
 kind = "provides"
@@ -73,59 +229,149 @@ provides = "environment:linux/x86-64"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "data:amd64-bootstrap:x86-64:root"
+provides = "tool:bash"
 
-# Each target's gcc, installed at /: the compiler for the machine it
-# runs on, by the plain labels and its triple's (§53), with its static
-# C++ library. The two targets offer the same labels; each is offered to
-# builds in its own environment.
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:coreutils"
 
-[[provides]]
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:make"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:sed"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:grep"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gawk"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:tar"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:xz"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gzip"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:diffutils"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:findutils"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:m4"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:binutils:x86_64-linux-musl"
+
+[[build.targets.dependencies]]
+kind = "provides"
 provides = "tool:gcc"
-version = "7.5.0"
-target = "x86"
+version = "^15.2.0"
 
-[[provides]]
+[[build.targets.dependencies]]
+kind = "provides"
 provides = "tool:g++"
-version = "7.5.0"
-target = "x86"
+version = "^15.2.0"
 
-[[provides]]
-provides = "tool:gcc:i686-linux-musl"
-version = "7.5.0"
-target = "x86"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:stdc++:shared"
 
-[[provides]]
-provides = "tool:g++:i686-linux-musl"
-version = "7.5.0"
-target = "x86"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:gcc:shared"
 
-[[provides]]
-provides = "lib:stdc++:static"
-version = "7.5.0"
-target = "x86"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:headers"
 
-[[provides]]
-provides = "tool:gcc"
-version = "7.5.0"
-target = "x86-64"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
 
-[[provides]]
-provides = "tool:g++"
-version = "7.5.0"
-target = "x86-64"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:shared"
 
-[[provides]]
-provides = "tool:gcc:x86_64-linux-musl"
-version = "7.5.0"
-target = "x86-64"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:linux:headers"
 
-[[provides]]
-provides = "tool:g++:x86_64-linux-musl"
+[[build.targets.children]]
+name = "gcc-7.5.0"
+root = "gcc-7.5.0"
+summary = "gcc 7.5.0 with C and C++ for x86-64, without its shared runtime libraries, which are children of their own."
+tags = ["gcc"]
 version = "7.5.0"
-target = "x86-64"
+requires = [{ provides = "tool:binutils:x86_64-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }, { provides = "lib:musl:shared" }, { provides = "lib:gcc:shared" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "tool:gcc:x86_64-linux-musl" }, { provides = "tool:g++:x86_64-linux-musl" }]
 
-[[provides]]
-provides = "lib:stdc++:static"
+[[build.targets.children]]
+name = "libstdc++-7.5.0"
+root = "libstdc++-7.5.0"
+summary = "gcc 7.5.0's shared libstdc++, for x86-64."
+tags = ["gcc"]
 version = "7.5.0"
-target = "x86-64"
+requires = [{ provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libgcc_s-7.5.0"
+root = "libgcc_s-7.5.0"
+summary = "gcc 7.5.0's shared libgcc_s, for x86-64."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libgomp-7.5.0"
+root = "libgomp-7.5.0"
+summary = "gcc 7.5.0's shared libgomp, for x86-64."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gomp:shared", confers = [{ provides = "lib:gomp:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libatomic-7.5.0"
+root = "libatomic-7.5.0"
+summary = "gcc 7.5.0's shared libatomic, for x86-64."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:atomic:shared", confers = [{ provides = "lib:atomic:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libitm-7.5.0"
+root = "libitm-7.5.0"
+summary = "gcc 7.5.0's shared libitm, for x86-64."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:itm:shared", confers = [{ provides = "lib:itm:shared", version = ">=7.5.0" }] }]
+
+[[build.targets.children]]
+name = "libquadmath-7.5.0"
+root = "libquadmath-7.5.0"
+summary = "gcc 7.5.0's shared libquadmath, for x86-64."
+tags = ["gcc"]
+version = "7.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:quadmath:shared", confers = [{ provides = "lib:quadmath:shared", version = ">=7.5.0" }] }]

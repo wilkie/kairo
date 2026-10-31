@@ -2,11 +2,13 @@
 # (bootstrap/amd64/native-root/README.md), on the root before it: the
 # kernel headers, binutils, gcc bootstrapping itself, musl, the
 # userland, zlib, libffi, perl, and python. Each package is installed
-# into the artifact and into /, so each after it is built with it: all
-# but the first few are built by this build's own gcc.
+# into a directory of its own in the artifact, a child object's root,
+# and into /, so each after it is built with it: all but the first few
+# are built by this build's own gcc. gcc's runtime libraries are
+# children apart from the compiler.
 #
-# With --fixed-point, the root it builds on is this build's own, as
-# another build made it, and it fails unless it makes that root again,
+# With --fixed-point, the root it builds on is this build's children,
+# as another build made them, and it fails unless it makes them again,
 # file for file.
 set -euo pipefail
 export PATH=/usr/bin
@@ -28,8 +30,9 @@ JOBS=$(nproc)
 mkdir -p "$BUILD"
 
 # Every file under a directory's usr/: a link by its target, anything
-# else by whether it is executable, all an artifact keeps of its mode,
-# and its contents.
+# else by whether it is executable and its contents. (An artifact keeps
+# the whole mode, DECISIONS.md §54; stage 4's artifact being stage 3's
+# compares that.)
 listing() {
     cd "$1"
     find usr ! -type d | LC_ALL=C sort | while IFS= read -r file; do
@@ -62,11 +65,30 @@ unpack() {
     tar -C "$BUILD" --no-same-owner -xf "$SRC/distfiles/$tarball"
 }
 
-# Copies what a package installed into $STAGE into the artifact and
-# into /. A file at / may be running, as bash or the loader are, so it
-# is replaced, never written over.
+# Copies what a package installed into $STAGE into the child directory
+# named as the argument and into /, without its documentation,
+# translations, or libtool's archives, which a root that builds what
+# comes next doesn't need. A file at / may be running, as bash or the
+# loader are, so it is replaced, never written over. No two children
+# hold one path: a consumer's overlay would show only one (§41).
+OWNERS=$SRC/owners
+: > "$OWNERS"
 ship() {
-    cp -a "$STAGE/." "$OUT/"
+    local child=$1
+    rm -rf "$STAGE/usr/share/info" "$STAGE/usr/share/man" \
+        "$STAGE/usr/share/doc" "$STAGE/usr/share/locale"
+    find "$STAGE" -name '*.la' -delete
+    (cd "$STAGE" && find . ! -type d) | sed 's|^\./||' | LC_ALL=C sort > "$SRC/shipping"
+    if ! awk -F '\t' -v child="$child" '
+        FILENAME == ARGV[1] { owner[$2] = $1; next }
+        ($0 in owner) && owner[$0] != child { print $0 " is " owner[$0] "\x27s too"; clash = 1 }
+        END { exit clash }' "$OWNERS" "$SRC/shipping" >&2; then
+        echo "build.sh: $child ships what another child does" >&2
+        exit 1
+    fi
+    sed "s|^|$child\t|" "$SRC/shipping" >> "$OWNERS"
+    mkdir -p "$OUT/$child"
+    cp -a "$STAGE/." "$OUT/$child/"
     cp -a --remove-destination "$STAGE/." /
     rm -rf "$STAGE"
 }
@@ -85,14 +107,14 @@ gnu() {
         CFLAGS="-O2 -std=gnu17 -fpermissive" "$@"
     make -j"$JOBS"
     make install DESTDIR="$STAGE"
-    ship
+    ship "$package"
 }
 
 # 1. The kernel's headers. Its host helpers predate C23.
 unpack linux-4.14.336
 cd "$BUILD/linux-4.14.336"
 make HOSTCC="gcc -std=gnu11" INSTALL_HDR_PATH="$STAGE/usr" headers_install
-ship
+ship linux-headers-4.14.336
 
 # 2. binutils. gprofng doesn't compile under C23, as in stage 1.
 unpack binutils-2.41
@@ -102,12 +124,15 @@ cd "$BUILD/binutils"
     --disable-multilib --enable-deterministic-archives --disable-gprofng
 make -j"$JOBS" MAKEINFO=true
 make install DESTDIR="$STAGE" MAKEINFO=true
-ship
+ship binutils-2.41
 
 # 3. gcc, with C and C++, and gmp, mpfr, and mpc built in its tree. It
 # bootstraps: built by the root's gcc, then by itself, then by itself
-# again, the last two compared. Its libraries go in /usr/lib, beside
-# musl's, not lib64.
+# again, the last two compared. Its runtime libraries and C++ headers go
+# in its own versioned directory, where it links against them, so that
+# another gcc can sit beside it (DECISIONS.md §55); their shared
+# libraries are children of their own (§56). libcc1, gdb's plugin, would
+# go in /usr/lib, and isn't built.
 unpack gcc-15.2.0
 for library in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
     unpack "$library"
@@ -119,11 +144,42 @@ cd "$BUILD/gcc"
 ../gcc-15.2.0/configure --prefix=/usr --enable-languages=c,c++ \
     --disable-nls --disable-multilib --enable-bootstrap \
     --disable-libsanitizer --disable-libssp --enable-shared \
-    --enable-threads=posix
-make -j"$JOBS" MAKEINFO=true
+    --enable-threads=posix --enable-version-specific-runtime-libs \
+    --disable-libcc1
+# Once, a later stage's configure found nothing declared, and the
+# stage didn't compile; the same build passed when run again. If it
+# fails, what configure saw is shown, since the build's tree is gone
+# afterwards.
+make -j"$JOBS" MAKEINFO=true || {
+    for check in 'whether strsignal is declared' 'for rlim_t' 'whether the C++ compiler works' 'whether the C compiler works'; do
+        echo "build.sh: config.log at '$check':" >&2
+        grep -n -m1 -A40 "checking $check" gcc/config.log >&2 || true
+    done
+    exit 1
+}
 make install DESTDIR="$STAGE" MAKEINFO=true
 ln -sf gcc "$STAGE/usr/bin/cc"
-ship
+# libgcc puts libgcc_s in the versioned directory's multilib directory
+# for the OS, ../lib, which no version names: it is moved into the
+# versioned directory.
+GCCLIB=$STAGE/usr/lib/gcc/x86_64-pc-linux-musl/15.2.0
+mv "$STAGE/usr/lib/gcc/x86_64-pc-linux-musl/lib"/* "$GCCLIB/"
+rmdir "$STAGE/usr/lib/gcc/x86_64-pc-linux-musl/lib"
+# Each shared runtime library, its file and the soname's link, is
+# copied out to /usr/lib, where the loader finds it, as a child of its
+# own: a program links against the gcc that builds it, and runs with
+# the newest of the library any gcc's child offers (§56).
+RUNTIME=$SRC/runtime
+for library in stdc++ gcc_s gomp atomic itm quadmath; do
+    mkdir -p "$RUNTIME/lib$library-15.2.0/usr/lib"
+    cp -a "$GCCLIB"/lib$library.so.[0-9]* "$RUNTIME/lib$library-15.2.0/usr/lib/"
+    rm -f "$RUNTIME/lib$library-15.2.0/usr/lib"/*-gdb.py
+done
+ship gcc-15.2.0
+for library in stdc++ gcc_s gomp atomic itm quadmath; do
+    mv "$RUNTIME/lib$library-15.2.0" "$STAGE"
+    ship lib$library-15.2.0
+done
 
 # 4. musl, with its loader in /usr/lib, reached as /lib through the
 # merged-/usr links. It comes after gcc, as what links libc.so with
@@ -134,13 +190,13 @@ cd "$BUILD/musl-1.2.5"
 ./configure --prefix=/usr --syslibdir=/usr/lib --disable-wrapper
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
-ship
+ship musl-1.2.5
 
 # 5. The userland, built by that gcc.
 gnu bash-5.2.15 --without-bash-malloc
 mkdir -p "$STAGE/usr/bin"
 ln -sf bash "$STAGE/usr/bin/sh"
-ship
+ship bash-5.2.15
 gnu coreutils-9.4 --enable-no-install-program=kill,uptime
 gnu make-4.2.1 --without-guile
 gnu sed-4.8
@@ -171,7 +227,7 @@ ln -s libbz2.so.1.0.8 "$STAGE/usr/lib/libbz2.so"
 install -m 644 bzlib.h "$STAGE/usr/include/"
 ln -s bzip2 "$STAGE/usr/bin/bunzip2"
 ln -s bzip2 "$STAGE/usr/bin/bzcat"
-ship
+ship bzip2-1.0.8
 
 # 6. The libraries python builds against.
 unpack zlib-1.3.1
@@ -179,7 +235,7 @@ cd "$BUILD/zlib-1.3.1"
 ./configure --prefix=/usr
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
-ship
+ship zlib-1.3.1
 gnu libffi-3.5.2 --disable-docs
 
 # 7. perl. Configure records the machine's kernel version and the time
@@ -207,7 +263,7 @@ sed -i -e "s/^cf_time=.*/cf_time='Tue Jan  1 00:00:00 UTC 1980'/" \
 sh Configure -S
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
-ship
+ship perl-5.42.0
 
 # 8. python, without pip, which it would fetch. SOURCE_DATE_EPOCH, which
 # Kairo sets, makes its bytecode checked by hash, not by time. Its
@@ -220,22 +276,41 @@ cd "$BUILD/python"
     --with-ensurepip=no --with-system-ffi PYTHON_FOR_REGEN=python3
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
-ship
+ship python-3.11.1
 
-# What a root that builds what comes next doesn't need: documentation,
-# translations, and libtool's archives.
-rm -rf "$OUT/usr/share/info" "$OUT/usr/share/man" "$OUT/usr/share/doc" \
-    "$OUT/usr/share/locale"
-find "$OUT" -name '*.la' -delete
-
-# Everything is under /usr, and nothing in lib64.
+# musl as its headers, static, and shared parts, as live-bootstrap's are
+# (§51): the headers, the startup files, and the stub archives, needed
+# to link either way; libc.a; and libc.so, the loader's link, and ldd.
+cd "$OUT/musl-1.2.5"
+find . ! -type d | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r path; do
+    case "$path" in
+    usr/bin/ldd | usr/lib/ld-musl-* | */libc.so) part=shared ;;
+    */libc.a) part=static ;;
+    *) part=headers ;;
+    esac
+    mkdir -p "$OUT/musl-1.2.5-$part/$(dirname "$path")"
+    mv "$path" "$OUT/musl-1.2.5-$part/$path"
+done
 cd "$OUT"
-[ "$(ls -A)" = usr ] || { echo "build.sh: not only usr/: $(ls -A)" >&2; exit 1; }
-if [ -e usr/lib64 ]; then
-    echo "build.sh: usr/lib64 exists:" >&2
-    find usr/lib64 >&2
-    exit 1
-fi
+rm -r musl-1.2.5
+
+# Each child is everything under its usr/, and nothing in lib64.
+for child in *; do
+    [ "$(ls -A "$child")" = usr ] || { echo "build.sh: $child holds not only usr/: $(ls -A "$child")" >&2; exit 1; }
+    if [ -e "$child/usr/lib64" ]; then
+        echo "build.sh: $child/usr/lib64 exists:" >&2
+        find "$child/usr/lib64" >&2
+        exit 1
+    fi
+done
+
+# The libraries each child's programs and libraries load, by soname, for
+# its requires in kairo.toml.
+for child in *; do
+    needed=$(find "$child" -type f -exec sh -c 'od -An -c -N4 "$1" | tr -d " " | grep -qx 177ELF' sh {} \; -print |
+        { xargs -r readelf -d 2>/dev/null || true; } | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | LC_ALL=C sort -u | tr '\n' ' ')
+    echo "build.sh: $child needs: ${needed:-nothing}" >&2
+done
 
 # It works: C, static and dynamic, and C++ compile and run, and perl
 # and python run, with the modules that need the libraries above.
@@ -251,15 +326,20 @@ done
 perl -MPOSIX -e 'exit 0'
 python3 -c 'import bz2, ctypes, lzma, zlib'
 
-# The fixed point: what this build made is the root it ran on.
+# The fixed point: what this build made is the root it ran on, its
+# children together.
 if [ "$FIXED_POINT" = yes ]; then
-    listing "$OUT" > "$SRC/made"
+    mkdir "$SRC/made-root"
+    for child in "$OUT"/*; do
+        cp -a "$child/." "$SRC/made-root/"
+    done
+    listing "$SRC/made-root" > "$SRC/made"
     if ! diff "$SRC/expected" "$SRC/made" >&2; then
         # How each text file whose contents differ differs.
         diff "$SRC/expected" "$SRC/made" | sed -n 's/^> \(usr\/[^ ]*\) [x-] .*/\1/p' |
             while IFS= read -r file; do
-                if [ -f "$SRC/before/${file#usr/}" ] && grep -Iq . "$OUT/$file"; then
-                    diff -u "$SRC/before/${file#usr/}" "$OUT/$file" | head -40 >&2 || true
+                if [ -f "$SRC/before/${file#usr/}" ] && grep -Iq . "$SRC/made-root/$file"; then
+                    diff -u "$SRC/before/${file#usr/}" "$SRC/made-root/$file" | head -40 >&2 || true
                 fi
             done
         echo "build.sh: not a fixed point: the lines above differ" >&2

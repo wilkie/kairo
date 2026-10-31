@@ -5440,7 +5440,9 @@ Sub-decisions:
    `libgcc_s` are newer and keep their ABI, so the package offers
    `lib:stdc++:static` and not the shared libraries, which a consumer
    takes from the root; a gcc newer than the root's will have to offer
-   its own.
+   its own. *Amended by §56:* every gcc offers its shared runtime
+   libraries, as children of their own in `/usr/lib`; only the
+   compiler keeps to its versioned directory.
 
 5. **A compiler bootstraps itself.** A packaged gcc bootstraps, its
    later stages built by its earlier ones and compared, so what it is
@@ -5452,6 +5454,8 @@ Sub-decisions:
    for binutils, musl, or the kernel's headers as live-bootstrap's
    children do. A package's x86-64 target requires that root whole
    until it does; its x86 target requires the parts by label.
+   *Replaced by §56:* the root's packages are children, and the label
+   for the whole is gone.
 
 Rationale: a bootstrap's stages are ordered by what each needs to make
 the next, and a package by nothing but its own release, so they are
@@ -5464,3 +5468,97 @@ artifacts run.
 Affected specs:
 
 - `PROJECT_LAYOUT.md` — `packages/`.
+
+---
+
+## 56. No Whole Roots: Every Package a Child, Runtime Libraries Apart
+
+Decision: nothing downstream of a bootstrap depends on a **whole
+root**. A bootstrap stage that builds many packages in one build ships
+each as a **child** (§41 sub-decision 4), as live-bootstrap's passes
+do, and its own artifact, the children side by side, is installed
+nowhere (`install = false`). A build that needs a shell, make, a
+compiler, and a libc asks for each by label, and its environment is
+the overlay of those packages and what they require. A gcc's shared
+**runtime libraries** are children apart from its compiler, each
+offered with its own version and conferring itself as a range, so a
+program runs with the newest any gcc in its environment offers.
+
+Sub-decisions:
+
+1. **The 64-bit root as children.** The 64-bit bootstrap's stage 3
+   (`bootstrap/amd64/native-root/`) ships every package into a
+   directory of its own under `/kairo/package`, each a child installed
+   at `/`: the kernel's headers, binutils, gcc, each of gcc's shared
+   runtime libraries, musl as its headers, static, and shared parts
+   (§51), the userland, zlib, libffi, perl, and python. The label for
+   the whole root, `data:amd64-bootstrap:x86-64:root`, is withdrawn
+   (§39 sub-decision 5: nothing built with it was published). The
+   build fails if two children would hold one path, since a consumer's
+   overlay would show only one of them.
+
+2. **Each child says what it runs with.** A child's `requires` (§46)
+   names what its programs and libraries load: the shared musl, for
+   every dynamically linked package, which brings the merged-/usr links
+   its loader is reached through; `libgcc_s` for `libstdc++`; and for
+   python, the libraries its modules load. The recipe reports each
+   child's `NEEDED` sonames, from which its requires are written. A
+   change to children alone keeps the build key (§52), so a missed
+   requirement is fixed without a rebuild.
+
+3. **Fixed points over children.** Stage 4 builds on stage 3's
+   children, each by its first label pinned to its version, and checks
+   that it makes them again, together; its artifact is stage 3's, the
+   same id.
+
+4. **The compiler and its runtime libraries.** A gcc installs its
+   runtime libraries and C++ headers in its versioned directory
+   (`--enable-version-specific-runtime-libs`), where its driver finds
+   them when it links, so a program is linked against the gcc that
+   builds it. Each shared runtime library (`libstdc++`, `libgcc_s`,
+   `libgomp`, `libatomic`, `libitm`, `libquadmath`) is also copied, its
+   file and its soname's link, into a child of its own in `/usr/lib`,
+   where the loader finds it. Each offers `lib:<name>:shared` at the
+   gcc's version and confers itself as `>=` that version: these
+   libraries keep one soname and their ABI across releases, so a later
+   one runs what an earlier one linked, and one copy, the newest a
+   consumer's confers allow, serves every program in an environment.
+   Libraries whose sonames change between releases (`libgfortran`,
+   `libasan`) don't satisfy one another, and will be offered as
+   coexisting (§46). libcc1, which would go in `/usr/lib` under no
+   version, isn't built.
+
+5. **The compiler's requirements.** A gcc child requires binutils for
+   its target, musl's headers, the kernel's headers, `one_of` musl's
+   static or shared libc, chosen by what builds with it (§51), and the
+   shared musl its own programs load.
+
+6. **Packages build by label.** A package under `packages/` (§55)
+   builds from the packages it names, not from a root: a shell and the
+   GNU userland, binutils, a compiler and the runtime libraries its
+   programs load, a libc, and headers, each by label, from
+   live-bootstrap's children in x86 and the 64-bit bootstrap's in
+   x86-64.
+
+7. **What comes next.** The base packages become objects of their own
+   under `packages/`, built first from the bootstraps' children and
+   then from one another, so that the archive's packages depend on the
+   bootstraps only as history. A **build environment** that many
+   objects share will be an object holding only a list of
+   requirements, which a consumer depends on instead of naming each
+   package; and since an environment of many small packages is a deep
+   overlay, **merged layers** will be cached rather than stacked
+   (§41 sub-decision 5 notes the limit). Both are decisions of their
+   own.
+
+Rationale: an aggregate root ties every consumer to every package in
+it, so no one package can be replaced or chosen by version; children
+cost the bootstrap nothing, since they share its one build, and let
+every consumer take exactly what it needs. Runtime libraries apart
+from their compiler let one environment hold several compilers and
+one copy of each library, the newest, which is what the libraries'
+compatibility promises.
+
+Affected specs:
+
+- `DECISIONS.md` §55 sub-decisions 4 and 6.

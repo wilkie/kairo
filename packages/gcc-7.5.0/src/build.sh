@@ -2,8 +2,10 @@
 # with C and C++, for the musl target named as the first argument, on
 # the root it is given. It bootstraps: built by the root's gcc, then by
 # itself twice, the last two compared, so what it is doesn't depend on
-# the root's gcc. Every file but the programs in /usr/bin is under a
-# directory named by its version, so it sits beside another gcc.
+# the root's gcc. The compiler is one child, every file of it but the
+# programs in /usr/bin under a directory named by its version, so it
+# sits beside another gcc; each shared runtime library is a child of
+# its own, in /usr/lib (DECISIONS.md §56).
 set -euo pipefail
 export PATH=/usr/bin
 # The root has no texinfo, and the manuals aren't shipped; gcc's
@@ -64,50 +66,74 @@ cd "$BUILD/gcc"
     --disable-libssp \
     CC="gcc -std=gnu17 -fpermissive" CXX="g++ -std=gnu++98"
 make -j"$JOBS" MAKEINFO=true
-make install DESTDIR="$OUT" MAKEINFO=true
+COMPILER=$OUT/gcc-$VERSION
+make install DESTDIR="$COMPILER" MAKEINFO=true
 # libgcc puts libgcc_s in the versioned directory's multilib directory
 # for the OS, ../lib, which no version names: it is moved into the
 # versioned directory, which the driver searches when it links.
-unversioned=$OUT/usr/lib/gcc/$TRIPLE/lib
+GCCLIB=$COMPILER/usr/lib/gcc/$TRIPLE/$VERSION
+unversioned=$COMPILER/usr/lib/gcc/$TRIPLE/lib
 if [ -d "$unversioned" ]; then
-    mv "$unversioned"/* "$OUT/usr/lib/gcc/$TRIPLE/$VERSION/"
+    mv "$unversioned"/* "$GCCLIB/"
     rmdir "$unversioned"
 fi
 
 # What a compiler for building with doesn't need: documentation and
 # libtool's archives.
-rm -rf "$OUT/usr/share/info" "$OUT/usr/share/man"
-find "$OUT" -name '*.la' -delete
+rm -rf "$COMPILER/usr/share/info" "$COMPILER/usr/share/man"
+find "$COMPILER" -name '*.la' -delete
 
-# Every file is under /usr, and all but its programs under a directory
-# named by its version.
+# Each shared runtime library, its file and the soname's link, is
+# copied out to /usr/lib, where the loader finds it, as a child of its
+# own: a program links against the gcc that builds it, and runs with
+# the newest of the library any gcc's child offers.
+LIBRARIES="stdc++ gcc_s gomp atomic itm quadmath"
+for library in $LIBRARIES; do
+    mkdir -p "$OUT/lib$library-$VERSION/usr/lib"
+    cp -a "$GCCLIB"/lib$library.so.[0-9]* "$OUT/lib$library-$VERSION/usr/lib/"
+    rm -f "$OUT/lib$library-$VERSION/usr/lib"/*-gdb.py
+done
+
+# Each child is everything under its usr/. All of the compiler but its
+# programs is under a directory named by its version.
 cd "$OUT"
-[ "$(ls -A)" = usr ] || { echo "build.sh: not only usr/: $(ls -A)" >&2; exit 1; }
-stray=$(find usr ! -type d ! -path 'usr/bin/*' ! -path "*/$VERSION/*" ! -path "*/gcc-$VERSION/*")
+for child in *; do
+    [ "$(ls -A "$child")" = usr ] || { echo "build.sh: $child holds not only usr/: $(ls -A "$child")" >&2; exit 1; }
+done
+stray=$(cd "$COMPILER" && find usr ! -type d ! -path 'usr/bin/*' ! -path "*/$VERSION/*" ! -path "*/gcc-$VERSION/*")
 if [ -n "$stray" ]; then
     echo "build.sh: outside gcc's versioned directories:" >&2
     echo "$stray" >&2
     exit 1
 fi
 
-# Every program is the target's code: an ELF of its class for its
-# machine.
+# Every program and library is the target's code: an ELF of its class
+# for its machine.
 case "$TRIPLE" in
 i686-*) class=1 machine=3 ;;
 x86_64-*) class=2 machine=62 ;;
 *) echo "build.sh: no ELF class for $TRIPLE" >&2; exit 1 ;;
 esac
-for file in usr/bin/* usr/libexec/gcc/"$TRIPLE"/$VERSION/cc1*; do
+for file in gcc-$VERSION/usr/bin/* gcc-$VERSION/usr/libexec/gcc/"$TRIPLE"/$VERSION/cc1* lib*-$VERSION/usr/lib/*; do
     [ -f "$file" ] && [ ! -L "$file" ] || continue
     [ "$(od -An -c -N4 "$file" | tr -d ' ')" = 177ELF ] || continue
     [ "$(od -An -tu1 -j4 -N1 "$file" | tr -d ' ')" = $class ] || { echo "$file is the wrong class" >&2; exit 1; }
     [ "$(od -An -tu2 -j18 -N2 "$file" | tr -d ' ')" = $machine ] || { echo "$file is the wrong machine" >&2; exit 1; }
 done
 
-# It works, installed over the root as a consumer would have it: C,
-# static and dynamic, and C++, dynamic, run against the root's newer
-# libstdc++, and static.
-cp -a "$OUT/." /
+# The libraries each child's programs and libraries load, by soname, for
+# its requires in kairo.toml.
+for child in *; do
+    needed=$(find "$child" -type f -exec sh -c 'od -An -c -N4 "$1" | tr -d " " | grep -qx 177ELF' sh {} \; -print |
+        { xargs -r readelf -d 2>/dev/null || true; } | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | LC_ALL=C sort -u | tr '\n' ' ')
+    echo "build.sh: $child needs: ${needed:-nothing}" >&2
+done
+
+# It works, the compiler installed over the root as a consumer would
+# have it: C, static and dynamic, and C++, static and dynamic, the
+# dynamic program run against the root's newer libstdc++ and against
+# this gcc's own.
+cp -a "$COMPILER/." /
 cd "$BUILD"
 [ "$(gcc -dumpfullversion)" = $VERSION ] || { echo "build.sh: gcc is $(gcc -dumpfullversion)" >&2; exit 1; }
 printf '#include <stdio.h>\nint main(void) { puts("hello"); return 0; }\n' > hello.c
@@ -119,3 +145,5 @@ g++ -static -o hello-cc-static hello.cc
 for program in hello-dynamic hello-static hello-cc hello-cc-static; do
     [ "$(./$program)" = hello ] || { echo "build.sh: $program failed" >&2; exit 1; }
 done
+[ "$(LD_LIBRARY_PATH=$OUT/libstdc++-$VERSION/usr/lib:$OUT/libgcc_s-$VERSION/usr/lib ./hello-cc)" = hello ] ||
+    { echo "build.sh: hello-cc failed with gcc $VERSION's libstdc++" >&2; exit 1; }

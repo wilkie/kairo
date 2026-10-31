@@ -1,11 +1,12 @@
 # The 64-bit bootstrap's third and fourth stages
 # (bootstrap/amd64/README.md): an x86_64 root built natively, in x86-64,
-# by the one before it. The x86-64 target builds it on stage 2's
+# by the one before it, each of its packages a child object
+# (DECISIONS.md §56). The x86-64 target builds it on stage 2's
 # cross-built root (bootstrap/amd64/cross-root/); the fixed-point target
-# builds it again on the x86-64 target's own, and fails unless what it
-# makes is that root, file for file. It holds musl, the Linux headers,
-# binutils, gcc with C and C++, a GNU userland, zlib, libffi, perl, and
-# python.
+# builds it again on the x86-64 target's children, and fails unless what
+# it makes is those children, file for file. It holds musl, the Linux
+# headers, binutils, gcc with C and C++ and its runtime libraries, a GNU
+# userland, zlib, libffi, perl, and python.
 [kairo]
 schema = 1
 kind = "software"
@@ -146,32 +147,450 @@ path = "distfiles/libffi-3.5.2.tar.gz"
 
 # Stage 3: built by stage 2's root, the build's first package after
 # binutils a gcc that bootstraps itself, and the rest built by that
-# gcc.
+# gcc. Its artifact is each package in a directory of its own, each a
+# child below; the whole is nobody's to install.
 [[build.targets]]
 name = "x86-64"
 tree = "src"
 command = ["/usr/bin/bash", "build.sh"]
-# Its programs find musl's loader at /lib/ld-musl-x86_64.so.1, and its
-# scripts /bin/sh, through the merged-/usr links (§46, §50).
-requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+
+[build.targets.artifact]
+install = false
 
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:amd64-bootstrap:x86-64:cross-root"
 
-# Stage 4: the same build, by stage 3's root; build.sh --fixed-point
-# checks that it makes that root again.
+# Each package, installed at /. Its programs find musl's loader at
+# /lib/ld-musl-x86_64.so.1, and its scripts /bin/sh, through the
+# merged-/usr links, which musl's shared part requires (§46, §50). What
+# each requires is what its programs and libraries load, as build.sh
+# reports it. gcc's shared runtime libraries confer themselves as a
+# range, so a program runs with the newest any gcc offers (§56).
+
+[[build.targets.children]]
+name = "linux-headers-4.14.336"
+root = "linux-headers-4.14.336"
+summary = "The Linux 4.14 kernel's headers, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "4.14.336"
+provides = [{ provides = "lib:linux:headers" }]
+
+[[build.targets.children]]
+name = "binutils-2.41"
+root = "binutils-2.41"
+summary = "binutils 2.41 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "2.41"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:binutils" }, { provides = "tool:binutils:x86_64-linux-musl" }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0"
+root = "gcc-15.2.0"
+summary = "gcc 15.2.0 with C and C++ for x86_64, without its shared runtime libraries, which are children of their own."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "tool:binutils:x86_64-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }, { provides = "lib:musl:shared" }, { provides = "lib:gcc:shared" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "tool:gcc:x86_64-linux-musl" }, { provides = "tool:g++:x86_64-linux-musl" }]
+
+[[build.targets.children]]
+name = "libstdc++-15.2.0"
+root = "libstdc++-15.2.0"
+summary = "gcc 15.2.0's shared libstdc++, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "libgcc_s-15.2.0"
+root = "libgcc_s-15.2.0"
+summary = "gcc 15.2.0's shared libgcc_s, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "libgomp-15.2.0"
+root = "libgomp-15.2.0"
+summary = "gcc 15.2.0's shared libgomp, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gomp:shared", confers = [{ provides = "lib:gomp:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "libatomic-15.2.0"
+root = "libatomic-15.2.0"
+summary = "gcc 15.2.0's shared libatomic, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:atomic:shared", confers = [{ provides = "lib:atomic:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "libitm-15.2.0"
+root = "libitm-15.2.0"
+summary = "gcc 15.2.0's shared libitm, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:itm:shared", confers = [{ provides = "lib:itm:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "libquadmath-15.2.0"
+root = "libquadmath-15.2.0"
+summary = "gcc 15.2.0's shared libquadmath, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:quadmath:shared", confers = [{ provides = "lib:quadmath:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-headers"
+root = "musl-1.2.5-headers"
+summary = "musl 1.2.5's headers part, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:headers" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-static"
+root = "musl-1.2.5-static"
+summary = "musl 1.2.5's static part, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:static" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-shared"
+root = "musl-1.2.5-shared"
+summary = "musl 1.2.5's shared part, for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.2.5"
+requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+provides = [{ provides = "lib:musl:shared", confers = [{ provides = "lib:musl:shared", version = "^1.2.5" }] }]
+
+[[build.targets.children]]
+name = "bash-5.2.15"
+root = "bash-5.2.15"
+summary = "bash 5.2.15 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "5.2.15"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:bash" }]
+
+[[build.targets.children]]
+name = "coreutils-9.4"
+root = "coreutils-9.4"
+summary = "coreutils 9.4 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "9.4"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:coreutils" }]
+
+[[build.targets.children]]
+name = "make-4.2.1"
+root = "make-4.2.1"
+summary = "make 4.2.1 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "4.2.1"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:make" }]
+
+[[build.targets.children]]
+name = "sed-4.8"
+root = "sed-4.8"
+summary = "sed 4.8 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "4.8"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:sed" }]
+
+[[build.targets.children]]
+name = "grep-3.12"
+root = "grep-3.12"
+summary = "grep 3.12 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "3.12"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:grep" }]
+
+[[build.targets.children]]
+name = "gawk-5.3.0"
+root = "gawk-5.3.0"
+summary = "gawk 5.3.0 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "5.3.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:gawk" }, { provides = "tool:awk" }]
+
+[[build.targets.children]]
+name = "tar-1.34"
+root = "tar-1.34"
+summary = "tar 1.34 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.34"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:tar" }]
+
+[[build.targets.children]]
+name = "xz-5.6.4"
+root = "xz-5.6.4"
+summary = "xz 5.6.4 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "5.6.4"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:xz" }, { provides = "lib:lzma" }]
+
+[[build.targets.children]]
+name = "gzip-1.13"
+root = "gzip-1.13"
+summary = "gzip 1.13 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.13"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:gzip" }]
+
+[[build.targets.children]]
+name = "diffutils-3.10"
+root = "diffutils-3.10"
+summary = "diffutils 3.10 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "3.10"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:diffutils" }, { provides = "tool:diff" }]
+
+[[build.targets.children]]
+name = "patch-2.8"
+root = "patch-2.8"
+summary = "patch 2.8 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "2.8"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:patch" }]
+
+[[build.targets.children]]
+name = "m4-1.4.19"
+root = "m4-1.4.19"
+summary = "m4 1.4.19 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.4.19"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:m4" }]
+
+[[build.targets.children]]
+name = "findutils-4.10.0"
+root = "findutils-4.10.0"
+summary = "findutils 4.10.0 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "4.10.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:findutils" }, { provides = "tool:find" }]
+
+[[build.targets.children]]
+name = "bzip2-1.0.8"
+root = "bzip2-1.0.8"
+summary = "bzip2 1.0.8 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.0.8"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:bzip2" }, { provides = "lib:bz2" }]
+
+[[build.targets.children]]
+name = "zlib-1.3.1"
+root = "zlib-1.3.1"
+summary = "zlib 1.3.1 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "1.3.1"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:zlib" }]
+
+[[build.targets.children]]
+name = "libffi-3.5.2"
+root = "libffi-3.5.2"
+summary = "libffi 3.5.2 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "3.5.2"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:ffi" }]
+
+[[build.targets.children]]
+name = "perl-5.42.0"
+root = "perl-5.42.0"
+summary = "perl 5.42.0 for x86_64."
+tags = ["amd64-bootstrap"]
+version = "5.42.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:perl" }]
+
+[[build.targets.children]]
+name = "python-3.11.1"
+root = "python-3.11.1"
+summary = "Python 3.11.1 for x86_64, without pip."
+tags = ["amd64-bootstrap"]
+version = "3.11.1"
+requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:python" }]
+
+# Stage 4: the same build, on stage 3's children, each by its first
+# label at its version; build.sh --fixed-point checks that it makes them again.
 [[build.targets]]
 name = "fixed-point"
 tree = "src"
 command = ["/usr/bin/bash", "build.sh", "--fixed-point"]
-requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+
+[build.targets.artifact]
+install = false
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "data:amd64-bootstrap:x86-64:root"
+provides = "lib:linux:headers"
+version = "=4.14.336"
 
-# The whole root, installed at /.
-[[provides]]
-provides = "data:amd64-bootstrap:x86-64:root"
-target = "x86-64"
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:binutils"
+version = "=2.41"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gcc"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:stdc++:shared"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:gcc:shared"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:gomp:shared"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:atomic:shared"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:itm:shared"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:quadmath:shared"
+version = "=15.2.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:headers"
+version = "=1.2.5"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
+version = "=1.2.5"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:shared"
+version = "=1.2.5"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:bash"
+version = "=5.2.15"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:coreutils"
+version = "=9.4"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:make"
+version = "=4.2.1"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:sed"
+version = "=4.8"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:grep"
+version = "=3.12"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gawk"
+version = "=5.3.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:tar"
+version = "=1.34"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:xz"
+version = "=5.6.4"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:gzip"
+version = "=1.13"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:diffutils"
+version = "=3.10"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:patch"
+version = "=2.8"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:m4"
+version = "=1.4.19"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:findutils"
+version = "=4.10.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:bzip2"
+version = "=1.0.8"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:zlib"
+version = "=1.3.1"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ffi"
+version = "=3.5.2"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:perl"
+version = "=5.42.0"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:python"
+version = "=3.11.1"

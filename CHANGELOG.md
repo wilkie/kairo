@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **No whole roots: every package a child, runtime libraries apart
+  (`DECISIONS.md` §56).** The 64-bit bootstrap's stage 3 ships each of
+  its packages as a child object with labels of its own, and its whole
+  artifact is installed nowhere; `data:amd64-bootstrap:x86-64:root` is
+  withdrawn, and stage 4 builds on the children. A gcc's shared runtime
+  libraries (`libstdc++`, `libgcc_s`, `libgomp`, `libatomic`, `libitm`,
+  `libquadmath`) are children apart from its compiler, in `/usr/lib`,
+  each conferring itself `>=` its version, so one copy, the newest,
+  serves an environment. gcc 7.5.0 builds from packages by label and
+  offers its own runtime libraries the same way. The children say what
+  they load, which their recipes report.
+
 - **Packages, starting with gcc 7.5.0 (`DECISIONS.md` §55,
   `packages/`).** Software kept as artifacts apart from the bootstraps,
   one object per release, built on a finished root. gcc 7.5.0, with C

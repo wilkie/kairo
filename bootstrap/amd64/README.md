@@ -9,8 +9,8 @@ goes on from the one before it.
 |---|---|---|---|---|
 | 1 | `cross/` | `linux/x86` | `linux/x86` | binutils 2.41 and gcc 15.2.0 for `x86_64-linux-musl`, with musl 1.2.5 and the Linux 4.14 headers as their sysroot |
 | 2 | `cross-root/` | `linux/x86-64` | `linux/x86` | a minimal 64-bit root, cross-built with stage 1: musl, binutils, gcc, and a GNU userland |
-| 3 | `native-root/`, target `x86-64` | `linux/x86-64` | `linux/x86-64` | the root rebuilt natively by stage 2's, gcc bootstrapping itself, with zlib, libffi, perl, and python |
-| 4 | `native-root/`, target `fixed-point` | `linux/x86-64` | `linux/x86-64` | stage 3 rebuilt by itself, which must give the same bytes: the fixed point |
+| 3 | `native-root/`, target `x86-64` | `linux/x86-64` | `linux/x86-64` | the root rebuilt natively by stage 2's, gcc bootstrapping itself, with zlib, libffi, perl, and python, each package a child object of its own |
+| 4 | `native-root/`, target `fixed-point` | `linux/x86-64` | `linux/x86-64` | stage 3 rebuilt on its own children, which must give the same bytes: the fixed point |
 
 A stage that runs in one environment and is built in another says so
 as `specs/DECISIONS.md` §53 has it: its top-level environment
@@ -18,6 +18,11 @@ dependency is what its artifacts run in, and its build target's own is
 where the build runs. The compilers and binutils carry their target's
 triple in their labels (`tool:gcc:x86_64-linux-musl`); only a native one
 also offers the plain label (§53).
+
+What comes after the bootstrap uses stage 3's packages, each a child
+with labels of its own, never a whole root (§56): gcc's runtime
+libraries are children apart from the compiler, and stages 1 and 2's
+whole-tree labels are only for the stage after them.
 
 The builds use as many jobs as the guest has processors (`nproc`). The
 job count isn't part of a build key (§52), so a build must give the

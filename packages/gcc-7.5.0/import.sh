@@ -12,7 +12,7 @@
 #    history and created as an object, or, with --wrapper, committed on
 #    top of that existing object's history as its next revision.
 #
-# The roots the targets build on must be imported: live-bootstrap's six
+# What the targets build from must be imported: live-bootstrap's six
 # passes and linux-filesystem for x86, the 64-bit bootstrap's stage 3
 # for x86-64 (bootstrap/amd64/). Extra arguments go before the command
 # in every `kairo` call, e.g. `--store <path>`. KAIRO names the kairo
@@ -66,7 +66,7 @@ commit_wrapper "gcc 7.5.0 for x86 and x86-64" kairo.toml src/build.sh
 cat <<OUT
 object = $WRAPPER
 
-# With the roots imported:
+# With what the targets build from imported:
 #   kairo build object:$WRAPPER --target x86 --actor $ACTOR
 #   kairo build object:$WRAPPER --target x86-64 --actor $ACTOR
 OUT
