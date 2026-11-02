@@ -8,9 +8,15 @@ rooted at the directory start.kaem extracts it into and installed at /
 holds (§44). The last revision of each name and version provides that
 name's label, at the child's version; earlier revisions, which later
 steps rebuilt, are children without labels. A musl package is three
-children, or two, by what linking needs of it (§51; split-musl.sh).
+children, or two, by what linking needs of it (§51; split-musl.sh); a
+gcc with shared runtime libraries is its compiler and a child for each
+library (§58; split-gcc.sh).
 
-    kairo build ... | sed -n 's|^  repo/\\([^ ]*\\) .*|\\1|p' | ./children.py
+Given the report package.sh writes to the build's stderr, each child
+requires what its programs and libraries load and it doesn't hold
+(§56), by the label of the child that holds it.
+
+    kairo build ... | sed -n 's|^  repo/\\([^ ]*\\) .*|\\1|p' | ./children.py [report]
 """
 
 import re
@@ -72,9 +78,10 @@ ALSO = {
     # 4.7.4 is the first gcc live-bootstrap builds with C++; its
     # libstdc++ is static only, so it confers nothing.
     "gcc-4.7.4": ["tool:g++", "lib:stdc++:static"],
-    # 10.5.0 also builds its runtime libraries shared.
-    "gcc-10.5.0": ["tool:g++", "lib:stdc++:static", "lib:stdc++:shared", "lib:gcc:shared"],
-    "gcc-15.2.0": ["tool:g++", "lib:stdc++:static", "lib:stdc++:shared", "lib:gcc:shared"],
+    # 10.5.0 also builds its runtime libraries shared, which are children
+    # of their own (GCC_SHARED).
+    "gcc-10.5.0": ["tool:g++", "lib:stdc++:static"],
+    "gcc-15.2.0": ["tool:g++", "lib:stdc++:static"],
 }
 # Shared libraries confer themselves on what links against them, as a
 # range from the version linked (§46, §51): musl keeps its ABI across a
@@ -84,7 +91,68 @@ SELF_CONFERS = {
     "lib:musl:shared": "^{version}",
     "lib:stdc++:shared": ">={version}",
     "lib:gcc:shared": ">={version}",
+    "lib:gomp:shared": ">={version}",
+    "lib:atomic:shared": ">={version}",
+    "lib:itm:shared": ">={version}",
+    "lib:quadmath:shared": ">={version}",
 }
+
+# The gcc packages built with shared runtime libraries, each of which
+# split-gcc.sh moves into a child of its own, by the library's name and
+# its label. A wrong guess fails the build, since the child's root isn't
+# made.
+GCC_SHARED = {"gcc-10.5.0_0", "gcc-15.2.0_0"}
+GCC_RUNTIME = [
+    ("stdc++", "libstdc++"),
+    ("gcc_s", "libgcc_s"),
+    ("gomp", "libgomp"),
+    ("atomic", "libatomic"),
+    ("itm", "libitm"),
+    ("quadmath", "libquadmath"),
+]
+
+# The label of the child holding each shared library a child may load,
+# by soname (§56). A soname loaded but neither here nor held by the
+# child stops the generation: a requirement isn't guessed.
+SONAMES = {
+    "libc.so": "lib:musl:shared",
+    "libstdc++.so.6": "lib:stdc++:shared",
+    "libgcc_s.so.1": "lib:gcc:shared",
+    "libgomp.so.1": "lib:gomp:shared",
+    "libatomic.so.1": "lib:atomic:shared",
+    "libitm.so.1": "lib:itm:shared",
+    "libquadmath.so.0": "lib:quadmath:shared",
+    "libmd.so.0": "lib:md",
+    "libbsd.so.0": "lib:bsd",
+}
+
+
+def read_report(path):
+    """What each child loads and holds, by soname, from package.sh's
+    lines in a build's stderr."""
+    needs, holds = {}, {}
+    with open(path) as report:
+        for line in report:
+            match = re.match(r"package\.sh: (\S+) (needs|holds): (.*)$", line.rstrip("\n"))
+            if not match:
+                continue
+            child, kind, sonames = match.groups()
+            names = [] if sonames.strip() == "nothing" else sonames.split()
+            (needs if kind == "needs" else holds)[child] = names
+    return needs, holds
+
+
+def loaded(child, needs, holds):
+    """The labels of what `child` loads and doesn't hold."""
+    labels = []
+    for soname in needs.get(child, []):
+        if soname in holds.get(child, []):
+            continue
+        if soname not in SONAMES:
+            sys.exit(f"{child} loads {soname}, which no label here names")
+        if SONAMES[soname] not in labels:
+            labels.append(SONAMES[soname])
+    return labels
 # The musl packages that hold a shared libc, as built: the earlier
 # ones are built static only. A wrong guess fails the build, since the
 # child's root isn't made.
@@ -140,6 +208,7 @@ def child(name, root, summary, version, requires, provides):
 
 
 def main():
+    needs, holds = read_report(sys.argv[1]) if len(sys.argv) > 1 else ({}, {})
     packages = [parse(line.strip()) for line in sys.stdin if line.strip()]
     last = {}
     for package, name, version, revision in packages:
@@ -157,6 +226,7 @@ def main():
                 # Its loader is reached through /lib (§50).
                 if part == "shared":
                     requires = ["data:linux-filesystem:merged-usr"]
+                requires += loaded(f"{package}-{part}", needs, holds)
                 child(
                     f"{package}-{part}",
                     f"{package}-{part}",
@@ -172,14 +242,34 @@ def main():
             + ALSO.get(f"{name}-{version}", [])
         )
         labels += [f"{label}:{TRIPLE}" for label in TARGETED if label in labels]
+        requires = list(REQUIRES.get(name, []))
+        requires += [label for label in loaded(package, needs, holds) if label not in requires]
+        summary = f"{name} {version}, as live-bootstrap builds it (package {package})."
+        if package in GCC_SHARED:
+            summary = (
+                f"gcc {version}, as live-bootstrap builds it (package {package}), "
+                "without its shared runtime libraries, which are children of their own."
+            )
         child(
             package,
             package,
-            f"{name} {version}, as live-bootstrap builds it (package {package}).",
+            summary,
             version,
-            REQUIRES.get(name, []),
+            requires,
             [provide(label, version) for label in labels] if labelled else None,
         )
+        # Its shared runtime libraries, each a child (§58).
+        if package in GCC_SHARED:
+            for library, what in GCC_RUNTIME:
+                part = f"{package}-lib{library}"
+                child(
+                    part,
+                    part,
+                    f"gcc {version}'s shared {what}, as live-bootstrap builds it (package {package}).",
+                    version,
+                    loaded(part, needs, holds),
+                    [provide(f"lib:{library.replace('_s', '')}:shared", version)] if labelled else None,
+                )
 
 
 main()

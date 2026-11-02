@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **live-bootstrap's gcc in parts, and what its children load
+  (`DECISIONS.md` §58).** Every later pass's packaging splits each gcc
+  with shared runtime libraries, as it does musl: gcc 10.5.0 and 15.2.0
+  are now a compiler child and a child for each of `libstdc++`,
+  `libgcc_s`, `libgomp`, `libatomic`, `libitm`, and `libquadmath`, each
+  conferring itself `>=` its version. The packaging also reports what
+  each child loads, and `children.py` writes each child's `requires`
+  from it (pass 6's m4 now requires `libatomic`). Passes 2 to 6 and
+  everything built on them rebuild.
+
 - **An object that doesn't build brings its dependencies
   (`DECISIONS.md` §57).** A build that depends on an object without a
   build, by label or by id, takes that object's `[[dependencies]]` as

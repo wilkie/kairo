@@ -744,6 +744,7 @@ root = "python-2.0.1_0"
 summary = "python 2.0.1, as live-bootstrap builds it (package python-2.0.1_0)."
 tags = ["live-bootstrap"]
 version = "2.0.1"
+requires = [{ provides = "lib:musl:shared" }]
 
 [[build.targets.children]]
 name = "python-2.0.1_1"
@@ -751,6 +752,7 @@ root = "python-2.0.1_1"
 summary = "python 2.0.1, as live-bootstrap builds it (package python-2.0.1_1)."
 tags = ["live-bootstrap"]
 version = "2.0.1"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -759,6 +761,7 @@ root = "python-2.3.7_0"
 summary = "python 2.3.7, as live-bootstrap builds it (package python-2.3.7_0)."
 tags = ["live-bootstrap"]
 version = "2.3.7"
+requires = [{ provides = "lib:musl:shared" }]
 
 [[build.targets.children]]
 name = "python-2.3.7_1"
@@ -766,6 +769,7 @@ root = "python-2.3.7_1"
 summary = "python 2.3.7, as live-bootstrap builds it (package python-2.3.7_1)."
 tags = ["live-bootstrap"]
 version = "2.3.7"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -774,6 +778,7 @@ root = "gperf-3.3_0"
 summary = "gperf 3.3, as live-bootstrap builds it (package gperf-3.3_0)."
 tags = ["live-bootstrap"]
 version = "3.3"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:gperf" }]
 
 [[build.targets.children]]
@@ -782,6 +787,7 @@ root = "gettext-0.26_0"
 summary = "gettext 0.26, as live-bootstrap builds it (package gettext-0.26_0)."
 tags = ["live-bootstrap"]
 version = "0.26"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:gettext" }, { provides = "lib:intl" }]
 
 [[build.targets.children]]
@@ -798,6 +804,7 @@ root = "texinfo-7.2_0"
 summary = "texinfo 7.2, as live-bootstrap builds it (package texinfo-7.2_0)."
 tags = ["live-bootstrap"]
 version = "7.2"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:texinfo" }, { provides = "tool:makeinfo" }]
 
 [[build.targets.children]]
@@ -814,6 +821,7 @@ root = "python-2.5.6_0"
 summary = "python 2.5.6, as live-bootstrap builds it (package python-2.5.6_0)."
 tags = ["live-bootstrap"]
 version = "2.5.6"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -822,6 +830,7 @@ root = "python-3.1.5_0"
 summary = "python 3.1.5, as live-bootstrap builds it (package python-3.1.5_0)."
 tags = ["live-bootstrap"]
 version = "3.1.5"
+requires = [{ provides = "lib:musl:shared" }]
 
 [[build.targets.children]]
 name = "python-3.1.5_1"
@@ -829,6 +838,7 @@ root = "python-3.1.5_1"
 summary = "python 3.1.5, as live-bootstrap builds it (package python-3.1.5_1)."
 tags = ["live-bootstrap"]
 version = "3.1.5"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -837,6 +847,7 @@ root = "python-3.3.7_0"
 summary = "python 3.3.7, as live-bootstrap builds it (package python-3.3.7_0)."
 tags = ["live-bootstrap"]
 version = "3.3.7"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -845,6 +856,7 @@ root = "python-3.4.10_0"
 summary = "python 3.4.10, as live-bootstrap builds it (package python-3.4.10_0)."
 tags = ["live-bootstrap"]
 version = "3.4.10"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -853,6 +865,7 @@ root = "python-3.8.16_0"
 summary = "python 3.8.16, as live-bootstrap builds it (package python-3.8.16_0)."
 tags = ["live-bootstrap"]
 version = "3.8.16"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -861,6 +874,7 @@ root = "python-3.11.1_0"
 summary = "python 3.11.1, as live-bootstrap builds it (package python-3.11.1_0)."
 tags = ["live-bootstrap"]
 version = "3.11.1"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 [[build.targets.children]]
@@ -885,6 +899,7 @@ root = "guile-3.0.11_0"
 summary = "guile 3.0.11, as live-bootstrap builds it (package guile-3.0.11_0)."
 tags = ["live-bootstrap"]
 version = "3.0.11"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:guile" }, { provides = "lib:guile" }]
 
 [[build.targets.children]]
@@ -893,6 +908,7 @@ root = "which-2.23_0"
 summary = "which 2.23, as live-bootstrap builds it (package which-2.23_0)."
 tags = ["live-bootstrap"]
 version = "2.23"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:which" }]
 
 [[build.targets.children]]
@@ -901,6 +917,7 @@ root = "grep-3.12_0"
 summary = "grep 3.12, as live-bootstrap builds it (package grep-3.12_0)."
 tags = ["live-bootstrap"]
 version = "3.12"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:grep" }]
 
 [[build.targets.children]]
@@ -917,6 +934,7 @@ root = "autogen-5.18.16_0"
 summary = "autogen 5.18.16, as live-bootstrap builds it (package autogen-5.18.16_0)."
 tags = ["live-bootstrap"]
 version = "5.18.16"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:autogen" }]
 
 # The whole root after this pass, for the pass that goes on from it.

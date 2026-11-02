@@ -5636,3 +5636,67 @@ Affected specs:
 - `BUILD.md` §3 — what a target's requirements are.
 - `schemas/canonical/resolved-manifest-v1.md` — `brought_by`.
 - `PROJECT_LAYOUT.md` — `packages/build-base/`.
+
+---
+
+## 58. live-bootstrap's gcc in Parts, and What Its Children Load
+
+Decision: live-bootstrap's gcc packages with shared runtime libraries
+are split at packaging time, as its musl is (§51), into the compiler
+and a child for each library, the shape §56 gave the 64-bit
+bootstrap's gcc. And live-bootstrap's children say what their programs
+and libraries load, from a report the packaging writes, as §56
+sub-decision 2 has the 64-bit bootstrap's children do. The split is
+made by the build, not by declaring a filtered child: a child stays
+what the build staged under one directory (§41 sub-decision 4).
+
+Sub-decisions:
+
+1. **`split-gcc.sh`.** Every later pass's `package.sh` sources
+   `bootstrap/live-bootstrap/split-gcc.sh`, as it does `split-musl.sh`,
+   and runs it on each gcc package the pass made. For each runtime
+   library, `libstdc++`, `libgcc_s`, `libgomp`, `libatomic`, `libitm`,
+   and `libquadmath`, the shared file and its soname's link move into
+   `<package>-lib<name>/`, laid out as in the package. What links
+   against them stays with the compiler: the unversioned names
+   (`libstdc++.so`, and `libgcc_s.so`, a linker script), the static
+   archives, the headers, and the debugger's scripts. A gcc built
+   without shared libraries, as live-bootstrap's 4.x are, is left as it
+   is; one with some must have all six.
+
+2. **Its children.** gcc 10.5.0 (pass 5) and 15.2.0 (pass 6) are each a
+   compiler child providing `tool:gcc`, `tool:g++`, their
+   `i686-linux-musl` labels, and `lib:stdc++:static`, and six runtime
+   children providing `lib:stdc++:shared`, `lib:gcc:shared`,
+   `lib:gomp:shared`, `lib:atomic:shared`, `lib:itm:shared`, and
+   `lib:quadmath:shared`, each conferring itself `>=` its version. The
+   compiler child no longer offers the shared labels.
+
+3. **What each child loads.** After the splits, `package.sh` reports,
+   for each child, the sonames its ELF files load (`NEEDED`) and those
+   its libraries are (`SONAME`). `children.py`, given the report, has
+   each child require the label of what it loads and doesn't hold, by a
+   table of sonames, and stops on a soname it has no label for rather
+   than guess. So pass 6's m4 requires `lib:atomic:shared`, which it
+   loads, and pass 6's gcc the shared musl, `libstdc++`, and `libgcc_s`
+   its programs load; pass 4's dynamically linked programs require the
+   shared musl. Before, they got these only when the whole gcc child
+   happened to be installed.
+
+4. **What rebuilds.** Passes 2 to 6 share `pass/package.sh`, so all five
+   rebuild, and with pass 6's artifact everything built on it: the
+   64-bit bootstrap's four stages and gcc 7.5.0's x86 target. Pass 1
+   keeps its own `package.sh` and its build: its packages, before
+   live-bootstrap's first shared musl, load nothing.
+
+Rationale: a child that is a filter over a finished artifact would give
+children a second definition, matched against a tree rather than made
+by a build, to save rebuilding; the archive is better served by one
+rule, kept everywhere, and the bootstrap's outputs made as its later
+packages are. Requirements read from what a child actually loads,
+rather than written by hand, are complete by construction, and stop
+the generation when the table is.
+
+Affected specs:
+
+- `DECISIONS.md` §51 (musl's split, the precedent), §56.

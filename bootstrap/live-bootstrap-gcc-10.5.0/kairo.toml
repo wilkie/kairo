@@ -64,11 +64,65 @@ command = ["/usr/bin/bash", "/kairo/src/start.sh", "build autogen-5.18.16 pass1.
 [[build.targets.children]]
 name = "gcc-10.5.0_0"
 root = "gcc-10.5.0_0"
-summary = "gcc 10.5.0, as live-bootstrap builds it (package gcc-10.5.0_0)."
+summary = "gcc 10.5.0, as live-bootstrap builds it (package gcc-10.5.0_0), without its shared runtime libraries, which are children of their own."
 tags = ["live-bootstrap"]
 version = "10.5.0"
 requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
-provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=10.5.0" }] }, { provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=10.5.0" }] }, { provides = "tool:gcc:i686-linux-musl" }, { provides = "tool:g++:i686-linux-musl" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "tool:gcc:i686-linux-musl" }, { provides = "tool:g++:i686-linux-musl" }]
+
+[[build.targets.children]]
+name = "gcc-10.5.0_0-libstdc++"
+root = "gcc-10.5.0_0-libstdc++"
+summary = "gcc 10.5.0's shared libstdc++, as live-bootstrap builds it (package gcc-10.5.0_0)."
+tags = ["live-bootstrap"]
+version = "10.5.0"
+requires = [{ provides = "lib:musl:shared" }, { provides = "lib:gcc:shared" }]
+provides = [{ provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=10.5.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-10.5.0_0-libgcc_s"
+root = "gcc-10.5.0_0-libgcc_s"
+summary = "gcc 10.5.0's shared libgcc_s, as live-bootstrap builds it (package gcc-10.5.0_0)."
+tags = ["live-bootstrap"]
+version = "10.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=10.5.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-10.5.0_0-libgomp"
+root = "gcc-10.5.0_0-libgomp"
+summary = "gcc 10.5.0's shared libgomp, as live-bootstrap builds it (package gcc-10.5.0_0)."
+tags = ["live-bootstrap"]
+version = "10.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gomp:shared", confers = [{ provides = "lib:gomp:shared", version = ">=10.5.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-10.5.0_0-libatomic"
+root = "gcc-10.5.0_0-libatomic"
+summary = "gcc 10.5.0's shared libatomic, as live-bootstrap builds it (package gcc-10.5.0_0)."
+tags = ["live-bootstrap"]
+version = "10.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:atomic:shared", confers = [{ provides = "lib:atomic:shared", version = ">=10.5.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-10.5.0_0-libitm"
+root = "gcc-10.5.0_0-libitm"
+summary = "gcc 10.5.0's shared libitm, as live-bootstrap builds it (package gcc-10.5.0_0)."
+tags = ["live-bootstrap"]
+version = "10.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:itm:shared", confers = [{ provides = "lib:itm:shared", version = ">=10.5.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-10.5.0_0-libquadmath"
+root = "gcc-10.5.0_0-libquadmath"
+summary = "gcc 10.5.0's shared libquadmath, as live-bootstrap builds it (package gcc-10.5.0_0)."
+tags = ["live-bootstrap"]
+version = "10.5.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:quadmath:shared", confers = [{ provides = "lib:quadmath:shared", version = ">=10.5.0" }] }]
 
 [[build.targets.children]]
 name = "binutils-2.41_1"
@@ -76,6 +130,7 @@ root = "binutils-2.41_1"
 summary = "binutils 2.41, as live-bootstrap builds it (package binutils-2.41_1)."
 tags = ["live-bootstrap"]
 version = "2.41"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:binutils" }, { provides = "tool:binutils:i686-linux-musl" }]
 
 # The whole root after this pass, for the pass that goes on from it;

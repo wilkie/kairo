@@ -462,7 +462,9 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     assert_eq!(field(&built, "status"), "success", "{built}");
     assert!(!built.contains("\nbuilds = "), "{built}");
     assert_eq!(check_packages(&built, &sums, &blob_store), 139, "{built}");
-    assert_eq!(field(&built, "children"), "2", "{built}");
+    // gcc's compiler and its six shared runtime libraries (§58), and
+    // binutils.
+    assert_eq!(field(&built, "children"), "8", "{built}");
     let paths = child_paths(&built, "gcc-10.5.0_0", &blob_store);
     for program in ["usr/bin/gcc", "usr/bin/g++"] {
         assert!(paths.contains(&program.to_owned()), "{paths:?}");
@@ -491,7 +493,8 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     assert_eq!(field(&built, "status"), "success", "{built}");
     assert!(!built.contains("\nbuilds = "), "{built}");
     assert_eq!(check_packages(&built, &sums, &blob_store), 149, "{built}");
-    assert_eq!(field(&built, "children"), "10", "{built}");
+    // Its 10 packages, gcc's six shared runtime libraries apart (§58).
+    assert_eq!(field(&built, "children"), "16", "{built}");
     let built = build(store, &format!("object:{consumer}"), &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     let out = built

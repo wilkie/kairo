@@ -124,11 +124,65 @@ command = ["/usr/bin/bash", "/kairo/src/start.sh", "build binutils-2.41 pass2.sh
 [[build.targets.children]]
 name = "gcc-15.2.0_0"
 root = "gcc-15.2.0_0"
-summary = "gcc 15.2.0, as live-bootstrap builds it (package gcc-15.2.0_0)."
+summary = "gcc 15.2.0, as live-bootstrap builds it (package gcc-15.2.0_0), without its shared runtime libraries, which are children of their own."
 tags = ["live-bootstrap"]
 version = "15.2.0"
-requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }]
-provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=15.2.0" }] }, { provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=15.2.0" }] }, { provides = "tool:gcc:i686-linux-musl" }, { provides = "tool:g++:i686-linux-musl" }]
+requires = [{ provides = "tool:binutils:i686-linux-musl" }, { provides = "lib:musl:headers" }, { one_of = [{ provides = "lib:musl:static" }, { provides = "lib:musl:shared" }] }, { provides = "lib:linux:headers" }, { provides = "lib:musl:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:stdc++:shared" }]
+provides = [{ provides = "tool:gcc" }, { provides = "tool:g++" }, { provides = "lib:stdc++:static" }, { provides = "tool:gcc:i686-linux-musl" }, { provides = "tool:g++:i686-linux-musl" }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0_0-libstdc++"
+root = "gcc-15.2.0_0-libstdc++"
+summary = "gcc 15.2.0's shared libstdc++, as live-bootstrap builds it (package gcc-15.2.0_0)."
+tags = ["live-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }, { provides = "lib:gcc:shared" }]
+provides = [{ provides = "lib:stdc++:shared", confers = [{ provides = "lib:stdc++:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0_0-libgcc_s"
+root = "gcc-15.2.0_0-libgcc_s"
+summary = "gcc 15.2.0's shared libgcc_s, as live-bootstrap builds it (package gcc-15.2.0_0)."
+tags = ["live-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gcc:shared", confers = [{ provides = "lib:gcc:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0_0-libgomp"
+root = "gcc-15.2.0_0-libgomp"
+summary = "gcc 15.2.0's shared libgomp, as live-bootstrap builds it (package gcc-15.2.0_0)."
+tags = ["live-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:gomp:shared", confers = [{ provides = "lib:gomp:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0_0-libatomic"
+root = "gcc-15.2.0_0-libatomic"
+summary = "gcc 15.2.0's shared libatomic, as live-bootstrap builds it (package gcc-15.2.0_0)."
+tags = ["live-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:atomic:shared", confers = [{ provides = "lib:atomic:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0_0-libitm"
+root = "gcc-15.2.0_0-libitm"
+summary = "gcc 15.2.0's shared libitm, as live-bootstrap builds it (package gcc-15.2.0_0)."
+tags = ["live-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:itm:shared", confers = [{ provides = "lib:itm:shared", version = ">=15.2.0" }] }]
+
+[[build.targets.children]]
+name = "gcc-15.2.0_0-libquadmath"
+root = "gcc-15.2.0_0-libquadmath"
+summary = "gcc 15.2.0's shared libquadmath, as live-bootstrap builds it (package gcc-15.2.0_0)."
+tags = ["live-bootstrap"]
+version = "15.2.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:quadmath:shared", confers = [{ provides = "lib:quadmath:shared", version = ">=15.2.0" }] }]
 
 [[build.targets.children]]
 name = "libmd-1.1.0_0"
@@ -136,6 +190,7 @@ root = "libmd-1.1.0_0"
 summary = "libmd 1.1.0, as live-bootstrap builds it (package libmd-1.1.0_0)."
 tags = ["live-bootstrap"]
 version = "1.1.0"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "lib:md" }]
 
 [[build.targets.children]]
@@ -144,6 +199,7 @@ root = "libbsd-0.11.8_0"
 summary = "libbsd 0.11.8, as live-bootstrap builds it (package libbsd-0.11.8_0)."
 tags = ["live-bootstrap"]
 version = "0.11.8"
+requires = [{ provides = "lib:musl:shared" }, { provides = "lib:md" }]
 provides = [{ provides = "lib:bsd" }]
 
 [[build.targets.children]]
@@ -152,6 +208,7 @@ root = "shadow-4.14.3_0"
 summary = "shadow 4.14.3, as live-bootstrap builds it (package shadow-4.14.3_0)."
 tags = ["live-bootstrap"]
 version = "4.14.3"
+requires = [{ provides = "lib:bsd" }, { provides = "lib:musl:shared" }, { provides = "lib:md" }]
 provides = [{ provides = "tool:shadow" }]
 
 [[build.targets.children]]
@@ -160,6 +217,7 @@ root = "opendoas-6.8.2_0"
 summary = "opendoas 6.8.2, as live-bootstrap builds it (package opendoas-6.8.2_0)."
 tags = ["live-bootstrap"]
 version = "6.8.2"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:opendoas" }, { provides = "tool:doas" }]
 
 [[build.targets.children]]
@@ -168,6 +226,7 @@ root = "gzip-1.13_0"
 summary = "gzip 1.13, as live-bootstrap builds it (package gzip-1.13_0)."
 tags = ["live-bootstrap"]
 version = "1.13"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:gzip" }]
 
 [[build.targets.children]]
@@ -176,6 +235,7 @@ root = "diffutils-3.10_0"
 summary = "diffutils 3.10, as live-bootstrap builds it (package diffutils-3.10_0)."
 tags = ["live-bootstrap"]
 version = "3.10"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:diffutils" }, { provides = "tool:diff" }]
 
 [[build.targets.children]]
@@ -184,6 +244,7 @@ root = "gawk-5.3.0_0"
 summary = "gawk 5.3.0, as live-bootstrap builds it (package gawk-5.3.0_0)."
 tags = ["live-bootstrap"]
 version = "5.3.0"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:gawk" }, { provides = "tool:awk" }]
 
 [[build.targets.children]]
@@ -192,6 +253,7 @@ root = "m4-1.4.19_0"
 summary = "m4 1.4.19, as live-bootstrap builds it (package m4-1.4.19_0)."
 tags = ["live-bootstrap"]
 version = "1.4.19"
+requires = [{ provides = "lib:atomic:shared" }, { provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:m4" }]
 
 [[build.targets.children]]
@@ -200,6 +262,7 @@ root = "libarchive-3.5.2_0"
 summary = "libarchive 3.5.2, as live-bootstrap builds it (package libarchive-3.5.2_0)."
 tags = ["live-bootstrap"]
 version = "3.5.2"
+requires = [{ provides = "lib:musl:shared" }]
 provides = [{ provides = "lib:archive" }, { provides = "tool:bsdtar" }]
 
 # The whole root, live-bootstrap's CI pass 2 complete.

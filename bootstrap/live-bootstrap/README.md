@@ -61,11 +61,12 @@ puts it, and the wrapper's own files are in `/kairo/src`:
 | File | What it is |
 |---|---|
 | `kairo.toml` | The pins and placements above; one target, `x86`, whose artifact (installed at `/`) is the installed `usr/` tree, the checked packages in `repo/`, the `state/` a later pass needs, and each package extracted as a child, 83 in all (each musl package as two), providing `tool:bash`, `tool:gcc`, `lib:musl:static`, and the rest; the parent itself provides `tool:mes`, `tool:patch`, and `tool:gzip`, and the whole root as `data:live-bootstrap:x86:zlib-1.3.1`, which pass 2 goes on from. |
-| `children.py` | Writes the `[[build.targets.children]]` entries from the package names a build lists, when the milestone moves (the later passes use it too); gives gcc what it requires beside it (binutils, musl's headers, the kernel headers, and `one_of` static or shared musl, chosen by whatever builds with it) and makes each musl package its headers, static, and shared children, only the shared one conferring itself (`specs/DECISIONS.md` §46, §51). |
+| `children.py` | Writes the `[[build.targets.children]]` entries from the package names a build lists, when the milestone moves (the later passes use it too); gives gcc what it requires beside it (binutils, musl's headers, the kernel headers, and `one_of` static or shared musl, chosen by whatever builds with it) and makes each musl package its headers, static, and shared children, only the shared one conferring itself (`specs/DECISIONS.md` §46, §51); makes each gcc with shared runtime libraries its compiler and a child for each library, conferring itself `>=` its version (§58); and, given the report a later pass's `package.sh` writes, has each child require what its programs and libraries load and it doesn't hold, by soname (§56). |
 | `hello/` | A consumer of the children: a C program that names `tool:gcc` and the musl it links against, gets binutils and the headers as what gcc requires, and prints the version of the gcc that built it (the highest held: 4.0.4 here, 4.7.4 once pass 3 is). Its `x86-static` target links against `lib:musl:static` and requires nothing at run time; its `x86` target links against `lib:musl:shared`, which pass 3 builds, and requires it. `hello/create.sh <actor id>` makes the object; the end-to-end test builds it last. |
 | `start.kaem` | Stands in for the end of stage0-posix's `kaem.run`: puts the wrapper's step files over upstream's, sets `kaem.run`'s variables, copies the seed files to `/`, and runs live-bootstrap's `after.kaem`, which concatenates `bootstrap.cfg`, `env`, and `seed.kaem` and runs them. At the end it runs `package.sh`. |
 | `package.sh` | Run under the bash the build made: copies `/usr` and `/external/repo` into `/kairo/package`, the artifact; copies `/steps/env`, `/steps/bootstrap.cfg`, and `/script-generator` into its `state/`; and extracts each package into `/kairo/package/<package>/`, musl's split by `split-musl.sh` into `<package>-headers`, `-static`, and `-shared`. |
 | `split-musl.sh` | Lays out a musl package as the children linking needs of it (`specs/DECISIONS.md` §51); every pass's `package.sh` uses it. |
+| `split-gcc.sh` | Moves each shared runtime library of a gcc package (`libstdc++`, `libgcc_s`, `libgomp`, `libatomic`, `libitm`, `libquadmath`), its file and its soname's link, into a child of its own (`specs/DECISIONS.md` §58); every later pass's `package.sh` uses it. A gcc built without them, as the 4.x ones are, is left as it is. |
 | `steps/bootstrap.cfg` | What `rootfs.py --arch x86 --bwrap --external-sources` writes. |
 | `steps/manifest` | live-bootstrap's manifest, truncated after `zlib-1.3.1`, before the perl chain of upstream's CI pass 2. |
 | `import.sh` | Archives live-bootstrap and the distfiles, and creates the wrapper. |
@@ -109,7 +110,11 @@ guile, and autogen, `bootstrap/live-bootstrap-gcc-10.5.0/` from that
 to gcc 10.5.0, and `bootstrap/live-bootstrap-gcc-15.2.0/` from that to
 gcc 15.2.0 and the end of upstream's CI pass 2.
 Every pass after this one shares `pass/start.sh` and `pass/package.sh`,
-which its `import.sh` puts in its wrapper.
+with `split-musl.sh` and `split-gcc.sh`, which its `import.sh` puts in
+its wrapper. That `package.sh` also reports what each child's programs
+and libraries load and which libraries it holds, from which
+`children.py` writes each child's `requires` (`specs/DECISIONS.md`
+§56).
 
 The full flow is the ignored test
 `crates/kairo-cli/tests/bootstrap_live.rs`, which needs the network:

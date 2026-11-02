@@ -16,10 +16,11 @@
 #    makes them with `git archive`, and the mirrors serve those bytes.
 # 3. The native wrapper -- this directory's kairo.toml and
 #    steps/manifest, and the start.sh and package.sh every later pass
-#    shares (../live-bootstrap/pass/) and the musl split
-#    (../live-bootstrap/split-musl.sh) -- is committed as SHA-256 history
-#    and created as an object, or, with --wrapper, committed on top of
-#    that existing wrapper object's history as its next revision.
+#    shares (../live-bootstrap/pass/) and the musl and gcc splits
+#    (../live-bootstrap/split-musl.sh, split-gcc.sh) -- is committed as
+#    SHA-256 history and created as an object, or, with --wrapper,
+#    committed on top of that existing wrapper object's history as its
+#    next revision.
 #
 # Pass 1 (bootstrap/live-bootstrap/import.sh) must be imported: its
 # artifact, data:live-bootstrap:x86:zlib-1.3.1, is this build's input,
@@ -212,9 +213,9 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 mkdir "$WORK/steps"
 cp "$HERE/kairo.toml" "$HERE/../live-bootstrap/pass/start.sh" "$HERE/../live-bootstrap/pass/package.sh" \
-    "$HERE/../live-bootstrap/split-musl.sh" "$WORK/"
+    "$HERE/../live-bootstrap/split-musl.sh" "$HERE/../live-bootstrap/split-gcc.sh" "$WORK/"
 cp "$HERE/steps/manifest" "$WORK/steps/"
-commit_wrapper "live-bootstrap b1ceced7 x86 pass 2: the perl chain" kairo.toml start.sh package.sh split-musl.sh steps/manifest
+commit_wrapper "live-bootstrap b1ceced7 x86 pass 2: the perl chain" kairo.toml start.sh package.sh split-musl.sh split-gcc.sh steps/manifest
 
 cat <<OUT
 wrapper = $WRAPPER
