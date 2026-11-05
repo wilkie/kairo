@@ -2181,6 +2181,375 @@ fn what_is_brought_meets_obligations_and_confers_as_the_builds_own() -> TestResu
     Ok(())
 }
 
+/// After the fixture's own time, so a branch set then is the newer.
+const LATER: i64 = 1_900_000_000;
+
+/// A compiler that builds with a `tool:cc`, offering its artifact as
+/// `tool:cc` at `version`.
+fn self_hosting_cc(version: &str) -> String {
+    manifest(
+        "cc",
+        &format!(
+            r#"
+            [[provides]]
+            provides = "tool:cc"
+            version = "{version}"
+            target = "release"
+            [[build.targets]]
+            name = "release"
+            command = ["make"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "tool:cc"
+            "#
+        ),
+    )
+}
+
+/// What the plan resolved `label` to: the object and snapshot.
+fn resolved_to(resolution: &Resolution, label: &str) -> Option<(String, String)> {
+    resolution
+        .plan
+        .manifest
+        .requirements
+        .iter()
+        .find_map(
+            |requirement| match (&requirement.requested, &requirement.resolved) {
+                (
+                    Requested::Provides { provides, .. },
+                    Resolved::Artifact {
+                        object, snapshot, ..
+                    }
+                    | Resolved::Content {
+                        object, snapshot, ..
+                    },
+                ) if provides == label => Some((object.clone(), snapshot.clone())),
+                _ => None,
+            },
+        )
+}
+
+#[test]
+fn a_build_never_uses_its_own_generation_but_may_use_an_older_one() -> TestResult {
+    let mut world = World::new();
+    // The bootstrap's compiler.
+    let (seed, _) = world.object(&content_provider("tool:cc", Some("1.0.0")));
+
+    // The first generation: its own offer is excluded, so it builds
+    // with the bootstrap's.
+    let (cc, first) = world.object(&self_hosting_cc("7.5.0"));
+    let resolution = world.resolve(&cc.object_id, "release")?;
+    assert_eq!(
+        resolved_to(&resolution, "tool:cc").map(|(object, _)| object),
+        Some(seed.object_id.to_string())
+    );
+
+    // Tagged, then a newer version on top: the newer builds with the
+    // older generation of itself, found by label at its tag.
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &cc, &first, "7.5.0");
+    let second = world.revision(
+        &cc,
+        &self_hosting_cc("8.5.0"),
+        vec![first.statement.unsigned().body().revision().clone()],
+    );
+    world
+        .fixture
+        .set_branch_at(&world.actor, &cc, &second, "head", LATER);
+    let first_snapshot = Snapshot::from_object_revision(&cc.object_id, &first.statement)?;
+    let resolution = world.resolve(&cc.object_id, "release")?;
+    assert_eq!(
+        resolved_to(&resolution, "tool:cc"),
+        Some((
+            cc.object_id.to_string(),
+            first_snapshot.snapshot_id().to_string()
+        ))
+    );
+    // And that older generation is planned first, built with the
+    // bootstrap's, not with itself.
+    let older = resolution
+        .prerequisites
+        .iter()
+        .find(|plan| plan.manifest.snapshot == first_snapshot.snapshot_id().to_string())
+        .expect("the older generation is planned first");
+    assert_eq!(
+        resolved_to_plan(older, "tool:cc"),
+        Some(seed.object_id.to_string())
+    );
+
+    // Once 8.5.0 is tagged, a revision after it builds with it, its
+    // newest older generation; an older generation never builds with a
+    // newer one, so 7.5.0's plan is unchanged.
+    let fix = world.revision(
+        &cc,
+        &self_hosting_cc("8.5.1"),
+        vec![second.statement.unsigned().body().revision().clone()],
+    );
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &cc, &second, "8.5.0");
+    world
+        .fixture
+        .set_branch_at(&world.actor, &cc, &fix, "head", LATER + 1);
+    let second_snapshot = Snapshot::from_object_revision(&cc.object_id, &second.statement)?;
+    let resolution = world.resolve(&cc.object_id, "release")?;
+    assert_eq!(
+        resolved_to(&resolution, "tool:cc"),
+        Some((
+            cc.object_id.to_string(),
+            second_snapshot.snapshot_id().to_string()
+        ))
+    );
+    let older = resolution
+        .prerequisites
+        .iter()
+        .find(|plan| plan.manifest.snapshot == first_snapshot.snapshot_id().to_string())
+        .expect("7.5.0 is planned first");
+    assert_eq!(
+        resolved_to_plan(older, "tool:cc"),
+        Some(seed.object_id.to_string())
+    );
+    Ok(())
+}
+
+fn resolved_to_plan(plan: &PlanDocument, label: &str) -> Option<String> {
+    plan.manifest.requirements.iter().find_map(|requirement| {
+        match (&requirement.requested, &requirement.resolved) {
+            (
+                Requested::Provides { provides, .. },
+                Resolved::Artifact { object, .. } | Resolved::Content { object, .. },
+            ) if provides == label => Some(object.clone()),
+            _ => None,
+        }
+    })
+}
+
+#[test]
+fn a_target_may_build_with_another_target_of_its_own_snapshot() -> TestResult {
+    let mut world = World::new();
+    // Stage 3 and its fixed point, stage 4, in one object.
+    let (root, _) = world.object(&manifest(
+        "root",
+        r#"
+        [[provides]]
+        provides = "data:root"
+        version = "1.0.0"
+        target = "stage"
+        [[build.targets]]
+        name = "stage"
+        command = ["make"]
+        [[build.targets]]
+        name = "fixed-point"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "data:root"
+        "#,
+    ));
+    let resolution = world.resolve(&root.object_id, "fixed-point")?;
+    assert!(matches!(
+        &resolution.plan.manifest.requirements[0].resolved,
+        Resolved::Artifact { object, target, .. }
+            if object == &root.object_id.to_string() && target == "stage"
+    ));
+    // A target's own output is never its own input.
+    let (selfish, _) = world.object(&manifest(
+        "selfish",
+        r#"
+        [[provides]]
+        provides = "data:selfish"
+        target = "stage"
+        [[build.targets]]
+        name = "stage"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "data:selfish"
+        "#,
+    ));
+    assert!(matches!(
+        world.resolve(&selfish.object_id, "stage"),
+        Err(ResolveError::Unsatisfied(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_closure_label_is_met_by_what_the_build_installs_already() -> TestResult {
+    let mut world = World::new();
+    // The binutils the build names, offering the triple's label too.
+    let (chosen, _) = world.object(&manifest(
+        "binutils",
+        r#"
+        [[provides]]
+        provides = "tool:binutils"
+        version = "2.41"
+        [[provides]]
+        provides = "tool:binutils:x86_64-linux-musl"
+        version = "2.41"
+        "#,
+    ));
+    // A compiler requiring binutils by its triple.
+    world.object(&manifest(
+        "cc",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.children]]
+        name = "cc"
+        root = "cc"
+        version = "15.2.0"
+        requires = [{ provides = "tool:binutils:x86_64-linux-musl" }]
+        provides = [{ provides = "tool:cc" }]
+        "#,
+    ));
+    // Another binutils, the same version, published later: it wins the
+    // tie (§48) when the label is chosen anew.
+    let actor = world.actor.clone();
+    let later = world.object_as(
+        &actor,
+        &manifest(
+            "binutils",
+            r#"
+            [[provides]]
+            provides = "tool:binutils:x86_64-linux-musl"
+            version = "2.41"
+            "#,
+        ),
+        LATER,
+    );
+    let (alone, _) = world.object(&app_requiring("tool:binutils:x86_64-linux-musl", None));
+    assert_eq!(
+        resolved_to(
+            &world.resolve(&alone.object_id, "release")?,
+            "tool:binutils:x86_64-linux-musl"
+        )
+        .map(|(object, _)| object),
+        Some(later.object_id.to_string())
+    );
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:binutils"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:cc"
+        "#,
+    ));
+    let resolution = world.resolve(&app.object_id, "release")?;
+    let triple = resolution
+        .plan
+        .manifest
+        .runtime
+        .iter()
+        .find(|entry| entry.provides == "tool:binutils:x86_64-linux-musl")
+        .ok_or("the closure brings the triple's binutils")?;
+    assert!(matches!(
+        &triple.resolved,
+        Resolved::Content { object, .. } if object == &chosen.object_id.to_string()
+    ));
+    Ok(())
+}
+
+#[test]
+fn a_tagged_older_version_is_offered_by_label() -> TestResult {
+    let mut world = World::new();
+    let (lib, first) = world.object(&content_provider("lib:a", Some("1.0.0")));
+    world
+        .fixture
+        .bind_version_tag(&world.actor, &lib, &first, "1.0.0");
+    let second = world.revision(
+        &lib,
+        &content_provider("lib:a", Some("2.0.0")),
+        vec![first.statement.unsigned().body().revision().clone()],
+    );
+    world
+        .fixture
+        .set_branch_at(&world.actor, &lib, &second, "head", LATER);
+    let first_snapshot = Snapshot::from_object_revision(&lib.object_id, &first.statement)?;
+    let second_snapshot = Snapshot::from_object_revision(&lib.object_id, &second.statement)?;
+
+    let (old, _) = world.object(&app_requiring("lib:a", Some("^1")));
+    assert_eq!(
+        resolved_to(&world.resolve(&old.object_id, "release")?, "lib:a"),
+        Some((
+            lib.object_id.to_string(),
+            first_snapshot.snapshot_id().to_string()
+        ))
+    );
+    let (new, _) = world.object(&app_requiring("lib:a", None));
+    assert_eq!(
+        resolved_to(&world.resolve(&new.object_id, "release")?, "lib:a"),
+        Some((
+            lib.object_id.to_string(),
+            second_snapshot.snapshot_id().to_string()
+        ))
+    );
+    Ok(())
+}
+
+#[test]
+fn offered_by_takes_only_those_objects_offers_and_their_childrens() -> TestResult {
+    let mut world = World::new();
+    let (bootstrap, _) = world.object(&content_provider("tool:make", Some("4.2.1")));
+    // A package of the same version, published later: it wins the tie
+    // (§48) unless the build says whose it wants.
+    let (package, _) = world.object(&content_provider("tool:make", Some("4.2.1")));
+    let (toolchain, _) = world.object(&toolchain());
+    let wants = |by: &[&ObjectId], label: &str| {
+        let by: Vec<String> = by.iter().map(|id| format!("\"{id}\"")).collect();
+        manifest(
+            "app",
+            &format!(
+                r#"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "{label}"
+                offered_by = [{}]
+                "#,
+                by.join(", ")
+            ),
+        )
+    };
+
+    let (any, _) = world.object(&app_requiring("tool:make", None));
+    assert_eq!(
+        resolved_to(&world.resolve(&any.object_id, "release")?, "tool:make").map(|(o, _)| o),
+        Some(package.object_id.to_string())
+    );
+    let (pinned, _) = world.object(&wants(&[&bootstrap.object_id], "tool:make"));
+    let resolution = world.resolve(&pinned.object_id, "release")?;
+    assert_eq!(
+        resolved_to(&resolution, "tool:make").map(|(o, _)| o),
+        Some(bootstrap.object_id.to_string())
+    );
+    // The plan records it, so the build key does.
+    assert!(matches!(
+        &resolution.plan.manifest.requirements[0].requested,
+        Requested::Provides { offered_by, .. } if offered_by == &[bootstrap.object_id.to_string()]
+    ));
+    // A child is offered by its parent.
+    let (child, _) = world.object(&wants(&[&toolchain.object_id], "lib:stdc++"));
+    assert!(resolved_to(&world.resolve(&child.object_id, "release")?, "lib:stdc++").is_some());
+    // None of them offers it: unsatisfied.
+    let (none, _) = world.object(&wants(&[&toolchain.object_id], "tool:make"));
+    assert!(matches!(
+        world.resolve(&none.object_id, "release"),
+        Err(ResolveError::Unsatisfied(_))
+    ));
+    Ok(())
+}
+
 /// Builds known only by their build key (§52), at no snapshot.
 struct ByKey(Vec<(String, String, BlobId)>);
 

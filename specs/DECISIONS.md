@@ -5418,7 +5418,9 @@ Sub-decisions:
    releases are offered side by side, chosen by the version a consumer
    asks for (§43), and each release's recipe differs from the next's in
    ways a history of one object would only hide. A fix to a release's
-   recipe is a revision of its object.
+   recipe is a revision of its object. *Replaced by §59:* one object
+   per software, its releases version tags on its history, each built
+   with older ones.
 
 3. **A target per environment.** A package built for x86 and x86-64
    names `environment:linux/x86` on one target and
@@ -5700,3 +5702,180 @@ the generation when the table is.
 Affected specs:
 
 - `DECISIONS.md` §51 (musl's split, the precedent), §56.
+
+---
+
+## 59. One Object per Software, Generations, and Offers by Whom
+
+Decision: a package is **one object per piece of software**, its
+releases **version tags** on its history, as Occam kept gcc. Every
+tagged snapshot **offers its labels** beside the head, so older
+releases stay available by label. A build may use its own object's
+offers only from an **older generation**: a version-tagged snapshot
+whose revision is an ancestor of the one being built. And a
+requirement can say **whose offers** may satisfy it (`offered_by`), so
+a first generation names the bootstrap it is built from. This replaces
+§55 sub-decision 2.
+
+Sub-decisions:
+
+1. **One object per software.** `packages/<name>/` is one object: its
+   manifest and recipe are its latest release's, and each release is a
+   revision of it, tagged with the release's version (§43). An older
+   release's recipe is its tagged revision, in the object's history; a
+   fix to it is a revision on a branch from its tag. gcc 7.5.0 is the
+   `gcc` object at tag 7.5.0, and a later gcc a later revision on it.
+
+2. **Tagged snapshots offer their labels.** The resolver offers, for
+   each held object, the labels of its head and of each of its
+   creator's version-tagged snapshots whose tree the node holds. Ties
+   are broken as before (§48); the highest version still wins by
+   default (§43), so an older release is chosen only when a
+   requirement asks for it. Search and `kairo provider show` still
+   describe the head.
+
+3. **Generations.** A generation is a tagged snapshot. A target's build
+   may use an offer of its own object, or of a child of it, only when
+   the offer is a generation older than the build, a version-tagged
+   snapshot whose revision is an ancestor of the revision being built,
+   or another target's of the same snapshot, which is a build of its
+   own, as the 64-bit bootstrap's stage 4 builds on stage 3's children.
+   Its own target's offers, and a newer or unrelated tag's, are never
+   candidates, as Occam never built an artifact with one of its own
+   generation. So the first release of an object builds with what
+   others offer, and each later one may build with an older release of
+   itself, as gcc 8 with gcc 7. A resolution keys the builds it plans by
+   snapshot as well as object and target, so planning an older
+   generation for a newer one is no cycle.
+
+4. **`offered_by`.** A provides dependency may name the objects whose
+   offers alone satisfy it:
+
+   ```toml
+   [[dependencies]]
+   kind = "provides"
+   provides = "tool:make"
+   offered_by = ["zQm...", "zQm..."]
+   ```
+
+   An offer qualifies when its object, or for a child its parent, is
+   named. The ids are bare (§4), at least one; only a provides
+   dependency takes it. It is part of the manifest's canonical bytes
+   and of the plan's requested requirement, and so of the build key,
+   only when given.
+
+5. **The first generation names its bootstrap.** Packages offer the
+   bootstrap's labels at its versions, and win the tie as the newest
+   published (§48); building one package with another of the same
+   round would be a cycle, and breaking cycles by whichever was asked
+   for first would make a plan depend on its caller. So a package's
+   first generation builds with `packages/bootstrap-base/`
+   (`data:bootstrap-base`), which brings what `build-base` does (§57),
+   each label `offered_by` the bootstrap's objects: live-bootstrap's
+   six passes and the 64-bit bootstrap's root, by their ids. Object ids
+   are bound to their genesis and permanent (§2); the objects in the
+   archive's canonical store are these, and other stores get them by
+   bundle or federation, keeping their ids. Later releases build with
+   `build-base`, whose labels resolve to the packages, and to older
+   generations of themselves.
+
+6. **What a build installs already meets what it brings.** A label the
+   runtime closure asks for (§46) is met by an object the build already
+   installs, a choice for its declared requirements or the closure's,
+   when that object offers the label at a version every constraint
+   allows; only otherwise is the label chosen anew. So the bootstrap's
+   gcc, requiring `tool:binutils:x86_64-linux-musl`, is served by the
+   binutils child the build took for `tool:binutils` under
+   `offered_by`, not by a package of the same version that would win the
+   tie, and no second package is installed where one serves.
+
+Rationale: a piece of software's releases are one lineage, which an
+object's history and tags already are; one object per release would
+duplicate that lineage across objects and hide that 8.5.0 follows
+7.5.0. Barring only the build's own and newer generations, rather than
+the whole object, is what lets software that builds itself do so, and
+naming the bootstrap by the ids it already has is what lets a first
+generation exist at all without a cycle.
+
+Affected specs:
+
+- `DECISIONS.md` §55 sub-decision 2.
+- `schemas/canonical/object-manifest-v1.md` — `offered_by`.
+- `schemas/canonical/resolved-manifest-v1.md` — the requested
+  requirement's `offered_by`.
+- `BUILD.md` §3 — generations and `offered_by`.
+- `PROJECT_LAYOUT.md` — `packages/<name>/`.
+
+---
+
+## 60. Libraries in a Directory Named by the Target
+
+Decision: in each Linux environment, every library built for musl is
+installed in **a directory named by the target**, not in `/usr/lib`, and
+musl's loader searches that directory alone. In `linux/x86` that is the
+directory live-bootstrap already uses, `/usr/lib/i686-unknown-linux-musl`;
+in `linux/x86-64`, `/usr/lib/x86_64-linux-musl`. Libraries built for
+another C library, as glibc's would be, have their own directory beside
+it, so the two can be installed in one environment: they share sonames
+and not ABIs, and each loader finds only its own. `schemas/environment/linux-v1.md`
+records each environment's directory as a convention packages follow.
+
+Sub-decisions:
+
+1. **Why not `/usr/lib`.** A program built against musl can't load a
+   library built against glibc, nor the reverse, yet both have a
+   `libstdc++.so.6`. In one `/usr/lib` they would collide on the path,
+   and glibc's loader searches `/usr/lib` by default. A directory per C
+   library keeps them apart, as Debian's multiarch keeps architectures
+   apart; musl's loader reads `/etc/ld-musl-<arch>.path` and, when it
+   exists, searches only what it lists.
+
+2. **How a package follows it.** A package configures its libraries'
+   directory (`--libdir`) as the environment's; `/usr/lib` keeps only
+   musl's loader, a relative link to the directory's `libc.so`, reached
+   as `/lib` through the merged-/usr links, and links to its startup
+   files, which a gcc running from its build tree, as one bootstrapping
+   does, looks for only in `/usr/lib` and `/lib`: the 64-bit root's
+   stage 4, with no other C library in `/usr/lib`, failed without them.
+   musl's shared part ships the loader's search path in `etc/`. A gcc is configured with the
+   same `--libdir`, so that it finds the C library's startup files and
+   libraries there; on x86-64 its multilib directory for the OS is the
+   directory itself (`MULTILIB_OSDIRNAMES = m64=.`), not `../lib64`,
+   which it would otherwise add to every library path. An experiment
+   built such a gcc and musl in `linux/x86-64` and linked and ran a
+   static and a dynamic program before the 64-bit root moved.
+
+3. **The 64-bit bootstrap moves, from stage 2.** Stage 2, the
+   cross-built root, and stage 3 install into
+   `/usr/lib/x86_64-linux-musl`, so that stage 3 builds in the layout
+   stage 4 does. A stage 3 built on a stage 2 with its libraries in
+   `/usr/lib` made a gcc whose driver differed from the one stage 4 then
+   made on stage 3's children: what gcc's configure finds of the C
+   library is built into its driver. Stage 4 builds stage 3 again on its
+   children, `offered_by` its own object, since the packages of the same
+   versions would otherwise win the tie; when it differs, it shows how
+   each differing file differs, a binary by its strings.
+
+4. **gcc's runtime children** (§56) are in the environment's
+   directory, where the loader finds them: until now gcc 7's x86 ones
+   were in `/usr/lib`, which x86's loader doesn't search.
+
+5. **Headers wait for glibc.** Headers matter only to a build, which
+   chooses one C library, so a second C library's headers will be a
+   root of their own, each gcc configured for one C library's root,
+   when glibc arrives. Libraries are installed everywhere at run time,
+   so their directory is settled now.
+
+6. **The name.** The x86-64 directory carries no vendor field, as the
+   target triples in labels don't (§53); x86's is live-bootstrap's, with
+   one, which the bootstrap fixed and the contract records.
+
+Rationale: where libraries live is what every installed package and
+every loader depends on at run time, and so the costliest thing to
+change once many packages exist; a directory per C library is what lets
+musl and glibc, or any two C libraries, share an environment.
+
+Affected specs:
+
+- `schemas/environment/linux-v1.md` — the conventions.
+- `DECISIONS.md` §56 (where gcc's runtime children go).

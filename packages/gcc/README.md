@@ -1,12 +1,14 @@
-# gcc 7.5.0 (x86 and x86-64)
+# gcc
 
-gcc 7.5.0, with C and C++, for musl, as a package of its own: built on
+gcc, with C and C++, for musl, as a package of its own: built on
 finished packages, not as a step of a bootstrap (`specs/DECISIONS.md`
-§55). It is the first of the gcc versions Kairo keeps as artifacts, so
-that a build can choose its compiler by version, and a later gcc can be
-built with any earlier one.
+§55). One object holds every release Kairo keeps, each a version tag on
+its history, so that a build can choose its compiler by version, and
+each later gcc is built with an older one, an older generation of the
+same object (§59). This revision is gcc 7.5.0, its first, tagged
+`7.5.0`: built with what other objects offer.
 
-One object has a target for each environment it is built for, and no
+The object has a target for each environment it is built for, and no
 environment of its own: each target's artifact runs where it was built
 (§53 sub-decision 1).
 
@@ -38,23 +40,28 @@ the target's children side by side (§56).
 
 | Child | Where | Offers |
 |---|---|---|
-| `gcc-7.5.0` | `/usr/bin` and `/usr/lib/gcc/<triple>/7.5.0/`, `/usr/libexec/gcc/<triple>/7.5.0/` | `tool:gcc`, `tool:g++`, their triple labels (`i686-linux-musl`, `x86_64-linux-musl`), `lib:stdc++:static` |
-| `libstdc++-7.5.0`, `libgcc_s-7.5.0`, `libgomp-7.5.0`, `libatomic-7.5.0`, `libitm-7.5.0`, `libquadmath-7.5.0` | `/usr/lib` | `lib:stdc++:shared`, `lib:gcc:shared`, `lib:gomp:shared`, `lib:atomic:shared`, `lib:itm:shared`, `lib:quadmath:shared`, each conferring itself `>=7.5.0` |
+| `gcc-7.5.0` | `/usr/bin` and `<libdir>/gcc/<triple>/7.5.0/`, `/usr/libexec/gcc/<triple>/7.5.0/` | `tool:gcc`, `tool:g++`, their triple labels (`i686-linux-musl`, `x86_64-linux-musl`), `lib:stdc++:static` |
+| `libstdc++-7.5.0`, `libgcc_s-7.5.0`, `libgomp-7.5.0`, `libatomic-7.5.0`, `libitm-7.5.0`, `libquadmath-7.5.0` | `<libdir>` | `lib:stdc++:shared`, `lib:gcc:shared`, `lib:gomp:shared`, `lib:atomic:shared`, `lib:itm:shared`, `lib:quadmath:shared`, each conferring itself `>=7.5.0` |
 
 The two targets have the same children and offer the same labels, each
-to builds in its own environment.
+to builds in its own environment. `<libdir>` is the environment's
+directory for musl's libraries (§60): `/usr/lib/i686-unknown-linux-musl`
+in x86, `/usr/lib/x86_64-linux-musl` in x86-64. gcc is configured with
+it, so it finds musl there; on x86-64 its multilib directory for the OS
+is the directory itself, not `lib64`.
 
 **The compiler sits beside another gcc.** A consumer's `/` is an
 overlay of its dependencies, the first listed on top (§41).
 
 - **Its own directories:** its runtime libraries and C++ headers are in
-  its versioned directory, `/usr/lib/gcc/<triple>/7.5.0/`
+  its versioned directory, `<libdir>/gcc/<triple>/7.5.0/`
   (`--enable-version-specific-runtime-libs`). It links against them
   there, so a program records gcc 7's symbol versions.
-- **libgcc_s moved:** libgcc installs `libgcc_s` one directory up, in
-  `/usr/lib/gcc/<triple>/lib/`, which no version names, so the recipe
-  moves it into the versioned directory.
-- **libcc1 left out:** it would go in `/usr/lib`, so it isn't built.
+- **libgcc_s moved:** where libgcc installs `libgcc_s` one directory
+  up, in `<libdir>/gcc/<triple>/lib/`, which no version names, the
+  recipe moves it into the versioned directory.
+- **libcc1 left out:** it would go in `<libdir>` under no version, so it
+  isn't built.
 - **Checked:** the build fails if any of the compiler's files, other
   than its programs in `/usr/bin`, is outside a directory named by the
   version.
@@ -68,7 +75,7 @@ headers, and the shared musl and `libgcc_s` its own programs load. It also requi
 chooses (§51).
 
 **Each runtime library is a child of its own.** Each is a copy of the
-library's file and its soname's link, in `/usr/lib`, where the loader
+library's file and its soname's link, in `<libdir>`, where the loader
 finds it. These libraries keep one soname and their ABI from release
 to release, so the newest one runs what any earlier gcc linked. In an
 environment with gcc 7's and gcc 15's `libstdc++`, the confers choose
@@ -83,7 +90,7 @@ has its own stack protector, so they and libssp are left out.
 |---|---|
 | `kairo.toml` | The sources, shared by both targets, and the two targets with what they build from and their children. |
 | `src/build.sh` | Builds gcc for the triple it is given and lays out its children. It then checks that only the compiler's programs are outside its versioned directories, that every program and library is the target's code, and that C and C++, static and dynamic, compile and run with it installed. It also reports what each child loads. |
-| `import.sh` | Archives the tarballs and creates the object with `../../bootstrap/wrapper.sh`. |
+| `import.sh` | Archives the tarballs, creates the object or its next revision with `../../bootstrap/wrapper.sh`, and tags it 7.5.0. |
 
 ## Running it
 
@@ -92,7 +99,7 @@ live-bootstrap's six passes and linux-filesystem for `x86`, the 64-bit
 bootstrap through stage 3 for `x86-64`. Then:
 
 ```sh
-packages/gcc-7.5.0/import.sh <your actor id>
+packages/gcc/import.sh <your actor id>
 kairo build object:<object id> --target x86 --actor <your actor id>
 kairo build object:<object id> --target x86-64 --actor <your actor id>
 ```

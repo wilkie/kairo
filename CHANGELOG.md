@@ -18,6 +18,26 @@ rather than per-commit.
 
 ### Added
 
+- **Libraries in a directory named by the target (`DECISIONS.md`
+  §60).** Every library built for musl goes in the environment's own
+  directory, `/usr/lib/i686-unknown-linux-musl` in x86, as
+  live-bootstrap already has it, and `/usr/lib/x86_64-linux-musl` in
+  x86-64, which musl's loader alone searches, so that another C
+  library's can sit beside them. The 64-bit root moves there, and gcc
+  7.5.0's runtime children with it; `linux-v1.md` records the
+  directories as a convention packages follow.
+
+- **One object per software, generations, and `offered_by`
+  (`DECISIONS.md` §59).** A package is one object whose releases are
+  version tags; tagged snapshots offer their labels beside the head. A
+  build uses its own object's offers only from an older generation, a
+  tagged ancestor of its revision, or from another target of its
+  snapshot. A provides dependency may name the objects whose offers
+  alone satisfy it. `packages/bootstrap-base/` brings build-base's
+  labels offered by the bootstraps alone, for a package's first
+  generation; `packages/make`, `packages/binutils`, and `packages/musl`
+  are the first, and gcc 7.5.0 becomes `packages/gcc`, tagged 7.5.0.
+
 - **live-bootstrap's gcc in parts, and what its children load
   (`DECISIONS.md` §58).** Every later pass's packaging splits each gcc
   with shared runtime libraries, as it does musl: gcc 10.5.0 and 15.2.0
@@ -665,6 +685,9 @@ rather than per-commit.
 
 ### Wire format
 
+- **A provides dependency gains `offered_by` (`DECISIONS.md` §59)**, in
+  the manifest's canonical bytes and the plan's requested requirement,
+  only when given, so manifests and plans without it keep their bytes.
 - **A plan's requirement gains `brought_by` (`DECISIONS.md` §57)**,
   only on a requirement an object that doesn't build brought, so a plan
   with nothing brought keeps its bytes. Build keys don't read it.

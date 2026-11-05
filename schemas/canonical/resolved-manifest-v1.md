@@ -70,7 +70,7 @@ nothing brought is unchanged. The build key reads `requested` and
 
 | `kind` | Fields |
 |---|---|
-| `provides` | `provides`; `version` when a requirement was given; `path` when placed |
+| `provides` | `provides`; `version` when a requirement was given; `path` when placed; `offered_by`, the bare object ids it names, when it names any (`DECISIONS.md` §59) |
 | `object` | `object`; one of `version`, `snapshot`; `path` when placed |
 | `source` | `source` (the canonical URL), `revision`; `path` when placed; `seed` when `true` |
 | `file` | `sha256`, `path` |

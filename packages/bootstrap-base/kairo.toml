@@ -1,0 +1,146 @@
+# What a typical C or C++ package builds with, as build-base has it
+# (../build-base/, DECISIONS.md §57), but offered only by the bootstraps:
+# the first generation of every package builds with it (§59). Packages
+# offer the bootstrap's labels at its versions, and would win the tie;
+# built with one another in one round, they would be a cycle. Each label
+# here takes only an offer of one of the bootstraps' objects or their
+# children, named by their ids in the archive's canonical store:
+#
+#   zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ  pass 1, live-bootstrap to zlib
+#   zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu  pass 2, the perl chain
+#   zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR  pass 3, to gcc 4.7.4
+#   zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X  pass 4, python, guile, and autogen
+#   zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V  pass 5, to gcc 10.5.0
+#   zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk  pass 6, to gcc 15.2.0
+#   zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS  the 64-bit bootstrap's stage 3, the x86_64 root
+#
+# Labels resolve per environment, as build-base's do: live-bootstrap's
+# passes serve x86, the 64-bit root x86-64.
+[kairo]
+schema = 1
+kind = "software"
+name = "bootstrap-base"
+summary = "What a typical C or C++ package builds with, offered only by the bootstraps: for a package's first generation."
+tags = ["build-environment", "toolchain", "bootstrap"]
+
+[[provides]]
+provides = "data:bootstrap-base"
+version = "1.0.0"
+
+# A shell, and the GNU userland that configure scripts and makefiles run.
+[[dependencies]]
+kind = "provides"
+provides = "tool:bash"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:coreutils"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:sed"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:grep"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gawk"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:make"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:diffutils"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:findutils"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:patch"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+# The archivers and compressors source tarballs come in, and m4, which
+# autoconf's output and gmp's build run.
+[[dependencies]]
+kind = "provides"
+provides = "tool:tar"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gzip"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:xz"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:bzip2"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:m4"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+# The native toolchain: binutils and gcc with C++, for the machine the
+# build runs on (§53), and the runtime libraries the programs gcc builds
+# load, which gcc's own programs load too.
+[[dependencies]]
+kind = "provides"
+provides = "tool:binutils"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:gcc"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "tool:g++"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:stdc++:shared"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:gcc:shared"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+# musl, its headers and shared libc, which gcc requires a build to
+# choose (§51), and the kernel's headers.
+[[dependencies]]
+kind = "provides"
+provides = "lib:musl:headers"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:musl:shared"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:linux:headers"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]

@@ -30,6 +30,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 cp "$HERE/kairo.toml" "$WORK/"
 commit_wrapper "build-base: what a typical C or C++ package builds with" kairo.toml
+tag_release 1.0.0
 
 cat <<OUT
 object = $WRAPPER

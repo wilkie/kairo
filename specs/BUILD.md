@@ -66,6 +66,11 @@ Rules:
   dependencies, which the target takes as its own requirements, after
   it; a label the target names itself replaces a brought requirement on
   it (`DECISIONS.md` §57)
+- a target's build never uses its own object's offers except an older
+  generation's: a version-tagged snapshot whose revision is an ancestor
+  of the one being built (`DECISIONS.md` §59)
+- a provides dependency may name the objects whose offers alone satisfy
+  it, `offered_by` (`DECISIONS.md` §59)
 - version requirements use Cargo's syntax
 - dependencies express requirements only
 - resolution is performed by the planner

@@ -14,9 +14,14 @@ Its programs run in `linux/x86-64`, its top-level environment; its
 build runs in `linux/x86`, its target's (`specs/DECISIONS.md` §53). They
 find musl's loader at `/lib/ld-musl-x86_64.so.1`, and scripts `/bin/sh`,
 through the merged-/usr links, which it requires
-(`data:linux-filesystem:merged-usr`). gcc's own libraries go in
-`/usr/lib`, beside musl's, not in `lib64`. Documentation and
-translations are left out: this root only builds the next.
+(`data:linux-filesystem:merged-usr`). Every library, musl's and gcc's
+own among them, is in `/usr/lib/x86_64-linux-musl`, x86-64's directory
+for musl's (`specs/DECISIONS.md` §60), which musl's loader alone
+searches, through `/etc/ld-musl-x86_64.path`; `/usr/lib` holds the
+loader's link and links to musl's startup files, and nothing is in
+`lib64`. Stage 3 builds in the same layout, as stage 4 does.
+Documentation and translations are left out: this root only builds the
+next.
 
 It provides the whole root as `data:amd64-bootstrap:x86-64:cross-root`,
 and no tool labels: stage 3's tools are the ones to use.
@@ -34,7 +39,7 @@ and no tool labels: stage 3's tools are the ones to use.
 | File | What it is |
 |---|---|
 | `kairo.toml` | The pins and placements above; one target, `x86-64`. |
-| `src/build.sh` | Builds each package with `--host=x86_64-linux-musl` and installs it under `/usr` in the artifact; then checks that the artifact holds only `usr/`, no `usr/lib64`, and that every program is ELF64 x86_64. |
+| `src/build.sh` | Builds each package with `--host=x86_64-linux-musl` and installs it under `/usr` in the artifact; then checks that the artifact holds only `usr/` and the loader's search path in `etc/`, no `usr/lib64`, and that every program is ELF64 x86_64. |
 | `import.sh` | Archives the tarballs and creates the object with `../../wrapper.sh`. The tarballs are live-bootstrap's but for coreutils 9.4, GNU's release rather than live-bootstrap's own, and findutils 4.10.0. |
 
 ## Running it

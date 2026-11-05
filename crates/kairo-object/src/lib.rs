@@ -1072,6 +1072,7 @@ pub struct ProvidesDependency {
     version: Option<String>,
     placement: Option<Placement>,
     confer: Option<bool>,
+    offered_by: Vec<ObjectId>,
 }
 
 impl ProvidesDependency {
@@ -1096,6 +1097,13 @@ impl ProvidesDependency {
     pub fn confer(&self) -> Option<bool> {
         self.confer
     }
+
+    /// The objects whose offers alone may satisfy it, each an offer's
+    /// own object or, for a child, its parent (`DECISIONS.md` §59);
+    /// empty when any may.
+    pub fn offered_by(&self) -> &[ObjectId] {
+        &self.offered_by
+    }
 }
 
 impl CanonicalEncode for ProvidesDependency {
@@ -1114,6 +1122,13 @@ impl CanonicalEncode for ProvidesDependency {
         if let Some(confer) = self.confer {
             encode_str(out, "confer");
             encode_u8(out, u8::from(confer));
+        }
+        // Only when given, likewise.
+        if !self.offered_by.is_empty() {
+            encode_str(out, "offered_by");
+            encode_list(out, &self.offered_by, |out, object| {
+                encode_str(out, object.as_str());
+            });
         }
     }
 }
@@ -2226,6 +2241,7 @@ struct RawDependencyDeclaration {
     from: Option<String>,
     overlay: Option<bool>,
     confer: Option<bool>,
+    offered_by: Option<Vec<String>>,
 }
 
 impl RawDependencyDeclaration {
@@ -2259,6 +2275,13 @@ impl RawDependencyDeclaration {
                 Err(ManifestError::SourceFieldsOnOtherKind(self.kind.clone()))
             }
             "provides" => self.validate_provides(),
+            _ if self.offered_by.is_some() => Err(ManifestError::InvalidRequirement {
+                field: "dependencies.offered_by",
+                reason: format!(
+                    "a {} dependency names what it wants; only a provides one chooses among offers",
+                    self.kind
+                ),
+            }),
             _ if self.confer.is_some() => Err(ManifestError::InvalidRequirement {
                 field: "dependencies.confer",
                 reason: format!(
@@ -2358,11 +2381,26 @@ impl RawDependencyDeclaration {
             ensure_version_requirement("dependencies.version", version)?;
         }
 
+        let offered_by = match self.offered_by {
+            None => Vec::new(),
+            Some(objects) if objects.is_empty() => {
+                return Err(ManifestError::InvalidRequirement {
+                    field: "dependencies.offered_by",
+                    reason: "names no object; leave it out for any".to_owned(),
+                })
+            }
+            Some(objects) => objects
+                .into_iter()
+                .map(|object| ObjectId::new(object).map_err(ManifestError::InvalidObjectId))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+
         Ok(DependencyDeclaration::Provides(ProvidesDependency {
             provides,
             version: self.version,
             placement,
             confer: self.confer,
+            offered_by,
         }))
     }
 
@@ -3517,6 +3555,45 @@ mod tests {
         let object = "[kairo]\nschema = 1\nkind = \"software\"\nname = \"x\"\n\
                       [[dependencies]]\nkind = \"object\"\nobject = \"zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk\"\nconfer = true\n";
         assert!(ObjectManifest::parse_toml(object).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn offered_by_is_declared_and_hashed_only_when_given() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let id = "zQmR83z7U8QpdpnLXSwbQaa29Tz9DWTH6YspqDQEtTfGFrk";
+        let manifest = |kind: &str, extra: &str| {
+            format!(
+                "[kairo]\nschema = 1\nkind = \"software\"\nname = \"x\"\n\
+                 [[dependencies]]\nkind = \"{kind}\"\n{extra}\n"
+            )
+        };
+        let plain = ObjectManifest::parse_toml(&manifest("provides", "provides = \"tool:make\""))?;
+        let by = ObjectManifest::parse_toml(&manifest(
+            "provides",
+            &format!("provides = \"tool:make\"\noffered_by = [\"{id}\"]"),
+        ))?;
+        assert!(matches!(
+            by.dependencies(),
+            [DependencyDeclaration::Provides(dependency)]
+                if dependency.offered_by().iter().map(ObjectId::as_str).eq([id])
+        ));
+        assert_ne!(plain.manifest_hash(), by.manifest_hash());
+        // Named objects only, at least one, and only on a provides
+        // dependency, which chooses among offers.
+        for bad in [
+            manifest("provides", "provides = \"tool:make\"\noffered_by = []"),
+            manifest(
+                "provides",
+                "provides = \"tool:make\"\noffered_by = [\"object:zQm\"]",
+            ),
+            manifest(
+                "object",
+                &format!("object = \"{id}\"\noffered_by = [\"{id}\"]"),
+            ),
+        ] {
+            assert!(ObjectManifest::parse_toml(&bad).is_err(), "{bad}");
+        }
         Ok(())
     }
 

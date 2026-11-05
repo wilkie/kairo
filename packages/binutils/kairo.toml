@@ -1,0 +1,74 @@
+# GNU binutils, as a package of its own (specs/DECISIONS.md §55, §59): one
+# object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 2.41, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone; a later release builds with
+# data:build-base, and may use this one. Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "binutils"
+summary = "GNU binutils for musl, built for x86 and x86-64, each release a version tag; this one 2.41."
+tags = ["toolchain", "binutils"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "ae9a5789e23459e59606e6714723f2d3ffc31c03174191ef0d015bdf06007450"
+path = "distfiles/binutils-2.41.tar.xz"
+
+# Each target's artifact is its children, and the whole is nobody's to
+# install. What each child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "binutils-2.41"
+root = "binutils-2.41"
+summary = "GNU binutils 2.41 for x86, for its own machine."
+tags = ["binutils"]
+version = "2.41"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:binutils" }, { provides = "tool:binutils:i686-linux-musl" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "binutils-2.41"
+root = "binutils-2.41"
+summary = "GNU binutils 2.41 for x86-64, for its own machine."
+tags = ["binutils"]
+version = "2.41"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:binutils" }, { provides = "tool:binutils:x86_64-linux-musl" }]

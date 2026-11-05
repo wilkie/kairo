@@ -1,6 +1,8 @@
-# gcc 7.5.0, with C and C++, for musl, as a package of its own outside
-# the bootstraps (specs/DECISIONS.md §55): one object, a target for each
-# environment it is built for. The x86 target builds it on
+# gcc, with C and C++, for musl, as a package of its own outside the
+# bootstraps (specs/DECISIONS.md §55): one object for every release, each
+# a version tag on its history (§59), and a target for each environment
+# it is built for. This revision is gcc 7.5.0, its first: built with what
+# others offer, as each later one may be built with an older one. The x86 target builds it on
 # live-bootstrap's x86 packages, the x86-64 target on the 64-bit
 # bootstrap's (bootstrap/amd64/), each from their packages by label.
 # Each gcc bootstraps, built by the root's gcc 15 and then by itself, so
@@ -10,8 +12,8 @@
 [kairo]
 schema = 1
 kind = "software"
-name = "gcc-7.5.0"
-summary = "gcc 7.5.0 with C and C++ for musl, built for x86 and x86-64."
+name = "gcc"
+summary = "gcc with C and C++ for musl, built for x86 and x86-64, each release a version tag; this one 7.5.0."
 tags = ["toolchain", "gcc", "compiler"]
 
 # The sources both targets build: gcc, and gmp, mpfr, and mpc, built in

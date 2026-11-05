@@ -11,7 +11,7 @@
 # making another object that offers the same labels. Fixed author and
 # dates make the commit depend only on the files and its parent, so an
 # unchanged wrapper gives the commit it already has and no new revision.
-# Sets WRAPPER and OID.
+# Sets WRAPPER, OID, and STATEMENT, the revision statement its head names.
 commit_wrapper() {
     local message=$1
     shift
@@ -33,6 +33,8 @@ commit_wrapper() {
         if git -C "$WORK" diff --cached --quiet "$previous"; then
             echo "import.sh: object:$WRAPPER already holds this wrapper" >&2
             OID=$previous
+            STATEMENT=$(kairo branch show --actor "$ACTOR" --object "$WRAPPER" --name head |
+                field revision)
             return
         fi
         parent=(--parent "git:sha256:$previous")
@@ -51,6 +53,18 @@ commit_wrapper() {
         field statement)
     [ -n "$statement" ] || fail "revision create printed no statement"
     kairo branch set --actor "$ACTOR" --object "$WRAPPER" --revision "$statement" >/dev/null
+    STATEMENT=$statement
+}
+
+# Tag the revision commit_wrapper made, or the one already at head, with
+# the release's version (DECISIONS.md §59): an object per piece of
+# software, each release a tag on its history.
+#
+#   tag_release <version>
+tag_release() {
+    [ -n "${STATEMENT:-}" ] || fail "no revision to tag"
+    kairo tag bind --actor "$ACTOR" --object "$WRAPPER" --version "$1" \
+        --revision "$STATEMENT" >/dev/null
 }
 
 # import.sh's arguments: <actor id> [--wrapper <object id>] [kairo args...].

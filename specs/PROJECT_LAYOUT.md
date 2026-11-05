@@ -47,9 +47,13 @@ kairo/
   bootstrap/          # archived bootstrap chains as Kairo objects (DECISIONS.md §36)
     stage0-posix/
 
-  packages/           # software built on a finished root, one object per release (DECISIONS.md §55)
+  packages/           # software built on finished packages, one object per software, each release a tag (DECISIONS.md §55, §59)
+    bootstrap-base/   # build-base's labels, offered by the bootstraps alone, for a first generation (§59)
     build-base/       # what a typical C or C++ package builds with, a list of dependencies (§57)
-    gcc-7.5.0/
+    binutils/
+    gcc/
+    make/
+    musl/
 
   crates/
     kairo-core/

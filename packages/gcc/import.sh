@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Archive gcc 7.5.0's sources and make its object
-# (packages/gcc-7.5.0/README.md).
+# Archive gcc's sources, make its object or its next revision, and tag
+# it with the release's version (packages/gcc/README.md).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
@@ -63,6 +63,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 cp -r "$HERE/kairo.toml" "$HERE/src" "$WORK/"
 commit_wrapper "gcc 7.5.0 for x86 and x86-64" kairo.toml src/build.sh
+tag_release 7.5.0
 
 cat <<OUT
 object = $WRAPPER

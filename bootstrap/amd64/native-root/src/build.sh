@@ -28,6 +28,10 @@ STAGE=$SRC/stage
 # it (DECISIONS.md §52 leaves the machine out of a build key).
 JOBS=$(nproc)
 mkdir -p "$BUILD"
+# Libraries go in the directory named by the target, so that another C
+# library's can sit beside them (DECISIONS.md §60), and musl's loader
+# searches it alone, as it does in the root this builds on.
+LIBDIR=/usr/lib/x86_64-linux-musl
 
 # Every file under a directory's usr/: a link by its target, anything
 # else by whether it is executable and its contents. (An artifact keeps
@@ -103,7 +107,7 @@ gnu() {
     unpack "$package"
     mkdir "$BUILD/$package-build"
     cd "$BUILD/$package-build"
-    "../$package/configure" --prefix=/usr --disable-nls \
+    "../$package/configure" --prefix=/usr --libdir="$LIBDIR" --disable-nls \
         CFLAGS="-O2 -std=gnu17 -fpermissive" "$@"
     make -j"$JOBS"
     make install DESTDIR="$STAGE"
@@ -120,7 +124,7 @@ ship linux-headers-4.14.336
 unpack binutils-2.41
 mkdir "$BUILD/binutils"
 cd "$BUILD/binutils"
-../binutils-2.41/configure --prefix=/usr --disable-nls --disable-werror \
+../binutils-2.41/configure --prefix=/usr --libdir="$LIBDIR" --disable-nls --disable-werror \
     --disable-multilib --enable-deterministic-archives --disable-gprofng
 make -j"$JOBS" MAKEINFO=true
 make install DESTDIR="$STAGE" MAKEINFO=true
@@ -132,16 +136,20 @@ ship binutils-2.41
 # in its own versioned directory, where it links against them, so that
 # another gcc can sit beside it (DECISIONS.md §55); their shared
 # libraries are children of their own (§56). libcc1, gdb's plugin, would
-# go in /usr/lib, and isn't built.
+# go in the library directory under no version, and isn't built. Its
+# library directory is the target's (§60); the multilib directory for
+# the OS, which it would add to every library path, is the directory
+# itself, not lib64.
 unpack gcc-15.2.0
 for library in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
     unpack "$library"
     mv "$BUILD/$library" "$BUILD/gcc-15.2.0/${library%-*}"
 done
-sed -i '/m64=/s/lib64/lib/' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
+sed -i '/m64=/s/=\.\.\/lib64.*$/=./' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
+grep -q '^MULTILIB_OSDIRNAMES = m64=\.$' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
 mkdir "$BUILD/gcc"
 cd "$BUILD/gcc"
-../gcc-15.2.0/configure --prefix=/usr --enable-languages=c,c++ \
+../gcc-15.2.0/configure --prefix=/usr --libdir="$LIBDIR" --enable-languages=c,c++ \
     --disable-nls --disable-multilib --enable-bootstrap \
     --disable-libsanitizer --disable-libssp --enable-shared \
     --enable-threads=posix --enable-version-specific-runtime-libs \
@@ -159,21 +167,16 @@ make -j"$JOBS" MAKEINFO=true || {
 }
 make install DESTDIR="$STAGE" MAKEINFO=true
 ln -sf gcc "$STAGE/usr/bin/cc"
-# libgcc puts libgcc_s in the versioned directory's multilib directory
-# for the OS, ../lib, which no version names: it is moved into the
-# versioned directory.
-GCCLIB=$STAGE/usr/lib/gcc/x86_64-pc-linux-musl/15.2.0
-mv "$STAGE/usr/lib/gcc/x86_64-pc-linux-musl/lib"/* "$GCCLIB/"
-rmdir "$STAGE/usr/lib/gcc/x86_64-pc-linux-musl/lib"
+GCCLIB=$STAGE$LIBDIR/gcc/x86_64-pc-linux-musl/15.2.0
 # Each shared runtime library, its file and the soname's link, is
-# copied out to /usr/lib, where the loader finds it, as a child of its
-# own: a program links against the gcc that builds it, and runs with
-# the newest of the library any gcc's child offers (§56).
+# copied out to the library directory, where the loader finds it, as a
+# child of its own: a program links against the gcc that builds it, and
+# runs with the newest of the library any gcc's child offers (§56).
 RUNTIME=$SRC/runtime
 for library in stdc++ gcc_s gomp atomic itm quadmath; do
-    mkdir -p "$RUNTIME/lib$library-15.2.0/usr/lib"
-    cp -a "$GCCLIB"/lib$library.so.[0-9]* "$RUNTIME/lib$library-15.2.0/usr/lib/"
-    rm -f "$RUNTIME/lib$library-15.2.0/usr/lib"/*-gdb.py
+    mkdir -p "$RUNTIME/lib$library-15.2.0$LIBDIR"
+    cp -a "$GCCLIB"/lib$library.so.[0-9]* "$RUNTIME/lib$library-15.2.0$LIBDIR/"
+    rm -f "$RUNTIME/lib$library-15.2.0$LIBDIR"/*-gdb.py
 done
 ship gcc-15.2.0
 for library in stdc++ gcc_s gomp atomic itm quadmath; do
@@ -181,15 +184,25 @@ for library in stdc++ gcc_s gomp atomic itm quadmath; do
     ship lib$library-15.2.0
 done
 
-# 4. musl, with its loader in /usr/lib, reached as /lib through the
-# merged-/usr links. It comes after gcc, as what links libc.so with
-# libgcc, so that libc.so is this build's gcc's work, whatever built
-# the root.
+# 4. musl, in the library directory, with its loader in /usr/lib,
+# reached as /lib through the merged-/usr links, a relative link to its
+# libc.so, and the file that has the loader search the library
+# directory. It comes after gcc, as what links libc.so with libgcc, so
+# that libc.so is this build's gcc's work, whatever built the root.
 unpack musl-1.2.5
 cd "$BUILD/musl-1.2.5"
-./configure --prefix=/usr --syslibdir=/usr/lib --disable-wrapper
+./configure --prefix=/usr --libdir="$LIBDIR" --syslibdir=/usr/lib --disable-wrapper
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
+ln -sf "${LIBDIR#/usr/lib/}/libc.so" "$STAGE/usr/lib/ld-musl-x86_64.so.1"
+# Its startup files are linked in /usr/lib too, as live-bootstrap's are:
+# a gcc running from its build tree, as one bootstrapping does, looks
+# for them only there and in /lib.
+for file in crt1.o crti.o crtn.o Scrt1.o rcrt1.o; do
+    ln -sf "${LIBDIR#/usr/lib/}/$file" "$STAGE/usr/lib/$file"
+done
+mkdir -p "$STAGE/etc"
+printf '%s\n' "$LIBDIR" >"$STAGE/etc/ld-musl-x86_64.path"
 ship musl-1.2.5
 
 # 5. The userland, built by that gcc.
@@ -218,12 +231,12 @@ cd "$BUILD/bzip2-1.0.8"
 make -j"$JOBS" -f Makefile-libbz2_so CFLAGS="-O2 -fPIC -D_FILE_OFFSET_BITS=64"
 make clean
 make -j"$JOBS" CFLAGS="-O2 -D_FILE_OFFSET_BITS=64" bzip2 bzip2recover libbz2.a
-mkdir -p "$STAGE/usr/bin" "$STAGE/usr/lib" "$STAGE/usr/include"
+mkdir -p "$STAGE/usr/bin" "$STAGE$LIBDIR" "$STAGE/usr/include"
 install -m 755 bzip2 bzip2recover "$STAGE/usr/bin/"
-install -m 644 libbz2.a "$STAGE/usr/lib/"
-install -m 755 libbz2.so.1.0.8 "$STAGE/usr/lib/"
-ln -s libbz2.so.1.0.8 "$STAGE/usr/lib/libbz2.so.1.0"
-ln -s libbz2.so.1.0.8 "$STAGE/usr/lib/libbz2.so"
+install -m 644 libbz2.a "$STAGE$LIBDIR/"
+install -m 755 libbz2.so.1.0.8 "$STAGE$LIBDIR/"
+ln -s libbz2.so.1.0.8 "$STAGE$LIBDIR/libbz2.so.1.0"
+ln -s libbz2.so.1.0.8 "$STAGE$LIBDIR/libbz2.so"
 install -m 644 bzlib.h "$STAGE/usr/include/"
 ln -s bzip2 "$STAGE/usr/bin/bunzip2"
 ln -s bzip2 "$STAGE/usr/bin/bzcat"
@@ -232,7 +245,7 @@ ship bzip2-1.0.8
 # 6. The libraries python builds against.
 unpack zlib-1.3.1
 cd "$BUILD/zlib-1.3.1"
-./configure --prefix=/usr
+./configure --prefix=/usr --libdir="$LIBDIR"
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
 ship zlib-1.3.1
@@ -244,6 +257,7 @@ gnu libffi-3.5.2 --disable-docs
 # header, and the installed perl it sets whatever it is given, so they
 # are changed in config.sh after, and the files made from config.sh
 # made again (Configure -S).
+# The libraries it looks for are in the library directory (§60).
 # It finds functions, eaccess among them, that musl declares only for
 # _GNU_SOURCE, as Alpine's build defines. With no man directories in
 # the root, it would install its manuals at the artifact's top; they go
@@ -251,7 +265,7 @@ gnu libffi-3.5.2 --disable-docs
 unpack perl-5.42.0
 cd "$BUILD/perl-5.42.0"
 sh Configure -des -Dprefix=/usr -Dvendorprefix=/usr -Duseshrplib \
-    -Dcc=gcc -Accflags=-D_GNU_SOURCE \
+    -Dcc=gcc -Accflags=-D_GNU_SOURCE -Dlibpth="$LIBDIR" \
     -Dman1dir=/usr/share/man/man1 -Dman3dir=/usr/share/man/man3 \
     -Dman1ext=1 -Dman3ext=3pm \
     -Dmyhostname=kairo -Dmydomain=.invalid -Dcf_by=kairo \
@@ -269,13 +283,21 @@ ship perl-5.42.0
 # Kairo sets, makes its bytecode checked by hash, not by time. Its
 # Makefile records a python found installed, to regenerate files with;
 # none is used, so it records the one it falls back to.
+# Its standard library and compiled modules stay in /usr/lib/python3.11,
+# where it looks for them, whatever its libdir; its modules' build is
+# told where the libraries they load are, and its own shared library,
+# with pkg-config's files, moves to the library directory (§60), as
+# Debian's multiarch python has it.
 unpack Python-3.11.1
 mkdir "$BUILD/python"
 cd "$BUILD/python"
 ../Python-3.11.1/configure --prefix=/usr --enable-shared \
-    --with-ensurepip=no --with-system-ffi PYTHON_FOR_REGEN=python3
+    --with-ensurepip=no --with-system-ffi PYTHON_FOR_REGEN=python3 \
+    LDFLAGS="-L$LIBDIR"
 make -j"$JOBS"
 make install DESTDIR="$STAGE"
+mkdir -p "$STAGE$LIBDIR"
+mv "$STAGE"/usr/lib/libpython3*.so* "$STAGE/usr/lib/pkgconfig" "$STAGE$LIBDIR/"
 ship python-3.11.1
 
 # musl as its headers, static, and shared parts, as live-bootstrap's are
@@ -284,7 +306,7 @@ ship python-3.11.1
 cd "$OUT/musl-1.2.5"
 find . ! -type d | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r path; do
     case "$path" in
-    usr/bin/ldd | usr/lib/ld-musl-* | */libc.so) part=shared ;;
+    etc/* | usr/bin/ldd | usr/lib/ld-musl-* | */libc.so) part=shared ;;
     */libc.a) part=static ;;
     *) part=headers ;;
     esac
@@ -294,9 +316,12 @@ done
 cd "$OUT"
 rm -r musl-1.2.5
 
-# Each child is everything under its usr/, and nothing in lib64.
+# Each child is everything under its usr/, musl's shared part its
+# loader's search path in etc/ too, and nothing in lib64.
 for child in *; do
-    [ "$(ls -A "$child")" = usr ] || { echo "build.sh: $child holds not only usr/: $(ls -A "$child")" >&2; exit 1; }
+    expected=usr
+    [ "$child" = musl-1.2.5-shared ] && expected=$'etc\nusr'
+    [ "$(ls -A "$child")" = "$expected" ] || { echo "build.sh: $child holds not only usr/: $(ls -A "$child")" >&2; exit 1; }
     if [ -e "$child/usr/lib64" ]; then
         echo "build.sh: $child/usr/lib64 exists:" >&2
         find "$child/usr/lib64" >&2
@@ -335,11 +360,16 @@ if [ "$FIXED_POINT" = yes ]; then
     done
     listing "$SRC/made-root" > "$SRC/made"
     if ! diff "$SRC/expected" "$SRC/made" >&2; then
-        # How each text file whose contents differ differs.
+        # How each file whose contents differ differs: a text file line by
+        # line, any other by the strings in it.
         diff "$SRC/expected" "$SRC/made" | sed -n 's/^> \(usr\/[^ ]*\) [x-] .*/\1/p' |
             while IFS= read -r file; do
-                if [ -f "$SRC/before/${file#usr/}" ] && grep -Iq . "$SRC/made-root/$file"; then
+                [ -f "$SRC/before/${file#usr/}" ] || continue
+                if grep -Iq . "$SRC/made-root/$file"; then
                     diff -u "$SRC/before/${file#usr/}" "$SRC/made-root/$file" | head -40 >&2 || true
+                else
+                    diff -u <(strings -n 6 "$SRC/before/${file#usr/}") \
+                        <(strings -n 6 "$SRC/made-root/$file") | head -60 >&2 || true
                 fi
             done
         echo "build.sh: not a fixed point: the lines above differ" >&2

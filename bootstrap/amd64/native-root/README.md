@@ -46,6 +46,18 @@ sonames. The build fails if two children would hold one path.
 | `zlib-1.3.1`, `libffi-3.5.2` | `lib:zlib`, `lib:ffi` |
 | `perl-5.42.0`, `python-3.11.1` | `tool:perl`, `tool:python` |
 
+Every library is in `/usr/lib/x86_64-linux-musl`, x86-64's directory
+for musl's (`specs/DECISIONS.md` §60), which musl's loader alone
+searches, through `/etc/ld-musl-x86_64.path`, part of musl's shared
+child; `/usr/lib` holds only the loader's link. Every package is
+configured with that `--libdir`, gcc too, its multilib directory for
+the OS the directory itself rather than `lib64`. musl's startup files
+are linked in `/usr/lib` as well, where a gcc running from its build
+tree, as one bootstrapping does, looks for them. Stage 2's root has the
+same layout, so stage 3 builds as stage 4 does, on stage 3's children:
+what gcc's configure finds of the C library is built into its driver,
+and stage 4 would otherwise make another one.
+
 gcc keeps its runtime libraries and C++ headers in its versioned
 directory, where it links against them, so another gcc can sit beside
 it; the shared libraries are copied out to `/usr/lib`, each a child of

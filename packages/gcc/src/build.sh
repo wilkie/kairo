@@ -1,11 +1,11 @@
-# Builds gcc 7.5.0 into /kairo/package (packages/gcc-7.5.0/README.md),
-# with C and C++, for the musl target named as the first argument, on
-# the root it is given. It bootstraps: built by the root's gcc, then by
+# Builds gcc 7.5.0 into /kairo/package (packages/gcc/README.md), with C
+# and C++, for the musl target named as the first argument, with the
+# packages it is given. It bootstraps: built by the root's gcc, then by
 # itself twice, the last two compared, so what it is doesn't depend on
 # the root's gcc. The compiler is one child, every file of it but the
 # programs in /usr/bin under a directory named by its version, so it
 # sits beside another gcc; each shared runtime library is a child of
-# its own, in /usr/lib (DECISIONS.md §56).
+# its own, in the library directory (DECISIONS.md §56, §60).
 set -euo pipefail
 export PATH=/usr/bin
 # The root has no texinfo, and the manuals aren't shipped; gcc's
@@ -16,6 +16,13 @@ export MAKEINFO=true
 # name: the triple is given, for x86-64 too.
 TRIPLE=$1
 VERSION=7.5.0
+# Libraries go in the environment's directory for musl's, where its
+# loader looks (DECISIONS.md §60).
+case "$TRIPLE" in
+i686-*) LIBDIR=/usr/lib/i686-unknown-linux-musl ;;
+x86_64-*) LIBDIR=/usr/lib/x86_64-linux-musl ;;
+*) echo "build.sh: no library directory for $TRIPLE" >&2; exit 1 ;;
+esac
 OUT=/kairo/package
 SRC=$PWD
 BUILD=$SRC/build
@@ -30,15 +37,16 @@ unpack() {
     tar -C "$BUILD" --no-same-owner -xf "$SRC/distfiles/$1"
 }
 
-# gcc, and gmp, mpfr, and mpc in its tree. Its libraries go in lib, as
-# musl's loader looks there, not lib64.
+# gcc, and gmp, mpfr, and mpc in its tree. On x86-64, the multilib
+# directory for the OS, which it adds to every library path, is the
+# library directory itself, not lib64 (§60).
 unpack gcc-$VERSION.tar.xz
 for library in gmp-6.2.1.tar.xz mpfr-4.1.0.tar.xz mpc-1.2.1.tar.gz; do
     unpack "$library"
     directory=${library%.tar.*}
     mv "$BUILD/$directory" "$BUILD/gcc-$VERSION/${directory%-*}"
 done
-sed -i '/m64=/s/lib64/lib/' "$BUILD/gcc-$VERSION/gcc/config/i386/t-linux64"
+sed -i '/m64=/s/=\.\.\/lib64.*$/=./' "$BUILD/gcc-$VERSION/gcc/config/i386/t-linux64"
 # musl defines NULL as nullptr for C++11 and later, which gcc 7, built
 # by itself as C++14, can't initialize a bool with; gcc 8 initializes
 # it with false.
@@ -52,14 +60,15 @@ grep -q 'bool error_p = false;' "$BUILD/gcc-$VERSION/gcc/config/i386/i386.c"
 #
 # The runtime libraries, libstdc++ and libgcc_s among them, go in gcc's
 # own versioned directory, with the C++ headers, so they never take the
-# place of another gcc's. libcc1, gdb's plugin, would go in /usr/lib, and
-# isn't built. The libraries that don't build against musl aren't:
+# place of another gcc's. libcc1, gdb's plugin, would go in the library
+# directory under no version, and isn't built. The libraries that don't
+# build against musl aren't:
 # libsanitizer, libmpx, and libcilkrts; musl has its own stack
 # protector, so libssp isn't either.
 mkdir "$BUILD/gcc"
 cd "$BUILD/gcc"
 ../gcc-$VERSION/configure --build="$TRIPLE" --host="$TRIPLE" --target="$TRIPLE" \
-    --prefix=/usr --enable-languages=c,c++ --disable-nls --disable-multilib \
+    --prefix=/usr --libdir="$LIBDIR" --enable-languages=c,c++ --disable-nls --disable-multilib \
     --enable-bootstrap --enable-shared --enable-threads=posix \
     --enable-version-specific-runtime-libs --disable-libcc1 \
     --disable-libsanitizer --disable-libmpx --disable-libcilkrts \
@@ -71,8 +80,8 @@ make install DESTDIR="$COMPILER" MAKEINFO=true
 # libgcc puts libgcc_s in the versioned directory's multilib directory
 # for the OS, ../lib, which no version names: it is moved into the
 # versioned directory, which the driver searches when it links.
-GCCLIB=$COMPILER/usr/lib/gcc/$TRIPLE/$VERSION
-unversioned=$COMPILER/usr/lib/gcc/$TRIPLE/lib
+GCCLIB=$COMPILER$LIBDIR/gcc/$TRIPLE/$VERSION
+unversioned=$COMPILER$LIBDIR/gcc/$TRIPLE/lib
 if [ -d "$unversioned" ]; then
     mv "$unversioned"/* "$GCCLIB/"
     rmdir "$unversioned"
@@ -84,14 +93,14 @@ rm -rf "$COMPILER/usr/share/info" "$COMPILER/usr/share/man"
 find "$COMPILER" -name '*.la' -delete
 
 # Each shared runtime library, its file and the soname's link, is
-# copied out to /usr/lib, where the loader finds it, as a child of its
-# own: a program links against the gcc that builds it, and runs with
-# the newest of the library any gcc's child offers.
+# copied out to the library directory, where the loader finds it, as a
+# child of its own: a program links against the gcc that builds it, and
+# runs with the newest of the library any gcc's child offers.
 LIBRARIES="stdc++ gcc_s gomp atomic itm quadmath"
 for library in $LIBRARIES; do
-    mkdir -p "$OUT/lib$library-$VERSION/usr/lib"
-    cp -a "$GCCLIB"/lib$library.so.[0-9]* "$OUT/lib$library-$VERSION/usr/lib/"
-    rm -f "$OUT/lib$library-$VERSION/usr/lib"/*-gdb.py
+    mkdir -p "$OUT/lib$library-$VERSION$LIBDIR"
+    cp -a "$GCCLIB"/lib$library.so.[0-9]* "$OUT/lib$library-$VERSION$LIBDIR/"
+    rm -f "$OUT/lib$library-$VERSION$LIBDIR"/*-gdb.py
 done
 
 # Each child is everything under its usr/. All of the compiler but its
@@ -114,7 +123,7 @@ i686-*) class=1 machine=3 ;;
 x86_64-*) class=2 machine=62 ;;
 *) echo "build.sh: no ELF class for $TRIPLE" >&2; exit 1 ;;
 esac
-for file in gcc-$VERSION/usr/bin/* gcc-$VERSION/usr/libexec/gcc/"$TRIPLE"/$VERSION/cc1* lib*-$VERSION/usr/lib/*; do
+for file in gcc-$VERSION/usr/bin/* gcc-$VERSION/usr/libexec/gcc/"$TRIPLE"/$VERSION/cc1* lib*-$VERSION"$LIBDIR"/*; do
     [ -f "$file" ] && [ ! -L "$file" ] || continue
     [ "$(od -An -c -N4 "$file" | tr -d ' ')" = 177ELF ] || continue
     [ "$(od -An -tu1 -j4 -N1 "$file" | tr -d ' ')" = $class ] || { echo "$file is the wrong class" >&2; exit 1; }
@@ -145,5 +154,5 @@ g++ -static -o hello-cc-static hello.cc
 for program in hello-dynamic hello-static hello-cc hello-cc-static; do
     [ "$(./$program)" = hello ] || { echo "build.sh: $program failed" >&2; exit 1; }
 done
-[ "$(LD_LIBRARY_PATH=$OUT/libstdc++-$VERSION/usr/lib:$OUT/libgcc_s-$VERSION/usr/lib ./hello-cc)" = hello ] ||
+[ "$(LD_LIBRARY_PATH=$OUT/libstdc++-$VERSION$LIBDIR:$OUT/libgcc_s-$VERSION$LIBDIR ./hello-cc)" = hello ] ||
     { echo "build.sh: hello-cc failed with gcc $VERSION's libstdc++" >&2; exit 1; }

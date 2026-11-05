@@ -1,0 +1,114 @@
+# musl, as a package of its own (specs/DECISIONS.md §55, §59): one
+# object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 1.2.5, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone; a later release builds with
+# data:build-base, and may use this one. Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "musl"
+summary = "musl, the C library, built for x86 and x86-64, each release a version tag; this one 1.2.5."
+tags = ["libc", "musl"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+path = "distfiles/musl-1.2.5.tar.gz"
+
+# Each target's artifact is its children, and the whole is nobody's to
+# install. What each child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
+
+[[build.targets.children]]
+name = "musl-1.2.5-headers"
+root = "musl-1.2.5-headers"
+summary = "musl 1.2.5's headers part, for x86."
+tags = ["musl"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:headers" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-static"
+root = "musl-1.2.5-static"
+summary = "musl 1.2.5's static part, for x86."
+tags = ["musl"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:static" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-shared"
+root = "musl-1.2.5-shared"
+summary = "musl 1.2.5's shared part, for x86."
+tags = ["musl"]
+version = "1.2.5"
+requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+provides = [{ provides = "lib:musl:shared", confers = [{ provides = "lib:musl:shared", version = "^1.2.5" }] }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
+
+[[build.targets.children]]
+name = "musl-1.2.5-headers"
+root = "musl-1.2.5-headers"
+summary = "musl 1.2.5's headers part, for x86-64."
+tags = ["musl"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:headers" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-static"
+root = "musl-1.2.5-static"
+summary = "musl 1.2.5's static part, for x86-64."
+tags = ["musl"]
+version = "1.2.5"
+provides = [{ provides = "lib:musl:static" }]
+
+[[build.targets.children]]
+name = "musl-1.2.5-shared"
+root = "musl-1.2.5-shared"
+summary = "musl 1.2.5's shared part, for x86-64."
+tags = ["musl"]
+version = "1.2.5"
+requires = [{ provides = "data:linux-filesystem:merged-usr" }]
+provides = [{ provides = "lib:musl:shared", confers = [{ provides = "lib:musl:shared", version = "^1.2.5" }] }]

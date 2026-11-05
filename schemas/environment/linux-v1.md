@@ -95,6 +95,33 @@ part of any artifact.
   contract's empty `/sys` only keeps scripts that mount what isn't
   mounted from doing so.
 
+## Conventions packages follow
+
+Not promises of the engine, which provides nothing at these paths, but
+the layout the archive's packages share in each environment, so that
+what one installs another finds (`DECISIONS.md` §60).
+
+| Environment | musl's library directory | Its loader | Its search path |
+|---|---|---|---|
+| `environment:linux/x86` | `/usr/lib/i686-unknown-linux-musl`, as live-bootstrap lays it out | `/lib/ld-musl-i386.so.1` | `/etc/ld-musl-i386.path`: the library directory |
+| `environment:linux/x86-64` | `/usr/lib/x86_64-linux-musl` | `/lib/ld-musl-x86_64.so.1` | `/etc/ld-musl-x86_64.path`: the library directory |
+
+Every library a package for musl ships for programs to link against or
+the loader to find, static or shared, with pkg-config's files, is in
+the library directory, its package configured with `--libdir` set to
+it, or moved there; a language's own modules stay where it looks for
+them (`/usr/lib/python3.11`);
+`/usr/lib` holds no C library's files but the loader's link, reached as
+`/lib` through the merged-/usr links, and links to its startup files
+(`crt1.o`, `crti.o`, `crtn.o`, `Scrt1.o`, `rcrt1.o`), which a gcc running
+from its build tree, as one bootstrapping does, looks for only there
+and in `/lib`. A gcc is configured with the same
+`--libdir`, so it finds the C library's startup files and libraries
+there, and on x86-64 with the multilib directory for the OS set to the
+directory itself. Another C library, glibc, would have a directory of
+its own beside it, its loader searching only that, and its headers in
+a root of their own.
+
 ## Equivalence
 
 Engines that implement this label are interchangeable: a plan's hash

@@ -2,7 +2,9 @@
 # (bootstrap/amd64/cross-root/README.md), on live-bootstrap's x86 root with
 # stage 1's x86_64-linux-musl toolchain: the kernel headers, musl,
 # binutils, gcc, then the userland, each configured to run on x86_64 and
-# installed under /usr.
+# installed under /usr, every library in x86-64's directory for musl's
+# (DECISIONS.md §60), as the stages after it have them, so that each of
+# them builds in the same layout.
 set -euo pipefail
 export PATH=/usr/bin
 HOST=x86_64-linux-musl
@@ -14,6 +16,7 @@ BUILD=$SRC/build
 # it (DECISIONS.md §52 leaves the machine out of a build key).
 JOBS=$(nproc)
 mkdir -p "$BUILD"
+LIBDIR=/usr/lib/x86_64-linux-musl
 
 # The guest is root in its own namespace, where the tarballs' owners
 # aren't mapped: the files are the guest's.
@@ -35,7 +38,7 @@ gnu() {
     unpack "$package"
     mkdir "$BUILD/$package-build"
     cd "$BUILD/$package-build"
-    "../$package/configure" --build="$BUILD_TRIPLE" --host="$HOST" \
+    "../$package/configure" --build="$BUILD_TRIPLE" --host="$HOST" --libdir="$LIBDIR" \
         --prefix=/usr --disable-nls CFLAGS="-O2 -std=gnu17 -fpermissive" \
         CC_FOR_BUILD="gcc -std=gnu17 -fpermissive" "$@"
     make -j"$JOBS"
@@ -47,42 +50,62 @@ unpack linux-4.14.336
 cd "$BUILD/linux-4.14.336"
 make ARCH=x86_64 HOSTCC="gcc -std=gnu11" INSTALL_HDR_PATH="$OUT/usr" headers_install
 
-# 2. musl, with its loader in /usr/lib, reached as /lib through the
-# merged-/usr links.
+# 2. musl, in the library directory, with its loader in /usr/lib,
+# reached as /lib through the merged-/usr links, a relative link to its
+# libc.so, its startup files linked in /usr/lib, where a gcc running
+# from its build tree looks, and the file that has the loader search the
+# library directory alone (§60), as stage 3's musl.
 unpack musl-1.2.5
 cd "$BUILD/musl-1.2.5"
-./configure --prefix=/usr --syslibdir=/usr/lib --target="$HOST" \
+./configure --prefix=/usr --libdir="$LIBDIR" --syslibdir=/usr/lib --target="$HOST" \
     CROSS_COMPILE="$HOST-" --disable-wrapper
 make -j"$JOBS"
 make install DESTDIR="$OUT"
+ln -sf "${LIBDIR#/usr/lib/}/libc.so" "$OUT/usr/lib/ld-musl-x86_64.so.1"
+for file in crt1.o crti.o crtn.o Scrt1.o rcrt1.o; do
+    ln -sf "${LIBDIR#/usr/lib/}/$file" "$OUT/usr/lib/$file"
+done
+mkdir -p "$OUT/etc"
+printf '%s\n' "$LIBDIR" >"$OUT/etc/ld-musl-x86_64.path"
 
 # 3. binutils. gprofng doesn't compile under C23, as in stage 1.
 unpack binutils-2.41
 mkdir "$BUILD/binutils"
 cd "$BUILD/binutils"
 ../binutils-2.41/configure --build="$BUILD_TRIPLE" --host="$HOST" \
-    --target="$HOST" --prefix=/usr --disable-nls --disable-werror \
+    --target="$HOST" --prefix=/usr --libdir="$LIBDIR" --disable-nls --disable-werror \
     --disable-multilib --enable-deterministic-archives --disable-gprofng
 make -j"$JOBS"
 make install DESTDIR="$OUT"
 
 # 4. gcc, with C and C++, and gmp, mpfr, and mpc built in its tree. Its
-# libraries go in /usr/lib, beside musl's, not lib64.
+# libraries go in the library directory, beside musl's; the multilib
+# directory for the OS, which it adds to every library path, is the
+# directory itself, not lib64 (§60). Its runtime libraries are built by
+# stage 1's cross compiler, whose multilib directory for the OS is
+# ../lib, so their directory is named outright, and what installs by
+# that multilib directory anyway, libgcc among it, is moved there.
 unpack gcc-15.2.0
 for library in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
     unpack "$library"
     mv "$BUILD/$library" "$BUILD/gcc-15.2.0/${library%-*}"
 done
-sed -i '/m64=/s/lib64/lib/' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
+sed -i '/m64=/s/=\.\.\/lib64.*$/=./' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
+grep -q '^MULTILIB_OSDIRNAMES = m64=\.$' "$BUILD/gcc-15.2.0/gcc/config/i386/t-linux64"
 mkdir "$BUILD/gcc"
 cd "$BUILD/gcc"
 ../gcc-15.2.0/configure --build="$BUILD_TRIPLE" --host="$HOST" \
-    --target="$HOST" --prefix=/usr --enable-languages=c,c++ \
+    --target="$HOST" --prefix=/usr --libdir="$LIBDIR" --with-toolexeclibdir="$LIBDIR" \
+    --enable-languages=c,c++ \
     --disable-nls --disable-multilib --disable-bootstrap \
     --disable-libsanitizer --disable-libssp --enable-shared \
     --enable-threads=posix
 make -j"$JOBS"
 make install DESTDIR="$OUT"
+if [ -d "$OUT/usr/lib/lib" ]; then
+    cp -a "$OUT/usr/lib/lib/." "$OUT$LIBDIR/"
+    rm -r "$OUT/usr/lib/lib"
+fi
 ln -s gcc "$OUT/usr/bin/cc"
 
 # 5. The userland.
@@ -109,7 +132,7 @@ cd "$BUILD/bzip2-1.0.8"
 make -j"$JOBS" CC="$HOST-gcc" AR="$HOST-ar" RANLIB="$HOST-ranlib" \
     CFLAGS="-O2 -D_FILE_OFFSET_BITS=64" bzip2 bzip2recover libbz2.a
 install -m 755 bzip2 bzip2recover "$OUT/usr/bin/"
-install -m 644 libbz2.a "$OUT/usr/lib/"
+install -m 644 libbz2.a "$OUT$LIBDIR/"
 install -m 644 bzlib.h "$OUT/usr/include/"
 ln -s bzip2 "$OUT/usr/bin/bunzip2"
 ln -s bzip2 "$OUT/usr/bin/bzcat"
@@ -120,9 +143,18 @@ rm -rf "$OUT/usr/share/info" "$OUT/usr/share/man" "$OUT/usr/share/doc" \
     "$OUT/usr/share/locale"
 find "$OUT" -name '*.la' -delete
 
-# Everything is under /usr, and nothing in lib64.
+# Everything is under /usr, but the loader's search path in etc/, and
+# nothing in lib64.
 cd "$OUT"
-[ "$(ls -A)" = usr ] || { echo "build.sh: not only usr/: $(ls -A)" >&2; exit 1; }
+[ "$(ls -A | tr '\n' ' ')" = "etc usr " ] || { echo "build.sh: not only etc/ and usr/: $(ls -A)" >&2; exit 1; }
+# /usr/lib holds the library directory, the loader's link, and links to
+# the startup files alone.
+stray=$(find usr/lib -mindepth 1 -maxdepth 1 ! -name "${LIBDIR##*/}" ! -name 'ld-musl-*' ! -name '*crt*.o')
+if [ -n "$stray" ]; then
+    echo "build.sh: in /usr/lib, outside the library directory:" >&2
+    echo "$stray" >&2
+    exit 1
+fi
 if [ -e usr/lib64 ]; then
     echo "build.sh: usr/lib64 exists:" >&2
     find usr/lib64 >&2

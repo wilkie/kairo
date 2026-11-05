@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Make the bootstrap-base object (packages/bootstrap-base/README.md).
+#
+# Usage:
+#   import.sh <actor id> [--wrapper <object id>] [kairo args...]
+#
+# This directory's kairo.toml is committed as SHA-256 history and
+# created as an object, or, with --wrapper, committed on top of that
+# existing object's history as its next revision. It has no sources: it
+# doesn't build, and what it names are labels. Extra arguments go before
+# the command in every `kairo` call, e.g. `--store <path>`. KAIRO names
+# the kairo binary (default: kairo on PATH). Prints the object's id.
+set -euo pipefail
+shopt -s inherit_errexit
+
+KAIRO=${KAIRO:-kairo}
+HERE=$(cd "$(dirname "$0")" && pwd)
+
+kairo() { "$KAIRO" "${KAIRO_ARGS[@]}" "$@"; }
+field() { sed -n "s/^$1 = //p" | head -n 1; }
+fail() {
+    echo "import.sh: $*" >&2
+    exit 1
+}
+# shellcheck source=../../bootstrap/wrapper.sh
+. "$HERE/../../bootstrap/wrapper.sh"
+parse_import_args "$@"
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+cp "$HERE/kairo.toml" "$WORK/"
+commit_wrapper "bootstrap-base: build-base offered by the bootstraps alone" kairo.toml
+tag_release 1.0.0
+
+cat <<OUT
+object = $WRAPPER
+
+# A first generation that depends on data:bootstrap-base takes its
+# dependencies as its own, offered by the bootstraps alone.
+OUT

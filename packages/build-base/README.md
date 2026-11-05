@@ -22,7 +22,7 @@ bootstrap's to one in `linux/x86-64`.
 **A build's own labels win.** A build that names one of these labels
 itself replaces this object's requirement on it. A build that wants gcc
 7 names `tool:gcc` with `^7` and still takes everything else from here.
-gcc 7.5.0's own build (`../gcc-7.5.0/`) does the same, naming the gcc
+gcc 7.5.0's own build (`../gcc/`) does the same, naming the gcc
 15 that builds its first stage.
 
 **In a plan.** Each brought dependency is a requirement of the build,

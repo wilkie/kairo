@@ -363,6 +363,9 @@ pub enum Requested {
         from: Option<String>,
         #[serde(skip_serializing_if = "std::ops::Not::not", default)]
         overlay: bool,
+        /// The objects whose offers alone may satisfy it (§59).
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        offered_by: Vec<String>,
     },
     Object {
         object: String,
@@ -1194,6 +1197,9 @@ struct Constraint {
     /// The labels it came through, the build dependency first; empty
     /// for the target's own requirement.
     via: Vec<String>,
+    /// The objects whose offers alone satisfy it, each an offer's own or
+    /// its parent's (§59); empty for any.
+    offered_by: Vec<ObjectId>,
 }
 
 impl Constraint {
@@ -1202,21 +1208,96 @@ impl Constraint {
             .as_ref()
             .is_none_or(|(object, snapshot)| &offer.object == object && &offer.snapshot == snapshot)
             && version_matches(self.version.as_deref(), offer.version.as_deref())
+            && (self.offered_by.is_empty()
+                || self.offered_by.contains(&offer.object)
+                || self.offered_by.contains(offer.builder()))
     }
 
     fn describe(&self, label: &str) -> String {
-        let what = match (&self.pin, &self.version) {
+        let mut what = match (&self.pin, &self.version) {
             (Some((object, snapshot)), _) => {
                 format!("{label} pinned to object:{object} at snapshot {snapshot}")
             }
             (None, Some(version)) => format!("{label} {version}"),
             (None, None) => format!("{label} (any version)"),
         };
+        if !self.offered_by.is_empty() {
+            let objects: Vec<String> = self
+                .offered_by
+                .iter()
+                .map(|object| format!("object:{object}"))
+                .collect();
+            what = format!("{what} offered by {}", objects.join(" or "));
+        }
         if self.via.is_empty() {
             format!("{what}, required by this target")
         } else {
             format!("{what}, required via {}", self.via.join(" > "))
         }
+    }
+}
+
+/// Which of its own object's offers a target's build may use
+/// (`DECISIONS.md` §59): another target's of the same snapshot, which is
+/// a build of its own, as stage 4 builds on stage 3's children; and of
+/// another snapshot, only an older generation's, a version-tagged
+/// snapshot whose revision is an ancestor of the one being built. Never
+/// its own target's, nor a newer or unrelated tag's, which would be built
+/// with it in turn.
+struct Generation {
+    object: ObjectId,
+    snapshot: SnapshotId,
+    target: String,
+    older: BTreeSet<SnapshotId>,
+}
+
+impl Generation {
+    fn of(
+        store: &FilesystemStore,
+        index: &Index,
+        snapshot: &Snapshot,
+        target: &str,
+    ) -> Result<Self, ResolveError> {
+        let object = snapshot.object().clone();
+        let ancestors: BTreeSet<String> = store
+            .revision_log(&object, snapshot.frontier(), 0, usize::MAX)
+            .map_err(ResolveError::Store)?
+            .revisions
+            .iter()
+            .map(|revision| revision.unsigned().body().revision())
+            .filter(|revision| *revision != snapshot.revision())
+            .map(|revision| revision.as_str().to_owned())
+            .collect();
+        let older = index
+            .candidates
+            .iter()
+            .chain(&index.tagged)
+            .filter(|candidate| {
+                candidate.object == object && ancestors.contains(candidate.revision.as_str())
+            })
+            .map(|candidate| candidate.snapshot.clone())
+            .collect();
+        Ok(Self {
+            object,
+            snapshot: snapshot.snapshot_id(),
+            target: target.to_owned(),
+            older,
+        })
+    }
+
+    /// Whether `offer` is barred from this build: its own target's, or
+    /// another snapshot's of its object that isn't an older generation.
+    fn bars(&self, offer: &Offer) -> bool {
+        if offer.builder() != &self.object {
+            return false;
+        }
+        if offer.snapshot == self.snapshot {
+            return offer
+                .artifact
+                .as_ref()
+                .is_none_or(|(target, _)| target == &self.target);
+        }
+        !self.older.contains(&offer.snapshot)
     }
 }
 
@@ -1281,6 +1362,9 @@ impl Offer {
 #[derive(Debug)]
 pub struct Index {
     pub candidates: Vec<Candidate>,
+    /// Each candidate's other version-tagged snapshots, by its creator,
+    /// which offer their labels too, as older generations (§59).
+    pub tagged: Vec<Candidate>,
     pub skipped: Vec<Skipped>,
 }
 
@@ -1293,6 +1377,7 @@ impl Index {
         manifests: &dyn ManifestSource,
     ) -> Result<Self, ResolveError> {
         let mut candidates = Vec::new();
+        let mut tagged = Vec::new();
         let mut skipped = Vec::new();
         for object in store.list_objects().map_err(ResolveError::Store)? {
             match current_head(store, &object)? {
@@ -1309,20 +1394,41 @@ impl Index {
                                 snapshot.revision().as_str()
                             ),
                         }),
-                        Some(manifest) => candidates.push(Candidate {
-                            object,
-                            snapshot: snapshot.snapshot_id(),
-                            revision: snapshot.revision().clone(),
-                            manifest,
-                            owner,
-                            published,
-                        }),
+                        Some(manifest) => {
+                            // Its older generations, those of its tagged
+                            // snapshots this node holds the trees of,
+                            // vouched for as its head is.
+                            for (_, older) in tagged_snapshots(store, &object)? {
+                                if older.snapshot_id() == snapshot.snapshot_id() {
+                                    continue;
+                                }
+                                if let Some(manifest) = load_manifest(manifests, &object, &older)? {
+                                    tagged.push(Candidate {
+                                        object: object.clone(),
+                                        snapshot: older.snapshot_id(),
+                                        revision: older.revision().clone(),
+                                        manifest,
+                                        owner: owner.clone(),
+                                        published,
+                                    });
+                                }
+                            }
+                            candidates.push(Candidate {
+                                object,
+                                snapshot: snapshot.snapshot_id(),
+                                revision: snapshot.revision().clone(),
+                                manifest,
+                                owner,
+                                published,
+                            });
+                        }
                     }
                 }
             }
         }
         Ok(Self {
             candidates,
+            tagged,
             skipped,
         })
     }
@@ -1334,6 +1440,7 @@ impl Index {
         let mut offers: Vec<Offer> =
             self.candidates
                 .iter()
+                .chain(&self.tagged)
                 .flat_map(|candidate| {
                     candidate
                         .manifest
@@ -1378,7 +1485,7 @@ impl Index {
                 })
                 .collect();
         // Child objects' labels (§41 sub-decision 4).
-        for candidate in &self.candidates {
+        for candidate in self.candidates.iter().chain(&self.tagged) {
             for target in candidate.manifest.build_targets() {
                 for child in target.children() {
                     for provide in child.provides().iter().filter(|p| p.provides() == label) {
@@ -1434,17 +1541,23 @@ impl Index {
         let mut labels: Vec<&str> = self
             .candidates
             .iter()
+            .chain(&self.tagged)
             .flat_map(|candidate| candidate.manifest.provides().iter())
             .map(|declaration| declaration.provides())
-            .chain(self.candidates.iter().flat_map(|candidate| {
-                candidate
-                    .manifest
-                    .build_targets()
+            .chain(
+                self.candidates
                     .iter()
-                    .flat_map(|target| target.children())
-                    .flat_map(|child| child.provides())
-                    .map(|provide| provide.provides())
-            }))
+                    .chain(&self.tagged)
+                    .flat_map(|candidate| {
+                        candidate
+                            .manifest
+                            .build_targets()
+                            .iter()
+                            .flat_map(|target| target.children())
+                            .flat_map(|child| child.provides())
+                            .map(|provide| provide.provides())
+                    }),
+            )
             .collect();
         labels.sort_unstable();
         labels.dedup();
@@ -1816,28 +1929,35 @@ impl<'a> Resolver<'a> {
         object: &ObjectId,
         selector: &SnapshotSelector,
         target_name: &str,
-        stack: &mut Vec<(ObjectId, String)>,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         diagnostics: &mut Diagnostics,
     ) -> Result<PlanDocument, ResolveError> {
-        let key = (object.clone(), target_name.to_owned());
+        // A build is its object's target at one snapshot: another
+        // snapshot's is another generation, and may be built for it (§59).
+        let snapshot = self.select_snapshot(object, selector)?;
+        let key = (
+            object.clone(),
+            snapshot.snapshot_id(),
+            target_name.to_owned(),
+        );
         if let Some(start) = stack.iter().position(|entry| entry == &key) {
             let mut chain: Vec<String> = stack[start..]
                 .iter()
-                .map(|(object, target)| format!("object:{object} target {target}"))
+                .map(|(object, _, target)| format!("object:{object} target {target}"))
                 .collect();
             chain.push(format!("object:{object} target {target_name}"));
             return Err(ResolveError::Cycle { chain });
         }
         stack.push(key);
 
-        let snapshot = self.select_snapshot(object, selector)?;
         let manifest = load_manifest(self.manifests, object, &snapshot)?.ok_or_else(|| {
             ResolveError::ManifestUnavailable {
                 object: object.clone(),
                 revision: snapshot.revision().clone(),
             }
         })?;
+        let generation = Generation::of(self.store, index, &snapshot, target_name)?;
         let target = manifest
             .build_target(target_name)
             .ok_or_else(|| ResolveError::NoTarget {
@@ -1903,6 +2023,11 @@ impl<'a> Resolver<'a> {
                             path,
                             from,
                             overlay,
+                            offered_by: dependency
+                                .offered_by()
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
                         };
                         let resolved = if dependency.provides().starts_with(ENVIRONMENT_PREFIX) {
                             self.resolve_environment(
@@ -1926,6 +2051,7 @@ impl<'a> Resolver<'a> {
                                             version: other.version().map(str::to_owned),
                                             pin: None,
                                             via: Vec::new(),
+                                            offered_by: other.offered_by().to_vec(),
                                         })
                                     }
                                     _ => None,
@@ -1946,6 +2072,7 @@ impl<'a> Resolver<'a> {
                                 mine,
                                 isolated,
                                 consumer_environment.as_deref(),
+                                &generation,
                                 stack,
                                 prerequisites,
                                 &mut needed_first,
@@ -1961,9 +2088,11 @@ impl<'a> Resolver<'a> {
                             {
                                 let key = brought_key(declaration);
                                 if offer.artifact.is_none() && !brought.contains_key(&key) {
-                                    if let Some(candidate) = index.candidates.iter().find(|c| {
-                                        c.object == offer.object && c.snapshot == offer.snapshot
-                                    }) {
+                                    if let Some(candidate) =
+                                        index.candidates.iter().chain(&index.tagged).find(|c| {
+                                            c.object == offer.object && c.snapshot == offer.snapshot
+                                        })
+                                    {
                                         if let Some(more) = brings(
                                             object,
                                             target_name,
@@ -2157,6 +2286,7 @@ impl<'a> Resolver<'a> {
                 &seeded,
                 isolated,
                 consumer_environment.as_deref(),
+                &generation,
                 stack,
                 prerequisites,
                 diagnostics,
@@ -2360,10 +2490,19 @@ impl<'a> Resolver<'a> {
         constraints: &[Constraint],
         isolated: bool,
         consumer_environment: Option<&str>,
+        generation: &Generation,
     ) -> Result<Vec<Choice>, Conflict> {
         let mut considered = Vec::new();
         let mut offers = Vec::new();
         for offer in index.offers(label) {
+            // Not built with itself, only with older generations (§59).
+            if generation.bars(&offer) {
+                considered.push(format!(
+                    "{} is this object's, and not an older generation",
+                    offer.describe()
+                ));
+                continue;
+            }
             // Binaries are for one architecture (§38 sub-decision 8).
             if let (Some(wanted), Some(built)) = (consumer_environment, &offer.environment) {
                 if contract_arch(wanted) != contract_arch(built) {
@@ -2498,7 +2637,7 @@ impl<'a> Resolver<'a> {
         &self,
         index: &Index,
         picked: &Picked,
-        stack: &mut Vec<(ObjectId, String)>,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
         diagnostics: &mut Diagnostics,
@@ -2550,13 +2689,21 @@ impl<'a> Resolver<'a> {
         mine: usize,
         isolated: bool,
         consumer_environment: Option<&str>,
-        stack: &mut Vec<(ObjectId, String)>,
+        generation: &Generation,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
         diagnostics: &mut Diagnostics,
     ) -> Result<(Resolved, Vec<Choice>), ResolveError> {
         let choices = self
-            .choose_for_label(index, label, constraints, isolated, consumer_environment)
+            .choose_for_label(
+                index,
+                label,
+                constraints,
+                isolated,
+                consumer_environment,
+                generation,
+            )
             .map_err(|conflict| conflict.into_error(object, target, requested, constraints))?;
         let own = choices
             .iter()
@@ -2674,7 +2821,7 @@ impl<'a> Resolver<'a> {
         &self,
         index: &Index,
         offer: &Offer,
-        stack: &mut Vec<(ObjectId, String)>,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         diagnostics: &mut Diagnostics,
     ) -> Result<Vec<ArtifactRequirement>, ResolveError> {
@@ -2753,7 +2900,8 @@ impl<'a> Resolver<'a> {
         seeded: &[(String, Picked, Vec<String>)],
         isolated: bool,
         consumer_environment: Option<&str>,
-        stack: &mut Vec<(ObjectId, String)>,
+        generation: &Generation,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         diagnostics: &mut Diagnostics,
     ) -> Result<Closure, ResolveError> {
@@ -2815,6 +2963,7 @@ impl<'a> Resolver<'a> {
                             version: entry.version,
                             pin: held_pin(entry.pin)?,
                             via: chain,
+                            offered_by: Vec::new(),
                         });
                 }
             }
@@ -2847,13 +2996,50 @@ impl<'a> Resolver<'a> {
             // The other labels: chosen anew from everything asked of
             // them this round.
             let mut next: Vec<(String, Picked, Vec<String>)> = seeded.to_vec();
+            // What the build installs already, its declared requirements'
+            // choices and the closure's so far: an object of these that
+            // offers a label asked here too meets it, so the closure adds
+            // no second package where one already serves (§59).
+            let installed: Vec<(&ObjectId, &SnapshotId)> = declared
+                .values()
+                .flatten()
+                .chain(runtime.iter().map(|(_, pick, _)| pick))
+                .filter_map(|pick| match pick {
+                    Picked::Offer(offer) => Some((&offer.object, &offer.snapshot)),
+                    Picked::HostTool(_) => None,
+                })
+                .collect();
             for (label, constraints) in &gathered {
                 if declared.contains_key(label) {
                     continue;
                 }
-                let choices = self
-                    .choose_for_label(index, label, constraints, isolated, consumer_environment)
-                    .map_err(|conflict| conflict.into_runtime_error(object, target_name))?;
+                let already = index.offers(label).into_iter().find(|offer| {
+                    installed.contains(&(&offer.object, &offer.snapshot))
+                        && !generation.bars(offer)
+                        && match (consumer_environment, &offer.environment) {
+                            (Some(wanted), Some(built)) => {
+                                contract_arch(wanted) == contract_arch(built)
+                            }
+                            _ => true,
+                        }
+                        && constraints.iter().all(|c| c.satisfied_by(offer))
+                });
+                let choices = match already {
+                    Some(offer) => vec![Choice {
+                        picked: Picked::Offer(Box::new(offer)),
+                        serves: (0..constraints.len()).collect(),
+                    }],
+                    None => self
+                        .choose_for_label(
+                            index,
+                            label,
+                            constraints,
+                            isolated,
+                            consumer_environment,
+                            generation,
+                        )
+                        .map_err(|conflict| conflict.into_runtime_error(object, target_name))?,
+                };
                 for choice in choices {
                     let via = choice
                         .serves
@@ -2886,7 +3072,7 @@ impl<'a> Resolver<'a> {
         offer: &Offer,
         provider_target: &str,
         output: &str,
-        stack: &mut Vec<(ObjectId, String)>,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
         diagnostics: &mut Diagnostics,
@@ -2998,7 +3184,7 @@ impl<'a> Resolver<'a> {
         wanted: &ObjectId,
         version: Option<&str>,
         pinned: Option<&SnapshotId>,
-        stack: &mut Vec<(ObjectId, String)>,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
         prerequisites: &mut Vec<PlanDocument>,
         needed_first: &mut Vec<BuildFirst>,
         diagnostics: &mut Diagnostics,
