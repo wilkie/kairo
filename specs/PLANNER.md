@@ -760,18 +760,20 @@ store's cache with fingerprints of what it read:
 
 ```text
 each label it looked up    its release offers eligible in the target's
-                           architecture: object, snapshot, owner, in rank order
-each object it named       by offered_by, by id, or itself: head and version tags
-the ranking                preferred owners, local actors, their general trust
-the host                   contract, engines, host tools in development mode
+                           architecture, and any offers of objects its
+                           requirements named: object, snapshot, owner, in rank order
+each object it named       by id: head and version tags; itself: tags, and
+                           whether its snapshot is still its head
+each owner it ranked       its tier: preference, local actors, their trust
+what it found held         providers' artifacts, their builds' plans, sources
+the host                   contract, engines, host tools, seeds
 the resolver               a version raised when it would choose differently
 ```
 
 A resolution of the same object, snapshot, and target whose recorded
-fingerprints all match, and whose providers' plans are reused too,
-reuses the choices and binds them again to what this node holds: held
-artifacts, builds first, build keys, sources. Any mismatch plans again
-in full. A reused plan is byte for byte the plan a full resolution
+fingerprints all match, whose holdings read the same, and whose
+providers' plans are reused too, reuses the plan. Any mismatch plans
+it again in full, reusing the providers that still hold. A reused plan is byte for byte the plan a full resolution
 makes; the record is cache data, never federated, and losing it costs
 only time.
 
@@ -782,8 +784,8 @@ make 4.4.1 tagged          tool:make changes: its consumers are replanned
 python 3.12 tagged         tool:python changes: plans that never asked keep theirs
 make's head moves, untagged    no label changes (§61): nothing is replanned
 another owner's make fetched   tool:make changes: replanned, to the same choice
-an actor newly trusted     the ranking changes: every plan is replanned
-a build finishes           no fingerprint changes: rebinding finds its artifact
+an actor newly trusted     its tier changes: plans that ranked its offers are replanned
+a build finishes           what was held changes: its consumers are replanned
 ```
 
 ---

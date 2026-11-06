@@ -18,14 +18,17 @@ rather than per-commit.
 
 ### Added
 
-- **Reused plans, specified (`DECISIONS.md` §62).** A plan is recorded
-  in the store's `cache/plans/` with fingerprints of what it consulted:
-  each label's release offers per architecture, each object it named,
-  the owners' ranking, the host, and the resolver's version. A later
-  resolution reuses its choices while they all match, rebinding held
-  artifacts and build keys, so a new release replans only the plans
-  that looked at its label. `kairo build --replan` plans afresh. Not
-  yet implemented.
+- **Plans are recorded and reused (`DECISIONS.md` §62).** Each plan is
+  recorded in the store's `cache/plans/` with fingerprints of what it
+  read: each label's release offers in its architecture, the objects it
+  named, the tiers of the owners it ranked, what it found held, the
+  host, and the resolver's version. A later resolution reuses it while
+  all of them match, and its providers' too, so a new release replans
+  only the plans that looked at its label. A reused plan, its
+  prerequisites, and its alternatives are what planning would give;
+  `kairo build --replan` plans afresh. Against the canonical store a
+  plan with `build-base` takes 0.13 s reused, 0.45 s planned.
+  `scripts/plan-timing.sh` times both.
 
 - **The base packages (`packages/`).** bash, coreutils, sed, grep, gawk,
   diffutils, findutils, patch, tar, gzip, xz, bzip2, m4, and the Linux

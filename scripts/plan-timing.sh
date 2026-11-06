@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Time `kairo build --plan-only` for each <object>:<target> given, with
+# Time `kairo build --plan-only` for each <object>:<target> given, planned
+# in full and reused from its record (`specs/DECISIONS.md` §62), with
 # a release build of kairo, against a store, the best of several runs:
 # what planning costs, to watch for regressions as the archive grows
 # (`specs/DECISIONS.md` §52, §59, §61). Prints each plan's time and how
@@ -33,22 +34,34 @@ if [ ! -x "$KAIRO" ]; then
     cargo build --release -p kairo-cli --manifest-path "$HERE/Cargo.toml" >&2
 fi
 
-for entry in "${PLANS[@]}"; do
-    object=${entry%%:*}
-    target=${entry#*:}
-    best=
+# The best of $RUNS runs of a plan, with any extra flags given.
+best_of() {
+    local object=$1 target=$2 best= start end took
+    shift 2
     for _ in $(seq "$RUNS"); do
         start=$(date +%s.%N)
         plan=$("$KAIRO" --store "$STORE" build "object:$object" --target "$target" \
-            --actor "$ACTOR" --plan-only)
+            --actor "$ACTOR" --plan-only "$@")
         end=$(date +%s.%N)
         took=$(echo "$end - $start" | bc)
         if [ -z "$best" ] || [ "$(echo "$took < $best" | bc)" = 1 ]; then
             best=$took
         fi
     done
+    echo "$best"
+}
+
+# Each plan twice: planned in full (`--replan`), and reused from what
+# that recorded (DECISIONS.md §62).
+for entry in "${PLANS[@]}"; do
+    object=${entry%%:*}
+    target=${entry#*:}
+    planned=$(best_of "$object" "$target" --replan)
+    reused=$(best_of "$object" "$target")
+    plan=$("$KAIRO" --store "$STORE" build "object:$object" --target "$target" \
+        --actor "$ACTOR" --plan-only)
     count() { sed -n "s/^$1 = //p" <<<"$plan" | head -n 1; }
-    printf '%s %s: %.2f s (requirements %s, runtime %s, builds first %s)\n' \
-        "$object" "$target" "$best" "$(count requirements)" "$(count runtime)" \
-        "$(count builds_first)"
+    printf '%s %s: planned %.2f s, reused %.2f s (requirements %s, runtime %s, builds first %s)\n' \
+        "$object" "$target" "$planned" "$reused" "$(count requirements)" \
+        "$(count runtime)" "$(count builds_first)"
 done

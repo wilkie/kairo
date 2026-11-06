@@ -8310,6 +8310,7 @@ fn build_prefers_the_owners_named_by_flag_then_config() -> Result<(), Box<dyn st
                 plan_only: true,
                 json: false,
                 prefer: prefer.iter().map(|actor| (*actor).clone()).collect(),
+                replan: false,
             },
         )
     };
@@ -8483,9 +8484,28 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     let plan_hash = parse_field(&plan, "plan = ")?;
+    // Recorded in the store's cache (§62), and the same plan whether
+    // reused or planned again.
+    assert!(store_dir.path().join("cache/plans").join(&app).is_dir());
+    for replan in [false, true] {
+        let again = run_in_store(
+            store_dir.path(),
+            Command::Build {
+                snapshot_ref: format!("object:{app}"),
+                target: "release".to_owned(),
+                actor: None,
+                plan_only: true,
+                json: false,
+                prefer: Vec::new(),
+                replan,
+            },
+        )?;
+        assert_eq!(again, plan, "replan {replan}");
+    }
     assert!(plan.contains(&format!("object = {app}\n")), "{plan}");
     assert!(plan.contains("target = release\n"), "{plan}");
     assert!(plan.contains("requirements = 3\n"), "{plan}");
@@ -8547,6 +8567,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             plan_only: true,
             json: true,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     let value: serde_json::Value = serde_json::from_str(&json)?;
@@ -8563,6 +8584,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     assert!(
@@ -8579,6 +8601,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     assert!(
@@ -8595,6 +8618,7 @@ fn build_plan_only_resolves_providers_from_the_git_cache() -> Result<(), Box<dyn
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     assert!(matches!(bad_ref, Err(CliError::NotASnapshotRef { .. })));
@@ -8729,6 +8753,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     assert!(
@@ -8751,6 +8776,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(built.contains("builds = 1\n"), "{built}");
@@ -8853,6 +8879,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     let Err(CliError::BuildFailed { status, summary }) = failed else {
@@ -8930,6 +8957,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     assert!(
@@ -8958,6 +8986,7 @@ fn build_runs_the_target_in_development_mode_and_records_it(
             plan_only: false,
             json: true,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     let value: serde_json::Value = serde_json::from_str(&allowed)?;
@@ -9066,6 +9095,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(first.contains("builds = 2\n"), "{first}");
@@ -9105,6 +9135,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(plan.contains("builds_first = 0\n"), "{plan}");
@@ -9123,6 +9154,7 @@ fn build_builds_an_artifact_provider_first_and_reuses_its_result(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(second.contains("status = held\n"), "{second}");
@@ -9196,6 +9228,7 @@ fn reproduce_reruns_a_cited_plan_here_and_on_another_node() -> Result<(), Box<dy
                 plan_only: false,
                 json: false,
                 prefer: Vec::new(),
+                replan: false,
             },
         )
     };
@@ -9498,6 +9531,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(
@@ -9518,6 +9552,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(built.contains("status = success\n"), "{built}");
@@ -9590,6 +9625,7 @@ fn build_under_bubblewrap_needs_no_development_mode_or_signer_trust(
             plan_only: false,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     );
     assert!(
@@ -10059,6 +10095,7 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
                 plan_only: false,
                 json: false,
                 prefer: Vec::new(),
+                replan: false,
             },
         )
     };
@@ -10104,6 +10141,7 @@ fn builds_use_sources_pinned_by_revision_copied_into_the_tree(
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(
@@ -10381,6 +10419,7 @@ fn pulling_a_native_object_brings_the_sources_it_pins() -> Result<(), Box<dyn st
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(
@@ -10667,6 +10706,7 @@ fn file_sources_federate_directly_and_with_what_pins_them() -> Result<(), Box<dy
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(
@@ -10918,6 +10958,7 @@ fn a_pushed_wrapper_carries_the_sources_it_pins() -> Result<(), Box<dyn std::err
             plan_only: true,
             json: false,
             prefer: Vec::new(),
+            replan: false,
         },
     )?;
     assert!(

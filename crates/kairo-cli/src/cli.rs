@@ -222,6 +222,10 @@ pub(crate) enum Command {
         /// name several, most preferred first.
         #[arg(long = "prefer", value_name = "ACTOR")]
         prefer: Vec<String>,
+        /// Plan everything again, reusing no recorded plan, and record
+        /// what is planned (`specs/DECISIONS.md` §62).
+        #[arg(long)]
+        replan: bool,
     },
     /// Re-run the plan a `BuildResult` cites and compare artifacts
     /// (`specs/DECISIONS.md` §33 sub-decision 9). Runs exactly what the

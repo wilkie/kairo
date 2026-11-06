@@ -5962,10 +5962,10 @@ of the labels it looked up, the objects it named, the owners' ranking,
 and the host. The resolver records a **fingerprint** of each of those
 with the plan, in a cache beside the store, and a later resolution of
 the same object, snapshot, and target whose fingerprints all still
-match reuses the plan's choices instead of planning again. The choices
-are reused; the bindings that follow from them (held artifacts, builds
-first, build keys) are made again each time, as they are now. Reuse
-never changes a plan: a reused plan is byte for byte the plan a full
+match reuses the plan instead of planning again. What the plan found
+held (artifacts, the plans their builds cite, sources) is read again
+each time, and a plan that would bind differently is planned again.
+Reuse never changes a plan: a reused plan is byte for byte the plan a full
 resolution would make, so its hash and build key are the same, and the
 cache is only ever a cost (`STORE.md` §2.3, §6).
 
@@ -5985,27 +5985,36 @@ Sub-decisions:
 2. **Releases only, unless named.** A label's fingerprint covers only
    its releases, the offers a requirement naming no object can take
    (§61), so a new untagged head changes no plan that didn't name its
-   object. A requirement that names objects (`offered_by`, §59) records
-   instead each named object's fingerprint: its creator's head
-   snapshot and its version tags. So does an object dependency, by id,
-   version, or snapshot, and the planned object itself, whose tags
-   decide its own generations (§59).
+   object. A lookup by requirements that name objects (`offered_by`,
+   §59) counts those objects' offers of the label too, released or not,
+   so their heads are part of it. An object dependency, by id, version,
+   or snapshot, records the object's fingerprint, its creator's head
+   snapshot and its version tags, and a child its parent's. The planned
+   object records its version tags, which decide its own generations
+   (§59), and whether its snapshot is still its head, but not where
+   its head has gone since: a fix to make that isn't tagged leaves
+   make 4.2.1's plan as it was.
 
 3. **Every lookup counts.** A plan records the fingerprint of every
    label it looked up and every object it named, chosen or passed
    over: a label consulted only in a branch the resolver abandoned, or
    by the runtime closure before it converged (§46 sub-decision 7),
-   decided the plan as much as one it chose from.
+   decided the plan as much as one it chose from. A plan that went on
+   past a provider whose planning failed, using its held artifact
+   (§52), isn't recorded: the failure may depend on what was being
+   planned around it.
 
-4. **What else it records.** A **ranking fingerprint**: the owners
-   preferred, by `--prefer` or `[resolve] prefer`, in order, the local
-   actors, and their trust decisions at `general` scope (§48). A **host
-   fingerprint**: the host's contract, the engines it offers, and in
-   development mode its host tools (§34 sub-decision 10). And the
+4. **What else it records.** The **ranking**: the tier of each owner
+   whose offers it ranked (§48), which `--prefer`, `[resolve] prefer`,
+   the local actors, and their trust decisions at `general` scope
+   decide; trusting an owner replans the plans that ranked its offers.
+   A **host fingerprint**: the host's contract, the engines it offers,
+   in development mode its host tools (§34 sub-decision 10), and the
+   seeds accepted (§37). And the
    **resolver's version**, a number the resolver raises whenever it
    would choose differently from the same inputs; a plan recorded by
-   another version is planned again. A trust change, a host change, or
-   a new resolver invalidates every plan; each is rare.
+   another version is planned again. A host change or a new resolver
+   invalidates every plan; each is rare.
 
 5. **Providers are plans of their own.** A plan records the providers
    it builds first by their own object, snapshot, and target, not
@@ -6014,17 +6023,19 @@ Sub-decisions:
    provider's plan is reused too, so a new release of `tool:make`
    replans make's consumers, and their consumers, and nothing else.
 
-6. **Bindings are made again.** On reuse the resolver rebinds what
-   depends on what this node holds rather than on what it offers: each
-   provider's held artifact or its place in builds first (§52), its
-   build key, the held sources and seeds a source dependency needs
-   (§37), and held trees. These are lookups by key, cheap beside a
-   resolution, and they are what changes when a build finishes, which
-   leaves every fingerprint as it was.
+6. **Bindings are read again.** A plan records what it found held,
+   rather than offered: each provider's held artifact, the plan its
+   held build cites, an artifact found by build key (§52), and each
+   source commit (§37). On reuse each is read again, lookups by key,
+   cheap beside a resolution; a plan that would find otherwise is
+   planned again. They are what changes when a build finishes, which
+   leaves every fingerprint as it was, so the plans that bound to the
+   build are planned again and the providers' beneath them reused.
 
 7. **Where it lives.** Under the store's `cache/plans/`, by object,
-   snapshot, and target: the choices, the fingerprints, and the
-   resolver version, unsigned and never federated. It is cache data:
+   snapshot, and target: the plan, its fingerprints and bindings, the
+   providers it built on, the resolver version, and what it passed
+   over, shown again when it is reused, unsigned and never federated. It is cache data:
    removing it costs the next resolution its full time and changes
    nothing else, and a record that can't be read is planned again,
    never an error. A failed resolution records nothing.
@@ -6037,10 +6048,12 @@ Sub-decisions:
    counts the plans it reuses beside the plans it makes (§59), so a
    test and `scripts/plan-timing.sh` see when reuse stops happening.
 
-9. **Not yet.** A plan with a changed fingerprint is planned again in
-   full. Re-choosing only the changed labels and what came through
-   them, keeping the rest, is the next step once full replans cost
-   enough to matter; it must give the plan a full resolution would.
+9. **Not yet.** A plan with a changed fingerprint or binding is
+   planned again in full, though its unchanged providers are reused.
+   Re-choosing only the changed labels and what came through them,
+   keeping the rest, and binding unchanged choices to newly held
+   builds, are the next steps once full replans cost enough to matter;
+   each must give the plan a full resolution would.
    Persisting the index itself, which every command now builds by
    reading every held object, waits until building it does. A
    candidate's record of being passed over, its reputation, may order

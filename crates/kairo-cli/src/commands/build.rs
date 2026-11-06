@@ -43,6 +43,8 @@ pub(crate) struct BuildArgs<'a> {
     pub json: bool,
     /// `--prefer`: owners ranked before `[resolve] prefer` (§48).
     pub prefer: &'a [String],
+    /// `--replan`: reuse no recorded plan (§62).
+    pub replan: bool,
 }
 
 /// Held artifacts, from `BuildResult`s this node accepts: signed by a
@@ -590,11 +592,20 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     let sources = CacheSources { paths };
     let accepted_sources = source_seeds(&config);
     let owners = owner_preference(args.prefer, &config, &local)?;
+    // Plans are recorded in the store's cache and reused while what they
+    // read holds (§62).
+    let records = kairo_resolver::PlanRecords::in_store(&store);
+    let records = if args.replan {
+        records.replanning()
+    } else {
+        records
+    };
     let resolve = || {
         Resolver::new(&store, &manifests, &artifacts, &host, &tools)
             .with_sources(&sources)
             .with_source_seeds(&accepted_sources)
             .with_owner_preference(&owners)
+            .with_plan_records(&records)
             .resolve(&object, &selector, args.target)
             .map_err(|error| CliError::Resolve(Box::new(error)))
     };

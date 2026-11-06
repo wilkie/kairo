@@ -2919,3 +2919,217 @@ fn an_object_built_in_one_environment_can_run_in_another() -> TestResult {
     );
     Ok(())
 }
+
+/// Plan `app` with `records`, as `kairo build` does, and the same
+/// without them: the plan reused must be the plan made (§62). Returns
+/// the plan, and how many plans were made and reused.
+fn plan_recorded(
+    world: &World,
+    records: &PlanRecords,
+    artifacts: &dyn ArtifactSource,
+    owners: &OwnerPreference,
+    app: &ObjectId,
+) -> Result<(Resolution, usize, usize), ResolveError> {
+    plan_recorded_on(world, records, artifacts, owners, &World::host(), app)
+}
+
+fn plan_recorded_on(
+    world: &World,
+    records: &PlanRecords,
+    artifacts: &dyn ArtifactSource,
+    owners: &OwnerPreference,
+    host: &Host,
+    app: &ObjectId,
+) -> Result<(Resolution, usize, usize), ResolveError> {
+    let resolver = Resolver::new(&world.fixture.store, &world.manifests, artifacts, host, &[])
+        .with_owner_preference(owners)
+        .with_plan_records(records);
+    let recorded = resolver.resolve(app, &SnapshotSelector::Current, "release")?;
+    let fresh = Resolver::new(&world.fixture.store, &world.manifests, artifacts, host, &[])
+        .with_owner_preference(owners)
+        .resolve(app, &SnapshotSelector::Current, "release")?;
+    assert_eq!(recorded.plan, fresh.plan);
+    assert_eq!(recorded.prerequisites, fresh.prerequisites);
+    assert_eq!(recorded.diagnostics, fresh.diagnostics);
+    Ok((recorded, resolver.plans_made(), resolver.plans_reused()))
+}
+
+#[test]
+fn a_recorded_plan_is_reused_until_what_it_read_changes() -> TestResult {
+    let mut world = World::new();
+    let (make, _) = world.object(&artifact_provider("tool:make", ""));
+    let other = world.fixture.make_actor();
+    // Another owner's older make: looked at, ranked, passed over.
+    world.object_as(
+        &other,
+        &manifest(
+            "make",
+            &format!(
+                "[[provides]]\nprovides = \"tool:make\"\nversion = \"3.81\"\ntarget = \"release\"\n{RELEASE_TARGET}"
+            ),
+        ),
+        LATER,
+    );
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let app = app.object_id;
+    let dir = tempfile::tempdir()?;
+    let records = PlanRecords::new(dir.path());
+    let owners = OwnerPreference {
+        preferred: Vec::new(),
+        local: vec![world.actor.actor_id.clone()],
+    };
+
+    // Planned, then reused: the app's plan and make's beneath it.
+    let (first, made, reused) = plan_recorded(&world, &records, &NoArtifacts, &owners, &app)?;
+    assert_eq!((made, reused), (2, 0));
+    let (again, made, reused) = plan_recorded(&world, &records, &NoArtifacts, &owners, &app)?;
+    assert_eq!((made, reused), (0, 2));
+    assert_eq!(again.plan, first.plan);
+    assert!(!again.diagnostics.alternatives.is_empty());
+
+    // A release of a label it never looked up, and an unreleased head
+    // offering one it did: neither is anything it read.
+    world.object(&artifact_provider("tool:python", ""));
+    world.untagged(&artifact_provider("tool:make", ""));
+    let (_, made, reused) = plan_recorded(&world, &records, &NoArtifacts, &owners, &app)?;
+    assert_eq!((made, reused), (0, 2));
+
+    // Its provider built: what it found held reads differently.
+    let built = BlobId::from_bytes(b"test", b"make");
+    let held = Held(vec![(
+        make.object_id.to_string(),
+        "release".to_owned(),
+        built,
+    )]);
+    let (_, made, _) = plan_recorded(&world, &records, &held, &owners, &app)?;
+    assert_eq!(made, 1);
+    let (_, made, reused) = plan_recorded(&world, &records, &held, &owners, &app)?;
+    assert_eq!((made, reused), (0, 2));
+
+    // The other owner now trusted: it ranks differently, though it
+    // still loses.
+    world.fixture.trust(&world.actor, &other.actor_id);
+    let (_, made, reused) = plan_recorded(&world, &records, &held, &owners, &app)?;
+    assert_eq!((made, reused), (1, 1));
+
+    // A new release of the label it chose from.
+    world.object(&manifest(
+        "make",
+        &format!(
+            "[[provides]]\nprovides = \"tool:make\"\nversion = \"4.5\"\ntarget = \"release\"\n{RELEASE_TARGET}"
+        ),
+    ));
+    let (newer, made, _) = plan_recorded(&world, &records, &held, &owners, &app)?;
+    assert_ne!(newer.plan, first.plan);
+    assert_eq!(made, 2);
+
+    // Planning again regardless records what it plans.
+    let replanning = PlanRecords::new(dir.path()).replanning();
+    let (_, made, reused) = plan_recorded(&world, &replanning, &held, &owners, &app)?;
+    assert_eq!((made, reused), (2, 0));
+    let (_, made, reused) = plan_recorded(&world, &records, &held, &owners, &app)?;
+    assert_eq!((made, reused), (0, 2));
+    Ok(())
+}
+
+#[test]
+fn an_unreadable_record_is_planned_again() -> TestResult {
+    let mut world = World::new();
+    world.object(&artifact_provider("tool:make", ""));
+    let (app, _) = world.object(&app_requiring("tool:make", None));
+    let app = app.object_id;
+    let dir = tempfile::tempdir()?;
+    let records = PlanRecords::new(dir.path());
+    let owners = OwnerPreference::default();
+    plan_recorded(&world, &records, &NoArtifacts, &owners, &app)?;
+
+    // An unreadable record is planned again, never an error.
+    for entry in walk(dir.path())? {
+        std::fs::write(entry, b"not a record")?;
+    }
+    let (_, made, reused) = plan_recorded(&world, &records, &NoArtifacts, &owners, &app)?;
+    assert_eq!((made, reused), (2, 0));
+    let (_, made, reused) = plan_recorded(&world, &records, &NoArtifacts, &owners, &app)?;
+    assert_eq!((made, reused), (0, 2));
+    Ok(())
+}
+
+#[test]
+fn a_release_for_another_architecture_leaves_a_plan_as_it_was() -> TestResult {
+    let mut world = World::new();
+    let built_for = |arch: &str, version: &str| {
+        manifest(
+            &format!("make-{arch}"),
+            &format!(
+                r#"
+                [[provides]]
+                provides = "tool:make"
+                version = "{version}"
+                target = "release"
+                output = "bin"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                [[build.targets.dependencies]]
+                kind = "provides"
+                provides = "environment:linux/{arch}"
+                [[build.targets.outputs]]
+                name = "bin"
+                path = "out/bin"
+                artifact_path = "bin"
+                kind = "directory"
+                "#
+            ),
+        )
+    };
+    world.object(&built_for("x86-64", "4.2.1"));
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[dependencies]]
+        kind = "provides"
+        provides = "environment:linux/x86-64"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:make"
+        "#,
+    ));
+    let app = app.object_id;
+    let mut host = World::host();
+    host.engines = ["environment:linux/x86-64", "environment:linux/x86"]
+        .map(str::to_owned)
+        .to_vec();
+    let dir = tempfile::tempdir()?;
+    let records = PlanRecords::new(dir.path());
+    let owners = OwnerPreference::default();
+    let plan =
+        |world: &World| plan_recorded_on(world, &records, &NoArtifacts, &owners, &host, &app);
+    assert_eq!(plan(&world)?.1, 2);
+
+    // make 4.4.1, built for x86 alone: nothing an x86-64 build can take.
+    world.object(&built_for("x86", "4.4.1"));
+    let (_, made, reused) = plan(&world)?;
+    assert_eq!((made, reused), (0, 2));
+
+    // Built for x86-64 too: the app's label changed.
+    world.object(&built_for("x86-64", "4.4.1"));
+    let (_, made, _) = plan(&world)?;
+    assert_eq!(made, 2);
+    Ok(())
+}
+
+fn walk(dir: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            found.extend(walk(&path)?);
+        } else {
+            found.push(path);
+        }
+    }
+    Ok(found)
+}

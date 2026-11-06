@@ -52,6 +52,10 @@ use kairo_store::{
 };
 use serde::{Deserialize, Serialize};
 
+mod reuse;
+use reuse::{Binding, Frame, LabelLookup, PlanKey, PlanRecord};
+pub use reuse::{PlanRecords, RESOLVER_VERSION};
+
 /// Domain separator for the plan hash: `BlobId` of a resolved
 /// manifest's bytes (`schemas/canonical/resolved-manifest-v1.md`).
 pub const RESOLVED_MANIFEST_DOMAIN: &[u8] = b"kairo.resolved-manifest.v1";
@@ -641,7 +645,7 @@ pub struct Skipped {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Alternative {
     pub requested: Requested,
     pub chosen: String,
@@ -1462,6 +1466,9 @@ pub struct Index {
     /// snapshots, made once when the index is built.
     by_label: BTreeMap<String, Vec<Offer>>,
     pub skipped: Vec<Skipped>,
+    /// Each label's fingerprint for a lookup, made when first asked
+    /// (`DECISIONS.md` §62).
+    fingerprints: std::cell::RefCell<BTreeMap<LabelLookup, String>>,
 }
 
 impl Index {
@@ -1533,6 +1540,7 @@ impl Index {
             tagged,
             skipped,
             by_label,
+            fingerprints: std::cell::RefCell::default(),
         })
     }
 
@@ -1541,7 +1549,11 @@ impl Index {
     /// newest published, then by object id. Looked up: every label's
     /// offers are made once, when the index is built.
     pub fn offers(&self, label: &str) -> Vec<Offer> {
-        self.by_label.get(label).cloned().unwrap_or_default()
+        self.offers_ref(label).to_vec()
+    }
+
+    fn offers_ref(&self, label: &str) -> &[Offer] {
+        self.by_label.get(label).map_or(&[], Vec::as_slice)
     }
 
     /// How many offers the index made from the candidates' manifests,
@@ -1763,6 +1775,22 @@ pub struct Resolver<'a> {
     /// How many indexes it has built, and the offers they made.
     indexes_built: std::cell::Cell<usize>,
     offers_made: std::cell::Cell<usize>,
+    /// Where plans are recorded and reused from (`DECISIONS.md` §62).
+    records: Option<&'a PlanRecords>,
+    /// What each target being planned has read, innermost last.
+    frames: std::cell::RefCell<Vec<Frame>>,
+    /// Each recorded plan checked this resolution: reusable or not.
+    checked: std::cell::RefCell<BTreeMap<PlanKey, Option<std::rc::Rc<Reused>>>>,
+    plans_reused: std::cell::Cell<usize>,
+}
+
+/// A recorded plan found to hold, with the plans it builds first.
+#[derive(Debug)]
+struct Reused {
+    plan: PlanDocument,
+    /// Every provider's plan beneath it, by hash.
+    beneath: BTreeMap<String, PlanDocument>,
+    alternatives: Vec<Alternative>,
 }
 
 /// What the runtime closure settled to, or why the declared
@@ -1834,6 +1862,31 @@ impl<'a> Resolver<'a> {
             plans_made: std::cell::Cell::new(0),
             indexes_built: std::cell::Cell::new(0),
             offers_made: std::cell::Cell::new(0),
+            records: None,
+            frames: std::cell::RefCell::default(),
+            checked: std::cell::RefCell::default(),
+            plans_reused: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Record plans there, and reuse them while what they read holds
+    /// (`DECISIONS.md` §62).
+    pub fn with_plan_records(mut self, records: &'a PlanRecords) -> Self {
+        self.records = Some(records);
+        self
+    }
+
+    /// How many recorded plans this resolver has reused rather than
+    /// planned: beside [`Self::plans_made`], what a test or a timing
+    /// sees stop happening when reuse does.
+    pub fn plans_reused(&self) -> usize {
+        self.plans_reused.get()
+    }
+
+    /// Note something the target being planned read.
+    fn note(&self, what: impl FnOnce(&mut Frame)) {
+        if let Some(frame) = self.frames.borrow_mut().last_mut() {
+            what(frame);
         }
     }
 
@@ -1852,13 +1905,23 @@ impl<'a> Resolver<'a> {
 
     /// Where `owner` ranks under this resolver's preference.
     pub fn owner_tier(&self, owner: &ActorId) -> OwnerTier {
-        self.owners.tier(self.store, owner)
+        let tier = self.owners.tier(self.store, owner);
+        self.note(|frame| {
+            frame.owners.insert(owner.to_string(), tier.to_string());
+        });
+        tier
     }
 
     /// `offers` in the order the resolver tries them: the owner's tier
     /// first, then the highest version, offers without one last; ties
     /// keep the index's order (§43, §48).
     fn rank_offers(&self, offers: &mut [Offer]) {
+        if self.records.is_some() {
+            let owners: BTreeSet<&ActorId> = offers.iter().map(|offer| &offer.owner).collect();
+            for owner in owners {
+                self.owner_tier(owner);
+            }
+        }
         self.owners.rank(self.store, offers);
     }
 
@@ -1989,6 +2052,15 @@ impl<'a> Resolver<'a> {
         // A build is its object's target at one snapshot: another
         // snapshot's is another generation, and may be built for it (§59).
         let snapshot = self.select_snapshot(object, selector)?;
+        // The plan being made, if any, builds on this one (§62
+        // sub-decision 5).
+        self.note(|frame| {
+            frame.providers.insert((
+                object.to_string(),
+                snapshot.snapshot_id().to_string(),
+                target_name.to_owned(),
+            ));
+        });
         let key = (
             object.clone(),
             snapshot.snapshot_id(),
@@ -2010,6 +2082,54 @@ impl<'a> Resolver<'a> {
         if let Some(plan) = self.planned.borrow().get(&cache_key) {
             return Ok(plan.clone());
         }
+        if let Some(plan) = self.reuse_recorded(index, &cache_key, prerequisites, diagnostics)? {
+            return Ok(plan);
+        }
+        self.frames.borrow_mut().push(Frame::default());
+        self.note(|frame| {
+            frame
+                .objects
+                .insert(format!("{object}@{}", snapshot.snapshot_id()));
+        });
+        let before = diagnostics.alternatives.len();
+        let planned = self.plan_target(
+            index,
+            object,
+            snapshot,
+            target_name,
+            key,
+            cache_key.clone(),
+            stack,
+            prerequisites,
+            diagnostics,
+        );
+        let frame = self.frames.borrow_mut().pop().unwrap_or_default();
+        let plan = planned?;
+        self.record(
+            index,
+            &cache_key,
+            &plan,
+            frame,
+            &diagnostics.alternatives[before..],
+        )?;
+        Ok(plan)
+    }
+
+    /// Plan `target_name` of `object` at `snapshot`, which neither this
+    /// resolution nor a record has planned.
+    #[allow(clippy::too_many_arguments)]
+    fn plan_target(
+        &self,
+        index: &Index,
+        object: &ObjectId,
+        snapshot: Snapshot,
+        target_name: &str,
+        key: (ObjectId, SnapshotId, String),
+        cache_key: PlanKey,
+        stack: &mut Vec<(ObjectId, SnapshotId, String)>,
+        prerequisites: &mut Vec<PlanDocument>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<PlanDocument, ResolveError> {
         stack.push(key);
 
         let manifest = load_manifest(self.manifests, object, &snapshot)?.ok_or_else(|| {
@@ -2437,6 +2557,318 @@ impl<'a> Resolver<'a> {
         Ok(plan)
     }
 
+    /// The held artifact of `target` at `snapshot`, noted as read.
+    fn held_artifact(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<BlobId>, SourceError> {
+        let held = self.artifacts.artifact(object, snapshot, target)?;
+        self.note(|frame| {
+            frame.bindings.insert(Binding::Artifact {
+                object: object.to_string(),
+                snapshot: snapshot.to_string(),
+                target: target.to_owned(),
+                held: held.as_ref().map(ToString::to_string),
+            });
+        });
+        Ok(held)
+    }
+
+    /// The plan its held build cites, noted as read by its hash.
+    fn held_build_plan(
+        &self,
+        object: &ObjectId,
+        snapshot: &SnapshotId,
+        target: &str,
+    ) -> Result<Option<Vec<u8>>, SourceError> {
+        let plan = self.artifacts.build_plan(object, snapshot, target)?;
+        self.note(|frame| {
+            frame.bindings.insert(Binding::BuildPlan {
+                object: object.to_string(),
+                snapshot: snapshot.to_string(),
+                target: target.to_owned(),
+                plan: plan
+                    .as_ref()
+                    .map(|bytes| BlobId::from_bytes(RESOLVED_MANIFEST_DOMAIN, bytes).to_string()),
+            });
+        });
+        Ok(plan)
+    }
+
+    /// The held artifact of a build with `build_key`, noted as read.
+    fn held_by_key(
+        &self,
+        object: &ObjectId,
+        target: &str,
+        build_key: &BlobId,
+    ) -> Result<Option<BlobId>, SourceError> {
+        let held = self.artifacts.artifact_by_key(object, target, build_key)?;
+        self.note(|frame| {
+            frame.bindings.insert(Binding::ByKey {
+                object: object.to_string(),
+                target: target.to_owned(),
+                key: build_key.to_string(),
+                held: held.as_ref().map(ToString::to_string),
+            });
+        });
+        Ok(held)
+    }
+
+    /// Whether a binding a record noted reads the same now.
+    fn binding_holds(&self, binding: &Binding) -> bool {
+        let ids = |object: &str, snapshot: &str| {
+            Some((ObjectId::new(object).ok()?, SnapshotId::new(snapshot).ok()?))
+        };
+        match binding {
+            Binding::Artifact {
+                object,
+                snapshot,
+                target,
+                held,
+            } => ids(object, snapshot).is_some_and(|(object, snapshot)| {
+                self.artifacts
+                    .artifact(&object, &snapshot, target)
+                    .is_ok_and(|now| now.map(|id| id.to_string()) == *held)
+            }),
+            Binding::BuildPlan {
+                object,
+                snapshot,
+                target,
+                plan,
+            } => ids(object, snapshot).is_some_and(|(object, snapshot)| {
+                self.artifacts
+                    .build_plan(&object, &snapshot, target)
+                    .is_ok_and(|now| {
+                        now.map(|bytes| {
+                            BlobId::from_bytes(RESOLVED_MANIFEST_DOMAIN, &bytes).to_string()
+                        }) == *plan
+                    })
+            }),
+            Binding::ByKey {
+                object,
+                target,
+                key,
+                held,
+            } => match (ObjectId::new(object.as_str()), BlobId::new(key.clone())) {
+                (Ok(object), Ok(key)) => self
+                    .artifacts
+                    .artifact_by_key(&object, target, &key)
+                    .is_ok_and(|now| now.map(|id| id.to_string()) == *held),
+                _ => false,
+            },
+            Binding::Source { source, revision } => {
+                let (Ok(source), Ok(Some(revision))) =
+                    (ObjectId::new(source.as_str()), GitRevision::parse(revision))
+                else {
+                    return false;
+                };
+                self.store.get_source(&source).is_ok()
+                    && self.sources.holds(&source, &revision).unwrap_or(false)
+            }
+        }
+    }
+
+    fn host_fingerprint(&self) -> String {
+        reuse::host_fingerprint(self.host, self.host_tools, self.source_seeds)
+    }
+
+    /// The recorded plan of `key`, when one is recorded and all it read
+    /// reads the same (§62), with the plans it builds first and what it
+    /// passed over, as planning it would have left them.
+    fn reuse_recorded(
+        &self,
+        index: &Index,
+        key: &PlanKey,
+        prerequisites: &mut Vec<PlanDocument>,
+        diagnostics: &mut Diagnostics,
+    ) -> Result<Option<PlanDocument>, ResolveError> {
+        let Some(reused) = self.check_recorded(index, key, &mut BTreeSet::new())? else {
+            return Ok(None);
+        };
+        for first in &reused.plan.manifest.builds_first {
+            if let Some(plan) = reused.beneath.get(&first.plan) {
+                if !prerequisites
+                    .iter()
+                    .any(|existing| existing.hash == plan.hash)
+                {
+                    prerequisites.push(plan.clone());
+                }
+            }
+        }
+        diagnostics
+            .alternatives
+            .extend(reused.alternatives.iter().cloned());
+        Ok(Some(reused.plan.clone()))
+    }
+
+    /// Whether `key`'s record holds, each checked once a resolution.
+    fn check_recorded(
+        &self,
+        index: &Index,
+        key: &PlanKey,
+        visiting: &mut BTreeSet<PlanKey>,
+    ) -> Result<Option<std::rc::Rc<Reused>>, ResolveError> {
+        let Some(records) = self.records.filter(|records| records.reuses()) else {
+            return Ok(None);
+        };
+        if let Some(known) = self.checked.borrow().get(key) {
+            return Ok(known.clone());
+        }
+        if !visiting.insert(key.clone()) {
+            return Ok(None);
+        }
+        let reused = match records.read(key) {
+            Some(record) => self.check_record(record, index, key, visiting)?,
+            None => None,
+        };
+        visiting.remove(key);
+        if let Some(reused) = &reused {
+            self.planned
+                .borrow_mut()
+                .insert(key.clone(), reused.plan.clone());
+            self.plans_reused.set(self.plans_reused.get() + 1);
+        }
+        self.checked
+            .borrow_mut()
+            .insert(key.clone(), reused.clone());
+        Ok(reused)
+    }
+
+    fn check_record(
+        &self,
+        record: PlanRecord,
+        index: &Index,
+        key: &PlanKey,
+        visiting: &mut BTreeSet<PlanKey>,
+    ) -> Result<Option<std::rc::Rc<Reused>>, ResolveError> {
+        if record.host != self.host_fingerprint() {
+            return Ok(None);
+        }
+        for seen in &record.labels {
+            let lookup = (seen.label.clone(), seen.arch.clone(), seen.names.clone());
+            if reuse::label_fingerprint(index, &lookup) != seen.fingerprint {
+                return Ok(None);
+            }
+        }
+        for seen in &record.objects {
+            if reuse::object_fingerprint(self.store, index, &seen.id)? != seen.fingerprint {
+                return Ok(None);
+            }
+        }
+        for seen in &record.owners {
+            let Ok(owner) = ActorId::new(seen.id.as_str()) else {
+                return Ok(None);
+            };
+            if self.owners.tier(self.store, &owner).to_string() != seen.fingerprint {
+                return Ok(None);
+            }
+        }
+        if !record
+            .bindings
+            .iter()
+            .all(|binding| self.binding_holds(binding))
+        {
+            return Ok(None);
+        }
+        let mut beneath = BTreeMap::new();
+        for provider in &record.providers {
+            let provider_key = (
+                provider.object.clone(),
+                provider.snapshot.clone(),
+                provider.target.clone(),
+            );
+            let Some(reused) = self.check_recorded(index, &provider_key, visiting)? else {
+                return Ok(None);
+            };
+            beneath.insert(reused.plan.hash.to_string(), reused.plan.clone());
+            beneath.extend(
+                reused
+                    .beneath
+                    .iter()
+                    .map(|(hash, plan)| (hash.clone(), plan.clone())),
+            );
+        }
+        let Ok(plan) = PlanDocument::from_bytes(record.plan.into_bytes()) else {
+            return Ok(None);
+        };
+        let manifest = &plan.manifest;
+        if (&manifest.object, &manifest.snapshot, &manifest.target) != (&key.0, &key.1, &key.2) {
+            return Ok(None);
+        }
+        Ok(Some(std::rc::Rc::new(Reused {
+            plan,
+            beneath,
+            alternatives: record.alternatives,
+        })))
+    }
+
+    /// Record a plan just made with what its planning read.
+    fn record(
+        &self,
+        index: &Index,
+        key: &PlanKey,
+        plan: &PlanDocument,
+        frame: Frame,
+        alternatives: &[Alternative],
+    ) -> Result<(), ResolveError> {
+        let Some(records) = self.records else {
+            return Ok(());
+        };
+        if frame.unrecordable {
+            return Ok(());
+        }
+        let Ok(bytes) = String::from_utf8(plan.bytes.clone()) else {
+            return Ok(());
+        };
+        let labels = frame
+            .labels
+            .into_iter()
+            .map(|lookup| reuse::LabelSeen {
+                fingerprint: reuse::label_fingerprint(index, &lookup),
+                label: lookup.0,
+                arch: lookup.1,
+                names: lookup.2,
+            })
+            .collect();
+        let objects = frame
+            .objects
+            .into_iter()
+            .map(|id| {
+                Ok(reuse::Seen {
+                    fingerprint: reuse::object_fingerprint(self.store, index, &id)?,
+                    id,
+                })
+            })
+            .collect::<Result<_, ResolveError>>()?;
+        let record = PlanRecord {
+            resolver: RESOLVER_VERSION,
+            host: self.host_fingerprint(),
+            plan: bytes,
+            labels,
+            objects,
+            owners: frame
+                .owners
+                .into_iter()
+                .map(|(id, fingerprint)| reuse::Seen { id, fingerprint })
+                .collect(),
+            bindings: frame.bindings.into_iter().collect(),
+            providers: frame
+                .providers
+                .into_iter()
+                .map(|(object, snapshot, target)| reuse::ProviderSeen {
+                    object,
+                    snapshot,
+                    target,
+                })
+                .collect(),
+            alternatives: alternatives.to_vec(),
+        };
+        records.write(key, &record);
+        Ok(())
+    }
+
     /// What the tree at `path` in `revision` holds (§52): a hash of its
     /// entries, `kairo.toml` left out at the top. The plan can't be made
     /// without it.
@@ -2556,6 +2988,20 @@ impl<'a> Resolver<'a> {
         consumer_environment: Option<&str>,
         generation: &Generation,
     ) -> Result<Vec<Choice>, Conflict> {
+        if self.records.is_some() {
+            let names: BTreeSet<String> = constraints
+                .iter()
+                .flat_map(|constraint| constraint.offered_by.iter().map(ToString::to_string))
+                .collect();
+            let lookup = (
+                label.to_owned(),
+                consumer_environment.map(|contract| contract_arch(contract).to_owned()),
+                names.into_iter().collect(),
+            );
+            self.note(|frame| {
+                frame.labels.insert(lookup);
+            });
+        }
         let mut considered = Vec::new();
         let mut offers = Vec::new();
         for offer in index.offers(label) {
@@ -2903,8 +3349,7 @@ impl<'a> Resolver<'a> {
             plan.manifest.requires.clone()
         } else {
             let built = self
-                .artifacts
-                .artifact(&builder, &snapshot, target)
+                .held_artifact(&builder, &snapshot, target)
                 .map_err(|source| ResolveError::ArtifactSource {
                     object: builder.clone(),
                     target: target.clone(),
@@ -2912,8 +3357,7 @@ impl<'a> Resolver<'a> {
                 })?;
             if built.is_some() {
                 match self
-                    .artifacts
-                    .build_plan(&builder, &snapshot, target)
+                    .held_build_plan(&builder, &snapshot, target)
                     .map_err(|source| ResolveError::ArtifactSource {
                         object: builder.clone(),
                         target: target.clone(),
@@ -3159,8 +3603,7 @@ impl<'a> Resolver<'a> {
         // artifact (§54 sub-decision 8); one whose plan isn't held can't
         // be told apart, and stands.
         let held = self
-            .artifacts
-            .artifact(builder, &offer.snapshot, provider_target)
+            .held_artifact(builder, &offer.snapshot, provider_target)
             .map_err(source_error)?;
         let planned = match self.resolve_target(
             index,
@@ -3172,15 +3615,17 @@ impl<'a> Resolver<'a> {
             diagnostics,
         ) {
             Ok(plan) => Some(plan),
-            Err(_) if held.is_some() => None,
+            Err(_) if held.is_some() => {
+                self.note(|frame| frame.unrecordable = true);
+                None
+            }
             Err(error) => return Err(error),
         };
         let build_key = planned.as_ref().map(|plan| plan.manifest.build_key.clone());
         let held = match (held, &build_key) {
             (Some(held), Some(key)) => {
                 let plan = self
-                    .artifacts
-                    .build_plan(builder, &offer.snapshot, provider_target)
+                    .held_build_plan(builder, &offer.snapshot, provider_target)
                     .map_err(source_error)?;
                 let other_key = match plan {
                     Some(bytes) => &PlanDocument::from_bytes(bytes)?.manifest.build_key != key,
@@ -3193,8 +3638,7 @@ impl<'a> Resolver<'a> {
         let artifact = match (held, &build_key) {
             (Some(held), _) => Some(held),
             (None, Some(key)) => self
-                .artifacts
-                .artifact_by_key(
+                .held_by_key(
                     builder,
                     provider_target,
                     &BlobId::new(key.clone()).map_err(|_| {
@@ -3264,6 +3708,9 @@ impl<'a> Resolver<'a> {
         // The parent: from the current manifests, or else whichever held
         // object declares the child at one of its snapshots (§44
         // sub-decision 2).
+        self.note(|frame| {
+            frame.objects.insert(wanted.to_string());
+        });
         let parents: Vec<&Candidate> = match index.child(wanted) {
             Some((candidate, _, _)) => vec![candidate],
             None => index.candidates.iter().collect(),
@@ -3430,6 +3877,12 @@ impl<'a> Resolver<'a> {
                 "{url} at {revision} is not an accepted seed ([[runtime.seeds]] source and revision)"
             )));
         }
+        self.note(|frame| {
+            frame.bindings.insert(Binding::Source {
+                source: source.to_string(),
+                revision: revision.to_string(),
+            });
+        });
         Ok(Resolved::Source {
             source: source.to_string(),
             url: url.to_string(),
@@ -3448,6 +3901,9 @@ impl<'a> Resolver<'a> {
         pinned: Option<&SnapshotId>,
         unsatisfied: &dyn Fn(Vec<String>) -> ResolveError,
     ) -> Result<Snapshot, ResolveError> {
+        self.note(|frame| {
+            frame.objects.insert(wanted.to_string());
+        });
         Ok(match (version, pinned) {
             (_, Some(pinned)) => self
                 .select_snapshot(wanted, &SnapshotSelector::Pinned(pinned.clone()))

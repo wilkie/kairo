@@ -185,6 +185,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
             plan_only,
             json,
             prefer,
+            replan,
         }) => commands::build::run_build(
             &commands::build::BuildArgs {
                 snapshot_ref: &snapshot_ref,
@@ -193,6 +194,7 @@ fn run(cli: Cli) -> Result<String, CliError> {
                 plan_only,
                 json,
                 prefer: &prefer,
+                replan,
             },
             &paths,
         ),
