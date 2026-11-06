@@ -2603,6 +2603,75 @@ fn offered_by_takes_only_those_objects_offers_and_their_childrens() -> TestResul
     Ok(())
 }
 
+#[test]
+fn a_resolution_plans_each_provider_once_however_many_builds_need_it() -> TestResult {
+    // A chain of providers, each built with the one before it, and many
+    // tools, each built with the last: every tool's plan needs the whole
+    // chain's. Planned anew for each tool, the chain's plans would be
+    // made once per tool, so the work grows as tools times depth.
+    const DEPTH: usize = 6;
+    const TOOLS: usize = 8;
+    let mut world = World::new();
+    let provider = |name: &str, label: &str, needs: Option<&str>| {
+        let needs = needs
+            .map(|needs| {
+                format!(
+                    "[[build.targets.dependencies]]\nkind = \"provides\"\nprovides = \"{needs}\"\n"
+                )
+            })
+            .unwrap_or_default();
+        manifest(
+            name,
+            &format!(
+                r#"
+                [[provides]]
+                provides = "{label}"
+                target = "release"
+                [[build.targets]]
+                name = "release"
+                command = ["make"]
+                {needs}
+                "#
+            ),
+        )
+    };
+    for level in 0..DEPTH {
+        let needs = (level > 0).then(|| format!("data:chain:{}", level - 1));
+        world.object(&provider(
+            &format!("chain-{level}"),
+            &format!("data:chain:{level}"),
+            needs.as_deref(),
+        ));
+    }
+    let top = format!("data:chain:{}", DEPTH - 1);
+    let mut app = String::from("[[build.targets]]\nname = \"release\"\ncommand = [\"make\"]\n");
+    for tool in 0..TOOLS {
+        world.object(&provider(
+            &format!("tool-{tool}"),
+            &format!("tool:t{tool}"),
+            Some(&top),
+        ));
+        app.push_str(&format!(
+            "[[build.targets.dependencies]]\nkind = \"provides\"\nprovides = \"tool:t{tool}\"\n"
+        ));
+    }
+    let (app, _) = world.object(&manifest("app", &app));
+
+    let host = World::host();
+    let resolver = Resolver::new(
+        &world.fixture.store,
+        &world.manifests,
+        &NoArtifacts,
+        &host,
+        &[],
+    );
+    let resolution = resolver.resolve(&app.object_id, &SnapshotSelector::Current, "release")?;
+    // The chain, the tools, and the app, each planned once.
+    assert_eq!(resolver.plans_made(), DEPTH + TOOLS + 1);
+    assert_eq!(resolution.prerequisites.len(), DEPTH + TOOLS);
+    Ok(())
+}
+
 /// Builds known only by their build key (§52), at no snapshot.
 struct ByKey(Vec<(String, String, BlobId)>);
 

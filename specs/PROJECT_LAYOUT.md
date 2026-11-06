@@ -48,12 +48,11 @@ kairo/
     stage0-posix/
 
   packages/           # software built on finished packages, one object per software, each release a tag (DECISIONS.md §55, §59)
+    common/           # what every package's recipe and import script share
     bootstrap-base/   # build-base's labels, offered by the bootstraps alone, for a first generation (§59)
     build-base/       # what a typical C or C++ package builds with, a list of dependencies (§57)
-    binutils/
-    gcc/
-    make/
-    musl/
+    bash/ binutils/ bzip2/ coreutils/ diffutils/ findutils/ gawk/ gcc/ grep/
+    gzip/ linux-headers/ m4/ make/ musl/ patch/ sed/ tar/ xz/
 
   crates/
     kairo-core/

@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
 # Archive gcc's sources, make its object or its next revision, and tag
-# it with the release's version (packages/gcc/README.md).
+# it with the release's version (packages/gcc/README.md,
+# packages/common/import.sh). This revision is 15.2.0, on top of 7.5.0:
+# import that first, at its tag, with --wrapper, since 15.2.0 builds
+# with it.
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
-# 1. gcc's, gmp's, mpfr's, and mpc's tarballs are archived as file
-#    sources with `kairo source fetch-file`, from GNU or else one of
-#    live-bootstrap's mirrors.
-# 2. This directory's kairo.toml and src/ are committed as SHA-256
-#    history and created as an object, or, with --wrapper, committed on
-#    top of that existing object's history as its next revision.
-#
-# What the targets build from must be imported: packages/build-base/,
-# and live-bootstrap's six passes and linux-filesystem for x86, the
-# 64-bit bootstrap's stage 3 for x86-64 (bootstrap/amd64/). Extra
-# arguments go before the command in every `kairo` call, e.g. `--store
-# <path>`. KAIRO names the kairo binary (default: kairo on PATH). Prints
-# the object's id.
+# What it builds with must be imported: packages/bootstrap-base/ and the
+# bootstraps it names. Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 
 # sha256 name url...
 DISTFILES=(
-    "b81946e7f01f90528a1f7352ab08cc602b9ccc05d4e44da4bd501c5a189ee661 gcc-7.5.0.tar.xz
-     https://mirrors.kernel.org/gnu/gcc/gcc-7.5.0/gcc-7.5.0.tar.xz"
+    "438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e gcc-15.2.0.tar.xz
+     https://mirrors.kernel.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz
+     https://samuelt.me/pub/live-bootstrap/gcc-15.2.0.tar.xz
+     https://live-bootstrap.stikonas.eu/gcc-15.2.0.tar.xz
+     https://archive.org/download/live-bootstrap-sources/gcc-15.2.0.tar.xz"
     "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2 gmp-6.2.1.tar.xz
      https://mirrors.kernel.org/gnu/gmp/gmp-6.2.1.tar.xz
      https://samuelt.me/pub/live-bootstrap/gmp-6.2.1.tar.xz
@@ -42,33 +37,7 @@ DISTFILES=(
      https://archive.org/download/live-bootstrap-sources/mpc-1.2.1.tar.gz"
 )
 
-KAIRO=${KAIRO:-kairo}
 HERE=$(cd "$(dirname "$0")" && pwd)
-
-kairo() { "$KAIRO" "${KAIRO_ARGS[@]}" "$@"; }
-field() { sed -n "s/^$1 = //p" | head -n 1; }
-fail() {
-    echo "import.sh: $*" >&2
-    exit 1
-}
-# shellcheck source=../../bootstrap/wrapper.sh
-. "$HERE/../../bootstrap/wrapper.sh"
-parse_import_args "$@"
-
-# 1. The sources, each from the first mirror that serves its bytes.
-fetch_distfiles
-
-# 2. The object (../../bootstrap/wrapper.sh).
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
-cp -r "$HERE/kairo.toml" "$HERE/src" "$WORK/"
-commit_wrapper "gcc 7.5.0 for x86 and x86-64" kairo.toml src/build.sh
-tag_release 7.5.0
-
-cat <<OUT
-object = $WRAPPER
-
-# With what the targets build from imported:
-#   kairo build object:$WRAPPER --target x86 --actor $ACTOR
-#   kairo build object:$WRAPPER --target x86-64 --actor $ACTOR
-OUT
+# shellcheck source=../common/import.sh
+. "$HERE/../common/import.sh"
+import_package "$@" "gcc 15.2.0 for x86 and x86-64, built with gcc 7.5.0" 15.2.0

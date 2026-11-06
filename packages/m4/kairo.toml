@@ -1,0 +1,73 @@
+# GNU m4, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 1.4.19, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone. Its libraries, if any, go in the
+# environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "m4"
+summary = "GNU m4, built for x86 and x86-64, each release a version tag; this one 1.4.19."
+tags = ["base", "m4"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "63aede5c6d33b6d9b13511cd0be2cac046f2e70fd0a07aa9573a04a82783af96"
+path = "distfiles/m4-1.4.19.tar.xz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "m4-1.4.19"
+root = "m4-1.4.19"
+summary = "GNU m4 1.4.19 for x86."
+tags = ["m4"]
+version = "1.4.19"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:m4" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "m4-1.4.19"
+root = "m4-1.4.19"
+summary = "GNU m4 1.4.19 for x86-64."
+tags = ["m4"]
+version = "1.4.19"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:m4" }]

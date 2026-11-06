@@ -1,0 +1,73 @@
+# GNU findutils, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 4.10.0, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone. Its libraries, if any, go in the
+# environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "findutils"
+summary = "GNU findutils, built for x86 and x86-64, each release a version tag; this one 4.10.0."
+tags = ["base", "findutils"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "1387e0b67ff247d2abde998f90dfbf70c1491391a59ddfecb8ae698789f0a4f5"
+path = "distfiles/findutils-4.10.0.tar.xz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "findutils-4.10.0"
+root = "findutils-4.10.0"
+summary = "GNU findutils 4.10.0 for x86."
+tags = ["findutils"]
+version = "4.10.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:findutils" }, { provides = "tool:find" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "findutils-4.10.0"
+root = "findutils-4.10.0"
+summary = "GNU findutils 4.10.0 for x86-64."
+tags = ["findutils"]
+version = "4.10.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:findutils" }, { provides = "tool:find" }]

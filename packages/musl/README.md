@@ -25,8 +25,8 @@ over what it was built with, a program compiled against it, static and dynamic, 
 | File | What it is |
 |---|---|
 | `kairo.toml` | The source, and the two targets with what they build with and their children. |
-| `src/build.sh` | Builds it for the triple it is given, lays out its children, and checks them. |
-| `import.sh` | Archives the source, creates the object or its next revision with `../../bootstrap/wrapper.sh`, and tags it 1.2.5. |
+| `src/build.sh` | Builds it for the triple it is given, with `../common/recipe.sh`, which `import.sh` puts beside it, lays out its children, and checks them. |
+| `import.sh` | Archives the source, creates the object or its next revision with `../common/import.sh`, and tags it 1.2.5. |
 
 ## Running it
 

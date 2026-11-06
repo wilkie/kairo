@@ -1,0 +1,73 @@
+# GNU tar, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 1.34, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone. Its libraries, if any, go in the
+# environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "tar"
+summary = "GNU tar, built for x86 and x86-64, each release a version tag; this one 1.34."
+tags = ["base", "tar"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "63bebd26879c5e1eea4352f0d03c991f966aeb3ddeb3c7445c902568d5411d28"
+path = "distfiles/tar-1.34.tar.xz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "tar-1.34"
+root = "tar-1.34"
+summary = "GNU tar 1.34 for x86."
+tags = ["tar"]
+version = "1.34"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:tar" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "tar-1.34"
+root = "tar-1.34"
+summary = "GNU tar 1.34 for x86-64."
+tags = ["tar"]
+version = "1.34"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:tar" }]

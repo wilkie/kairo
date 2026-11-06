@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **The base packages (`packages/`).** bash, coreutils, sed, grep, gawk,
+  diffutils, findutils, patch, tar, gzip, xz, bzip2, m4, and the Linux
+  4.14 headers, each one object built for x86 and x86-64 as a first
+  generation with `bootstrap-base`, beside make, binutils, and musl;
+  and gcc 15.2.0, the `gcc` object's next release, built with its own
+  gcc 7.5.0 (`DECISIONS.md` §59). Every package `build-base` names is
+  now a release, so `build-base` resolves, in both environments, to the
+  packages alone (§61). What every package's recipe and import script
+  share is in `packages/common/`.
+
 - **Libraries in a directory named by the target (`DECISIONS.md`
   §60).** Every library built for musl goes in the environment's own
   directory, `/usr/lib/i686-unknown-linux-musl` in x86, as
@@ -712,6 +722,23 @@ rather than per-commit.
   hashes.
 
 ### Changed
+
+- **A resolution plans each provider once.** Deciding whether a held
+  build is a provider's artifact plans the provider (§54), and each
+  provider's plan plans its own, so a build whose labels resolved to
+  many packages planned the bootstrap chain under each of them again:
+  a build with `build-base` took minutes to plan. A resolver now keeps
+  the plans it has made, by object, snapshot, and target, as a plan is
+  a function of those and the store; and `kairo build` keeps, for one
+  command, each object's build results, each plan's build key, and
+  which blobs and signers it has checked, rather than reading and
+  parsing every build result of a provider for each question,
+  forgetting the build results once it builds one, before it plans
+  again. Planning
+  with `build-base` went from 231 s to 3.4 s in x86 and from 994 s to
+  2.9 s in x86-64, to the same plans. The resolver counts the plans it
+  computes (`Resolver::plans_made`), and a test holds a shared chain to
+  each provider planned once.
 
 - **Only releases are offered by label (`DECISIONS.md` §61).** A
   requirement that names no object (`offered_by`) is satisfied only by

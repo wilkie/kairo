@@ -1756,6 +1756,13 @@ pub struct Resolver<'a> {
     sources: &'a dyn SourceHolder,
     source_seeds: &'a [SourceSeed],
     owners: &'a OwnerPreference,
+    /// The plans this resolver has made, by object, snapshot, and
+    /// target: a plan is a function of those and the store, so a
+    /// provider planned once in a resolution is not planned again.
+    planned: std::cell::RefCell<BTreeMap<(String, String, String), PlanDocument>>,
+    /// How many plans it has computed, each once: a measure of its work
+    /// that a test can hold steady where a clock can't.
+    plans_made: std::cell::Cell<usize>,
 }
 
 /// What the runtime closure settled to, or why the declared
@@ -1823,7 +1830,15 @@ impl<'a> Resolver<'a> {
             sources: &NoSources,
             source_seeds: &[],
             owners: &NO_PREFERENCE,
+            planned: std::cell::RefCell::new(BTreeMap::new()),
+            plans_made: std::cell::Cell::new(0),
         }
+    }
+
+    /// How many plans this resolver has computed; each object's target
+    /// at a snapshot is planned once however many builds need it.
+    pub fn plans_made(&self) -> usize {
+        self.plans_made.get()
     }
 
     /// Rank offers by these owners first (§48); without it every owner
@@ -1973,6 +1988,14 @@ impl<'a> Resolver<'a> {
                 .collect();
             chain.push(format!("object:{object} target {target_name}"));
             return Err(ResolveError::Cycle { chain });
+        }
+        let cache_key = (
+            object.to_string(),
+            snapshot.snapshot_id().to_string(),
+            target_name.to_owned(),
+        );
+        if let Some(plan) = self.planned.borrow().get(&cache_key) {
+            return Ok(plan.clone());
         }
         stack.push(key);
 
@@ -2382,7 +2405,7 @@ impl<'a> Resolver<'a> {
             &tree,
             source_date_epoch,
         )?;
-        PlanDocument::new(ResolvedManifest {
+        let plan = PlanDocument::new(ResolvedManifest {
             schema: RESOLVED_MANIFEST_SCHEMA.to_owned(),
             object: object.to_string(),
             snapshot: snapshot.snapshot_id().to_string(),
@@ -2395,7 +2418,10 @@ impl<'a> Resolver<'a> {
             runtime,
             source_date_epoch,
             build_key: build_key.to_string(),
-        })
+        })?;
+        self.planned.borrow_mut().insert(cache_key, plan.clone());
+        self.plans_made.set(self.plans_made.get() + 1);
+        Ok(plan)
     }
 
     /// What the tree at `path` in `revision` holds (§52): a hash of its

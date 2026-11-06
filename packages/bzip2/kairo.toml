@@ -1,0 +1,73 @@
+# bzip2 and libbz2, shared and static, in the library directory, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 1.0.8, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone. Its libraries, if any, go in the
+# environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "bzip2"
+summary = "bzip2 and libbz2, built for x86 and x86-64, each release a version tag; this one 1.0.8."
+tags = ["base", "bzip2"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+path = "distfiles/bzip2-1.0.8.tar.gz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "bzip2-1.0.8"
+root = "bzip2-1.0.8"
+summary = "bzip2 and libbz2 1.0.8 for x86."
+tags = ["bzip2"]
+version = "1.0.8"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:bzip2" }, { provides = "lib:bz2" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "bzip2-1.0.8"
+root = "bzip2-1.0.8"
+summary = "bzip2 and libbz2 1.0.8 for x86-64."
+tags = ["bzip2"]
+version = "1.0.8"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:bzip2" }, { provides = "lib:bz2" }]

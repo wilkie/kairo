@@ -1,0 +1,73 @@
+# GNU gzip, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 1.13, its
+# first generation, built with data:bootstrap-base (../bootstrap-base/),
+# the bootstraps' packages alone. Its libraries, if any, go in the
+# environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "gzip"
+summary = "GNU gzip, built for x86 and x86-64, each release a version tag; this one 1.13."
+tags = ["base", "gzip"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "7454eb6935db17c6655576c2e1b0fabefd38b4d0936e0f87f48cd062ce91a057"
+path = "distfiles/gzip-1.13.tar.xz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "gzip-1.13"
+root = "gzip-1.13"
+summary = "GNU gzip 1.13 for x86."
+tags = ["gzip"]
+version = "1.13"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:gzip" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:bootstrap-base"
+
+[[build.targets.children]]
+name = "gzip-1.13"
+root = "gzip-1.13"
+summary = "GNU gzip 1.13 for x86-64."
+tags = ["gzip"]
+version = "1.13"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:gzip" }]

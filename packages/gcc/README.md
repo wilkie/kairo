@@ -5,35 +5,42 @@ finished packages, not as a step of a bootstrap (`specs/DECISIONS.md`
 §55). One object holds every release Kairo keeps, each a version tag on
 its history, so that a build can choose its compiler by version, and
 each later gcc is built with an older one, an older generation of the
-same object (§59). This revision is gcc 7.5.0, its first, tagged
-`7.5.0`: built with what other objects offer.
+same object (§59).
+
+| Release | Tag | Built with | Recipe |
+|---|---|---|---|
+| gcc 7.5.0 | `7.5.0` | the bootstraps' gcc 15, through `bootstrap-base` | the object's revision at its tag, this directory before 15.2.0 |
+| gcc 15.2.0 | `15.2.0` | gcc 7.5.0, this object's own release, with the rest from `bootstrap-base` | this directory |
 
 The object has a target for each environment it is built for, and no
 environment of its own: each target's artifact runs where it was built
 (§53 sub-decision 1).
 
-| Target | Runs in, built in | Built from | Triple |
-|---|---|---|---|
-| `x86` | `linux/x86` | live-bootstrap's packages, its children | `i686-pc-linux-musl` |
-| `x86-64` | `linux/x86-64` | the 64-bit bootstrap's packages, stage 3's children (`bootstrap/amd64/native-root/`) | `x86_64-pc-linux-musl` |
+| Target | Runs in, built in | Triple |
+|---|---|---|
+| `x86` | `linux/x86` | `i686-pc-linux-musl` |
+| `x86-64` | `linux/x86-64` | `x86_64-pc-linux-musl` |
 
 Neither builds on a whole root (§56). Each depends on
 `data:bootstrap-base` (`../bootstrap-base/`, §57, §59), which brings a
-shell, the GNU userland, make, the archivers, m4 for gmp, binutils, gcc
-15 and its runtime libraries, musl, static too for the checks, and the
-kernel's headers, each the bootstraps' package for the target's
-environment. This is gcc's first generation: until every package
-`build-base` names is a release, only the bootstraps can build it, as
-only releases are offered by label to a requirement that doesn't name
-its objects (§61).
+shell, the GNU userland, make, the archivers, m4 for gmp, binutils, the
+runtime libraries the compilers' programs load, musl, static too for
+the checks, and the kernel's headers, each the bootstraps' package for
+the target's environment; and 15.2.0's targets ask for `tool:gcc` and
+`tool:g++` `^7`, which only gcc 7.5.0 here offers, and which replace
+`bootstrap-base`'s gcc. Only releases are offered by label (§61), and a
+build of this object may use its own offers only from a tagged
+ancestor of its revision, so 15.2.0 takes 7.5.0 at its tag and 7.5.0
+never takes 15.2.0.
 
-Each gcc bootstraps: gcc 15 builds the first stage, which
-builds the second, which builds the third, and the last two are
-compared. What the artifact holds is gcc 7's own work, whatever gcc
-built it. The first stage is built as C17 and C++98, with
-`-fpermissive`, since gcc 7's sources predate what gcc 15 rejects. One
-line of gcc 7 initializes a `bool` with `NULL`, which musl defines as
-`nullptr` in C++11 and later; it is changed to `false`, as gcc 8 has it.
+Each gcc bootstraps: the gcc it is built with builds its first stage,
+which builds the second, which builds the third, and the last two are
+compared. What the artifact holds is that gcc's own work, whatever gcc
+built it. gcc 7.5.0's first stage, built by gcc 15, is built as C17 and
+C++98, with `-fpermissive`, since its sources predate what gcc 15
+rejects, and one line of it initializes a `bool` with `NULL`, which
+musl defines as `nullptr` in C++11 and later; it is changed to `false`,
+as gcc 8 has it.
 
 ## Children
 
@@ -42,8 +49,8 @@ the target's children side by side (§56).
 
 | Child | Where | Offers |
 |---|---|---|
-| `gcc-7.5.0` | `/usr/bin` and `<libdir>/gcc/<triple>/7.5.0/`, `/usr/libexec/gcc/<triple>/7.5.0/` | `tool:gcc`, `tool:g++`, their triple labels (`i686-linux-musl`, `x86_64-linux-musl`), `lib:stdc++:static` |
-| `libstdc++-7.5.0`, `libgcc_s-7.5.0`, `libgomp-7.5.0`, `libatomic-7.5.0`, `libitm-7.5.0`, `libquadmath-7.5.0` | `<libdir>` | `lib:stdc++:shared`, `lib:gcc:shared`, `lib:gomp:shared`, `lib:atomic:shared`, `lib:itm:shared`, `lib:quadmath:shared`, each conferring itself `>=7.5.0` |
+| `gcc-<version>` | `/usr/bin` and `<libdir>/gcc/<triple>/<version>/`, `/usr/libexec/gcc/<triple>/<version>/` | `tool:gcc`, `tool:g++`, their triple labels (`i686-linux-musl`, `x86_64-linux-musl`), `lib:stdc++:static` |
+| `libstdc++-<version>`, `libgcc_s-<version>`, `libgomp-<version>`, `libatomic-<version>`, `libitm-<version>`, `libquadmath-<version>` | `<libdir>` | `lib:stdc++:shared`, `lib:gcc:shared`, `lib:gomp:shared`, `lib:atomic:shared`, `lib:itm:shared`, `lib:quadmath:shared`, each conferring itself `>=<version>` |
 
 The two targets have the same children and offer the same labels, each
 to builds in its own environment. `<libdir>` is the environment's
@@ -56,9 +63,9 @@ is the directory itself, not `lib64`.
 overlay of its dependencies, the first listed on top (§41).
 
 - **Its own directories:** its runtime libraries and C++ headers are in
-  its versioned directory, `<libdir>/gcc/<triple>/7.5.0/`
+  its versioned directory, `<libdir>/gcc/<triple>/<version>/`
   (`--enable-version-specific-runtime-libs`). It links against them
-  there, so a program records gcc 7's symbol versions.
+  there, so a program records that gcc's symbol versions.
 - **libgcc_s moved:** where libgcc installs `libgcc_s` one directory
   up, in `<libdir>/gcc/<triple>/lib/`, which no version names, the
   recipe moves it into the versioned directory.
@@ -91,17 +98,23 @@ has its own stack protector, so they and libssp are left out.
 | File | What it is |
 |---|---|
 | `kairo.toml` | The sources, shared by both targets, and the two targets with what they build from and their children. |
-| `src/build.sh` | Builds gcc for the triple it is given and lays out its children. It then checks that only the compiler's programs are outside its versioned directories, that every program and library is the target's code, and that C and C++, static and dynamic, compile and run with it installed. It also reports what each child loads. |
-| `import.sh` | Archives the tarballs, creates the object or its next revision with `../../bootstrap/wrapper.sh`, and tags it 7.5.0. |
+| `src/build.sh` | Builds gcc for the triple it is given, with `../common/recipe.sh`, which `import.sh` puts beside it, and lays out its children. It then checks that only the compiler's programs are outside its versioned directories, that every program and library is the target's code, and that C and C++, static and dynamic, compile and run with it installed. It also reports what each child loads. |
+| `import.sh` | Archives the tarballs, creates the object or its next revision with `../common/import.sh`, and tags it with the release's version. |
 
 ## Running it
 
-Import what the targets build from: `../bootstrap-base/`, and
+Import what the targets build with: `../bootstrap-base/`, and
 live-bootstrap's six passes and linux-filesystem for `x86`, the 64-bit
-bootstrap through stage 3 for `x86-64`. Then:
+bootstrap through stage 3 for `x86-64`. Then import 7.5.0 from this
+directory as it was at that release, build it, and import this
+directory, 15.2.0, as its next revision:
 
 ```sh
-packages/gcc/import.sh <your actor id>
+git show <7.5.0's commit>:packages/gcc/...   # or check that commit out
+packages/gcc/import.sh <your actor id>                       # at 7.5.0
+kairo build object:<object id> --target x86 --actor <your actor id>
+kairo build object:<object id> --target x86-64 --actor <your actor id>
+packages/gcc/import.sh <your actor id> --wrapper <object id> # 15.2.0
 kairo build object:<object id> --target x86 --actor <your actor id>
 kairo build object:<object id> --target x86-64 --actor <your actor id>
 ```

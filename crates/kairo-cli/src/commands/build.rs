@@ -7,6 +7,8 @@
 //! exist yet, so every artifact provider is a build the plan needs
 //! first. Running the plan is the next slice.
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use std::path::Path;
@@ -49,26 +51,119 @@ pub(crate) struct BuildArgs<'a> {
 struct StoreArtifacts<'a> {
     store: &'a FilesystemStore,
     accepted: Vec<kairo_core::ActorId>,
+    /// What one command has read, kept for the rest of it: a resolution
+    /// asks after the same providers' builds many times (§52, §54), and
+    /// each answer would otherwise read and parse every build result of
+    /// the object, and every plan among them.
+    cache: StoreArtifactsCache,
 }
 
-impl StoreArtifacts<'_> {
-    fn accepts(&self, signer: &kairo_core::ActorId) -> bool {
-        if self.accepted.contains(signer) {
-            return true;
+#[derive(Default)]
+struct StoreArtifactsCache {
+    /// Each object's build results, newest first.
+    heads: RefCell<BTreeMap<String, Vec<kairo_store::BuildResultHead>>>,
+    /// Each plan blob's build key, or `None` when the blob isn't held.
+    keys: RefCell<BTreeMap<String, Option<String>>>,
+    /// Whether each blob is held.
+    held: RefCell<BTreeMap<String, bool>>,
+    /// Whether each signer's builds are accepted.
+    accepted: RefCell<BTreeMap<String, bool>>,
+}
+
+impl<'a> StoreArtifacts<'a> {
+    fn new(store: &'a FilesystemStore, accepted: Vec<kairo_core::ActorId>) -> Self {
+        Self {
+            store,
+            accepted,
+            cache: StoreArtifactsCache::default(),
         }
-        self.accepted.iter().any(|by_actor| {
-            self.store
-                .latest_trust(by_actor, signer, &TrustScope::general())
-                .ok()
-                .flatten()
-                .is_some_and(|trust| {
-                    trust.unsigned().body().decision() == Some(TrustDecision::Trusted)
-                })
-        })
     }
-}
 
-impl StoreArtifacts<'_> {
+    /// Forget what a build changes: the build results and blobs it read.
+    /// Called once a build has recorded its result, before planning
+    /// again, or the new build would look unbuilt.
+    fn forget(&self) {
+        self.cache.heads.borrow_mut().clear();
+        self.cache.keys.borrow_mut().clear();
+        self.cache.held.borrow_mut().clear();
+    }
+
+    fn accepts(&self, signer: &kairo_core::ActorId) -> bool {
+        if let Some(&known) = self.cache.accepted.borrow().get(signer.as_str()) {
+            return known;
+        }
+        let accepted = self.accepted.contains(signer)
+            || self.accepted.iter().any(|by_actor| {
+                self.store
+                    .latest_trust(by_actor, signer, &TrustScope::general())
+                    .ok()
+                    .flatten()
+                    .is_some_and(|trust| {
+                        trust.unsigned().body().decision() == Some(TrustDecision::Trusted)
+                    })
+            });
+        self.cache
+            .accepted
+            .borrow_mut()
+            .insert(signer.as_str().to_owned(), accepted);
+        accepted
+    }
+
+    /// `object`'s build results, newest first.
+    fn heads(&self, object: &ObjectId) -> Result<Vec<kairo_store::BuildResultHead>, SourceError> {
+        if let Some(heads) = self.cache.heads.borrow().get(object.as_str()) {
+            return Ok(heads.clone());
+        }
+        let heads = self
+            .store
+            .list_build_results(object)
+            .map_err(|error| SourceError(error.to_string()))?;
+        self.cache
+            .heads
+            .borrow_mut()
+            .insert(object.as_str().to_owned(), heads.clone());
+        Ok(heads)
+    }
+
+    /// Whether `blob` is held.
+    fn holds(&self, blob: &BlobId) -> Result<bool, SourceError> {
+        if let Some(&known) = self.cache.held.borrow().get(blob.as_str()) {
+            return Ok(known);
+        }
+        let held = match self.store.get_blob(blob) {
+            Ok(_) => true,
+            Err(kairo_store::StoreError::Missing) => false,
+            Err(error) => return Err(SourceError(error.to_string())),
+        };
+        self.cache
+            .held
+            .borrow_mut()
+            .insert(blob.as_str().to_owned(), held);
+        Ok(held)
+    }
+
+    /// The build key of the plan in `blob`, if it is held.
+    fn plan_key(&self, blob: &BlobId) -> Result<Option<String>, SourceError> {
+        if let Some(key) = self.cache.keys.borrow().get(blob.as_str()) {
+            return Ok(key.clone());
+        }
+        let key = match self.store.get_blob(blob) {
+            Ok(bytes) => Some(
+                kairo_resolver::PlanDocument::from_bytes(bytes)
+                    .map_err(|error| SourceError(error.to_string()))?
+                    .manifest
+                    .build_key,
+            ),
+            Err(kairo_store::StoreError::Missing) => None,
+            Err(error) => return Err(SourceError(error.to_string())),
+        };
+        self.cache
+            .keys
+            .borrow_mut()
+            .insert(blob.as_str().to_owned(), key.clone());
+        Ok(key)
+    }
+
     /// The newest accepted, successful build of `object`'s `target`,
     /// at any snapshot, whose plan has `build_key` and whose artifact
     /// is held (`DECISIONS.md` §52).
@@ -78,30 +173,18 @@ impl StoreArtifacts<'_> {
         target: &str,
         build_key: &BlobId,
     ) -> Result<Option<kairo_store::BuildResultHead>, SourceError> {
-        let heads = self
-            .store
-            .list_build_results(object)
-            .map_err(|error| SourceError(error.to_string()))?;
-        for head in heads {
+        for head in self.heads(object)? {
             if head.target != target || head.artifact.is_none() || !self.accepts(&head.actor) {
                 continue;
             }
-            let plan = match self.store.get_blob(&head.resolved_manifest) {
-                Ok(bytes) => kairo_resolver::PlanDocument::from_bytes(bytes)
-                    .map_err(|error| SourceError(error.to_string()))?,
-                Err(kairo_store::StoreError::Missing) => continue,
-                Err(error) => return Err(SourceError(error.to_string())),
-            };
-            if plan.manifest.build_key != build_key.as_str() {
+            if self.plan_key(&head.resolved_manifest)?.as_deref() != Some(build_key.as_str()) {
                 continue;
             }
             let Some(artifact) = &head.artifact else {
                 continue;
             };
-            match self.store.get_blob(artifact) {
-                Ok(_) => return Ok(Some(head)),
-                Err(kairo_store::StoreError::Missing) => continue,
-                Err(error) => return Err(SourceError(error.to_string())),
+            if self.holds(artifact)? {
+                return Ok(Some(head));
             }
         }
         Ok(None)
@@ -115,11 +198,7 @@ impl StoreArtifacts<'_> {
         snapshot: &SnapshotId,
         target: &str,
     ) -> Result<Option<kairo_store::BuildResultHead>, SourceError> {
-        let heads = self
-            .store
-            .list_build_results(object)
-            .map_err(|error| SourceError(error.to_string()))?;
-        for head in heads {
+        for head in self.heads(object)? {
             if &head.snapshot != snapshot || head.target != target {
                 continue;
             }
@@ -129,10 +208,8 @@ impl StoreArtifacts<'_> {
             if !self.accepts(&head.actor) {
                 continue;
             }
-            match self.store.get_blob(artifact) {
-                Ok(_) => return Ok(Some(head)),
-                Err(kairo_store::StoreError::Missing) => continue,
-                Err(error) => return Err(SourceError(error.to_string())),
+            if self.holds(artifact)? {
+                return Ok(Some(head));
             }
         }
         Ok(None)
@@ -173,27 +250,9 @@ impl ArtifactSource for StoreArtifacts<'_> {
         snapshot: &SnapshotId,
         target: &str,
     ) -> Result<Option<BlobId>, SourceError> {
-        let heads = self
-            .store
-            .list_build_results(object)
-            .map_err(|error| SourceError(error.to_string()))?;
-        for head in heads {
-            if &head.snapshot != snapshot || head.target != target {
-                continue;
-            }
-            let Some(artifact) = head.artifact else {
-                continue;
-            };
-            if !self.accepts(&head.actor) {
-                continue;
-            }
-            match self.store.get_blob(&artifact) {
-                Ok(_) => return Ok(Some(artifact)),
-                Err(kairo_store::StoreError::Missing) => continue,
-                Err(error) => return Err(SourceError(error.to_string())),
-            }
-        }
-        Ok(None)
+        Ok(self
+            .head(object, snapshot, target)?
+            .and_then(|head| head.artifact))
     }
 }
 
@@ -527,10 +586,7 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
     let manifests = CacheManifests { paths };
     let host = policy.host();
     let tools = host_tools(&config);
-    let artifacts = StoreArtifacts {
-        store: &store,
-        accepted: local.clone(),
-    };
+    let artifacts = StoreArtifacts::new(&store, local.clone());
     let sources = CacheSources { paths };
     let accepted_sources = source_seeds(&config);
     let owners = owner_preference(args.prefer, &config, &local)?;
@@ -633,6 +689,7 @@ pub(crate) fn run_build(args: &BuildArgs<'_>, paths: &StorePaths) -> Result<Stri
         if status != Status::Success || is_root {
             break status;
         }
+        artifacts.forget();
         resolution = resolve()?;
         store_plans(&resolution)?;
     };
