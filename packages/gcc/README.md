@@ -17,13 +17,15 @@ environment of its own: each target's artifact runs where it was built
 | `x86` | `linux/x86` | live-bootstrap's packages, its children | `i686-pc-linux-musl` |
 | `x86-64` | `linux/x86-64` | the 64-bit bootstrap's packages, stage 3's children (`bootstrap/amd64/native-root/`) | `x86_64-pc-linux-musl` |
 
-Neither builds on a whole root (§56). Each depends on `data:build-base`
-(`../build-base/`, §57), which brings a shell, the GNU userland, make,
-the archivers, m4 for gmp, binutils, gcc and its runtime libraries,
-musl, and the kernel's headers, each the package for the target's
-environment. Beyond that, each names the gcc 15 its first stage is
-built by (`^15.2.0`), which replaces build-base's gcc of any version,
-and static musl, for its checks.
+Neither builds on a whole root (§56). Each depends on
+`data:bootstrap-base` (`../bootstrap-base/`, §57, §59), which brings a
+shell, the GNU userland, make, the archivers, m4 for gmp, binutils, gcc
+15 and its runtime libraries, musl, static too for the checks, and the
+kernel's headers, each the bootstraps' package for the target's
+environment. This is gcc's first generation: until every package
+`build-base` names is a release, only the bootstraps can build it, as
+only releases are offered by label to a requirement that doesn't name
+its objects (§61).
 
 Each gcc bootstraps: gcc 15 builds the first stage, which
 builds the second, which builds the third, and the last two are
@@ -94,7 +96,7 @@ has its own stack protector, so they and libssp are left out.
 
 ## Running it
 
-Import what the targets build from: `../build-base/`, and
+Import what the targets build from: `../bootstrap-base/`, and
 live-bootstrap's six passes and linux-filesystem for `x86`, the 64-bit
 bootstrap through stage 3 for `x86-64`. Then:
 

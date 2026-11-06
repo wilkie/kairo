@@ -10,8 +10,8 @@ each.
 |---|---|
 | A shell and the GNU userland | `tool:bash`, `tool:coreutils`, `tool:sed`, `tool:grep`, `tool:gawk`, `tool:make`, `tool:diffutils`, `tool:findutils`, `tool:patch` |
 | Archivers, compressors, and m4 | `tool:tar`, `tool:gzip`, `tool:xz`, `tool:bzip2`, `tool:m4` |
-| The native toolchain | `tool:binutils`, `tool:gcc`, `tool:g++`, `lib:stdc++:shared`, `lib:gcc:shared` |
-| The C library and headers | `lib:musl:headers`, `lib:musl:shared`, `lib:linux:headers` |
+| The native toolchain | `tool:binutils`, `tool:gcc`, `tool:g++`, `lib:stdc++:shared`, `lib:gcc:shared`, `lib:atomic:shared` |
+| The C library and headers | `lib:musl:headers`, `lib:musl:shared`, `lib:musl:static`, `lib:linux:headers` |
 
 **One object for every environment.** It names no environment, and its
 labels name no target triple. Each label resolves to the package for
@@ -22,8 +22,12 @@ bootstrap's to one in `linux/x86-64`.
 **A build's own labels win.** A build that names one of these labels
 itself replaces this object's requirement on it. A build that wants gcc
 7 names `tool:gcc` with `^7` and still takes everything else from here.
-gcc 7.5.0's own build (`../gcc/`) does the same, naming the gcc
-15 that builds its first stage.
+
+**Releases only.** Its labels are resolved as any requirement that
+names no object is: only releases, version-tagged snapshots, satisfy
+them (§61). So it serves a build once every package it names is a
+release; until then a package's first generation builds with
+`../bootstrap-base/`, which names the bootstraps' objects.
 
 **In a plan.** Each brought dependency is a requirement of the build,
 resolved, chosen, and conferred as its own are. It is recorded after

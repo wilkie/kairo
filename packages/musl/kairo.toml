@@ -38,10 +38,6 @@ provides = "environment:linux/x86"
 kind = "provides"
 provides = "data:bootstrap-base"
 
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:musl:static"
-
 [[build.targets.children]]
 name = "musl-1.2.5-headers"
 root = "musl-1.2.5-headers"
@@ -83,10 +79,6 @@ provides = "environment:linux/x86-64"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:bootstrap-base"
-
-[[build.targets.dependencies]]
-kind = "provides"
-provides = "lib:musl:static"
 
 [[build.targets.children]]
 name = "musl-1.2.5-headers"

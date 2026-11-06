@@ -21,15 +21,24 @@ provides = "environment:linux/x86"
 kind = "provides"
 provides = "tool:bash"
 version = "^5"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:coreutils"
 version = "^9"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:gcc"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]
 
 # Linked against musl's shared libc, at /lib/ld-musl-i386.so.1: its
 # artifact requires lib:musl:shared at run time.
@@ -42,6 +51,9 @@ install = "/opt/hello"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "lib:musl:shared"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]
 
 # Linked statically: its artifact requires nothing at run time. Pass 1's
 # musl is static only, so this is the target pass 1's gcc can build.
@@ -54,3 +66,6 @@ install = "/opt/hello"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "lib:musl:static"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]

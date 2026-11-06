@@ -83,12 +83,25 @@ impl World {
     }
 
     /// An object with one revision on `head`, its manifest readable.
+    /// An object, its first revision current and tagged as a release,
+    /// as an object offering labels has to be (§61).
     fn object(&mut self, manifest: &str) -> (CreatedObject, CreatedRevision) {
         let object = self.fixture.make_object(&self.actor, "software");
         let revision = self.revision(&object, manifest, Vec::new());
         self.fixture
             .set_branch(&self.actor, &object, &revision, "head");
+        self.fixture
+            .bind_version_tag(&self.actor, &object, &revision, "0.0.0");
         (object, revision)
+    }
+
+    /// An object whose first revision is current but no release.
+    fn untagged(&mut self, manifest: &str) -> CreatedObject {
+        let object = self.fixture.make_object(&self.actor, "software");
+        let revision = self.revision(&object, manifest, Vec::new());
+        self.fixture
+            .set_branch(&self.actor, &object, &revision, "head");
+        object
     }
 
     /// An object `actor` creates and makes current at `seconds`.
@@ -105,6 +118,8 @@ impl World {
             .make_revision(actor, &object, id, manifest, Vec::new());
         self.fixture
             .set_branch_at(actor, &object, &revision, "head", seconds);
+        self.fixture
+            .bind_version_tag(actor, &object, &revision, "0.0.0");
         object
     }
 
@@ -994,7 +1009,7 @@ fn an_object_dependency_without_a_selector_takes_the_highest_version_tag() -> Te
     world
         .fixture
         .bind_version_tag(&world.actor, &lib, &second, "2.0.0");
-    let (untagged, _) = world.object(&manifest("untagged", ""));
+    let untagged = world.untagged(&manifest("untagged", ""));
     let app = |object: &ObjectId| {
         manifest(
             "app",
@@ -2459,7 +2474,7 @@ fn a_closure_label_is_met_by_what_the_build_installs_already() -> TestResult {
 }
 
 #[test]
-fn a_tagged_older_version_is_offered_by_label() -> TestResult {
+fn only_releases_are_offered_but_to_a_requirement_naming_the_object() -> TestResult {
     let mut world = World::new();
     let (lib, first) = world.object(&content_provider("lib:a", Some("1.0.0")));
     world
@@ -2472,26 +2487,64 @@ fn a_tagged_older_version_is_offered_by_label() -> TestResult {
     );
     world
         .fixture
-        .set_branch_at(&world.actor, &lib, &second, "head", LATER);
+        .bind_version_tag(&world.actor, &lib, &second, "2.0.0");
+    // A newer head, not yet a release.
+    let third = world.revision(
+        &lib,
+        &content_provider("lib:a", Some("3.0.0")),
+        vec![second.statement.unsigned().body().revision().clone()],
+    );
+    world
+        .fixture
+        .set_branch_at(&world.actor, &lib, &third, "head", LATER);
     let first_snapshot = Snapshot::from_object_revision(&lib.object_id, &first.statement)?;
     let second_snapshot = Snapshot::from_object_revision(&lib.object_id, &second.statement)?;
+    let third_snapshot = Snapshot::from_object_revision(&lib.object_id, &third.statement)?;
+    let at = |snapshot: &Snapshot| {
+        Some((
+            lib.object_id.to_string(),
+            snapshot.snapshot_id().to_string(),
+        ))
+    };
 
+    // An older release, by label.
     let (old, _) = world.object(&app_requiring("lib:a", Some("^1")));
     assert_eq!(
         resolved_to(&world.resolve(&old.object_id, "release")?, "lib:a"),
-        Some((
-            lib.object_id.to_string(),
-            first_snapshot.snapshot_id().to_string()
-        ))
+        at(&first_snapshot)
     );
+    // The highest release, not the newer head (§61).
     let (new, _) = world.object(&app_requiring("lib:a", None));
     assert_eq!(
         resolved_to(&world.resolve(&new.object_id, "release")?, "lib:a"),
-        Some((
-            lib.object_id.to_string(),
-            second_snapshot.snapshot_id().to_string()
-        ))
+        at(&second_snapshot)
     );
+    // The head, to a requirement naming the object; not otherwise.
+    let (named, _) = world.object(&manifest(
+        "app",
+        &format!(
+            r#"
+            [[build.targets]]
+            name = "release"
+            command = ["make"]
+            [[build.targets.dependencies]]
+            kind = "provides"
+            provides = "lib:a"
+            version = "^3"
+            offered_by = ["{}"]
+            "#,
+            lib.object_id
+        ),
+    ));
+    assert_eq!(
+        resolved_to(&world.resolve(&named.object_id, "release")?, "lib:a"),
+        at(&third_snapshot)
+    );
+    let (unnamed, _) = world.object(&app_requiring("lib:a", Some("^3")));
+    assert!(matches!(
+        world.resolve(&unnamed.object_id, "release"),
+        Err(ResolveError::Unsatisfied(_))
+    ));
     Ok(())
 }
 

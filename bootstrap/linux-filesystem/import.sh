@@ -32,6 +32,8 @@ trap 'rm -rf "$WORK"' EXIT
 # The links are committed as links.
 cp -a "$HERE/kairo.toml" "$HERE/files" "$WORK/"
 commit_wrapper "linux-filesystem: the merged-/usr layout" kairo.toml files/bin files/lib files/sbin
+# A release, 1.0.0, offered by label (DECISIONS.md §61).
+tag_release 1.0.0
 
 cat <<OUT
 object = $WRAPPER

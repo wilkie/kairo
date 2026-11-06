@@ -20,6 +20,13 @@
 //! again; and at 6, pass 6, gcc 15.2.0 to the end of upstream's CI pass
 //! 2 (`bootstrap/live-bootstrap-gcc-15.2.0/`), and hello with it.
 //!
+//! The wrappers' manifests name the stage before them by its object id
+//! in the archive's canonical store (`specs/DECISIONS.md` §59, §61); a
+//! fresh store's imports get other ids. So the test imports a copy of
+//! `bootstrap/` in which, before each import, the canonical ids of the
+//! wrappers it has imported are replaced by the ids they got here, and
+//! re-creates the hello consumer the same way after each pass.
+//!
 //! Ignored by default: it needs the network (GitHub, Savannah, and the
 //! distfile mirrors), bubblewrap on an x86-64 kernel that runs i386, and
 //! several minutes.
@@ -143,25 +150,157 @@ fn build_target(store: &Path, wrapper: &str, target: &str, actor: &str) -> Strin
 }
 
 /// Run a wrapper's `import.sh`; its stdout.
-fn import(store: &Path, actor: &str, wrapper: &str) -> String {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../bootstrap")
-        .join(wrapper)
-        .join("import.sh");
-    let output = Command::new(&script)
-        .arg(actor)
-        .arg("--store")
-        .arg(store)
-        .env("KAIRO", KAIRO)
-        .output()
-        .expect("run import.sh");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    assert!(
-        output.status.success(),
-        "{wrapper}/import.sh failed:\n{stdout}{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    stdout
+/// Each wrapper's object id in the archive's canonical store, which the
+/// manifests after it name (`specs/DECISIONS.md` §59, §61).
+const CANONICAL: [(&str, &str); 8] = [
+    (
+        "stage0-posix",
+        "zQmUovNuu85b7r5osUhLMKA1WdKNhAG5JcG8dR9iPPLJBte",
+    ),
+    (
+        "live-bootstrap",
+        "zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ",
+    ),
+    (
+        "linux-filesystem",
+        "zQmPdhpRFdK8r1tAKXivvrayNW7ME4iacqg8Gt92zmyKZxa",
+    ),
+    (
+        "live-bootstrap-perl",
+        "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu",
+    ),
+    (
+        "live-bootstrap-gcc-4.7.4",
+        "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR",
+    ),
+    (
+        "live-bootstrap-python",
+        "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X",
+    ),
+    (
+        "live-bootstrap-gcc-10.5.0",
+        "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V",
+    ),
+    (
+        "live-bootstrap-gcc-15.2.0",
+        "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk",
+    ),
+];
+
+/// The bootstrap's wrappers, copied, so that a fresh store can import
+/// them: the manifests name the stage before them by its id in the
+/// canonical store, and a fresh import of that stage gets another. Before
+/// each import, every canonical id whose wrapper this test has imported
+/// is replaced, in the copy, by the id its import here got.
+struct Wrappers {
+    dir: tempfile::TempDir,
+    fresh: Vec<(&'static str, String)>,
+}
+
+impl Wrappers {
+    fn new() -> Self {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bootstrap");
+        let copied = Command::new("cp")
+            .arg("-a")
+            .arg(&source)
+            .arg(dir.path().join("bootstrap"))
+            .status()
+            .expect("copy the wrappers");
+        assert!(copied.success(), "copying {} failed", source.display());
+        Self {
+            dir,
+            fresh: Vec::new(),
+        }
+    }
+
+    fn root(&self) -> std::path::PathBuf {
+        self.dir.path().join("bootstrap")
+    }
+
+    /// Every manifest in the copy, with the canonical ids imported so far
+    /// replaced by their fresh ones.
+    fn rewrite(&self) {
+        fn manifests(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read the copy") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    manifests(&path, found);
+                } else if path.file_name().is_some_and(|name| name == "kairo.toml") {
+                    found.push(path);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        manifests(&self.root(), &mut found);
+        for path in found {
+            let text = std::fs::read_to_string(&path).expect("manifest");
+            let mut rewritten = text.clone();
+            for (canonical, fresh) in &self.fresh {
+                rewritten = rewritten.replace(canonical, fresh);
+            }
+            if rewritten != text {
+                std::fs::write(&path, rewritten).expect("rewrite manifest");
+            }
+        }
+    }
+
+    /// Run `wrapper`'s import.sh from the copy and note the id it made.
+    fn import(&mut self, store: &Path, actor: &str, wrapper: &str) -> String {
+        self.rewrite();
+        let script = self.root().join(wrapper).join("import.sh");
+        let output = Command::new(&script)
+            .arg(actor)
+            .arg("--store")
+            .arg(store)
+            .env("KAIRO", KAIRO)
+            .output()
+            .expect("run import.sh");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        assert!(
+            output.status.success(),
+            "{wrapper}/import.sh failed:\n{stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let made = stdout
+            .lines()
+            .find_map(|line| {
+                line.strip_prefix("wrapper = ")
+                    .or_else(|| line.strip_prefix("object = "))
+            })
+            .unwrap_or_else(|| panic!("{wrapper}/import.sh printed no id:\n{stdout}"))
+            .to_owned();
+        if let Some((_, canonical)) = CANONICAL.iter().find(|(name, _)| *name == wrapper) {
+            self.fresh.push((canonical, made));
+        }
+        stdout
+    }
+
+    /// Create the hello consumer from the copy, or, given its id, its next
+    /// revision, naming the passes imported so far by their ids here.
+    fn hello(&self, store: &Path, actor: &str, consumer: Option<&str>) -> String {
+        self.rewrite();
+        let mut command = Command::new("bash");
+        command
+            .arg(self.root().join("live-bootstrap/hello/create.sh"))
+            .arg(actor);
+        if let Some(consumer) = consumer {
+            command.arg("--wrapper").arg(consumer);
+        }
+        let created = command
+            .arg("--store")
+            .arg(store)
+            .env("KAIRO", KAIRO)
+            .output()
+            .expect("run create.sh");
+        assert!(
+            created.status.success(),
+            "create.sh failed:\n{}{}",
+            String::from_utf8_lossy(&created.stdout),
+            String::from_utf8_lossy(&created.stderr)
+        );
+        field(&String::from_utf8_lossy(&created.stdout), "object").to_owned()
+    }
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -201,6 +340,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         KeptOrTemp::Temp(store_dir)
     };
     let store = store_dir.path();
+    let mut wrappers = Wrappers::new();
     let actor = field(
         &kairo(
             store,
@@ -217,7 +357,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     .to_owned();
 
     // stage0-posix's x86 tools, this build's input.
-    let stage0 = import(store, &actor, "stage0-posix");
+    let stage0 = wrappers.import(store, &actor, "stage0-posix");
     let config = &stage0[stage0.find("[[runtime.seeds]]").expect("config lines")..];
     // The longest pass runs longer than the default hour (gcc 15.2.0's
     // three-stage bootstrap, in pass 6, for hours), and the Linux
@@ -244,7 +384,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     );
     assert_eq!(field(&stage0_built, "status"), "success", "{stage0_built}");
 
-    let imported = import(store, &actor, "live-bootstrap");
+    let imported = wrappers.import(store, &actor, "live-bootstrap");
     let wrapper = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &wrapper, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
@@ -292,24 +432,9 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     // §51), the musl it links against: binutils and musl's and the
     // kernel's headers come as what gcc requires (§46), and the program
     // it builds runs. Pass 1's musl is static only, so the static target.
-    let filesystem = import(store, &actor, "linux-filesystem");
+    let filesystem = wrappers.import(store, &actor, "linux-filesystem");
     let filesystem = field(&filesystem, "object").to_owned();
-    let hello = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bootstrap/live-bootstrap/hello");
-    let created = Command::new("bash")
-        .arg(hello.join("create.sh"))
-        .arg(&actor)
-        .arg("--store")
-        .arg(store)
-        .env("KAIRO", KAIRO)
-        .output()
-        .expect("run create.sh");
-    assert!(
-        created.status.success(),
-        "create.sh failed:\n{}{}",
-        String::from_utf8_lossy(&created.stdout),
-        String::from_utf8_lossy(&created.stderr)
-    );
-    let consumer = field(&String::from_utf8_lossy(&created.stdout), "object").to_owned();
+    let consumer = wrappers.hello(store, &actor, None);
     let built = build_target(store, &format!("object:{consumer}"), "x86-static", &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     assert_eq!(field(&built, "provisioning"), "overlay", "{built}");
@@ -376,7 +501,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     if passes < 2 {
         return;
     }
-    let imported = import(store, &actor, "live-bootstrap-perl");
+    let imported = wrappers.import(store, &actor, "live-bootstrap-perl");
     let perl = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &perl, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
@@ -391,7 +516,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     }
 
     // Pass 3, to gcc 4.7.4, with C++.
-    let imported = import(store, &actor, "live-bootstrap-gcc-4.7.4");
+    let imported = wrappers.import(store, &actor, "live-bootstrap-gcc-4.7.4");
     let gcc = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &gcc, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
@@ -405,7 +530,9 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     // The consumer's dynamic target, now that a shared musl is held: it
     // gets the highest gcc, with the binutils built beside it, the shared
     // musl brings the merged-/usr layout its loader is reached through
-    // (§50), and the artifact requires that musl at its range.
+    // (§50), and the artifact requires that musl at its range. hello
+    // names the passes by their ids here, this one's too.
+    wrappers.hello(store, &actor, Some(&consumer));
     let planned = plan("x86");
     assert!(
         planned.contains(&format!(
@@ -436,7 +563,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     }
 
     // Pass 4: the python chain, guile, and autogen.
-    let imported = import(store, &actor, "live-bootstrap-python");
+    let imported = wrappers.import(store, &actor, "live-bootstrap-python");
     let python = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &python, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
@@ -456,7 +583,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     }
 
     // Pass 5: gcc 10.5.0, and binutils 2.41 rebuilt with it.
-    let imported = import(store, &actor, "live-bootstrap-gcc-10.5.0");
+    let imported = wrappers.import(store, &actor, "live-bootstrap-gcc-10.5.0");
     let gcc = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &gcc, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
@@ -470,6 +597,8 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
         assert!(paths.contains(&program.to_owned()), "{paths:?}");
     }
     // hello's dynamic target now builds with gcc 10.5.0.
+    // hello names the passes by their ids here, this one's too.
+    wrappers.hello(store, &actor, Some(&consumer));
     let built = build(store, &format!("object:{consumer}"), &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     let out = built
@@ -487,7 +616,7 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     }
 
     // Pass 6, the last: gcc 15.2.0 and the rest of upstream's CI pass 2.
-    let imported = import(store, &actor, "live-bootstrap-gcc-15.2.0");
+    let imported = wrappers.import(store, &actor, "live-bootstrap-gcc-15.2.0");
     let last = format!("object:{}", field(&imported, "wrapper"));
     let built = build(store, &last, &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
@@ -495,6 +624,8 @@ fn live_bootstrap_builds_into_its_ci_pass_2_from_the_stage0_artifact_under_the_e
     assert_eq!(check_packages(&built, &sums, &blob_store), 149, "{built}");
     // Its 10 packages, gcc's six shared runtime libraries apart (§58).
     assert_eq!(field(&built, "children"), "16", "{built}");
+    // hello names the passes by their ids here, this one's too.
+    wrappers.hello(store, &actor, Some(&consumer));
     let built = build(store, &format!("object:{consumer}"), &actor);
     assert_eq!(field(&built, "status"), "success", "{built}");
     let out = built

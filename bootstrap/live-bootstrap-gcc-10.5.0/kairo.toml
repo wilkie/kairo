@@ -24,6 +24,9 @@ provides = "environment:linux/x86"
 [[dependencies]]
 kind = "provides"
 provides = "data:live-bootstrap:x86:autogen-5.18.16"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X"]
 
 # live-bootstrap's steps, at the commit the earlier passes ran; this
 # pass's truncated manifest goes over upstream's.

@@ -71,6 +71,9 @@ Rules:
   of the one being built (`DECISIONS.md` §59)
 - a provides dependency may name the objects whose offers alone satisfy
   it, `offered_by` (`DECISIONS.md` §59)
+- a provides dependency that names no object is satisfied only by a
+  release, a snapshot its creator has tagged with a version; one that
+  names objects may take their heads (`DECISIONS.md` §61)
 - version requirements use Cargo's syntax
 - dependencies express requirements only
 - resolution is performed by the planner

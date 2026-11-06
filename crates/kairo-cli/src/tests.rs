@@ -8230,11 +8230,24 @@ fn create_held_object(
             command: BranchCommand::Set {
                 actor: actor.to_owned(),
                 object: object_id.clone(),
-                revision: statement,
+                revision: statement.clone(),
                 name: "head".to_owned(),
             },
         }),
     })?;
+    // A release, as an object offering labels has to be
+    // (`specs/DECISIONS.md` §61).
+    run_in_store(
+        store_dir,
+        Command::Tag {
+            command: TagCommand::Bind {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                version: "0.0.0".to_owned(),
+                revision: statement,
+            },
+        },
+    )?;
     Ok(object_id)
 }
 
@@ -8617,8 +8630,21 @@ fn create_held_tree(
             command: BranchCommand::Set {
                 actor: actor.to_owned(),
                 object: object_id.clone(),
-                revision: statement,
+                revision: statement.clone(),
                 name: "head".to_owned(),
+            },
+        },
+    )?;
+    // A release, as an object offering labels has to be
+    // (`specs/DECISIONS.md` §61).
+    run_in_store(
+        store_dir,
+        Command::Tag {
+            command: TagCommand::Bind {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                version: "0.0.0".to_owned(),
+                revision: statement,
             },
         },
     )?;
@@ -9351,8 +9377,21 @@ fn create_held_dir(
             command: BranchCommand::Set {
                 actor: actor.to_owned(),
                 object: object_id.clone(),
-                revision: statement,
+                revision: statement.clone(),
                 name: "head".to_owned(),
+            },
+        },
+    )?;
+    // A release, as an object offering labels has to be
+    // (`specs/DECISIONS.md` §61).
+    run_in_store(
+        store_dir,
+        Command::Tag {
+            command: TagCommand::Bind {
+                actor: actor.to_owned(),
+                object: object_id.clone(),
+                version: "0.0.0".to_owned(),
+                revision: statement,
             },
         },
     )?;

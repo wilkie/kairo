@@ -39,17 +39,26 @@ provides = "data:linux-filesystem:merged-usr"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:live-bootstrap:x86:libarchive-3.5.2"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]
 
 # Stage 1, at /: the compilers for x86_64 everything here is built with.
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "tool:gcc:x86_64-linux-musl"
 version = "15.2.0"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmd8Q4jFCejD6nrNzzKoxZRvE4h7foe7P8xcRfbn13xw4J"]
 
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "tool:g++:x86_64-linux-musl"
 version = "15.2.0"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmd8Q4jFCejD6nrNzzKoxZRvE4h7foe7P8xcRfbn13xw4J"]
 
 [[build.targets.dependencies]]
 kind = "file"

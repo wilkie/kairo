@@ -5623,7 +5623,10 @@ Sub-decisions:
    with C++ and their shared runtime libraries, musl's headers and
    shared libc, and the kernel's headers, as `data:build-base` 1.0.0.
    gcc 7.5.0 builds with it in x86 and x86-64, naming beyond it the gcc
-   15 its first stage is built by and static musl.
+   15 its first stage is built by and static musl. *Amended by §61:*
+   only releases satisfy its labels, so it serves builds once every
+   package it names is a release; gcc 7.5.0, a first generation, builds
+   with `bootstrap-base`.
 
 Rationale: a list of what builds need is information about builds, so
 it belongs in an object others depend on, versioned and signed like
@@ -5879,3 +5882,74 @@ Affected specs:
 
 - `schemas/environment/linux-v1.md` — the conventions.
 - `DECISIONS.md` §56 (where gcc's runtime children go).
+
+---
+
+## 61. Only Releases Are Offered by Label
+
+Decision: a requirement by label is satisfied only by a **release**, a
+snapshot its object's creator has tagged with a version (§43), unless
+the requirement **names the object** whose offer it takes
+(`offered_by`, §59). An object's untagged head offers nothing to a
+requirement that doesn't name it. So the bootstraps' stages, which are
+steps toward a base and never releases, are reached only by the builds
+that name them, and the packages, which are, are what every other
+build gets, whatever order the two were published in. This amends what
+a candidate offers (§33 sub-decision 2, the current snapshot) and the
+order offers are ranked in (§48), where at equal owner and version the
+newest published broke the tie between a package and the bootstrap's
+child of the same version.
+
+Sub-decisions:
+
+1. **What is a release.** A snapshot one of its object's creator's
+   version tags names (§43). An object's head is a release when it is
+   tagged; a recipe fix after a tag is a release when the owner tags
+   it, re-tagging the same version if it changes no version, which
+   supersedes the earlier tag. Releases are offered by label beside one
+   another, older ones too (§59).
+
+2. **Naming an object takes its head.** A requirement with
+   `offered_by` is satisfied by its named objects' offers, released or
+   not, as an object dependency by id or snapshot is: it says which
+   object it means. The bootstraps name the stage before them so:
+   live-bootstrap's passes 2 to 6 the pass before, the 64-bit
+   bootstrap's stage 1 and 2 pass 6 and stage 1, stage 3 stage 2, stage
+   4 stage 3, `bootstrap-base` the passes and stage 3, and the hello
+   consumer the passes, each by its id in the archive's canonical store
+   (§59).
+
+3. **What a build installs already.** A label the runtime closure asks
+   for is met by an object the build installs already, released or not
+   (§59 sub-decision 6), since the build chose it. Otherwise the closure
+   chooses among releases, as any requirement that names no object
+   does.
+
+4. **The releases so far.** stage0-posix, whose `tool:kaem` and the
+   rest are upstream's 1.9.1, is tagged 1.9.1, and linux-filesystem's
+   merged-/usr layout 1.0.0, so pass 1 and every requirer of the layout
+   resolve as before; the packages (§59) and the environment objects
+   are tagged by their `import.sh`.
+
+5. **Until the base is released.** `build-base` names a shell, the GNU
+   userland, and the rest, which only the bootstraps offer until each is
+   a package. Until then it can't be resolved, and every package is a
+   first generation, built with `bootstrap-base`: gcc 7.5.0 too. A
+   package's later release builds with `build-base` once the base it
+   names is released.
+
+6. **Tests and fixtures.** A fixture object that offers labels is
+   tagged as a release, `0.0.0`, as the objects it stands for would be.
+
+Rationale: a label is a request for software, and software is
+published as releases; a head is work in progress, and a bootstrap's
+stage a means to a base. Gating offers on the owner's own statement
+that something is a release settles which of two equal versions a build
+gets by what they are rather than when they were published, and keeps
+the bootstrap's internals out of every resolution but the ones that ask
+for them.
+
+Affected specs:
+
+- `DECISIONS.md` §33 sub-decision 2, §48, §57 sub-decision 6, §59.
+- `BUILD.md` §3 — only releases by label.

@@ -79,7 +79,8 @@ provides = "tool:m4"
 
 # The native toolchain: binutils and gcc with C++, for the machine the
 # build runs on (§53), and the runtime libraries the programs gcc builds
-# load, which gcc's own programs load too.
+# load, which gcc's own programs load too, libatomic among them, which
+# m4 loads.
 [[dependencies]]
 kind = "provides"
 provides = "tool:binutils"
@@ -100,8 +101,12 @@ provides = "lib:stdc++:shared"
 kind = "provides"
 provides = "lib:gcc:shared"
 
-# musl, its headers and shared libc, which gcc requires a build to
-# choose (§51), and the kernel's headers.
+[[dependencies]]
+kind = "provides"
+provides = "lib:atomic:shared"
+
+# musl, its headers, and its shared and static libc, one of which gcc
+# requires a build to choose (§51), and the kernel's headers.
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:headers"
@@ -109,6 +114,10 @@ provides = "lib:musl:headers"
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:shared"
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
 
 [[dependencies]]
 kind = "provides"

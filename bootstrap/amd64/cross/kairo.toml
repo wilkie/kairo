@@ -25,6 +25,9 @@ command = ["/usr/bin/bash", "build.sh"]
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:live-bootstrap:x86:libarchive-3.5.2"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk"]
 
 # /bin/sh and the rest, which configure scripts expect (§50).
 [[build.targets.dependencies]]

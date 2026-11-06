@@ -102,7 +102,8 @@ offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJS
 
 # The native toolchain: binutils and gcc with C++, for the machine the
 # build runs on (§53), and the runtime libraries the programs gcc builds
-# load, which gcc's own programs load too.
+# load, which gcc's own programs load too, libatomic among them, which
+# m4 loads.
 [[dependencies]]
 kind = "provides"
 provides = "tool:binutils"
@@ -128,8 +129,13 @@ kind = "provides"
 provides = "lib:gcc:shared"
 offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
 
-# musl, its headers and shared libc, which gcc requires a build to
-# choose (§51), and the kernel's headers.
+[[dependencies]]
+kind = "provides"
+provides = "lib:atomic:shared"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+# musl, its headers, and its shared and static libc, one of which gcc
+# requires a build to choose (§51), and the kernel's headers.
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:headers"
@@ -138,6 +144,11 @@ offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJS
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:shared"
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
+
+[[dependencies]]
+kind = "provides"
+provides = "lib:musl:static"
 offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ", "zQmRcSie6cMMJSCkJv9tJnkuF1HMSpwqzJQNjJiSLJmAFXu", "zQmRJS223L2J8WGQKQZwCjQh5r1NbMiLmNyQf1vc3QtM3eR", "zQmULyVeK4Tmvq3sNAh69bdXwUeKXYUbP27cSva9QgJUA4X", "zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V", "zQmNRiLHtCnvdDer5i5GRqPxzwjDoioZW7oxVSeudCKnNBk", "zQmPZfbmnu1hg7oj5E26zhYHuVur4PNAdNUi4STxE3CNdqS"]
 
 [[dependencies]]

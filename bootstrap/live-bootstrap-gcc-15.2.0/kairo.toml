@@ -25,6 +25,9 @@ provides = "environment:linux/x86"
 [[dependencies]]
 kind = "provides"
 provides = "data:live-bootstrap:x86:binutils-2.41_1"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmUUoeihepsPtywUtHvfu2s6PFV6fFw3YQg8AALvcSo35V"]
 
 # live-bootstrap's steps, at the commit the earlier passes ran; this
 # pass's manifest, upstream's whole, goes over upstream's.

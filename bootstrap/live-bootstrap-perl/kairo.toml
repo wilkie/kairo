@@ -25,6 +25,9 @@ provides = "environment:linux/x86"
 [[dependencies]]
 kind = "provides"
 provides = "data:live-bootstrap:x86:zlib-1.3.1"
+# Named by its object's id in the canonical store: a bootstrap stage
+# is no release, offered by label to anyone (DECISIONS.md §61).
+offered_by = ["zQmbn8aYLLJJkzCj8wcmTCHUhycMNozG3vWNXxnDrQRziAQ"]
 
 # live-bootstrap's steps, at the commit pass 1 ran; this pass's
 # truncated manifest goes over upstream's.

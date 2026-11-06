@@ -662,6 +662,9 @@ pub struct Candidate {
     pub owner: ActorId,
     /// When the creator's `head` branch statement was signed.
     pub published: Timestamp,
+    /// Whether the snapshot is a release, one its creator has tagged with
+    /// a version (`DECISIONS.md` §61).
+    pub release: bool,
 }
 
 /// Whose offers this node prefers (`DECISIONS.md` §48 sub-decision 1).
@@ -773,6 +776,10 @@ pub struct Offer {
     pub owner: ActorId,
     /// When its owner made the snapshot current.
     pub published: Timestamp,
+    /// Whether its snapshot is a release, tagged with a version by its
+    /// owner: only a release satisfies a requirement that doesn't name
+    /// its object (§61).
+    pub release: bool,
 }
 
 impl Offer {
@@ -1185,6 +1192,7 @@ fn child_offer(
         coexists: provide.is_some_and(kairo_object::ChildProvide::coexists),
         owner: candidate.owner.clone(),
         published: candidate.published,
+        release: candidate.release,
     }
 }
 
@@ -1203,14 +1211,25 @@ struct Constraint {
 }
 
 impl Constraint {
+    /// Whether `offer` satisfies it: a release, or else an offer of an
+    /// object it names (§61), at a version and from an object it allows.
     fn satisfied_by(&self, offer: &Offer) -> bool {
+        self.admits(offer) && (offer.release || self.names(offer))
+    }
+
+    /// Whether `offer` satisfies it but for being a release: as an offer
+    /// the build already installs does, which the build chose itself.
+    fn admits(&self, offer: &Offer) -> bool {
         self.pin
             .as_ref()
             .is_none_or(|(object, snapshot)| &offer.object == object && &offer.snapshot == snapshot)
             && version_matches(self.version.as_deref(), offer.version.as_deref())
-            && (self.offered_by.is_empty()
-                || self.offered_by.contains(&offer.object)
-                || self.offered_by.contains(offer.builder()))
+            && (self.offered_by.is_empty() || self.names(offer))
+    }
+
+    /// Whether it names `offer`'s object, or for a child its parent.
+    fn names(&self, offer: &Offer) -> bool {
+        self.offered_by.contains(&offer.object) || self.offered_by.contains(offer.builder())
     }
 
     fn describe(&self, label: &str) -> String {
@@ -1397,9 +1416,12 @@ impl Index {
                         Some(manifest) => {
                             // Its older generations, those of its tagged
                             // snapshots this node holds the trees of,
-                            // vouched for as its head is.
+                            // vouched for as its head is; the head is a
+                            // release when it is tagged too (§61).
+                            let mut head_release = false;
                             for (_, older) in tagged_snapshots(store, &object)? {
                                 if older.snapshot_id() == snapshot.snapshot_id() {
+                                    head_release = true;
                                     continue;
                                 }
                                 if let Some(manifest) = load_manifest(manifests, &object, &older)? {
@@ -1410,6 +1432,7 @@ impl Index {
                                         manifest,
                                         owner: owner.clone(),
                                         published,
+                                        release: true,
                                     });
                                 }
                             }
@@ -1420,6 +1443,7 @@ impl Index {
                                 manifest,
                                 owner,
                                 published,
+                                release: head_release,
                             });
                         }
                     }
@@ -1481,6 +1505,7 @@ impl Index {
                             coexists: declaration.coexists(),
                             owner: candidate.owner.clone(),
                             published: candidate.published,
+                            release: candidate.release,
                         })
                 })
                 .collect();
@@ -2976,7 +3001,7 @@ impl<'a> Resolver<'a> {
                 };
                 let unmet = constraints.iter().any(|constraint| {
                     !picks.iter().any(|pick| match pick {
-                        Picked::Offer(offer) => constraint.satisfied_by(offer),
+                        Picked::Offer(offer) => constraint.admits(offer),
                         Picked::HostTool(tool) => {
                             constraint.pin.is_none()
                                 && version_matches(
@@ -3022,7 +3047,7 @@ impl<'a> Resolver<'a> {
                             }
                             _ => true,
                         }
-                        && constraints.iter().all(|c| c.satisfied_by(offer))
+                        && constraints.iter().all(|c| c.admits(offer))
                 });
                 let choices = match already {
                     Some(offer) => vec![Choice {
@@ -3270,6 +3295,8 @@ impl<'a> Resolver<'a> {
                         // A tagged snapshot keeps its object's head time;
                         // it isn't ranked against other objects here.
                         published: candidate.published,
+                        // Named by id: no release is asked for (§61).
+                        release: true,
                     },
                     target_name,
                     child_name,

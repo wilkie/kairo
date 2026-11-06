@@ -57,6 +57,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 cp "$HERE/kairo.toml" "$HERE/kairo-amd64.kaem" "$HERE/kairo-x86.kaem" "$WORK/"
 commit_wrapper "stage0-posix 1.9.1 AMD64 and x86 bootstrap" kairo.toml kairo-amd64.kaem kairo-x86.kaem
+# A release of upstream's 1.9.1, offered by label (DECISIONS.md §61).
+tag_release 1.9.1
 
 cat <<OUT
 wrapper = $WRAPPER

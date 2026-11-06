@@ -713,6 +713,15 @@ rather than per-commit.
 
 ### Changed
 
+- **Only releases are offered by label (`DECISIONS.md` §61).** A
+  requirement that names no object (`offered_by`) is satisfied only by
+  a version-tagged snapshot; an untagged head is offered only to a
+  requirement naming its object. The bootstraps name the stage before
+  them by its canonical id; stage0-posix (1.9.1) and linux-filesystem
+  (1.0.0) are tagged releases; every package, gcc 7.5.0 among them, is
+  a first generation built with `bootstrap-base` until the base it
+  names is released.
+
 - **The guest's tree lacks `kairo.toml`, and `SOURCE_DATE_EPOCH` is
   fixed (`DECISIONS.md` §52).** `/kairo/src` no longer holds the
   manifest, and `SOURCE_DATE_EPOCH` is the target's `source_date_epoch`

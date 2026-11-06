@@ -148,6 +148,9 @@ impl World {
         );
         self.fixture
             .set_branch(&self.actor, &object, &revision, "head");
+        // A release, as an object offering labels has to be (§61).
+        self.fixture
+            .bind_version_tag(&self.actor, &object, &revision, "0.0.0");
         self.trees.0.insert(
             object.object_id.to_string(),
             files
