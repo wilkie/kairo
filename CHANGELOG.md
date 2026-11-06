@@ -723,6 +723,16 @@ rather than per-commit.
 
 ### Changed
 
+- **An index makes every label's offers once.** `Index::offers` looked
+  through every candidate's manifest and child for each label asked;
+  the index now makes every label's offers when it is built, in their
+  tie-break order, and a lookup is a lookup. The resolver counts the
+  indexes it builds and the offers they make (`Resolver::index_work`),
+  and a test holds a resolution to one index and each offer made once.
+  `scripts/plan-timing.sh` times plans with a release build against a
+  store: against the canonical store, planning with `build-base` takes
+  0.38 s in x86 and 0.37 s in x86-64.
+
 - **A resolution plans each provider once.** Deciding whether a held
   build is a provider's artifact plans the provider (§54), and each
   provider's plan plans its own, so a build whose labels resolved to

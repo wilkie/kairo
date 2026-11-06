@@ -2604,7 +2604,7 @@ fn offered_by_takes_only_those_objects_offers_and_their_childrens() -> TestResul
 }
 
 #[test]
-fn a_resolution_plans_each_provider_once_however_many_builds_need_it() -> TestResult {
+fn a_resolution_plans_each_provider_and_offers_each_label_once() -> TestResult {
     // A chain of providers, each built with the one before it, and many
     // tools, each built with the last: every tool's plan needs the whole
     // chain's. Planned anew for each tool, the chain's plans would be
@@ -2666,8 +2666,11 @@ fn a_resolution_plans_each_provider_once_however_many_builds_need_it() -> TestRe
         &[],
     );
     let resolution = resolver.resolve(&app.object_id, &SnapshotSelector::Current, "release")?;
-    // The chain, the tools, and the app, each planned once.
+    // The chain, the tools, and the app, each planned once; one index,
+    // whose offers, one a provider, are each made once, however often
+    // their labels are looked up.
     assert_eq!(resolver.plans_made(), DEPTH + TOOLS + 1);
+    assert_eq!(resolver.index_work(), (1, DEPTH + TOOLS));
     assert_eq!(resolution.prerequisites.len(), DEPTH + TOOLS);
     Ok(())
 }

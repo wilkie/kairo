@@ -1006,6 +1006,80 @@ fn build_dependencies<'a>(
         .chain(target.dependencies())
 }
 
+/// Every label's offers among `candidates`, each in the order that
+/// breaks ties after owner and version (§48): artifact providers first,
+/// then the newest published, then by object id.
+fn offers_by_label<'a>(
+    candidates: impl Iterator<Item = &'a Candidate>,
+) -> BTreeMap<String, Vec<Offer>> {
+    let mut by_label: BTreeMap<String, Vec<Offer>> = BTreeMap::new();
+    for candidate in candidates {
+        for declaration in candidate.manifest.provides() {
+            let offer = Offer {
+                object: candidate.object.clone(),
+                snapshot: candidate.snapshot.clone(),
+                provides: declaration.provides().to_owned(),
+                version: declaration.version().map(str::to_owned),
+                artifact: declaration
+                    .artifact()
+                    .map(|artifact| (artifact.target().to_owned(), artifact.output().to_owned())),
+                environment: declaration.artifact().and_then(|artifact| {
+                    candidate
+                        .manifest
+                        .build_target(artifact.target())
+                        .and_then(|target| artifact_environment(&candidate.manifest, target))
+                }),
+                install: match declaration.artifact() {
+                    Some(artifact) => candidate
+                        .manifest
+                        .build_target(artifact.target())
+                        .and_then(|target| target.install().map(str::to_owned)),
+                    None => content_placement(&candidate.manifest).0,
+                },
+                built_by: None,
+                child_name: None,
+                content_root: match declaration.artifact() {
+                    Some(_) => None,
+                    None => content_placement(&candidate.manifest).1,
+                },
+                confers: declaration
+                    .confers()
+                    .iter()
+                    .map(|c| (c.provides().to_owned(), c.version().map(str::to_owned)))
+                    .collect(),
+                coexists: declaration.coexists(),
+                owner: candidate.owner.clone(),
+                published: candidate.published,
+                release: candidate.release,
+            };
+            by_label
+                .entry(declaration.provides().to_owned())
+                .or_default()
+                .push(offer);
+        }
+        // Child objects' labels (§41 sub-decision 4).
+        for target in candidate.manifest.build_targets() {
+            for child in target.children() {
+                for provide in child.provides() {
+                    by_label
+                        .entry(provide.provides().to_owned())
+                        .or_default()
+                        .push(child_offer(candidate, target, child, Some(provide)));
+                }
+            }
+        }
+    }
+    for offers in by_label.values_mut() {
+        offers.sort_by(|a, b| {
+            a.rank()
+                .cmp(&b.rank())
+                .then_with(|| b.published.cmp(&a.published))
+                .then_with(|| a.object.cmp(&b.object))
+        });
+    }
+    by_label
+}
+
 /// What an object that doesn't build brings to a build that depends on
 /// it (`DECISIONS.md` §57): its own dependencies, and who brought them.
 #[derive(Debug, Clone)]
@@ -1384,6 +1458,9 @@ pub struct Index {
     /// Each candidate's other version-tagged snapshots, by its creator,
     /// which offer their labels too, as older generations (§59).
     pub tagged: Vec<Candidate>,
+    /// Every label's offers among the candidates and the tagged
+    /// snapshots, made once when the index is built.
+    by_label: BTreeMap<String, Vec<Offer>>,
     pub skipped: Vec<Skipped>,
 }
 
@@ -1450,82 +1527,28 @@ impl Index {
                 }
             }
         }
+        let by_label = offers_by_label(candidates.iter().chain(&tagged));
         Ok(Self {
             candidates,
             tagged,
             skipped,
+            by_label,
         })
     }
 
     /// Candidates offering `label`, in the order that breaks ties after
     /// owner and version (§48): artifact providers first, then the
-    /// newest published, then by object id.
+    /// newest published, then by object id. Looked up: every label's
+    /// offers are made once, when the index is built.
     pub fn offers(&self, label: &str) -> Vec<Offer> {
-        let mut offers: Vec<Offer> =
-            self.candidates
-                .iter()
-                .chain(&self.tagged)
-                .flat_map(|candidate| {
-                    candidate
-                        .manifest
-                        .provides()
-                        .iter()
-                        .filter(|declaration| declaration.provides() == label)
-                        .map(move |declaration| Offer {
-                            object: candidate.object.clone(),
-                            snapshot: candidate.snapshot.clone(),
-                            provides: declaration.provides().to_owned(),
-                            version: declaration.version().map(str::to_owned),
-                            artifact: declaration.artifact().map(|artifact| {
-                                (artifact.target().to_owned(), artifact.output().to_owned())
-                            }),
-                            environment: declaration.artifact().and_then(|artifact| {
-                                candidate.manifest.build_target(artifact.target()).and_then(
-                                    |target| artifact_environment(&candidate.manifest, target),
-                                )
-                            }),
-                            install: match declaration.artifact() {
-                                Some(artifact) => candidate
-                                    .manifest
-                                    .build_target(artifact.target())
-                                    .and_then(|target| target.install().map(str::to_owned)),
-                                None => content_placement(&candidate.manifest).0,
-                            },
-                            built_by: None,
-                            child_name: None,
-                            content_root: match declaration.artifact() {
-                                Some(_) => None,
-                                None => content_placement(&candidate.manifest).1,
-                            },
-                            confers: declaration
-                                .confers()
-                                .iter()
-                                .map(|c| (c.provides().to_owned(), c.version().map(str::to_owned)))
-                                .collect(),
-                            coexists: declaration.coexists(),
-                            owner: candidate.owner.clone(),
-                            published: candidate.published,
-                            release: candidate.release,
-                        })
-                })
-                .collect();
-        // Child objects' labels (§41 sub-decision 4).
-        for candidate in self.candidates.iter().chain(&self.tagged) {
-            for target in candidate.manifest.build_targets() {
-                for child in target.children() {
-                    for provide in child.provides().iter().filter(|p| p.provides() == label) {
-                        offers.push(child_offer(candidate, target, child, Some(provide)));
-                    }
-                }
-            }
-        }
-        offers.sort_by(|a, b| {
-            a.rank()
-                .cmp(&b.rank())
-                .then_with(|| b.published.cmp(&a.published))
-                .then_with(|| a.object.cmp(&b.object))
-        });
-        offers
+        self.by_label.get(label).cloned().unwrap_or_default()
+    }
+
+    /// How many offers the index made from the candidates' manifests,
+    /// each declaration once: a measure of its work that a test can hold
+    /// steady where a clock can't.
+    pub fn offers_made(&self) -> usize {
+        self.by_label.values().map(Vec::len).sum()
     }
 
     /// The child object `id` among the candidates' current manifests: its
@@ -1563,33 +1586,7 @@ impl Index {
 
     /// Every provides label offered by a held object, with its offers.
     pub fn all_offers(&self) -> BTreeMap<String, Vec<Offer>> {
-        let mut labels: Vec<&str> = self
-            .candidates
-            .iter()
-            .chain(&self.tagged)
-            .flat_map(|candidate| candidate.manifest.provides().iter())
-            .map(|declaration| declaration.provides())
-            .chain(
-                self.candidates
-                    .iter()
-                    .chain(&self.tagged)
-                    .flat_map(|candidate| {
-                        candidate
-                            .manifest
-                            .build_targets()
-                            .iter()
-                            .flat_map(|target| target.children())
-                            .flat_map(|child| child.provides())
-                            .map(|provide| provide.provides())
-                    }),
-            )
-            .collect();
-        labels.sort_unstable();
-        labels.dedup();
-        labels
-            .into_iter()
-            .map(|label| (label.to_owned(), self.offers(label)))
-            .collect()
+        self.by_label.clone()
     }
 }
 
@@ -1763,6 +1760,9 @@ pub struct Resolver<'a> {
     /// How many plans it has computed, each once: a measure of its work
     /// that a test can hold steady where a clock can't.
     plans_made: std::cell::Cell<usize>,
+    /// How many indexes it has built, and the offers they made.
+    indexes_built: std::cell::Cell<usize>,
+    offers_made: std::cell::Cell<usize>,
 }
 
 /// What the runtime closure settled to, or why the declared
@@ -1832,6 +1832,8 @@ impl<'a> Resolver<'a> {
             owners: &NO_PREFERENCE,
             planned: std::cell::RefCell::new(BTreeMap::new()),
             plans_made: std::cell::Cell::new(0),
+            indexes_built: std::cell::Cell::new(0),
+            offers_made: std::cell::Cell::new(0),
         }
     }
 
@@ -1905,7 +1907,18 @@ impl<'a> Resolver<'a> {
 
     /// Index this store's objects for this resolver's manifest source.
     pub fn index(&self) -> Result<Index, ResolveError> {
-        Index::build(self.store, self.manifests)
+        let index = Index::build(self.store, self.manifests)?;
+        self.indexes_built.set(self.indexes_built.get() + 1);
+        self.offers_made
+            .set(self.offers_made.get() + index.offers_made());
+        Ok(index)
+    }
+
+    /// How many indexes this resolver has built, and how many offers they
+    /// made: one index a resolution, each offer made once, however many
+    /// times its label is looked up.
+    pub fn index_work(&self) -> (usize, usize) {
+        (self.indexes_built.get(), self.offers_made.get())
     }
 
     /// Plan `target` of `object` at `selector`.
