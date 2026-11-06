@@ -1187,6 +1187,7 @@ Options:
 --output <path>
 --plan-only
 --prefer <actor>     owners whose offers rank first (repeatable; DECISIONS.md §48)
+--replan             plan again, ignoring recorded plans (DECISIONS.md §62)
 --reproduce
 --yes
 --format <human|json|ndjson>
@@ -1207,6 +1208,13 @@ Process:
 The CLI must not invoke arbitrary build commands outside daemon/core planning.
 
 If validation is not `valid`, build must not execute.
+
+Planning reuses a recorded plan of the same object, snapshot, and
+target while the fingerprints it recorded, of every label it looked up
+and object it named, the owners' ranking, the host, and the resolver,
+still match (`DECISIONS.md` §62); a reused plan is the plan a full
+resolution makes. `--replan` plans again regardless and records the
+result.
 
 Plan output (`--plan-only`):
 

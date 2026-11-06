@@ -485,6 +485,14 @@ Required by §7 if builds need toolchains.
 - [x] Decide MVP scope of provider declaration in `kairo.toml`.
 - [x] Implement provider resolution against the local store.
 - [x] Add CLI: `kairo provider list / show / resolve`.
+- [x] Make every label's offers once, when the index is built, and
+      plan each provider once a resolution.
+- [ ] Fingerprint each label's offers per architecture, and record
+      plans with the fingerprints they consulted (`DECISIONS.md` §62).
+- [ ] Reuse a recorded plan while its fingerprints match; `kairo build
+      --replan`.
+- [ ] Later: replan only the changed labels; persist the index (§62
+      sub-decision 9).
 
 **Why it matters:** the dependency-resolution backbone for builds.
 

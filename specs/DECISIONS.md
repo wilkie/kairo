@@ -5953,3 +5953,115 @@ Affected specs:
 
 - `DECISIONS.md` §33 sub-decision 2, §48, §57 sub-decision 6, §59.
 - `BUILD.md` §3 — only releases by label.
+
+## 62. A Plan Is Reused While What It Consulted Is Unchanged
+
+Decision: a plan is a function of the snapshot planned, the target, and
+what the resolver read of the store and the host on the way: the offers
+of the labels it looked up, the objects it named, the owners' ranking,
+and the host. The resolver records a **fingerprint** of each of those
+with the plan, in a cache beside the store, and a later resolution of
+the same object, snapshot, and target whose fingerprints all still
+match reuses the plan's choices instead of planning again. The choices
+are reused; the bindings that follow from them (held artifacts, builds
+first, build keys) are made again each time, as they are now. Reuse
+never changes a plan: a reused plan is byte for byte the plan a full
+resolution would make, so its hash and build key are the same, and the
+cache is only ever a cost (`STORE.md` §2.3, §6).
+
+Sub-decisions:
+
+1. **A label's fingerprint.** When the index is built (§59, the offers
+   of every label made once), each label's offers are fingerprinted:
+   a hash of each offer's object, snapshot, owner, and whether it is a
+   release, in the index's order (§48). The snapshot fixes everything
+   its manifest says of the offer, its version, artifact, environment,
+   install root, confers, and requires; the order fixes how ties fall.
+   It is computed per architecture, over the offers eligible for a
+   target of that architecture (§38 sub-decision 8), content offers in
+   every one, so a release built for x86 alone leaves x86-64's
+   fingerprints as they were.
+
+2. **Releases only, unless named.** A label's fingerprint covers only
+   its releases, the offers a requirement naming no object can take
+   (§61), so a new untagged head changes no plan that didn't name its
+   object. A requirement that names objects (`offered_by`, §59) records
+   instead each named object's fingerprint: its creator's head
+   snapshot and its version tags. So does an object dependency, by id,
+   version, or snapshot, and the planned object itself, whose tags
+   decide its own generations (§59).
+
+3. **Every lookup counts.** A plan records the fingerprint of every
+   label it looked up and every object it named, chosen or passed
+   over: a label consulted only in a branch the resolver abandoned, or
+   by the runtime closure before it converged (§46 sub-decision 7),
+   decided the plan as much as one it chose from.
+
+4. **What else it records.** A **ranking fingerprint**: the owners
+   preferred, by `--prefer` or `[resolve] prefer`, in order, the local
+   actors, and their trust decisions at `general` scope (§48). A **host
+   fingerprint**: the host's contract, the engines it offers, and in
+   development mode its host tools (§34 sub-decision 10). And the
+   **resolver's version**, a number the resolver raises whenever it
+   would choose differently from the same inputs; a plan recorded by
+   another version is planned again. A trust change, a host change, or
+   a new resolver invalidates every plan; each is rare.
+
+5. **Providers are plans of their own.** A plan records the providers
+   it builds first by their own object, snapshot, and target, not
+   their choices; each provider's plan is recorded and checked in its
+   own right. A plan is reused when its own fingerprints match and each
+   provider's plan is reused too, so a new release of `tool:make`
+   replans make's consumers, and their consumers, and nothing else.
+
+6. **Bindings are made again.** On reuse the resolver rebinds what
+   depends on what this node holds rather than on what it offers: each
+   provider's held artifact or its place in builds first (§52), its
+   build key, the held sources and seeds a source dependency needs
+   (§37), and held trees. These are lookups by key, cheap beside a
+   resolution, and they are what changes when a build finishes, which
+   leaves every fingerprint as it was.
+
+7. **Where it lives.** Under the store's `cache/plans/`, by object,
+   snapshot, and target: the choices, the fingerprints, and the
+   resolver version, unsigned and never federated. It is cache data:
+   removing it costs the next resolution its full time and changes
+   nothing else, and a record that can't be read is planned again,
+   never an error. A failed resolution records nothing.
+
+8. **Checking it.** `kairo build --replan` ignores the cache, for the
+   plan and every provider's, and records what it plans. Tests hold a
+   reused plan equal to a fresh one after each kind of change
+   (a release of a consulted label, of an unconsulted one, an untagged
+   head, a named object's head, a trust change), and the resolver
+   counts the plans it reuses beside the plans it makes (§59), so a
+   test and `scripts/plan-timing.sh` see when reuse stops happening.
+
+9. **Not yet.** A plan with a changed fingerprint is planned again in
+   full. Re-choosing only the changed labels and what came through
+   them, keeping the rest, is the next step once full replans cost
+   enough to matter; it must give the plan a full resolution would.
+   Persisting the index itself, which every command now builds by
+   reading every held object, waits until building it does. A
+   candidate's record of being passed over, its reputation, may order
+   offers to try but never excludes one: a rejection depends on what
+   the requirement asked, and a later one may ask differently.
+
+Rationale: planning is a pure function of what it reads, so a plan
+stays right exactly as long as what it read stays the same, and the
+cheapest correct test of that is to fingerprint what it read. A
+counter each write bumps was the alternative: cheaper to compare, but
+every path that writes an object, a tag, or a trust record, federation
+among them, would have to bump the right ones, and a missed bump is a
+stale plan that nothing catches. A fingerprint is computed from the
+store as it is, by the index already built for every resolution, so
+it can't fall out of step with it; and it is per label, not per
+store, so a new release replans only the plans that looked at its
+label.
+
+Affected specs:
+
+- `PLANNER.md` §19 — recorded plans and their reuse.
+- `STORE.md` §4 — `cache/plans/`.
+- `CLI.md` §17 — `kairo build --replan`.
+- `PHASE_2.md` §8 — fingerprints and reused plans.

@@ -751,6 +751,41 @@ feeding discovery agents
 
 Executed builds and runs should emit signed statements when their results are intended to be shared.
 
+### 19.1 Reusing plans
+
+A plan is a function of the snapshot planned, the target, and what the
+resolver read on the way, so it stays right while that stays the same
+(`DECISIONS.md` §62). The resolver records each plan's choices in the
+store's cache with fingerprints of what it read:
+
+```text
+each label it looked up    its release offers eligible in the target's
+                           architecture: object, snapshot, owner, in rank order
+each object it named       by offered_by, by id, or itself: head and version tags
+the ranking                preferred owners, local actors, their general trust
+the host                   contract, engines, host tools in development mode
+the resolver               a version raised when it would choose differently
+```
+
+A resolution of the same object, snapshot, and target whose recorded
+fingerprints all match, and whose providers' plans are reused too,
+reuses the choices and binds them again to what this node holds: held
+artifacts, builds first, build keys, sources. Any mismatch plans again
+in full. A reused plan is byte for byte the plan a full resolution
+makes; the record is cache data, never federated, and losing it costs
+only time.
+
+Example, a package built with `data:build-base` in `linux/x86-64`:
+
+```text
+make 4.4.1 tagged          tool:make changes: its consumers are replanned
+python 3.12 tagged         tool:python changes: plans that never asked keep theirs
+make's head moves, untagged    no label changes (§61): nothing is replanned
+another owner's make fetched   tool:make changes: replanned, to the same choice
+an actor newly trusted     the ranking changes: every plan is replanned
+a build finishes           no fingerprint changes: rebinding finds its artifact
+```
+
 ---
 
 ## 20. Relationship to Other Specs

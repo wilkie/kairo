@@ -96,7 +96,14 @@ store/
     <snapshot_id>.closure
   index/
     ...
+  cache/
+    plans/
+      <object_id>/<snapshot_id>/<target>   # recorded plan choices and their
+                                           # fingerprints (DECISIONS.md §62)
 ```
+
+`cache/` holds only cache data (§2.3): anything in it may be removed at
+any time, costing time and nothing else.
 
 Exact layout is not mandated but must preserve semantics.
 

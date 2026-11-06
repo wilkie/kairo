@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **Reused plans, specified (`DECISIONS.md` §62).** A plan is recorded
+  in the store's `cache/plans/` with fingerprints of what it consulted:
+  each label's release offers per architecture, each object it named,
+  the owners' ranking, the host, and the resolver's version. A later
+  resolution reuses its choices while they all match, rebinding held
+  artifacts and build keys, so a new release replans only the plans
+  that looked at its label. `kairo build --replan` plans afresh. Not
+  yet implemented.
+
 - **The base packages (`packages/`).** bash, coreutils, sed, grep, gawk,
   diffutils, findutils, patch, tar, gzip, xz, bzip2, m4, and the Linux
   4.14 headers, each one object built for x86 and x86-64 as a first
