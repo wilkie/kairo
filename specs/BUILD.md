@@ -70,7 +70,8 @@ Rules:
   generation's: a version-tagged snapshot whose revision is an ancestor
   of the one being built (`DECISIONS.md` §59)
 - a provides dependency may name the objects whose offers alone satisfy
-  it, `offered_by` (`DECISIONS.md` §59)
+  it, `offered_by` (`DECISIONS.md` §59), or the snapshots, `offered_at`
+  (`DECISIONS.md` §64)
 - a provides dependency that names no object is satisfied only by a
   release, a snapshot its creator has tagged with a version; one that
   names objects may take their heads (`DECISIONS.md` §61)

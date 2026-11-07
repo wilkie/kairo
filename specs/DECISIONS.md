@@ -6116,3 +6116,72 @@ Affected specs:
 
 - `DECISIONS.md` §59 sub-decision 5.
 - `packages/bootstrap-base/README.md`, `packages/build-base/README.md`.
+
+## 64. The Base Builds with the Round Before It
+
+Decision: the packages `build-base` names, the base, are rebuilt in
+**rounds**. Each round is a release of each base package, and each
+round builds with the round before it, named exactly by snapshot, never
+with the newest releases: through `build-base`, which takes the newest
+release of each label, a round that has been tagged builds with itself,
+binutils with make and make with binutils, a cycle the generation rule
+(§59) doesn't stop, since it bars only an object's own offers. The
+first round built with `bootstrap-base` (§59 sub-decision 5); every
+later round builds with `base-round`, whose version is the round before
+it. Everything outside the base builds with `build-base` (§63) and gets
+the newest round.
+
+Sub-decisions:
+
+1. **`offered_at`.** A provides dependency may name the snapshots whose
+   offers alone satisfy it, `offered_at = ["<snapshot id>", ...]`: an
+   offer's own snapshot, which for a child is its parent's. Like
+   `offered_by` (§59), it names what it takes, so a named snapshot's
+   offer satisfies it whether or not it is a release (§61), though one
+   that isn't held, or is neither a head nor tagged, offers nothing. It
+   is a provides dependency's alone; the ids are bare (§4), at least
+   one; it is part of the manifest's canonical bytes, and of the plan's
+   requested requirement, only when given. With `offered_by` too, an
+   offer must satisfy both.
+
+2. **`base-round`.** `packages/base-round/` brings what `build-base`
+   does (§57), each label `offered_at` its package's snapshot of one
+   round, by its id in the archive's canonical store. It provides
+   `data:base-round` at the round's number as its version, `1.0.0` for
+   round 1, and is one object, each round a release on its history:
+   round N+1's packages depend on `data:base-round` with `^N`, and once
+   they are built, its next revision names their snapshots, tagged
+   `N+1.0.0`.
+
+3. **A round's releases.** A round after the first is the package's
+   next revision, its recipe unchanged but for what it builds with,
+   tagged with its software's version and the round as build metadata:
+   `4.2.1+2` is make 4.2.1's round 2. A distinct tag keeps the round
+   before it a release, so `base-round` can still name it and others
+   still find it. Its offers keep the software's version, `4.2.1`, so a
+   requirement `^4.2` takes either; the newest published wins the tie
+   (§48), and that is the newest round.
+
+4. **Generations within a round.** A round's package may take its own
+   object's offers from the round before, an older generation, a tagged
+   ancestor of its revision (§59): gcc 15.2.0's round 2 is built by its
+   round 1.
+
+5. **The archive's rounds.** Round 1 is the base as first released,
+   built with `bootstrap-base`, gcc 15.2.0 among it with gcc 7.5.0.
+   Round 2 is built with round 1, so no bootstrap's object is in any
+   of its plans.
+
+Rationale: a base that builds itself has to say which of its own
+releases it builds with; naming the round before by snapshot says it
+exactly, keeps resolution's meaning for everything else, the newest
+release by label, and doesn't depend on when anything was published.
+It is what the generation rule says of one object, said of the base as
+a whole: a release is built with an older one.
+
+Affected specs:
+
+- `DECISIONS.md` §59, §61, §63.
+- `BUILD.md` §3; `schemas/canonical/object-manifest-v1.md`,
+  `resolved-manifest-v1.md`.
+- `packages/base-round/`, and the base's packages.

@@ -10,7 +10,8 @@ same object (§59).
 | Release | Tag | Built with | Recipe |
 |---|---|---|---|
 | gcc 7.5.0 | `7.5.0` | the bootstraps' gcc 15, through `bootstrap-base` | the object's revision at its tag, this directory before 15.2.0 |
-| gcc 15.2.0 | `15.2.0` | gcc 7.5.0, this object's own release, with the rest from `bootstrap-base` | this directory |
+| gcc 15.2.0, round 1 | `15.2.0` | gcc 7.5.0, this object's own release, with the rest from `bootstrap-base` | the object's revision at its tag |
+| gcc 15.2.0, round 2 | `15.2.0+2` | gcc 15.2.0's round 1, with the rest of the base's round 1, through `base-round` (§64) | this directory |
 
 The object has a target for each environment it is built for, and no
 environment of its own: each target's artifact runs where it was built
@@ -21,17 +22,18 @@ environment of its own: each target's artifact runs where it was built
 | `x86` | `linux/x86` | `i686-pc-linux-musl` |
 | `x86-64` | `linux/x86-64` | `x86_64-pc-linux-musl` |
 
-Neither builds on a whole root (§56). Each depends on
-`data:bootstrap-base` (`../bootstrap-base/`, §57, §59), which brings a
-shell, the GNU userland, make, the archivers, m4 for gmp, binutils, the
-runtime libraries the compilers' programs load, musl, static too for
-the checks, and the kernel's headers, each the bootstraps' package for
-the target's environment; and 15.2.0's targets ask for `tool:gcc` and
-`tool:g++` `^7`, which only gcc 7.5.0 here offers, and which replace
-`bootstrap-base`'s gcc. Only releases are offered by label (§61), and a
-build of this object may use its own offers only from a tagged
-ancestor of its revision, so 15.2.0 takes 7.5.0 at its tag and 7.5.0
-never takes 15.2.0.
+Neither builds on a whole root (§56). This revision's targets depend on
+`data:base-round` `^1` (`../base-round/`, §57, §64), which brings a
+shell, the GNU userland, make, the archivers, m4 for gmp, binutils, gcc
+and the runtime libraries its programs load, musl, static too for the
+checks, and the kernel's headers, each the base's round-1 package for
+the target's environment, named by its snapshot. Its gcc is this
+object's 15.2.0 of round 1. The first round's targets depended on
+`data:bootstrap-base` and asked for `tool:gcc` and `tool:g++` `^7`,
+which only gcc 7.5.0 offers. Only releases are offered by label (§61),
+and a build of this object may use its own offers only from a tagged
+ancestor of its revision, so each release takes an older one and never
+a newer.
 
 Each gcc bootstraps: the gcc it is built with builds its first stage,
 which builds the second, which builds the third, and the last two are
@@ -122,11 +124,11 @@ The build checks that a protected PIE program links and runs.
 
 ## Running it
 
-Import what the targets build with: `../bootstrap-base/`, and
-live-bootstrap's six passes and linux-filesystem for `x86`, the 64-bit
-bootstrap through stage 3 for `x86-64`. Then import 7.5.0 from this
-directory as it was at that release, build it, and import this
-directory, 15.2.0, as its next revision:
+Import 7.5.0 and 15.2.0's first round from this directory as it was at
+those releases, each with what it builds with (`../bootstrap-base/` and
+the bootstraps it names), building each before the next. Then import
+`../base-round/` and this directory, 15.2.0's second round, as the next
+revision:
 
 ```sh
 git show <7.5.0's commit>:packages/gcc/...   # or check that commit out
@@ -134,6 +136,10 @@ packages/gcc/import.sh <your actor id>                       # at 7.5.0
 kairo build object:<object id> --target x86 --actor <your actor id>
 kairo build object:<object id> --target x86-64 --actor <your actor id>
 packages/gcc/import.sh <your actor id> --wrapper <object id> # 15.2.0
+kairo build object:<object id> --target x86 --actor <your actor id>
+kairo build object:<object id> --target x86-64 --actor <your actor id>
+packages/base-round/import.sh <your actor id>
+packages/gcc/import.sh <your actor id> --wrapper <object id> # 15.2.0+2
 kairo build object:<object id> --target x86 --actor <your actor id>
 kairo build object:<object id> --target x86-64 --actor <your actor id>
 ```

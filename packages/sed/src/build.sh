@@ -1,7 +1,6 @@
-# Builds GNU sed 4.8 into /kairo/package (packages/sed/README.md)
-# for the target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# sed-4.8.
+# Builds GNU sed 4.8 into /kairo/package (packages/sed/README.md) for
+# the target named as the first argument, its second round, with the
+# base's first round (DECISIONS.md §64): one child, sed-4.8.
 . ./recipe.sh "$1"
 NAME=sed
 VERSION=4.8

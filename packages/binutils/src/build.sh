@@ -1,7 +1,7 @@
-# Builds GNU binutils 2.41 into /kairo/package (packages/binutils/README.md)
-# for the musl target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# binutils-2.41.
+# Builds GNU binutils 2.41 into /kairo/package
+# (packages/binutils/README.md) for the musl target named as the first
+# argument, its second round, with the base's first round (DECISIONS.md
+# §64): one child, binutils-2.41.
 . ./recipe.sh "$1"
 NAME=binutils
 VERSION=2.41

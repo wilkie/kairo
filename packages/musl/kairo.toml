@@ -1,10 +1,11 @@
 # musl, as a package of its own (specs/DECISIONS.md §55, §59): one
 # object for every release, each a version tag on its history, and a
-# target for each environment it is built for. This revision is 1.2.5, its
-# first generation, built with data:bootstrap-base (../bootstrap-base/),
-# the bootstraps' packages alone; a later release builds with
-# data:build-base, and may use this one. Its libraries, if any, go in
-# the environment's directory for musl's (§60).
+# target for each environment it is built for. This revision is 1.2.5,
+# its second round, released as 1.2.5+2: built with data:base-round 1
+# (../base-round/), the base's first round, each package at its
+# snapshot, so the base builds with the round before it, never with
+# itself (§64). Its libraries, if any, go in the environment's directory
+# for musl's (§60).
 [kairo]
 schema = 1
 kind = "software"
@@ -36,7 +37,8 @@ provides = "environment:linux/x86"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "data:bootstrap-base"
+provides = "data:base-round"
+version = "^1"
 
 [[build.targets.children]]
 name = "musl-1.2.5-headers"
@@ -78,7 +80,8 @@ provides = "environment:linux/x86-64"
 
 [[build.targets.dependencies]]
 kind = "provides"
-provides = "data:bootstrap-base"
+provides = "data:base-round"
+version = "^1"
 
 [[build.targets.children]]
 name = "musl-1.2.5-headers"

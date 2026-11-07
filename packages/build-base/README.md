@@ -28,8 +28,10 @@ names no object is: only releases, version-tagged snapshots, satisfy
 them (§61). So it serves a build once every package it names is a
 release, as each now is, in x86 and x86-64. A package it names builds
 its first generation with `../bootstrap-base/`, which names the
-bootstraps' objects; any other package, as zlib, libffi, perl, and
-Python do, builds with this from its first release (§63).
+bootstraps' objects, and each later round with `../base-round/`, which
+names the round before by snapshot (§64); any other package, as zlib,
+libffi, perl, and Python do, builds with this from its first release
+(§63), and gets the newest round.
 
 **In a plan.** Each brought dependency is a requirement of the build,
 resolved, chosen, and conferred as its own are. It is recorded after

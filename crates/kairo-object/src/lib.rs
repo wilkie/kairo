@@ -1073,6 +1073,7 @@ pub struct ProvidesDependency {
     placement: Option<Placement>,
     confer: Option<bool>,
     offered_by: Vec<ObjectId>,
+    offered_at: Vec<SnapshotId>,
 }
 
 impl ProvidesDependency {
@@ -1104,6 +1105,13 @@ impl ProvidesDependency {
     pub fn offered_by(&self) -> &[ObjectId] {
         &self.offered_by
     }
+
+    /// The snapshots whose offers alone may satisfy it, an offer's own
+    /// or, for a child, its parent's (`DECISIONS.md` §64): a round of
+    /// releases named exactly. Empty when any may.
+    pub fn offered_at(&self) -> &[SnapshotId] {
+        &self.offered_at
+    }
 }
 
 impl CanonicalEncode for ProvidesDependency {
@@ -1128,6 +1136,12 @@ impl CanonicalEncode for ProvidesDependency {
             encode_str(out, "offered_by");
             encode_list(out, &self.offered_by, |out, object| {
                 encode_str(out, object.as_str());
+            });
+        }
+        if !self.offered_at.is_empty() {
+            encode_str(out, "offered_at");
+            encode_list(out, &self.offered_at, |out, snapshot| {
+                encode_str(out, snapshot.as_str());
             });
         }
     }
@@ -2242,6 +2256,7 @@ struct RawDependencyDeclaration {
     overlay: Option<bool>,
     confer: Option<bool>,
     offered_by: Option<Vec<String>>,
+    offered_at: Option<Vec<String>>,
 }
 
 impl RawDependencyDeclaration {
@@ -2275,13 +2290,19 @@ impl RawDependencyDeclaration {
                 Err(ManifestError::SourceFieldsOnOtherKind(self.kind.clone()))
             }
             "provides" => self.validate_provides(),
-            _ if self.offered_by.is_some() => Err(ManifestError::InvalidRequirement {
-                field: "dependencies.offered_by",
-                reason: format!(
+            _ if self.offered_by.is_some() || self.offered_at.is_some() => {
+                Err(ManifestError::InvalidRequirement {
+                    field: if self.offered_by.is_some() {
+                        "dependencies.offered_by"
+                    } else {
+                        "dependencies.offered_at"
+                    },
+                    reason: format!(
                     "a {} dependency names what it wants; only a provides one chooses among offers",
                     self.kind
                 ),
-            }),
+                })
+            }
             _ if self.confer.is_some() => Err(ManifestError::InvalidRequirement {
                 field: "dependencies.confer",
                 reason: format!(
@@ -2394,6 +2415,19 @@ impl RawDependencyDeclaration {
                 .map(|object| ObjectId::new(object).map_err(ManifestError::InvalidObjectId))
                 .collect::<Result<Vec<_>, _>>()?,
         };
+        let offered_at = match self.offered_at {
+            None => Vec::new(),
+            Some(snapshots) if snapshots.is_empty() => {
+                return Err(ManifestError::InvalidRequirement {
+                    field: "dependencies.offered_at",
+                    reason: "names no snapshot; leave it out for any".to_owned(),
+                })
+            }
+            Some(snapshots) => snapshots
+                .into_iter()
+                .map(|snapshot| SnapshotId::new(snapshot).map_err(ManifestError::InvalidSnapshotId))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
 
         Ok(DependencyDeclaration::Provides(ProvidesDependency {
             provides,
@@ -2401,6 +2435,7 @@ impl RawDependencyDeclaration {
             placement,
             confer: self.confer,
             offered_by,
+            offered_at,
         }))
     }
 
@@ -3579,8 +3614,20 @@ mod tests {
                 if dependency.offered_by().iter().map(ObjectId::as_str).eq([id])
         ));
         assert_ne!(plain.manifest_hash(), by.manifest_hash());
-        // Named objects only, at least one, and only on a provides
-        // dependency, which chooses among offers.
+        let snapshot = "zQmPBf6Lu8hwSd4Ub4D5vGvG6hMCwZ1mmUNi6hRWRGNmpMr";
+        let at = ObjectManifest::parse_toml(&manifest(
+            "provides",
+            &format!("provides = \"tool:make\"\noffered_at = [\"{snapshot}\"]"),
+        ))?;
+        assert!(matches!(
+            at.dependencies(),
+            [DependencyDeclaration::Provides(dependency)]
+                if dependency.offered_at().iter().map(SnapshotId::as_str).eq([snapshot])
+        ));
+        assert_ne!(plain.manifest_hash(), at.manifest_hash());
+        assert_ne!(by.manifest_hash(), at.manifest_hash());
+        // Named objects and snapshots only, at least one, and only on a
+        // provides dependency, which chooses among offers.
         for bad in [
             manifest("provides", "provides = \"tool:make\"\noffered_by = []"),
             manifest(
@@ -3590,6 +3637,15 @@ mod tests {
             manifest(
                 "object",
                 &format!("object = \"{id}\"\noffered_by = [\"{id}\"]"),
+            ),
+            manifest("provides", "provides = \"tool:make\"\noffered_at = []"),
+            manifest(
+                "provides",
+                "provides = \"tool:make\"\noffered_at = [\"snapshot:zQm\"]",
+            ),
+            manifest(
+                "object",
+                &format!("object = \"{id}\"\noffered_at = [\"{snapshot}\"]"),
             ),
         ] {
             assert!(ObjectManifest::parse_toml(&bad).is_err(), "{bad}");

@@ -1,6 +1,6 @@
-# Builds GNU make 4.2.1 into /kairo/package (packages/make/README.md) for
-# the target named as the first argument, its first generation, with the
-# bootstraps' packages (DECISIONS.md §59): one child, make-4.2.1.
+# Builds GNU make 4.2.1 into /kairo/package (packages/make/README.md)
+# for the target named as the first argument, its second round, with the
+# base's first round (DECISIONS.md §64): one child, make-4.2.1.
 . ./recipe.sh "$1"
 NAME=make
 VERSION=4.2.1

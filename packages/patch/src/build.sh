@@ -1,7 +1,6 @@
 # Builds GNU patch 2.8 into /kairo/package (packages/patch/README.md)
-# for the target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# patch-2.8.
+# for the target named as the first argument, its second round, with the
+# base's first round (DECISIONS.md §64): one child, patch-2.8.
 . ./recipe.sh "$1"
 NAME=patch
 VERSION=2.8

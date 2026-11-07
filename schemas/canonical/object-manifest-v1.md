@@ -150,7 +150,7 @@ confused.
 
 | Variant | Encoding |
 |---|---|
-| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given, then `placement` when placed, then `string("confer") \|\| u8(confer)` when `confer` is given (`DECISIONS.md` §51), then `string("offered_by") \|\| list<string(object id)>` when `offered_by` is given (`DECISIONS.md` §59) |
+| `Provides` | `string("provides") \|\| string(provides)`, then `string("version") \|\| string(version)` when a version requirement is given, then `placement` when placed, then `string("confer") \|\| u8(confer)` when `confer` is given (`DECISIONS.md` §51), then `string("offered_by") \|\| list<string(object id)>` when `offered_by` is given (`DECISIONS.md` §59), then `string("offered_at") \|\| list<string(snapshot id)>` when `offered_at` is given (§64) |
 | `Object` | `string("object") \|\| string(object_id) \|\| selector`, then `placement` when placed |
 | `Source` | `string("source") \|\| string(canonical url) \|\| string(git revision) \|\| option<string>(path) \|\| u8(seed)`, then `placement options` when placed |
 | `File` | `string("file") \|\| string(lowercase hex sha256) \|\| string(path)`, then `string("overlay")` when it overlays |

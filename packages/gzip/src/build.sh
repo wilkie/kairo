@@ -1,7 +1,6 @@
-# Builds GNU gzip 1.13 into /kairo/package (packages/gzip/README.md)
-# for the target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# gzip-1.13.
+# Builds GNU gzip 1.13 into /kairo/package (packages/gzip/README.md) for
+# the target named as the first argument, its second round, with the
+# base's first round (DECISIONS.md §64): one child, gzip-1.13.
 . ./recipe.sh "$1"
 NAME=gzip
 VERSION=1.13

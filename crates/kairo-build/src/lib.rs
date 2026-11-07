@@ -1537,6 +1537,7 @@ pub fn run_plan(
                 from: None,
                 overlay: false,
                 offered_by: Vec::new(),
+                offered_at: Vec::new(),
             },
             resolved: entry.resolved.clone(),
             brought_by: None,

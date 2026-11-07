@@ -103,8 +103,9 @@ impl PlanRecords {
 pub(crate) type PlanKey = (String, String, String);
 
 /// A label as one target looked it up: in an architecture, or every one
-/// when the target declares no environment, and with the objects its
-/// requirements named, whose unreleased offers it could take too.
+/// when the target declares no environment, and with the objects and
+/// snapshots its requirements named, whose unreleased offers it could
+/// take too.
 pub(crate) type LabelLookup = (String, Option<String>, Vec<String>);
 
 /// What one target's planning read (§62 sub-decision 3).
@@ -230,9 +231,11 @@ fn counts(offer: &Offer, arch: Option<&str>, names: &[String]) -> bool {
         _ => true,
     };
     let named = || {
-        names
-            .iter()
-            .any(|name| name == offer.object.as_str() || name == offer.builder().as_str())
+        names.iter().any(|name| {
+            name == offer.object.as_str()
+                || name == offer.builder().as_str()
+                || name == offer.snapshot.as_str()
+        })
     };
     eligible && (offer.release || named())
 }

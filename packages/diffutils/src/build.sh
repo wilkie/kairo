@@ -1,7 +1,7 @@
-# Builds GNU diffutils 3.10 into /kairo/package (packages/diffutils/README.md)
-# for the target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# diffutils-3.10.
+# Builds GNU diffutils 3.10 into /kairo/package
+# (packages/diffutils/README.md) for the target named as the first
+# argument, its second round, with the base's first round (DECISIONS.md
+# §64): one child, diffutils-3.10.
 . ./recipe.sh "$1"
 NAME=diffutils
 VERSION=3.10

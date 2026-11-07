@@ -1,7 +1,6 @@
 # Builds GNU bash 5.2.15 into /kairo/package (packages/bash/README.md)
-# for the target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# bash-5.2.15.
+# for the target named as the first argument, its second round, with the
+# base's first round (DECISIONS.md §64): one child, bash-5.2.15.
 . ./recipe.sh "$1"
 NAME=bash
 VERSION=5.2.15

@@ -30,6 +30,15 @@ rather than per-commit.
   plan with `build-base` takes 0.13 s reused, 0.45 s planned.
   `scripts/plan-timing.sh` times both.
 
+- **The base's round 2, built with round 1 (`DECISIONS.md` §64).** A
+  provides dependency may name the snapshots whose offers alone satisfy
+  it, `offered_at`. `packages/base-round/`, `data:base-round` 1.0.0,
+  brings what `build-base` does, each label at the snapshot of the
+  base's first round. The base's packages' next revisions, tagged
+  `<version>+2`, build with it, gcc 15.2.0 with its own round 1, so no
+  bootstrap's object is in their plans; through `build-base`, a round
+  that builds with itself would be a cycle.
+
 - **zlib, libffi, perl, and Python as packages, built with packages
   alone (`DECISIONS.md` §63).** zlib 1.3.1, libffi 3.5.2, perl 5.42.0,
   and Python 3.11.1, each one object built for x86 and x86-64 with

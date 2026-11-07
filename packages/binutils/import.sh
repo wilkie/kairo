@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Archive binutils's sources, make its object or its next revision, and tag
-# it 2.41.0 (packages/binutils/README.md, packages/common/import.sh).
+# Archive binutils's sources, make its object or its next revision, and
+# tag it 2.41.0+2 (packages/binutils/README.md,
+# packages/common/import.sh).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
-# What it builds with must be imported: packages/bootstrap-base/ and the
-# bootstraps it names. Prints the object's id.
+# What it builds with must be imported: packages/base-round/ and the
+# base's round 1 it names. Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -22,4 +23,4 @@ DISTFILES=(
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "binutils 2.41 for x86 and x86-64" 2.41.0
+import_package "$@" "binutils 2.41 for x86 and x86-64, round 2, built with round 1" 2.41.0+2

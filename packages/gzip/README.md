@@ -5,10 +5,14 @@ history (`specs/DECISIONS.md` §59), with a target for each environment
 it is built for, `x86` and `x86-64`, and no environment of its own
 (§55). This revision is 1.13, tagged `1.13.0`, as a tag is a full semver version.
 
-**Its first generation.** It builds with `data:bootstrap-base`
-(`../bootstrap-base/`), whose labels only the bootstraps' objects may
-satisfy. A later release builds with `data:build-base`, once every
-package it names is a release (§61).
+**Its second round.** It builds with `data:base-round` 1
+(`../base-round/`), which brings what `build-base` does, each label
+offered only at the snapshot of the base's first round (§64): this
+package's first round, tagged without `+2`, was built with
+`../bootstrap-base/`, the bootstraps' packages. Built with the other
+packages of its own round, through `build-base`, it would be a cycle;
+built with the round before, it never builds with itself. Everything
+outside the base builds with `build-base` and gets this round.
 
 **Its child.** Each target's artifact is installed nowhere; it is its
 child, `gzip-1.13`, offering `tool:gzip`, and requiring `lib:musl:shared`, what its programs load.

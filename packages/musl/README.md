@@ -5,14 +5,16 @@ The C library, the version the bootstraps build, in the environment's library di
 One object for every release of musl, each a version tag on its
 history (`specs/DECISIONS.md` §59), with a target for each environment
 it is built for, `x86` and `x86-64`, and no environment of its own
-(§55). This revision is 1.2.5, tagged `1.2.5`.
+(§55). This revision is 1.2.5, its second round, tagged `1.2.5+2`; its first round is tagged `1.2.5`.
 
-**Its first generation.** It builds with `data:bootstrap-base`
-(`../bootstrap-base/`), whose labels only the bootstraps' objects may
-satisfy: live-bootstrap's in x86, the 64-bit root's in x86-64. Built
-with the other packages of its round, it would be a cycle. A later
-release builds with `data:build-base` (`../build-base/`), and may use
-this one, an older generation of itself.
+**Its second round.** It builds with `data:base-round` 1
+(`../base-round/`), which brings what `build-base` does, each label
+offered only at the snapshot of the base's first round (§64): this
+package's first round, tagged without `+2`, was built with
+`../bootstrap-base/`, the bootstraps' packages. Built with the other
+packages of its own round, through `build-base`, it would be a cycle;
+built with the round before, it never builds with itself. Everything
+outside the base builds with `build-base` and gets this round.
 
 **Its children.** Each target's artifact is installed nowhere; it is
 its children: `musl-1.2.5-headers`, `-static`, `-shared`, offering `lib:musl:headers`; `lib:musl:static`; `lib:musl:shared`, conferring `^1.2.5` and requiring the merged-/usr links, through which its loader is reached as `/lib` (§51). Each child requires what
@@ -30,7 +32,7 @@ over what it was built with, a program compiled against it, static and dynamic, 
 
 ## Running it
 
-Import `../bootstrap-base/` and the bootstraps it names. Then:
+Import `../base-round/` and the base's round 1 it names. Then:
 
 ```sh
 packages/musl/import.sh <your actor id>

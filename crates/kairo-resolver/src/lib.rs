@@ -370,6 +370,9 @@ pub enum Requested {
         /// The objects whose offers alone may satisfy it (§59).
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         offered_by: Vec<String>,
+        /// The snapshots whose offers alone may satisfy it (§64).
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        offered_at: Vec<String>,
     },
     Object {
         object: String,
@@ -1286,6 +1289,9 @@ struct Constraint {
     /// The objects whose offers alone satisfy it, each an offer's own or
     /// its parent's (§59); empty for any.
     offered_by: Vec<ObjectId>,
+    /// The snapshots whose offers alone satisfy it, an offer's own,
+    /// which for a child is its parent's (§64); empty for any.
+    offered_at: Vec<SnapshotId>,
 }
 
 impl Constraint {
@@ -1302,11 +1308,17 @@ impl Constraint {
             .as_ref()
             .is_none_or(|(object, snapshot)| &offer.object == object && &offer.snapshot == snapshot)
             && version_matches(self.version.as_deref(), offer.version.as_deref())
-            && (self.offered_by.is_empty() || self.names(offer))
+            && (self.offered_by.is_empty() || self.names_object(offer))
+            && (self.offered_at.is_empty() || self.offered_at.contains(&offer.snapshot))
     }
 
-    /// Whether it names `offer`'s object, or for a child its parent.
+    /// Whether it names `offer`: its object, or for a child its parent
+    /// (§59), or its snapshot (§64).
     fn names(&self, offer: &Offer) -> bool {
+        self.names_object(offer) || self.offered_at.contains(&offer.snapshot)
+    }
+
+    fn names_object(&self, offer: &Offer) -> bool {
         self.offered_by.contains(&offer.object) || self.offered_by.contains(offer.builder())
     }
 
@@ -1325,6 +1337,10 @@ impl Constraint {
                 .map(|object| format!("object:{object}"))
                 .collect();
             what = format!("{what} offered by {}", objects.join(" or "));
+        }
+        if !self.offered_at.is_empty() {
+            let snapshots: Vec<&str> = self.offered_at.iter().map(SnapshotId::as_str).collect();
+            what = format!("{what} at snapshot {}", snapshots.join(" or "));
         }
         if self.via.is_empty() {
             format!("{what}, required by this target")
@@ -2209,6 +2225,11 @@ impl<'a> Resolver<'a> {
                                 .iter()
                                 .map(ToString::to_string)
                                 .collect(),
+                            offered_at: dependency
+                                .offered_at()
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect(),
                         };
                         let resolved = if dependency.provides().starts_with(ENVIRONMENT_PREFIX) {
                             self.resolve_environment(
@@ -2233,6 +2254,7 @@ impl<'a> Resolver<'a> {
                                             pin: None,
                                             via: Vec::new(),
                                             offered_by: other.offered_by().to_vec(),
+                                            offered_at: other.offered_at().to_vec(),
                                         })
                                     }
                                     _ => None,
@@ -2991,7 +3013,13 @@ impl<'a> Resolver<'a> {
         if self.records.is_some() {
             let names: BTreeSet<String> = constraints
                 .iter()
-                .flat_map(|constraint| constraint.offered_by.iter().map(ToString::to_string))
+                .flat_map(|constraint| {
+                    constraint
+                        .offered_by
+                        .iter()
+                        .map(ToString::to_string)
+                        .chain(constraint.offered_at.iter().map(ToString::to_string))
+                })
                 .collect();
             let lookup = (
                 label.to_owned(),
@@ -3472,6 +3500,7 @@ impl<'a> Resolver<'a> {
                             pin: held_pin(entry.pin)?,
                             via: chain,
                             offered_by: Vec::new(),
+                            offered_at: Vec::new(),
                         });
                 }
             }

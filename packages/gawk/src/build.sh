@@ -1,7 +1,6 @@
-# Builds GNU awk 5.3.0 into /kairo/package (packages/gawk/README.md)
-# for the target named as the first argument, its first generation,
-# with the bootstraps' packages (DECISIONS.md §59): one child,
-# gawk-5.3.0.
+# Builds GNU awk 5.3.0 into /kairo/package (packages/gawk/README.md) for
+# the target named as the first argument, its second round, with the
+# base's first round (DECISIONS.md §64): one child, gawk-5.3.0.
 . ./recipe.sh "$1"
 NAME=gawk
 VERSION=5.3.0

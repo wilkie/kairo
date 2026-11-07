@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Archive xz's sources, make its object or its next revision, and
-# tag it 5.6.4 (packages/xz/README.md, packages/common/import.sh).
+# Archive xz's sources, make its object or its next revision, and tag it
+# 5.6.4+2 (packages/xz/README.md, packages/common/import.sh).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
-# What it builds with must be imported: packages/bootstrap-base/ and the
-# bootstraps it names. Prints the object's id.
+# What it builds with must be imported: packages/base-round/ and the
+# base's round 1 it names. Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -19,4 +19,4 @@ DISTFILES=(
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "xz 5.6.4 for x86 and x86-64" 5.6.4
+import_package "$@" "xz 5.6.4 for x86 and x86-64, round 2, built with round 1" 5.6.4+2

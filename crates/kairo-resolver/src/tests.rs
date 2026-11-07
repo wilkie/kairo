@@ -3133,3 +3133,150 @@ fn walk(dir: &std::path::Path) -> std::io::Result<Vec<PathBuf>> {
     }
     Ok(found)
 }
+
+/// One of two tools that build with each other: `tool:<name>` at
+/// `version`, built with `needs`, a dependency's TOML.
+fn round_tool(name: &str, version: &str, needs: &str) -> String {
+    manifest(
+        name,
+        &format!(
+            r#"
+            [[provides]]
+            provides = "tool:{name}"
+            version = "{version}"
+            target = "release"
+            [[build.targets]]
+            name = "release"
+            command = ["make"]
+            {needs}
+            "#
+        ),
+    )
+}
+
+/// What `plan` resolved `label` to: the object and snapshot.
+fn resolved_snapshot(plan: &PlanDocument, label: &str) -> Option<String> {
+    plan.manifest.requirements.iter().find_map(|requirement| {
+        match (&requirement.requested, &requirement.resolved) {
+            (
+                Requested::Provides { provides, .. },
+                Resolved::Artifact { snapshot, .. } | Resolved::Content { snapshot, .. },
+            ) if provides == label => Some(snapshot.clone()),
+            _ => None,
+        }
+    })
+}
+
+#[test]
+fn a_round_builds_with_the_round_before_it_named_by_snapshot() -> TestResult {
+    let mut world = World::new();
+    // The first round: two tools, released at 1.0.0.
+    let first_round = |world: &mut World, name: &str| {
+        let object = world.fixture.make_object(&world.actor, "software");
+        let revision = world.revision(
+            &object,
+            &content_provider(&format!("tool:{name}"), Some("1.0.0")),
+            Vec::new(),
+        );
+        world
+            .fixture
+            .set_branch(&world.actor, &object, &revision, "head");
+        world
+            .fixture
+            .bind_version_tag(&world.actor, &object, &revision, "1.0.0");
+        (object, revision)
+    };
+    let (a, a1) = first_round(&mut world, "a");
+    let (b, b1) = first_round(&mut world, "b");
+    let a1_snapshot = Snapshot::from_object_revision(&a.object_id, &a1.statement)?.snapshot_id();
+    let b1_snapshot = Snapshot::from_object_revision(&b.object_id, &b1.statement)?.snapshot_id();
+
+    // The round object: the first round's tools, each at its snapshot.
+    let round_dependency = |label: &str, snapshot: &SnapshotId| {
+        format!(
+            "[[dependencies]]\nkind = \"provides\"\nprovides = \"{label}\"\noffered_at = [\"{snapshot}\"]\n"
+        )
+    };
+    world.object(&environment_object(
+        "round",
+        "data:round",
+        &(round_dependency("tool:a", &a1_snapshot) + &round_dependency("tool:b", &b1_snapshot)),
+    ));
+
+    // The second round, each built with the other, released as 1.0.0+2.
+    let second_round = |world: &mut World,
+                        object: &CreatedObject,
+                        first: &CreatedRevision,
+                        name: &str,
+                        needs: &str| {
+        let revision = world.revision(
+            object,
+            &round_tool(name, "1.0.0", needs),
+            vec![first.statement.unsigned().body().revision().clone()],
+        );
+        world
+            .fixture
+            .set_branch_at(&world.actor, object, &revision, "head", LATER);
+        world
+            .fixture
+            .bind_version_tag(&world.actor, object, &revision, "1.0.0+2");
+        revision
+    };
+    let needs_round =
+        "[[build.targets.dependencies]]\nkind = \"provides\"\nprovides = \"data:round\"\n";
+    second_round(&mut world, &a, &a1, "a", needs_round);
+    second_round(&mut world, &b, &b1, "b", needs_round);
+
+    // Each second-round tool builds with the first round's other one.
+    let a_plan = world.resolve(&a.object_id, "release")?;
+    assert_eq!(
+        resolved_snapshot(&a_plan.plan, "tool:b"),
+        Some(b1_snapshot.to_string())
+    );
+    let b_plan = world.resolve(&b.object_id, "release")?;
+    assert_eq!(
+        resolved_snapshot(&b_plan.plan, "tool:a"),
+        Some(a1_snapshot.to_string())
+    );
+
+    // Anything else takes the second round: the newest release.
+    let (app, _) = world.object(&manifest(
+        "app",
+        r#"
+        [[build.targets]]
+        name = "release"
+        command = ["make"]
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:a"
+        [[build.targets.dependencies]]
+        kind = "provides"
+        provides = "tool:b"
+        "#,
+    ));
+    let app_plan = world.resolve(&app.object_id, "release")?;
+    for (label, first) in [("tool:a", &a1_snapshot), ("tool:b", &b1_snapshot)] {
+        let chosen = resolved_snapshot(&app_plan.plan, label);
+        assert!(
+            chosen.is_some() && chosen.as_deref() != Some(first.as_str()),
+            "{label}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_round_that_builds_with_itself_is_a_cycle() -> TestResult {
+    let mut world = World::new();
+    let needs = |label: &str| {
+        format!("[[build.targets.dependencies]]\nkind = \"provides\"\nprovides = \"{label}\"\n")
+    };
+    let (a, _) = world.object(&round_tool("a", "1.0.0", &needs("tool:b")));
+    world.object(&round_tool("b", "1.0.0", &needs("tool:a")));
+    let cycle = world.resolve(&a.object_id, "release");
+    assert!(
+        matches!(cycle, Err(ResolveError::Cycle { .. })),
+        "{cycle:?}"
+    );
+    Ok(())
+}

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Archive gcc's sources, make its object or its next revision, and tag
 # it with the release's version (packages/gcc/README.md,
-# packages/common/import.sh). This revision is 15.2.0, on top of 7.5.0:
-# import that first, at its tag, with --wrapper, since 15.2.0 builds
-# with it.
+# packages/common/import.sh). This revision is 15.2.0's second round,
+# tagged 15.2.0+2, on top of 15.2.0's first, which is on top of 7.5.0:
+# import those first, at their tags, then this with --wrapper.
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
-# What it builds with must be imported: packages/bootstrap-base/ and the
-# bootstraps it names. Prints the object's id.
+# What it builds with must be imported: packages/base-round/ and the
+# base's round 1 it names. Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -40,4 +40,4 @@ DISTFILES=(
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "gcc 15.2.0 for x86 and x86-64, built with gcc 7.5.0" 15.2.0
+import_package "$@" "gcc 15.2.0 for x86 and x86-64, round 2, built with round 1" 15.2.0+2
