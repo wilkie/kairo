@@ -30,6 +30,14 @@ rather than per-commit.
   plan with `build-base` takes 0.13 s reused, 0.45 s planned.
   `scripts/plan-timing.sh` times both.
 
+- **zlib, libffi, perl, and Python as packages, built with packages
+  alone (`DECISIONS.md` §63).** zlib 1.3.1, libffi 3.5.2, perl 5.42.0,
+  and Python 3.11.1, each one object built for x86 and x86-64 with
+  `build-base`, Python against the zlib, libffi, xz, and bzip2
+  packages: no bootstrap's object is in their plans. Only the packages
+  `build-base` names build their first generation with
+  `bootstrap-base`.
+
 - **The base packages (`packages/`).** bash, coreutils, sed, grep, gawk,
   diffutils, findutils, patch, tar, gzip, xz, bzip2, m4, and the Linux
   4.14 headers, each one object built for x86 and x86-64 as a first
@@ -734,6 +742,19 @@ rather than per-commit.
   hashes.
 
 ### Changed
+
+- **gcc 15.2.0 without multiarch, and with the stack protector's local
+  helper.** The gcc package's next revision, tagged `15.2.0` again:
+  - is configured with `--disable-multiarch` and checks that `gcc
+    -print-multiarch` reports nothing. gcc had turned multiarch on in
+    x86, where the bootstrap's root it was built on has
+    `/usr/lib/libc.so`, and reported glibc's `i386-linux-gnu` for a
+    musl target, which Python's configure refused.
+  - builds libssp for its `libssp_nonshared.a` alone and links it
+    whenever a stack protector is asked for, as Alpine's gcc does. On
+    i386, protected position-independent code calls
+    `__stack_chk_fail_local`, which musl keeps hidden in libc, so perl
+    failed to link in x86. The build checks a protected PIE program.
 
 - **An index makes every label's offers once.** `Index::offers` looked
   through every candidate's manifest and child for each label asked;

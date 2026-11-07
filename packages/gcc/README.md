@@ -92,8 +92,27 @@ one, and it is 15.2.0's whenever anything there was linked by gcc 15.
 The build checks that a C++ program gcc 7 links runs both against the
 newer library its environment has and against gcc 7's own child.
 
-libsanitizer, libmpx, and libcilkrts don't build against musl, and musl
-has its own stack protector, so they and libssp are left out.
+**No multiarch.** gcc 15.2.0 is configured with `--disable-multiarch`,
+and the build checks that `gcc -print-multiarch` reports nothing.
+Left to itself, gcc turns multiarch on when the machine it is built on
+has `/usr/lib/libc.so`, as the x86 bootstraps' roots do. It then
+reports glibc's `i386-linux-gnu` for a musl target, which Python's
+configure refuses and CMake would search. The first 15.2.0 revision
+had it on in x86; this one, tagged `15.2.0` again, supersedes it (§61).
+gcc 7.5.0, an older generation, is left as it was.
+
+libsanitizer, libmpx, and libcilkrts don't build against musl, so
+they are left out.
+
+**The stack protector's local helper.** musl provides the stack
+protector, but on i386 code built with `-fstack-protector` and `-fPIC`
+or `-fPIE` calls `__stack_chk_fail_local`, which musl keeps hidden in
+libc, so each program needs its own copy. gcc 15.2.0 builds libssp for
+its `libssp_nonshared.a` alone, which defines it, and removes libssp's
+libraries and headers. Its link spec, where the C library provides the
+protector, adds `-lssp_nonshared` whenever a protector is asked for,
+as Alpine's gcc does; an x86-64 program never pulls the archive in.
+The build checks that a protected PIE program links and runs.
 
 | File | What it is |
 |---|---|

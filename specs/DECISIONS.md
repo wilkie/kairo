@@ -5771,8 +5771,9 @@ Sub-decisions:
    bootstrap's labels at its versions, and win the tie as the newest
    published (§48); building one package with another of the same
    round would be a cycle, and breaking cycles by whichever was asked
-   for first would make a plan depend on its caller. So a package's
-   first generation builds with `packages/bootstrap-base/`
+   for first would make a plan depend on its caller. So the first
+   generation of a package `build-base` names (§63 for the rest)
+   builds with `packages/bootstrap-base/`
    (`data:bootstrap-base`), which brings what `build-base` does (§57),
    each label `offered_by` the bootstrap's objects: live-bootstrap's
    six passes and the 64-bit bootstrap's root, by their ids. Object ids
@@ -6078,3 +6079,40 @@ Affected specs:
 - `STORE.md` §4 — `cache/plans/`.
 - `CLI.md` §17 — `kairo build --replan`.
 - `PHASE_2.md` §8 — fingerprints and reused plans.
+
+## 63. Packages Outside the Base Build with `build-base` from Their First Release
+
+Decision: only the packages `build-base` names, its base, build their
+first generation with `bootstrap-base` (§59 sub-decision 5). Any other
+package builds with `build-base` from its first release: nothing it
+offers is a label `build-base` brings, so its build can't take itself
+through it, and the cycle §59 avoids can't form. zlib, libffi, perl,
+and Python are the first: built with packages alone, no bootstrap's
+object in their plans. This narrows §59 sub-decision 5, which said
+every package's first generation names its bootstrap.
+
+Sub-decisions:
+
+1. **What it builds against is a package too.** A library such a
+   package builds against, as Python does zlib, libffi, liblzma, and
+   libbz2, is required by label beside `build-base` and resolves, as
+   `build-base`'s labels do, to releases alone (§61), so to the
+   packages and never to a bootstrap's child of the same software.
+
+2. **When a package joins the base.** A package `build-base` comes to
+   name, as perl or Python might once a base needs them, has its
+   releases built with `build-base` by then; one built before then
+   with `build-base` is an older generation of itself, which a later
+   release may build with (§59), and its own target is barred from its
+   own offers as any build's is.
+
+Rationale: `bootstrap-base` exists to break the cycle between a base
+package and the packages that build it. Software outside the base has
+no such cycle, and building it with the packages is what every later
+package will do; naming the bootstraps would tie it to objects that
+are steps toward a base, never releases (§61).
+
+Affected specs:
+
+- `DECISIONS.md` §59 sub-decision 5.
+- `packages/bootstrap-base/README.md`, `packages/build-base/README.md`.

@@ -1,8 +1,9 @@
 # bootstrap-base
 
 What a typical C or C++ package builds with, as `../build-base/` has
-it, but offered **only by the bootstraps**: the environment a package's
-first generation builds with (`specs/DECISIONS.md` §59).
+it, but offered **only by the bootstraps**: the environment the first
+generation of a package `build-base` names builds with
+(`specs/DECISIONS.md` §59, §63).
 
 **Why it exists.** A package offers the bootstrap's labels at the
 bootstrap's versions (`packages/make` offers `tool:make` 4.2.1, as stage

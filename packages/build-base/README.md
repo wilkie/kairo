@@ -26,9 +26,10 @@ itself replaces this object's requirement on it. A build that wants gcc
 **Releases only.** Its labels are resolved as any requirement that
 names no object is: only releases, version-tagged snapshots, satisfy
 them (§61). So it serves a build once every package it names is a
-release, as each now is, in x86 and x86-64; a package's first
-generation still builds with `../bootstrap-base/`, which names the
-bootstraps' objects.
+release, as each now is, in x86 and x86-64. A package it names builds
+its first generation with `../bootstrap-base/`, which names the
+bootstraps' objects; any other package, as zlib, libffi, perl, and
+Python do, builds with this from its first release (§63).
 
 **In a plan.** Each brought dependency is a requirement of the build,
 resolved, chosen, and conferred as its own are. It is recorded after
