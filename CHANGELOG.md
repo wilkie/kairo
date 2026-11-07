@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **libssh2 and OpenSSH as packages, curl with SCP and SFTP, and Git
+  with its Perl parts.** libssh2 1.11.1 and OpenSSH 10.6p2 (tagged
+  `10.6.2`), each with OpenSSL and zlib, one object built for x86 and
+  x86-64 with `build-base`. OpenSSH's build signs and verifies with
+  `ssh-keygen` and checks that `sshd` loads its configuration; it can't
+  log in during the build, whose root maps no other user for sshd's
+  privilege separation. curl 8.23.0's next revision has SCP and SFTP;
+  Git 2.56.0's has its Perl parts, run by the perl package, and checks
+  `send-email`.
+
 - **libunistring, libidn2, libpsl, nghttp2, and brotli as packages,
   and curl with them.** libunistring 1.5; libidn2 2.3.8 against it, not
   its bundled copy; libpsl 0.23.3 with its release's public suffix list

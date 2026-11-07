@@ -7,7 +7,7 @@
 #
 # What it builds with must be imported: packages/build-base/ and the
 # packages it names, and openssl, zlib, zstd, brotli, nghttp2, libpsl,
-# libidn2, and pkgconf.
+# libidn2, libssh2, and pkgconf.
 # Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit

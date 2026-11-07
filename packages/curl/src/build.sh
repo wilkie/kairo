@@ -10,13 +10,13 @@ CHILD=curl-8.23.0
 # TLS by OpenSSL, trusting the bundle ca-certificates puts where Debian
 # and Alpine have it; HTTP/2 by nghttp2; the public suffix list, for
 # cookies, by libpsl; international domain names by libidn2; and
-# compression by zlib, zstd, and brotli. Left out for now, as no
-# package has them yet: SSH (libssh2) and LDAP. Without its static
+# compression by zlib, zstd, and brotli; SCP and SFTP by libssh2. Left
+# out for now, as no package has it yet: LDAP. Without its static
 # library.
 gnu "$CHILD" "$NAME-$VERSION" --disable-static --with-openssl --with-zlib --with-zstd \
     --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt --without-ca-path \
     --with-libpsl --with-nghttp2 --with-libidn2 --with-brotli \
-    --without-libssh2 --disable-ldap
+    --with-libssh2 --disable-ldap
 
 finish
 
@@ -24,7 +24,7 @@ finish
 install_over
 version=$(curl --version)
 for part in "^curl 8\.23\.0 " " libcurl/8\.23\.0 " " OpenSSL/3\.5\.9 " " zlib/1\.3\.1 " " brotli/1\.2\.1 " \
-    " zstd/1\.5\.7 " " libidn2/2\.3\.8 " " libpsl/0\.23\.3 " " nghttp2/1\.71\.0" \
+    " zstd/1\.5\.7 " " libidn2/2\.3\.8 " " libpsl/0\.23\.3 " " nghttp2/1\.71\.0" " libssh2/1\.11\.1" "^Protocols: .* scp .*sftp" \
     "^Features: .* HTTP2 " "^Features: .* IDN " "^Features: .* PSL " "^Features: .* brotli " "^Features: .* zstd"; do
     grep -q -- "$part" <<<"$version" || { echo "build.sh: curl lacks $part: $version" >&2; false; }
 done
