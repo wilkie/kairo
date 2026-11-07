@@ -1,21 +1,22 @@
-# Python, without pip, with its shared library in the library directory, as a package of its own (specs/DECISIONS.md §55, §59):
+# Python, with pip, its shared library in the library directory, as a package of its own (specs/DECISIONS.md §55, §59):
 # one object for every release, each a version tag on its history, and a
-# target for each environment it is built for. This revision is 3.11.1
-# again, with ssl, hashlib's OpenSSL digests, sqlite3, curses, readline,
-# dbm, and uuid, superseding the earlier ones (§61); built with data:build-base (../build-base/): with
-# packages alone, no bootstrap's object taking part (§61). Its libraries,
-# if any, go in the environment's directory for musl's (§60).
+# target for each environment it is built for. This revision is 3.15.2,
+# its release after 3.15.2, which stays tagged at the revision before;
+# built with data:build-base (../build-base/): with packages alone, no
+# bootstrap's object taking part (§61), and every library it builds
+# against a package, none of the copies it bundles. Its libraries go in
+# the environment's directory for musl's (§60).
 [kairo]
 schema = 1
 kind = "software"
 name = "python"
-summary = "Python, built for x86 and x86-64, each release a version tag; this one 3.11.1."
+summary = "Python, built for x86 and x86-64, each release a version tag; this one 3.15.2."
 tags = ["python"]
 
 [[dependencies]]
 kind = "file"
-sha256 = "85879192f2cffd56cb16c092905949ebf3e5e394b7f764723529637901dfb58f"
-path = "distfiles/Python-3.11.1.tar.xz"
+sha256 = "8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de"
+path = "distfiles/Python-3.15.2.tar.xz"
 
 # Each target's artifact is its child, and the whole is nobody's to
 # install. What the child requires is what its programs and libraries
@@ -78,6 +79,18 @@ provides = "lib:gdbm"
 kind = "provides"
 provides = "lib:uuid"
 
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:expat"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:mpdec"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:zstd"
+
 # Not loaded: the build checks that ssl finds the certificate
 # authorities where OpenSSL's directory puts them.
 [[build.targets.dependencies]]
@@ -85,12 +98,12 @@ kind = "provides"
 provides = "data:ca-certificates"
 
 [[build.targets.children]]
-name = "python-3.11.1"
-root = "python-3.11.1"
-summary = "Python 3.11.1 for x86."
+name = "python-3.15.2"
+root = "python-3.15.2"
+summary = "Python 3.15.2 for x86."
 tags = ["python"]
-version = "3.11.1"
-requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:ncurses" }, { provides = "lib:readline" }, { provides = "lib:gdbm" }, { provides = "lib:uuid" }, { provides = "lib:musl:shared" }]
+version = "3.15.2"
+requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:ncurses" }, { provides = "lib:readline" }, { provides = "lib:gdbm" }, { provides = "lib:uuid" }, { provides = "lib:expat" }, { provides = "lib:mpdec" }, { provides = "lib:zstd" }, { provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 # For x86-64, built and run in the x86-64 environment.
@@ -150,6 +163,18 @@ provides = "lib:gdbm"
 kind = "provides"
 provides = "lib:uuid"
 
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:expat"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:mpdec"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:zstd"
+
 # Not loaded: the build checks that ssl finds the certificate
 # authorities where OpenSSL's directory puts them.
 [[build.targets.dependencies]]
@@ -157,10 +182,10 @@ kind = "provides"
 provides = "data:ca-certificates"
 
 [[build.targets.children]]
-name = "python-3.11.1"
-root = "python-3.11.1"
-summary = "Python 3.11.1 for x86-64."
+name = "python-3.15.2"
+root = "python-3.15.2"
+summary = "Python 3.15.2 for x86-64."
 tags = ["python"]
-version = "3.11.1"
-requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:ncurses" }, { provides = "lib:readline" }, { provides = "lib:gdbm" }, { provides = "lib:uuid" }, { provides = "lib:musl:shared" }]
+version = "3.15.2"
+requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:ncurses" }, { provides = "lib:readline" }, { provides = "lib:gdbm" }, { provides = "lib:uuid" }, { provides = "lib:expat" }, { provides = "lib:mpdec" }, { provides = "lib:zstd" }, { provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]

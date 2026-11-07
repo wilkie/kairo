@@ -1,28 +1,30 @@
-# Builds python 3.11.1 into /kairo/package (packages/python/README.md) for the
-# target named as the first argument, its first release, again, with
-# OpenSSL, SQLite, ncurses, readline, gdbm, and libuuid, with packages
-# alone (data:build-base, DECISIONS.md §61): one child, python-3.11.1.
+# Builds Python 3.15.2 into /kairo/package (packages/python/README.md) for
+# the target named as the first argument, a release after its first, with
+# packages alone (data:build-base, DECISIONS.md §61): one child,
+# python-3.15.2.
 . ./recipe.sh "$1"
 NAME=python
-VERSION=3.11.1
-CHILD=python-3.11.1
+VERSION=3.15.2
+CHILD=python-3.15.2
 
-# Without pip, which it would fetch. OpenSSL's headers are in
-# /usr/include and its libraries in the library directory, which the
-# linker is given. SOURCE_DATE_EPOCH, which Kairo
-# sets, makes its bytecode checked by hash, not by time. Its Makefile
-# records a python found installed, to regenerate files with; none is
-# used, so it records the one it falls back to.
-# Its standard library and compiled modules stay in /usr/lib/python3.11,
-# where it looks for them, whatever its libdir; its modules' build is
-# told where the libraries they load are, and its own shared library,
+# With pip, which ensurepip installs from the wheel Python's source
+# bundles, fetching nothing. Every library it builds against is a
+# package's: expat and mpdecimal too, whose copies it would otherwise
+# build in. OpenSSL's headers are in /usr/include and the libraries in
+# the library directory, which the linker is given. SOURCE_DATE_EPOCH,
+# which Kairo sets, makes its bytecode, pip's too, checked by hash, not
+# by time. Its Makefile records a python found installed, to regenerate
+# files with; none is used, so it records the one it falls back to.
+# Its standard library and compiled modules stay in /usr/lib/python3.15,
+# where it looks for them, whatever its libdir; its own shared library,
 # with pkg-config's files, moves to the library directory (§60), as
 # Debian's multiarch python has it.
 unpack "Python-$VERSION"
 mkdir "$BUILD/python"
 cd "$BUILD/python"
 "../Python-$VERSION/configure" --build="$TRIPLE" --host="$TRIPLE" --prefix=/usr \
-    --enable-shared --with-ensurepip=no --with-system-ffi --with-openssl=/usr \
+    --enable-shared --with-ensurepip=install --with-system-expat --with-system-libmpdec \
+    --with-openssl=/usr \
     PYTHON_FOR_REGEN=python3 LDFLAGS="-L$LIBDIR"
 make -j"$JOBS"
 make install DESTDIR="$OUT/$CHILD"
@@ -47,4 +49,14 @@ TERM=xterm python3 -c 'import curses, sys; curses.setupterm(); sys.exit(curses.t
 python3 -c 'import readline, sys; sys.exit(readline._READLINE_LIBRARY_VERSION != "8.3")'
 python3 -c 'import dbm.gnu, dbm.ndbm, sys; d = dbm.gnu.open("check", "n"); d[b"a"] = b"made"; sys.exit(d[b"a"] != b"made")'
 python3 -c 'import _uuid, uuid, sys; sys.exit(len(str(uuid.uuid1())) != 36)'
-python3 -c 'import sys; sys.exit(sys.version_info[:3] != (3, 11, 1))'
+# expat, mpdecimal, and zstd, the packages'.
+python3 -c 'import pyexpat, sys; sys.exit(pyexpat.EXPAT_VERSION != "expat_2.10.0")'
+python3 -c 'import decimal, sys; sys.exit(decimal.__libmpdec_version__ != "4.0.1" or str(decimal.Decimal(1) / 3)[:5] != "0.333")'
+python3 -c 'import sys; from compression import zstd; sys.exit(zstd.decompress(zstd.compress(b"made")) != b"made" or zstd.zstd_version_info[:3] != (1, 5, 7))'
+python3 -c 'import sys; sys.exit(sys.version_info[:3] != (3, 15, 2))'
+# pip, run by the installed python, and in a new environment, as venv
+# installs it from the same wheel.
+[ "$(head -n 1 /usr/bin/pip3)" = "#!/usr/bin/python3.15" ]
+pip3 --version | grep -q "^pip 26\.2\.2 from /usr/lib/python3\.15/site-packages/pip "
+python3 -m venv venv
+venv/bin/python -m pip --version | grep -q "^pip 26\.2\.2 "

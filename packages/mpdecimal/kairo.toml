@@ -1,0 +1,73 @@
+# mpdecimal, the decimal arithmetic library Python's decimal uses, shared, in the library directory, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 4.0.1, its
+# first, built with data:build-base (../build-base/): with packages alone,
+# no bootstrap's object taking part (§61). Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "mpdecimal"
+summary = "mpdecimal, built for x86 and x86-64, each release a version tag; this one 4.0.1."
+tags = ["mpdecimal"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "96d33abb4bb0070c7be0fed4246cd38416188325f820468214471938545b1ac8"
+path = "distfiles/mpdecimal-4.0.1.tar.gz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.children]]
+name = "mpdecimal-4.0.1"
+root = "mpdecimal-4.0.1"
+summary = "mpdecimal 4.0.1 for x86."
+tags = ["mpdecimal"]
+version = "4.0.1"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:mpdec" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.children]]
+name = "mpdecimal-4.0.1"
+root = "mpdecimal-4.0.1"
+summary = "mpdecimal 4.0.1 for x86-64."
+tags = ["mpdecimal"]
+version = "4.0.1"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:mpdec" }]

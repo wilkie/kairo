@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **Python 3.15.2, with pip, and expat, mpdecimal, and zstd as
+  packages.** Python 3.15.2 is the python object's next release, tagged
+  `3.15.2` beside 3.11.1. `ensurepip` installs pip 26.2.2 from the wheel
+  its source bundles, fetching nothing. It builds against expat 2.10.0
+  and mpdecimal 4.0.1, each a package, not the copies it bundles, and
+  zstd 1.5.7 for `compression.zstd`; of its optional modules it lacks
+  only `tkinter`. Each library is one object built for x86 and x86-64
+  with `build-base`.
+
 - **pkgconf, Ninja, CMake, and Meson as packages.** pkgconf 3.0.10,
   answering as `pkg-config` too, searching the library directory;
   Ninja 1.13.2, bootstrapped with Python; CMake 4.4.5 with its bundled

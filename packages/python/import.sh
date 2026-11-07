@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive python's sources, make its object or its next revision, and
-# tag it 3.11.1 (packages/python/README.md, packages/common/import.sh).
+# tag it 3.15.2 (packages/python/README.md, packages/common/import.sh).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
@@ -13,14 +13,11 @@ shopt -s inherit_errexit
 
 # sha256 name url...
 DISTFILES=(
-    "85879192f2cffd56cb16c092905949ebf3e5e394b7f764723529637901dfb58f Python-3.11.1.tar.xz
-     https://www.python.org/ftp/python/3.11.1/Python-3.11.1.tar.xz
-     https://samuelt.me/pub/live-bootstrap/Python-3.11.1.tar.xz
-     https://live-bootstrap.stikonas.eu/Python-3.11.1.tar.xz
-     https://archive.org/download/live-bootstrap-sources/Python-3.11.1.tar.xz"
+    "8b5536d280142ecf6cdfe15d12a21ba1c65e300bbf7b28a8d0cdb849575797de Python-3.15.2.tar.xz
+     https://www.python.org/ftp/python/3.15.2/Python-3.15.2.tar.xz"
 )
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "python 3.11.1 for x86 and x86-64" 3.11.1
+import_package "$@" "python 3.15.2 for x86 and x86-64" 3.15.2
