@@ -18,6 +18,14 @@ rather than per-commit.
 
 ### Added
 
+- **pkgconf, Ninja, CMake, and Meson as packages.** pkgconf 3.0.10,
+  answering as `pkg-config` too, searching the library directory;
+  Ninja 1.13.2, bootstrapped with Python; CMake 4.4.5 with its bundled
+  libraries and OpenSSL for its downloads, finding a package's library
+  in the library directory; and Meson 1.12.1 as one file Python runs,
+  zipped in order so that it is the same each time. Each is one object
+  built for x86 and x86-64 with `build-base`.
+
 - **ncurses, readline, gdbm, and libuuid as packages, and Python with
   them.** ncurses 6.6, wide characters alone, with the unsuffixed names
   linked to it and the terminfo database; GNU readline 8.3 with its six

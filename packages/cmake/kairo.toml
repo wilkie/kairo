@@ -1,0 +1,81 @@
+# CMake, with ctest and cpack, its own libraries built in, and OpenSSL for its downloads, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 4.4.5, its
+# first, built with data:build-base (../build-base/): with packages alone,
+# no bootstrap's object taking part (§61). Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "cmake"
+summary = "CMake, built for x86 and x86-64, each release a version tag; this one 4.4.5."
+tags = ["cmake"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "a0c54c88abb8078dd8eccadb717fc6bb194bf18e7d44c86309910288886e04e2"
+path = "distfiles/cmake-4.4.5.tar.gz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ssl"
+
+[[build.targets.children]]
+name = "cmake-4.4.5"
+root = "cmake-4.4.5"
+summary = "CMake 4.4.5 for x86."
+tags = ["cmake"]
+version = "4.4.5"
+requires = [{ provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:stdc++:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:cmake" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ssl"
+
+[[build.targets.children]]
+name = "cmake-4.4.5"
+root = "cmake-4.4.5"
+summary = "CMake 4.4.5 for x86-64."
+tags = ["cmake"]
+version = "4.4.5"
+requires = [{ provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:stdc++:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:cmake" }]
