@@ -1,0 +1,73 @@
+# PCRE2, Perl-compatible regular expressions, its 8-, 16-, and 32-bit libraries, shared, in the library directory, with JIT, and `pcre2grep`, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 10.49, its
+# first, built with data:build-base (../build-base/): with packages alone,
+# no bootstrap's object taking part (§61). Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "pcre2"
+summary = "PCRE2, built for x86 and x86-64, each release a version tag; this one 10.49."
+tags = ["pcre2"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "53c156e1ba416a20da8e65395daa132da0d80e76910424caca3fcdae7831d384"
+path = "distfiles/pcre2-10.49.tar.bz2"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.children]]
+name = "pcre2-10.49"
+root = "pcre2-10.49"
+summary = "PCRE2 10.49 for x86."
+tags = ["pcre2"]
+version = "10.49"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:pcre2" }, { provides = "tool:pcre2grep" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.children]]
+name = "pcre2-10.49"
+root = "pcre2-10.49"
+summary = "PCRE2 10.49 for x86-64."
+tags = ["pcre2"]
+version = "10.49"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:pcre2" }, { provides = "tool:pcre2grep" }]

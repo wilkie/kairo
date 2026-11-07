@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **curl, PCRE2, and Git as packages.** curl 8.23.0 with OpenSSL,
+  zlib, and zstd, trusting the ca-certificates bundle, checked with a
+  TLS request to `openssl s_server` on the loopback; PCRE2 10.49, its
+  three widths with JIT; and Git 2.56.0 with HTTPS remotes by libcurl,
+  WebDAV by expat, and `grep -P`, without its Perl, Python, Tcl/Tk, and
+  Rust parts. Each is one object built for x86 and x86-64 with
+  `build-base`. A package's recipe that fails now says which step and
+  line.
+
 - **Python 3.15.2, with pip, and expat, mpdecimal, and zstd as
   packages.** Python 3.15.2 is the python object's next release, tagged
   `3.15.2` beside 3.11.1. `ensurepip` installs pip 26.2.2 from the wheel

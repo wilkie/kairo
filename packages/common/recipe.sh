@@ -9,6 +9,9 @@
 # x86 guest runs on a 64-bit kernel, whose machine config.guess would
 # name: the triple is given, for x86-64 too.
 set -euo pipefail
+# A step that fails says which, where the check would otherwise end the
+# build without a word.
+trap 'echo "build.sh: line $LINENO failed: $BASH_COMMAND" >&2' ERR
 export PATH=/usr/bin
 TRIPLE=$1
 case "$TRIPLE" in
