@@ -57,7 +57,8 @@ gnu() {
 
 # What builds don't need is removed: documentation, translations, and
 # libtool's archives. Then every child is checked: everything under its
-# usr/ (musl's shared part its loader's search path in etc/ too),
+# usr/ or etc/ (musl's shared part its loader's search path, OpenSSL its
+# configuration, ca-certificates its bundle),
 # nothing in lib64, and every ELF in it the target's code. And what each
 # child's programs and libraries load is reported, by soname, for its
 # requires in kairo.toml (DECISIONS.md §56).
@@ -69,8 +70,8 @@ finish() {
     local child file needed
     for child in *; do
         case "$(ls -A "$child" | tr '\n' ' ')" in
-        "usr " | "etc usr ") ;;
-        *) echo "recipe.sh: $child holds not only usr/: $(ls -A "$child")" >&2; exit 1 ;;
+        "usr " | "etc usr " | "etc ") ;;
+        *) echo "recipe.sh: $child holds not only usr/ and etc/: $(ls -A "$child")" >&2; exit 1 ;;
         esac
         [ ! -e "$child/usr/lib64" ] || { echo "recipe.sh: $child/usr/lib64 exists" >&2; exit 1; }
     done

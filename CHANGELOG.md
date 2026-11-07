@@ -18,6 +18,17 @@ rather than per-commit.
 
 ### Added
 
+- **OpenSSL, SQLite, and ca-certificates as packages, and Python with
+  them.** OpenSSL 3.5.9, the long-term release, its configuration in
+  `/etc/ssl`; SQLite 3.54.1 with FTS3, FTS4, FTS5, and R*Tree, its soname
+  `libsqlite3.so.0` as distributions keep it; and the
+  certificate authorities NSS 3.119.1 trusts for servers, made a bundle
+  by curl's `mk-ca-bundle.pl`, at `/etc/ssl/cert.pem` where OpenSSL
+  looks. Each is one object built for x86 and x86-64 with `build-base`.
+  Python 3.11.1's next revision, tagged `3.11.1` again, builds against
+  them and has `ssl`, `hashlib`'s OpenSSL digests, and `sqlite3`. A
+  package's child may now hold only `etc/`.
+
 - **Plans are recorded and reused (`DECISIONS.md` §62).** Each plan is
   recorded in the store's `cache/plans/` with fingerprints of what it
   read: each label's release offers in its architecture, the objects it

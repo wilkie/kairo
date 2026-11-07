@@ -1,0 +1,84 @@
+# The certificate authorities Mozilla's NSS 3.119.1 trusts to identify servers, as one bundle in `/etc/ssl`, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 3.119.1, its
+# first, built with data:build-base (../build-base/): with packages alone,
+# no bootstrap's object taking part (§61). Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "ca-certificates"
+summary = "The certificate authorities Mozilla's NSS 3.119.1 trusts to identify servers, built for x86 and x86-64, each release a version tag; this one 3.119.1."
+tags = ["ca-certificates"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "a903b3cd05231e39332515ef7ebe37e697262f39515a52015c23c62805b73cd0"
+path = "distfiles/certdata.txt"
+
+[[dependencies]]
+kind = "file"
+sha256 = "955f6e729ad6b3566260e8fef68620e76ba3c31acf0a18524416a185acf77992"
+path = "distfiles/curl-8.17.0.tar.xz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:perl"
+
+[[build.targets.children]]
+name = "ca-certificates-3.119.1"
+root = "ca-certificates-3.119.1"
+summary = "The certificate authorities Mozilla's NSS 3.119.1 trusts to identify servers 3.119.1 for x86."
+tags = ["ca-certificates"]
+version = "3.119.1"
+provides = [{ provides = "data:ca-certificates" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:perl"
+
+[[build.targets.children]]
+name = "ca-certificates-3.119.1"
+root = "ca-certificates-3.119.1"
+summary = "The certificate authorities Mozilla's NSS 3.119.1 trusts to identify servers 3.119.1 for x86-64."
+tags = ["ca-certificates"]
+version = "3.119.1"
+provides = [{ provides = "data:ca-certificates" }]
