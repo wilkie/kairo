@@ -37,7 +37,10 @@ rather than per-commit.
   base's first round. The base's packages' next revisions, tagged
   `<version>+2`, build with it, gcc 15.2.0 with its own round 1, so no
   bootstrap's object is in their plans; through `build-base`, a round
-  that builds with itself would be a cycle.
+  that builds with itself would be a cycle. Round 3, built with round 2
+  through `base-round` 2.0.0 and tagged `<version>+3`, gives round 2's
+  artifacts byte for byte in both environments, and in x86-64 round 2
+  gives round 1's.
 
 - **zlib, libffi, perl, and Python as packages, built with packages
   alone (`DECISIONS.md` §63).** zlib 1.3.1, libffi 3.5.2, perl 5.42.0,

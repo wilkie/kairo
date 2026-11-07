@@ -1,7 +1,7 @@
 # Builds GNU findutils 4.10.0 into /kairo/package
 # (packages/findutils/README.md) for the target named as the first
-# argument, its second round, with the base's first round (DECISIONS.md
-# §64): one child, findutils-4.10.0.
+# argument, a round of the base after the first, with the round before
+# it (DECISIONS.md §64): one child, findutils-4.10.0.
 . ./recipe.sh "$1"
 NAME=findutils
 VERSION=4.10.0

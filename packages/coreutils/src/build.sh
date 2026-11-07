@@ -1,7 +1,7 @@
 # Builds GNU coreutils 9.4 into /kairo/package
 # (packages/coreutils/README.md) for the target named as the first
-# argument, its second round, with the base's first round (DECISIONS.md
-# §64): one child, coreutils-9.4.
+# argument, a round of the base after the first, with the round before
+# it (DECISIONS.md §64): one child, coreutils-9.4.
 . ./recipe.sh "$1"
 NAME=coreutils
 VERSION=9.4

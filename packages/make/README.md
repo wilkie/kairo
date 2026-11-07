@@ -5,16 +5,16 @@ GNU make, the version the bootstraps build. Built without guile, as C17 with `-f
 One object for every release of GNU make, each a version tag on its
 history (`specs/DECISIONS.md` §59), with a target for each environment
 it is built for, `x86` and `x86-64`, and no environment of its own
-(§55). This revision is 4.2.1, its second round, tagged `4.2.1+2`; its first round is tagged `4.2.1`.
+(§55). This revision is 4.2.1, its third round, tagged `4.2.1+3`; its earlier rounds are tagged `4.2.1+2` and `4.2.1`.
 
-**Its second round.** It builds with `data:base-round` 1
+**Its third round.** It builds with `data:base-round` 2
 (`../base-round/`), which brings what `build-base` does, each label
-offered only at the snapshot of the base's first round (§64): this
-package's first round, tagged without `+2`, was built with
+offered only at the snapshot of the base's round 2 (§64). Round 2 was
+built with round 1, and round 1, tagged without build metadata, with
 `../bootstrap-base/`, the bootstraps' packages. Built with the other
 packages of its own round, through `build-base`, it would be a cycle;
 built with the round before, it never builds with itself. Everything
-outside the base builds with `build-base` and gets this round.
+outside the base builds with `build-base` and gets the newest round.
 
 **Its children.** Each target's artifact is installed nowhere; it is
 its children: `make-4.2.1`, offering `tool:make`. Each child requires what
@@ -32,7 +32,7 @@ over what it was built with, `make --version` names it, and it runs a makefile.
 
 ## Running it
 
-Import `../base-round/` and the base's round 1 it names. Then:
+Import `../base-round/` and the base's round 2 it names. Then:
 
 ```sh
 packages/make/import.sh <your actor id>

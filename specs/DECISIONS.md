@@ -6170,7 +6170,12 @@ Sub-decisions:
 5. **The archive's rounds.** Round 1 is the base as first released,
    built with `bootstrap-base`, gcc 15.2.0 among it with gcc 7.5.0.
    Round 2 is built with round 1, so no bootstrap's object is in any
-   of its plans.
+   of its plans, and round 3 with round 2. In x86-64 round 2's
+   artifacts are round 1's, byte for byte. In x86 all but the kernel's
+   headers differ, since round 1 there was built with the bootstraps'
+   toolchain; round 3's are round 2's, byte for byte. Each was a build
+   of its own plan, so the base is a fixed point of building itself in
+   both environments.
 
 Rationale: a base that builds itself has to say which of its own
 releases it builds with; naming the round before by snapshot says it

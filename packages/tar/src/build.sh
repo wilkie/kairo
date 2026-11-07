@@ -1,6 +1,7 @@
 # Builds GNU tar 1.34 into /kairo/package (packages/tar/README.md) for
-# the target named as the first argument, its second round, with the
-# base's first round (DECISIONS.md §64): one child, tar-1.34.
+# the target named as the first argument, a round of the base after the
+# first, with the round before it (DECISIONS.md §64): one child,
+# tar-1.34.
 . ./recipe.sh "$1"
 NAME=tar
 VERSION=1.34

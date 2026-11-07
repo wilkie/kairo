@@ -5,14 +5,14 @@ history (`specs/DECISIONS.md` §59), with a target for each environment
 it is built for, `x86` and `x86-64`, and no environment of its own
 (§55). This revision is 4.8, tagged `4.8.0`, as a tag is a full semver version.
 
-**Its second round.** It builds with `data:base-round` 1
+**Its third round.** It builds with `data:base-round` 2
 (`../base-round/`), which brings what `build-base` does, each label
-offered only at the snapshot of the base's first round (§64): this
-package's first round, tagged without `+2`, was built with
+offered only at the snapshot of the base's round 2 (§64). Round 2 was
+built with round 1, and round 1, tagged without build metadata, with
 `../bootstrap-base/`, the bootstraps' packages. Built with the other
 packages of its own round, through `build-base`, it would be a cycle;
 built with the round before, it never builds with itself. Everything
-outside the base builds with `build-base` and gets this round.
+outside the base builds with `build-base` and gets the newest round.
 
 **Its child.** Each target's artifact is installed nowhere; it is its
 child, `sed-4.8`, offering `tool:sed`, and requiring `lib:musl:shared`, what its programs load.

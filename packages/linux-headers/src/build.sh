@@ -1,7 +1,7 @@
 # Builds the Linux kernel's headers 4.14.336 into /kairo/package
 # (packages/linux-headers/README.md) for the target named as the first
-# argument, its second round, with the base's first round (DECISIONS.md
-# §64): one child, linux-headers-4.14.336.
+# argument, a round of the base after the first, with the round before
+# it (DECISIONS.md §64): one child, linux-headers-4.14.336.
 . ./recipe.sh "$1"
 NAME=linux-headers
 VERSION=4.14.336

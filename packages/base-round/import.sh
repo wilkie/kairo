@@ -17,7 +17,7 @@ shopt -s inherit_errexit
 
 KAIRO=${KAIRO:-kairo}
 HERE=$(cd "$(dirname "$0")" && pwd)
-ROUND=1.0.0
+ROUND=2.0.0
 
 kairo() { "$KAIRO" "${KAIRO_ARGS[@]}" "$@"; }
 field() { sed -n "s/^$1 = //p" | head -n 1; }

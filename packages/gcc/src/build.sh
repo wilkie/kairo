@@ -1,10 +1,10 @@
 # Builds gcc 15.2.0 into /kairo/package (packages/gcc/README.md), with C
-# and C++, for the musl target named as the first argument. It is the
-# base's second round of gcc 15.2.0, built with the first, an older
-# generation of the same object (DECISIONS.md §59, §64), and it
-# bootstraps: that gcc builds its first stage, which builds the second,
-# which builds the third, the last two compared, so what it is doesn't
-# depend on the gcc it was built with. The compiler is one
+# and C++, for the musl target named as the first argument. It is a
+# round of the base's gcc 15.2.0 after the first, built with the round
+# before it, an older generation of the same object (DECISIONS.md §59,
+# §64), and it bootstraps: that gcc builds its first stage, which builds
+# the second, which builds the third, the last two compared, so what it
+# is doesn't depend on the gcc it was built with. The compiler is one
 # child, every file of it but the programs in /usr/bin under a directory
 # named by its version, so it sits beside another gcc; each shared
 # runtime library is a child of its own, in the library directory (§56,

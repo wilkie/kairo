@@ -1,6 +1,7 @@
 # Builds GNU grep 3.12 into /kairo/package (packages/grep/README.md) for
-# the target named as the first argument, its second round, with the
-# base's first round (DECISIONS.md §64): one child, grep-3.12.
+# the target named as the first argument, a round of the base after the
+# first, with the round before it (DECISIONS.md §64): one child,
+# grep-3.12.
 . ./recipe.sh "$1"
 NAME=grep
 VERSION=3.12

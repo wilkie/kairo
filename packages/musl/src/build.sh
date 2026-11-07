@@ -1,7 +1,7 @@
 # Builds musl 1.2.5 into /kairo/package (packages/musl/README.md) for
-# the target named as the first argument, its second round, with the
-# base's first round (DECISIONS.md §64): its headers, static, and shared
-# parts, each a child (§51).
+# the target named as the first argument, a round of the base after the
+# first, with the round before it (DECISIONS.md §64): its headers,
+# static, and shared parts, each a child (§51).
 . ./recipe.sh "$1"
 NAME=musl
 VERSION=1.2.5

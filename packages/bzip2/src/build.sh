@@ -1,7 +1,7 @@
 # Builds bzip2 and libbz2 1.0.8 into /kairo/package
 # (packages/bzip2/README.md) for the target named as the first argument,
-# its second round, with the base's first round (DECISIONS.md §64): one
-# child, bzip2-1.0.8.
+# a round of the base after the first, with the round before it
+# (DECISIONS.md §64): one child, bzip2-1.0.8.
 . ./recipe.sh "$1"
 NAME=bzip2
 VERSION=1.0.8

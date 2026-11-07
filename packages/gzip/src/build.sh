@@ -1,6 +1,7 @@
 # Builds GNU gzip 1.13 into /kairo/package (packages/gzip/README.md) for
-# the target named as the first argument, its second round, with the
-# base's first round (DECISIONS.md §64): one child, gzip-1.13.
+# the target named as the first argument, a round of the base after the
+# first, with the round before it (DECISIONS.md §64): one child,
+# gzip-1.13.
 . ./recipe.sh "$1"
 NAME=gzip
 VERSION=1.13
