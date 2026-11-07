@@ -6,7 +6,8 @@
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
 # What it builds with must be imported: packages/build-base/ and the
-# packages it names, and openssl, zlib, zstd, and pkgconf.
+# packages it names, and openssl, zlib, zstd, brotli, nghttp2, libpsl,
+# libidn2, and pkgconf.
 # Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit

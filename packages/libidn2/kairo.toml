@@ -1,0 +1,81 @@
+# GNU libidn2, international domain names, shared, in the library directory, and `idn2`, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 2.3.8, its
+# first, built with data:build-base (../build-base/): with packages alone,
+# no bootstrap's object taking part (§61). Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "libidn2"
+summary = "GNU libidn2, built for x86 and x86-64, each release a version tag; this one 2.3.8."
+tags = ["libidn2"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a"
+path = "distfiles/libidn2-2.3.8.tar.gz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:unistring"
+
+[[build.targets.children]]
+name = "libidn2-2.3.8"
+root = "libidn2-2.3.8"
+summary = "GNU libidn2 2.3.8 for x86."
+tags = ["libidn2"]
+version = "2.3.8"
+requires = [{ provides = "lib:unistring" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:idn2" }, { provides = "tool:idn2" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:unistring"
+
+[[build.targets.children]]
+name = "libidn2-2.3.8"
+root = "libidn2-2.3.8"
+summary = "GNU libidn2 2.3.8 for x86-64."
+tags = ["libidn2"]
+version = "2.3.8"
+requires = [{ provides = "lib:unistring" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:idn2" }, { provides = "tool:idn2" }]

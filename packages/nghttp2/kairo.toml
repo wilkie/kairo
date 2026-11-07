@@ -1,0 +1,81 @@
+# libnghttp2, HTTP/2 in C, shared, in the library directory, without its applications, as a package of its own (specs/DECISIONS.md §55, §59):
+# one object for every release, each a version tag on its history, and a
+# target for each environment it is built for. This revision is 1.71.0, its
+# first, built with data:build-base (../build-base/): with packages alone,
+# no bootstrap's object taking part (§61). Its libraries, if any, go in
+# the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "nghttp2"
+summary = "libnghttp2, built for x86 and x86-64, each release a version tag; this one 1.71.0."
+tags = ["nghttp2"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "c0f55121d88650e4b9227aec28cebaf664d2417ca60fe70be0f8d38829f52116"
+path = "distfiles/nghttp2-1.71.0.tar.xz"
+
+# Each target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86, built and run in the x86 environment.
+[[build.targets]]
+name = "x86"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "i686-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:pkgconf"
+
+[[build.targets.children]]
+name = "nghttp2-1.71.0"
+root = "nghttp2-1.71.0"
+summary = "libnghttp2 1.71.0 for x86."
+tags = ["nghttp2"]
+version = "1.71.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:nghttp2" }]
+
+# For x86-64, built and run in the x86-64 environment.
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:pkgconf"
+
+[[build.targets.children]]
+name = "nghttp2-1.71.0"
+root = "nghttp2-1.71.0"
+summary = "libnghttp2 1.71.0 for x86-64."
+tags = ["nghttp2"]
+version = "1.71.0"
+requires = [{ provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:nghttp2" }]

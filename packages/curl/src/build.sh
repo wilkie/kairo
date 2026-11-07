@@ -1,6 +1,6 @@
 # Builds curl 8.23.0 into /kairo/package (packages/curl/README.md) for
-# the target named as the first argument, its first release, with
-# packages alone (data:build-base, DECISIONS.md §61): one child,
+# the target named as the first argument, its first release, again,
+# with every library it uses a package, with packages alone (data:build-base, DECISIONS.md §61): one child,
 # curl-8.23.0.
 . ./recipe.sh "$1"
 NAME=curl
@@ -8,20 +8,26 @@ VERSION=8.23.0
 CHILD=curl-8.23.0
 
 # TLS by OpenSSL, trusting the bundle ca-certificates puts where Debian
-# and Alpine have it, and compression by zlib and zstd. Left out for
-# now, as no package has them yet: the public suffix list (libpsl),
-# HTTP/2 (nghttp2), international domain names (libidn2), brotli,
-# SSH (libssh2), and LDAP. Without its static library.
+# and Alpine have it; HTTP/2 by nghttp2; the public suffix list, for
+# cookies, by libpsl; international domain names by libidn2; and
+# compression by zlib, zstd, and brotli. Left out for now, as no
+# package has them yet: SSH (libssh2) and LDAP. Without its static
+# library.
 gnu "$CHILD" "$NAME-$VERSION" --disable-static --with-openssl --with-zlib --with-zstd \
     --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt --without-ca-path \
-    --without-libpsl --without-nghttp2 --without-libidn2 --without-brotli \
+    --with-libpsl --with-nghttp2 --with-libidn2 --with-brotli \
     --without-libssh2 --disable-ldap
 
 finish
 
 # It works, installed over what it was built with.
 install_over
-curl --version | head -1 | grep -q "^curl 8\.23\.0 .* OpenSSL/3\.5\.9 zlib/1\.3\.1 zstd/1\.5\.7"
+version=$(curl --version)
+for part in "^curl 8\.23\.0 " " libcurl/8\.23\.0 " " OpenSSL/3\.5\.9 " " zlib/1\.3\.1 " " brotli/1\.2\.1 " \
+    " zstd/1\.5\.7 " " libidn2/2\.3\.8 " " libpsl/0\.23\.3 " " nghttp2/1\.71\.0" \
+    "^Features: .* HTTP2 " "^Features: .* IDN " "^Features: .* PSL " "^Features: .* brotli " "^Features: .* zstd"; do
+    grep -q -- "$part" <<<"$version" || { echo "build.sh: curl lacks $part: $version" >&2; false; }
+done
 [ "$(curl-config --ca)" = /etc/ssl/certs/ca-certificates.crt ]
 echo made >made.txt
 [ "$(curl -s "file://$PWD/made.txt")" = made ]

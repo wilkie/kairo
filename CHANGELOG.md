@@ -18,6 +18,15 @@ rather than per-commit.
 
 ### Added
 
+- **libunistring, libidn2, libpsl, nghttp2, and brotli as packages,
+  and curl with them.** libunistring 1.5; libidn2 2.3.8 against it, not
+  its bundled copy; libpsl 0.23.3 with its release's public suffix list
+  built in; libnghttp2 1.71.0; and brotli 1.2.1, the first package
+  built with the CMake and Ninja packages. Each is one object built for
+  x86 and x86-64 with `build-base`. curl 8.23.0's next revision, tagged
+  `8.23.0` again, has HTTP/2, the public suffix list, international
+  domain names, and brotli; it lacks only SSH and LDAP.
+
 - **curl, PCRE2, and Git as packages.** curl 8.23.0 with OpenSSL,
   zlib, and zstd, trusting the ca-certificates bundle, checked with a
   TLS request to `openssl s_server` on the loopback; PCRE2 10.49, its
