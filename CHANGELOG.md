@@ -18,6 +18,16 @@ rather than per-commit.
 
 ### Added
 
+- **ncurses, readline, gdbm, and libuuid as packages, and Python with
+  them.** ncurses 6.6, wide characters alone, with the unsuffixed names
+  linked to it and the terminfo database; GNU readline 8.3 with its six
+  patches, released as 8.3.6, linking ncurses; gdbm 1.26 with its ndbm
+  compatibility; and util-linux 2.42.4's libuuid, the util-linux
+  object's first child. Each is one object built for x86 and x86-64
+  with `build-base`. Python 3.11.1's next revision, tagged `3.11.1`
+  again, has `curses`, `readline`, `dbm.gnu`, `dbm.ndbm`, and `_uuid`,
+  so that of its optional modules it lacks only `tkinter` and `nis`.
+
 - **OpenSSL, SQLite, and ca-certificates as packages, and Python with
   them.** OpenSSL 3.5.9, the long-term release, its configuration in
   `/etc/ssl`; SQLite 3.54.1 with FTS3, FTS4, FTS5, and R*Tree, its soname

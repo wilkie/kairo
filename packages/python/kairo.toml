@@ -1,8 +1,8 @@
 # Python, without pip, with its shared library in the library directory, as a package of its own (specs/DECISIONS.md §55, §59):
 # one object for every release, each a version tag on its history, and a
 # target for each environment it is built for. This revision is 3.11.1
-# again, with ssl, hashlib's OpenSSL digests, and sqlite3, superseding
-# the first (§61); built with data:build-base (../build-base/): with
+# again, with ssl, hashlib's OpenSSL digests, sqlite3, curses, readline,
+# dbm, and uuid, superseding the earlier ones (§61); built with data:build-base (../build-base/): with
 # packages alone, no bootstrap's object taking part (§61). Its libraries,
 # if any, go in the environment's directory for musl's (§60).
 [kairo]
@@ -62,6 +62,22 @@ provides = "lib:ssl"
 kind = "provides"
 provides = "lib:sqlite3"
 
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ncurses"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:readline"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:gdbm"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:uuid"
+
 # Not loaded: the build checks that ssl finds the certificate
 # authorities where OpenSSL's directory puts them.
 [[build.targets.dependencies]]
@@ -74,7 +90,7 @@ root = "python-3.11.1"
 summary = "Python 3.11.1 for x86."
 tags = ["python"]
 version = "3.11.1"
-requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:musl:shared" }]
+requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:ncurses" }, { provides = "lib:readline" }, { provides = "lib:gdbm" }, { provides = "lib:uuid" }, { provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]
 
 # For x86-64, built and run in the x86-64 environment.
@@ -118,6 +134,22 @@ provides = "lib:ssl"
 kind = "provides"
 provides = "lib:sqlite3"
 
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ncurses"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:readline"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:gdbm"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:uuid"
+
 # Not loaded: the build checks that ssl finds the certificate
 # authorities where OpenSSL's directory puts them.
 [[build.targets.dependencies]]
@@ -130,5 +162,5 @@ root = "python-3.11.1"
 summary = "Python 3.11.1 for x86-64."
 tags = ["python"]
 version = "3.11.1"
-requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:musl:shared" }]
+requires = [{ provides = "lib:ffi" }, { provides = "lib:zlib" }, { provides = "lib:bz2" }, { provides = "lib:lzma" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:sqlite3" }, { provides = "lib:ncurses" }, { provides = "lib:readline" }, { provides = "lib:gdbm" }, { provides = "lib:uuid" }, { provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:python" }]

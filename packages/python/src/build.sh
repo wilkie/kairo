@@ -1,6 +1,7 @@
 # Builds python 3.11.1 into /kairo/package (packages/python/README.md) for the
 # target named as the first argument, its first release, again, with
-# OpenSSL and SQLite, with packages alone (data:build-base, DECISIONS.md §61): one child, python-3.11.1.
+# OpenSSL, SQLite, ncurses, readline, gdbm, and libuuid, with packages
+# alone (data:build-base, DECISIONS.md §61): one child, python-3.11.1.
 . ./recipe.sh "$1"
 NAME=python
 VERSION=3.11.1
@@ -40,4 +41,10 @@ python3 -c 'import ssl, sys; sys.exit(not ssl.OPENSSL_VERSION.startswith("OpenSS
 python3 -c 'import _hashlib, hashlib; hashlib.sha3_256(b"made"); hashlib.pbkdf2_hmac("sha256", b"made", b"salt", 1)'
 python3 -c 'import ssl, sys; sys.exit(ssl.create_default_context().cert_store_stats()["x509_ca"] < 100)'
 python3 -c 'import sqlite3, sys; sys.exit(sqlite3.sqlite_version != "3.54.1")'
+# curses with ncurses and its terminfo, readline with GNU readline, dbm
+# with gdbm both ways, and uuid with libuuid.
+TERM=xterm python3 -c 'import curses, sys; curses.setupterm(); sys.exit(curses.tigetnum("colors") != 8)'
+python3 -c 'import readline, sys; sys.exit(readline._READLINE_LIBRARY_VERSION != "8.3")'
+python3 -c 'import dbm.gnu, dbm.ndbm, sys; d = dbm.gnu.open("check", "n"); d[b"a"] = b"made"; sys.exit(d[b"a"] != b"made")'
+python3 -c 'import _uuid, uuid, sys; sys.exit(len(str(uuid.uuid1())) != 36)'
 python3 -c 'import sys; sys.exit(sys.version_info[:3] != (3, 11, 1))'
