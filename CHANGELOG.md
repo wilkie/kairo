@@ -18,6 +18,13 @@ rather than per-commit.
 
 ### Added
 
+- **The base's round 4, with `cc` (`DECISIONS.md` §64).** gcc links
+  `cc` to `gcc`, so recipes no longer have to pass `CC=gcc`.
+  `base-round` 3.0.0 names round 3's snapshots, and the base's packages'
+  next revisions, tagged `<version>+4`, build with it. In both
+  environments the other packages' artifacts are round 3's, and gcc's
+  are round 3's with the link alone, byte for byte.
+
 - **libssh2 and OpenSSH as packages, curl with SCP and SFTP, and Git
   with its Perl parts.** libssh2 1.11.1 and OpenSSH 10.6p2 (tagged
   `10.6.2`), each with OpenSSL and zlib, one object built for x86 and

@@ -6177,6 +6177,14 @@ Sub-decisions:
    of its own plan, so the base is a fixed point of building itself in
    both environments.
 
+6. **A change to the base is a round.** A base package that changes is
+   released in a new round, every base package rebuilt with the round
+   before, so the base stays one round built with one other. Round 4,
+   built with round 3, gives gcc a `cc` link to `gcc`, the name POSIX
+   and make's default rules use, which recipes had had to override. Its
+   other packages' artifacts are round 3's, and its gcc's are round
+   3's with that link alone, byte for byte, in both environments.
+
 Rationale: a base that builds itself has to say which of its own
 releases it builds with; naming the round before by snapshot says it
 exactly, keeps resolution's meaning for everything else, the newest

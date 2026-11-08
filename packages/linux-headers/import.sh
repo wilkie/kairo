@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Archive linux-headers's sources, make its object or its next revision,
-# and tag it 4.14.336+3 (packages/linux-headers/README.md,
+# and tag it 4.14.336+4 (packages/linux-headers/README.md,
 # packages/common/import.sh).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
 # What it builds with must be imported: packages/base-round/ and the
-# base's round 2 it names. Prints the object's id.
+# base's round 3 it names. Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -20,4 +20,4 @@ DISTFILES=(
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "linux-headers 4.14.336 for x86 and x86-64, round 3, built with round 2" 4.14.336+3
+import_package "$@" "linux-headers 4.14.336 for x86 and x86-64, round 4, built with round 3" 4.14.336+4

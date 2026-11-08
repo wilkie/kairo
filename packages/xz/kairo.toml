@@ -2,8 +2,8 @@
 # directory, as a package of its own (specs/DECISIONS.md §55, §59): one
 # object for every release, each a version tag on its history, and a
 # target for each environment it is built for. This revision is 5.6.4,
-# its third round, released as 5.6.4+3: built with data:base-round 2
-# (../base-round/), the base's second round, each package at its
+# its fourth round, released as 5.6.4+4: built with data:base-round 3
+# (../base-round/), the base's third round, each package at its
 # snapshot, so the base builds with the round before it, never with
 # itself (§64). Its libraries, if any, go in the environment's directory
 # for musl's (§60).
@@ -39,7 +39,7 @@ provides = "environment:linux/x86"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:base-round"
-version = "^2"
+version = "^3"
 
 [[build.targets.children]]
 name = "xz-5.6.4"
@@ -66,7 +66,7 @@ provides = "environment:linux/x86-64"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:base-round"
-version = "^2"
+version = "^3"
 
 [[build.targets.children]]
 name = "xz-5.6.4"

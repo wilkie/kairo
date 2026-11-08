@@ -5,13 +5,14 @@ GNU binutils for the machine it runs on, the version the bootstraps build, with 
 One object for every release of GNU binutils, each a version tag on its
 history (`specs/DECISIONS.md` §59), with a target for each environment
 it is built for, `x86` and `x86-64`, and no environment of its own
-(§55). This revision is 2.41, tagged `2.41.0`, as a tag is a full
-semver version.
+(§55). This revision is 2.41, its fourth round, tagged `2.41.0+4`, as a
+tag is a full semver version; its earlier rounds are tagged
+`2.41.0+3`, `2.41.0+2`, and `2.41.0`.
 
-**Its third round.** It builds with `data:base-round` 2
+**Its fourth round.** It builds with `data:base-round` 3
 (`../base-round/`), which brings what `build-base` does, each label
-offered only at the snapshot of the base's round 2 (§64). Round 2 was
-built with round 1, and round 1, tagged without build metadata, with
+offered only at the snapshot of the base's round 3 (§64). Round 3 was
+built with round 2, round 2 with round 1, and round 1, tagged without build metadata, with
 `../bootstrap-base/`, the bootstraps' packages. Built with the other
 packages of its own round, through `build-base`, it would be a cycle;
 built with the round before, it never builds with itself. Everything
@@ -33,7 +34,7 @@ over what it was built with, `ld --version` names it, and gcc assembles and link
 
 ## Running it
 
-Import `../base-round/` and the base's round 2 it names. Then:
+Import `../base-round/` and the base's round 3 it names. Then:
 
 ```sh
 packages/binutils/import.sh <your actor id>

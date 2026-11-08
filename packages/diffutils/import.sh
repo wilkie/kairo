@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Archive diffutils's sources, make its object or its next revision, and
-# tag it 3.10.0+3 (packages/diffutils/README.md,
+# tag it 3.10.0+4 (packages/diffutils/README.md,
 # packages/common/import.sh).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
 #
 # What it builds with must be imported: packages/base-round/ and the
-# base's round 2 it names. Prints the object's id.
+# base's round 3 it names. Prints the object's id.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -23,4 +23,4 @@ DISTFILES=(
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "diffutils 3.10 for x86 and x86-64, round 3, built with round 2" 3.10.0+3
+import_package "$@" "diffutils 3.10 for x86 and x86-64, round 4, built with round 3" 3.10.0+4

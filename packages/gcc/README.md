@@ -12,7 +12,8 @@ same object (§59).
 | gcc 7.5.0 | `7.5.0` | the bootstraps' gcc 15, through `bootstrap-base` | the object's revision at its tag, this directory before 15.2.0 |
 | gcc 15.2.0, round 1 | `15.2.0` | gcc 7.5.0, this object's own release, with the rest from `bootstrap-base` | the object's revision at its tag |
 | gcc 15.2.0, round 2 | `15.2.0+2` | gcc 15.2.0's round 1, with the rest of the base's round 1, through `base-round` 1 (§64) | the object's revision at its tag |
-| gcc 15.2.0, round 3 | `15.2.0+3` | gcc 15.2.0's round 2, with the rest of the base's round 2, through `base-round` 2 | this directory |
+| gcc 15.2.0, round 3 | `15.2.0+3` | gcc 15.2.0's round 2, with the rest of the base's round 2, through `base-round` 2 | the object's revision at its tag |
+| gcc 15.2.0, round 4 | `15.2.0+4` | gcc 15.2.0's round 3, with the rest of the base's round 3, through `base-round` 3 | this directory: round 3's, with `cc` |
 
 The object has a target for each environment it is built for, and no
 environment of its own: each target's artifact runs where it was built
@@ -24,12 +25,12 @@ environment of its own: each target's artifact runs where it was built
 | `x86-64` | `linux/x86-64` | `x86_64-pc-linux-musl` |
 
 Neither builds on a whole root (§56). This revision's targets depend on
-`data:base-round` `^2` (`../base-round/`, §57, §64), which brings a
+`data:base-round` `^3` (`../base-round/`, §57, §64), which brings a
 shell, the GNU userland, make, the archivers, m4 for gmp, binutils, gcc
 and the runtime libraries its programs load, musl, static too for the
-checks, and the kernel's headers, each the base's round-2 package for
+checks, and the kernel's headers, each the base's round-3 package for
 the target's environment, named by its snapshot. Its gcc is this
-object's 15.2.0 of round 2. The first round's targets depended on
+object's 15.2.0 of round 3. The first round's targets depended on
 `data:bootstrap-base` and asked for `tool:gcc` and `tool:g++` `^7`,
 which only gcc 7.5.0 offers. Only releases are offered by label (§61),
 and a build of this object may use its own offers only from a tagged
@@ -78,7 +79,8 @@ overlay of its dependencies, the first listed on top (§41).
   than its programs in `/usr/bin`, is outside a directory named by the
   version.
 - **Programs:** they are `/usr/bin/gcc`, `g++`, and the rest, the same
-  names as any other gcc's. Whichever gcc is listed first is the one a
+  names as any other gcc's, with `cc` a link to `gcc` and `c++` to
+  `g++`, the names POSIX and make's default rules use, from round 4. Whichever gcc is listed first is the one a
   build runs.
 
 It requires binutils for its target, musl's headers, the kernel's
@@ -125,11 +127,11 @@ The build checks that a protected PIE program links and runs.
 
 ## Running it
 
-Import 7.5.0, 15.2.0's round 1, and its round 2 from this directory as
-it was at those releases, each with what it builds with
-(`../bootstrap-base/` and the bootstraps it names, then `../base-round/`
-1.0.0), building each before the next. Then import `../base-round/` at
-2.0.0 and this directory, 15.2.0's round 3, as the next revision:
+Import 7.5.0 and 15.2.0's rounds 1 to 3 from this directory as it was
+at those releases, each with what it builds with (`../bootstrap-base/`
+and the bootstraps it names, then `../base-round/` 1.0.0 and 2.0.0),
+building each before the next. Then import `../base-round/` at 3.0.0
+and this directory, 15.2.0's round 4, as the next revision:
 
 ```sh
 git show <7.5.0's commit>:packages/gcc/...   # or check that commit out
@@ -139,8 +141,8 @@ kairo build object:<object id> --target x86-64 --actor <your actor id>
 packages/gcc/import.sh <your actor id> --wrapper <object id> # 15.2.0
 kairo build object:<object id> --target x86 --actor <your actor id>
 kairo build object:<object id> --target x86-64 --actor <your actor id>
-packages/base-round/import.sh <your actor id> --wrapper <base-round id>  # 2.0.0
-packages/gcc/import.sh <your actor id> --wrapper <object id> # 15.2.0+3
+packages/base-round/import.sh <your actor id> --wrapper <base-round id>  # 3.0.0
+packages/gcc/import.sh <your actor id> --wrapper <object id> # 15.2.0+4
 kairo build object:<object id> --target x86 --actor <your actor id>
 kairo build object:<object id> --target x86-64 --actor <your actor id>
 ```

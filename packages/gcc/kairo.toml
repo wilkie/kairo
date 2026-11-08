@@ -1,10 +1,11 @@
 # gcc, with C and C++, for musl, as a package of its own outside the
 # bootstraps (specs/DECISIONS.md §55): one object for every release,
 # each a version tag on its history (§59), and a target for each
-# environment it is built for. This revision is gcc 15.2.0's third
-# round, released as 15.2.0+3: built with data:base-round 2
-# (../base-round/), the base's second round, each package at its
-# snapshot, its gcc this object's own 15.2.0+2, an older generation
+# environment it is built for. This revision is gcc 15.2.0's fourth
+# round, released as 15.2.0+4, the first with cc: built with
+# data:base-round 3 (../base-round/), the base's third round, each
+# package at its snapshot, its gcc this object's own 15.2.0+3, an older
+# generation
 # (§59, §64). 15.2.0's first round was built with gcc 7.5.0, this
 # object's first release; the releases' recipes are the object's
 # history, each at its tag. Each gcc bootstraps, built by the gcc before
@@ -15,7 +16,7 @@
 schema = 1
 kind = "software"
 name = "gcc"
-summary = "gcc with C and C++ for musl, built for x86 and x86-64, each release a version tag; this one 15.2.0, round 2."
+summary = "gcc with C and C++ for musl, built for x86 and x86-64, each release a version tag; this one 15.2.0, round 4."
 tags = ["toolchain", "gcc", "compiler"]
 
 # The sources both targets build: gcc, and gmp, mpfr, and mpc, built in
@@ -42,11 +43,11 @@ sha256 = "17503d2c395dfcf106b622dc142683c1199431d095367c6aacba6eec30340459"
 path = "distfiles/mpc-1.2.1.tar.gz"
 
 # Each target builds in its environment with what a typical C or C++
-# package does, as the base's round 2 has it, data:base-round 2
+# package does, as the base's round 3 has it, data:base-round 3
 # (../base-round/, DECISIONS.md §57, §64), whose dependencies it takes
-# as its own, each package at its round-2 snapshot, static musl among
+# as its own, each package at its round-3 snapshot, static musl among
 # them, for its checks; neither target takes a whole root. Its first
-# stage is built by gcc 15.2.0's round 2, this object's own release at
+# stage is built by gcc 15.2.0's round 3, this object's own release at
 # that tag: a build may use an older generation of its own object
 # (§59).
 #
@@ -74,7 +75,7 @@ provides = "environment:linux/x86"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:base-round"
-version = "^2"
+version = "^3"
 
 [[build.targets.children]]
 name = "gcc-15.2.0"
@@ -155,7 +156,7 @@ provides = "environment:linux/x86-64"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:base-round"
-version = "^2"
+version = "^3"
 
 [[build.targets.children]]
 name = "gcc-15.2.0"

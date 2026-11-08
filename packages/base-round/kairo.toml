@@ -1,31 +1,32 @@
-# The base's round 2: what build-base names (../build-base/), each label
-# offered only at the snapshot of its package's round 2, by its snapshot
+# The base's round 3: what build-base names (../build-base/), each label
+# offered only at the snapshot of its package's round 3, by its snapshot
 # id in the archive's canonical store (specs/DECISIONS.md §64). The
 # base's next round builds with it, so the base's packages are built
 # with the round before them, never with one another; build-base itself
 # names no round, and gives everything else the newest releases.
 #
 # Its version is the round's number; round 1, built with
-# ../bootstrap-base/, is its release 1.0.0. Round 2, built with round 1:
+# ../bootstrap-base/, is its release 1.0.0, and round 2, built with
+# round 1, its release 2.0.0. Round 3, built with round 2:
 #
-#   bash           5.2.15+2    zQmQiJqNmdFsn6VTaWGo7uotdz3Fh6FST6WyYiAVQgzzrYY
-#   coreutils      9.4.0+2     zQmZQqekSsrBhnL88kNA7Z3VcxAin6gE9eAZEewPeyzDf1u
-#   sed            4.8.0+2     zQmV1oxcaQzKR2NdMhMn5PrAgtrGf9rGopXp5QgJZqP12Bh
-#   grep           3.12.0+2    zQmabWaWvjQdjX7v84QpDTdeGSfjHuvvwBPmkXSDSrHD4AR
-#   gawk           5.3.0+2     zQmQ6GMHcYG6PCgjEUUkwoDDJ4ghtcab8WtePnL3BB56TNM
-#   make           4.2.1+2     zQmdMqNxBjhrfEV7UePv3LkQtqXyGVZqnSDUwBaFDM73yCV
-#   diffutils      3.10.0+2    zQmfNtsnmUf8NEbhaLBuGWdS6kJzfspN8uU4yQ8BSLGGcz7
-#   findutils      4.10.0+2    zQmP4sb35yRtJcAEEwn2JwBwMioT8Hut45AXqwMoMAy5yZ2
-#   patch          2.8.0+2     zQmaZVGQxduQxY9gzxiQUfEMfwR1PMHn6zioqEPG2JGXmVS
-#   tar            1.34.0+2    zQmbMoSCtk1xF36zRybb8QusqkhwFYFYkWu884aqQjxWNKx
-#   gzip           1.13.0+2    zQmc582VtDz26dB6iwLtG5tNKu8Wmg2MJtzZRZ9n2N9R4hw
-#   xz             5.6.4+2     zQmWg6e5iEv9xrJgVPNeRnkD4kwRj67srn1LU8g3Lz4Sagb
-#   bzip2          1.0.8+2     zQmV9pKgYs5MfYX4P9xSeG1MD2p3rjFdpF7CjEjtBN1V2BX
-#   m4             1.4.19+2    zQmSMLYHpiFv57dbWEqS65g3A2Uza8obaMd1GJ4W6e51gdM
-#   binutils       2.41.0+2    zQmf3uUbxYsQDsLgPRH5dgt7eAUgCvNz5LV3aXnS1et79uh
-#   gcc            15.2.0+2    zQmYVCzGaPWo71fCGjMi5nVU8VZoqAYQYEt7Z7U4YGHAnEz
-#   musl           1.2.5+2     zQmb9UZU2t3fvtnaVcbFHxtNfTi6r4iav2bGJo1YF3Ag48K
-#   linux-headers  4.14.336+2  zQmcxGqyVc4rCxrU9cJav82wX7vosmqPxhYQRAWcus6ZWRF
+#   bash           5.2.15+3    zQmSnsCrzjuUtSUFoGu6PWwUYwe6e6xD4BSZMfJT3qeL6P4
+#   coreutils      9.4.0+3     zQmXJYX2NyjDm9f5D1962UnUr1w8RvWb3hmXMFbQeKGS7BF
+#   sed            4.8.0+3     zQmZqCN1KPEAKj5Ey1zjzqMBxV7dXgEcK3yZnbc4GNmzY1m
+#   grep           3.12.0+3    zQmTBSMPJAMuQVjhmZsq9b5YGjpQKLHyEoLFbWa5CQcZFu2
+#   gawk           5.3.0+3     zQme9js9nbsRuX5YY5VCanm3GdnJ6SR9D9CKV249PCoUXba
+#   make           4.2.1+3     zQmUZ9hMgWygq4x4YBaWK4rDeKQFfyLdpHoFBLiMHgDc2gM
+#   diffutils      3.10.0+3    zQmY46y2gKosQZFGq2eUYrRLuz7HJvQSppbpSVdrUUgmDu7
+#   findutils      4.10.0+3    zQmb12Fyw1zukSq7ZWmJWDrgdT8ZVn6yiHG3K9nf8aDK1sE
+#   patch          2.8.0+3     zQmWXUmVY2FdzDbdEbJjc9yfGWpHVNC1EMDVGJV4Pp8ggfR
+#   tar            1.34.0+3    zQmaGmYyZj2JYYjTPcH9QUgBcopxyiA6N3hVB3fSq8vZJqv
+#   gzip           1.13.0+3    zQmf9X1JgeHiaXrcWag73b3sRgwwzR6wdcVyiiU4a61UP8h
+#   xz             5.6.4+3     zQmcp6Bu7pCVyWkEyHpVQsviWtqAKe6U26CttwASMP5Finc
+#   bzip2          1.0.8+3     zQmauP32mWo87yGEER24RZHNgRETchhGQJxe8HvwfjsqcLe
+#   m4             1.4.19+3    zQma3oDFzg1tuBPReSKSuHJF29Z9ba86aBF4RXkqrHyY9PH
+#   binutils       2.41.0+3    zQmayiDwcCatc8ei55PQqvfvLjuNxoENRrcHYcWqRNNz8m5
+#   gcc            15.2.0+3    zQmcj2PCsUQDPcBmV6wA5FL4RP2jWj9Mp2Wi39P1iPk8ni6
+#   musl           1.2.5+3     zQmX3oDoV8HupHBRQ5pika9BbLHYMS4LpzZWrBqdaoGPh3p
+#   linux-headers  4.14.336+3  zQmQFvpdi1ygQQ8TpYKBvCiUSxovQdSECFAEiLxadaGmkMq
 #
 # Each package's x86 and x86-64 children are of the one snapshot, so a
 # label resolves per environment, as build-base's do.
@@ -33,136 +34,136 @@
 schema = 1
 kind = "software"
 name = "base-round"
-summary = "The base's packages of one round, each at its snapshot, for the next round to build with; this one round 2."
+summary = "The base's packages of one round, each at its snapshot, for the next round to build with; this one round 3."
 tags = ["build-environment", "toolchain", "base"]
 
 [[provides]]
 provides = "data:base-round"
-version = "2.0.0"
+version = "3.0.0"
 
 # A shell, and the GNU userland that configure scripts and makefiles run.
 [[dependencies]]
 kind = "provides"
 provides = "tool:bash"
-offered_at = ["zQmQiJqNmdFsn6VTaWGo7uotdz3Fh6FST6WyYiAVQgzzrYY"]
+offered_at = ["zQmSnsCrzjuUtSUFoGu6PWwUYwe6e6xD4BSZMfJT3qeL6P4"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:coreutils"
-offered_at = ["zQmZQqekSsrBhnL88kNA7Z3VcxAin6gE9eAZEewPeyzDf1u"]
+offered_at = ["zQmXJYX2NyjDm9f5D1962UnUr1w8RvWb3hmXMFbQeKGS7BF"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:sed"
-offered_at = ["zQmV1oxcaQzKR2NdMhMn5PrAgtrGf9rGopXp5QgJZqP12Bh"]
+offered_at = ["zQmZqCN1KPEAKj5Ey1zjzqMBxV7dXgEcK3yZnbc4GNmzY1m"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:grep"
-offered_at = ["zQmabWaWvjQdjX7v84QpDTdeGSfjHuvvwBPmkXSDSrHD4AR"]
+offered_at = ["zQmTBSMPJAMuQVjhmZsq9b5YGjpQKLHyEoLFbWa5CQcZFu2"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:gawk"
-offered_at = ["zQmQ6GMHcYG6PCgjEUUkwoDDJ4ghtcab8WtePnL3BB56TNM"]
+offered_at = ["zQme9js9nbsRuX5YY5VCanm3GdnJ6SR9D9CKV249PCoUXba"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:make"
-offered_at = ["zQmdMqNxBjhrfEV7UePv3LkQtqXyGVZqnSDUwBaFDM73yCV"]
+offered_at = ["zQmUZ9hMgWygq4x4YBaWK4rDeKQFfyLdpHoFBLiMHgDc2gM"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:diffutils"
-offered_at = ["zQmfNtsnmUf8NEbhaLBuGWdS6kJzfspN8uU4yQ8BSLGGcz7"]
+offered_at = ["zQmY46y2gKosQZFGq2eUYrRLuz7HJvQSppbpSVdrUUgmDu7"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:findutils"
-offered_at = ["zQmP4sb35yRtJcAEEwn2JwBwMioT8Hut45AXqwMoMAy5yZ2"]
+offered_at = ["zQmb12Fyw1zukSq7ZWmJWDrgdT8ZVn6yiHG3K9nf8aDK1sE"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:patch"
-offered_at = ["zQmaZVGQxduQxY9gzxiQUfEMfwR1PMHn6zioqEPG2JGXmVS"]
+offered_at = ["zQmWXUmVY2FdzDbdEbJjc9yfGWpHVNC1EMDVGJV4Pp8ggfR"]
 
 
 # Archivers, compressors, and m4.
 [[dependencies]]
 kind = "provides"
 provides = "tool:tar"
-offered_at = ["zQmbMoSCtk1xF36zRybb8QusqkhwFYFYkWu884aqQjxWNKx"]
+offered_at = ["zQmaGmYyZj2JYYjTPcH9QUgBcopxyiA6N3hVB3fSq8vZJqv"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:gzip"
-offered_at = ["zQmc582VtDz26dB6iwLtG5tNKu8Wmg2MJtzZRZ9n2N9R4hw"]
+offered_at = ["zQmf9X1JgeHiaXrcWag73b3sRgwwzR6wdcVyiiU4a61UP8h"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:xz"
-offered_at = ["zQmWg6e5iEv9xrJgVPNeRnkD4kwRj67srn1LU8g3Lz4Sagb"]
+offered_at = ["zQmcp6Bu7pCVyWkEyHpVQsviWtqAKe6U26CttwASMP5Finc"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:bzip2"
-offered_at = ["zQmV9pKgYs5MfYX4P9xSeG1MD2p3rjFdpF7CjEjtBN1V2BX"]
+offered_at = ["zQmauP32mWo87yGEER24RZHNgRETchhGQJxe8HvwfjsqcLe"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:m4"
-offered_at = ["zQmSMLYHpiFv57dbWEqS65g3A2Uza8obaMd1GJ4W6e51gdM"]
+offered_at = ["zQma3oDFzg1tuBPReSKSuHJF29Z9ba86aBF4RXkqrHyY9PH"]
 
 
 # The native toolchain, and the runtime libraries its C++ programs load.
 [[dependencies]]
 kind = "provides"
 provides = "tool:binutils"
-offered_at = ["zQmf3uUbxYsQDsLgPRH5dgt7eAUgCvNz5LV3aXnS1et79uh"]
+offered_at = ["zQmayiDwcCatc8ei55PQqvfvLjuNxoENRrcHYcWqRNNz8m5"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:gcc"
-offered_at = ["zQmYVCzGaPWo71fCGjMi5nVU8VZoqAYQYEt7Z7U4YGHAnEz"]
+offered_at = ["zQmcj2PCsUQDPcBmV6wA5FL4RP2jWj9Mp2Wi39P1iPk8ni6"]
 
 [[dependencies]]
 kind = "provides"
 provides = "tool:g++"
-offered_at = ["zQmYVCzGaPWo71fCGjMi5nVU8VZoqAYQYEt7Z7U4YGHAnEz"]
+offered_at = ["zQmcj2PCsUQDPcBmV6wA5FL4RP2jWj9Mp2Wi39P1iPk8ni6"]
 
 [[dependencies]]
 kind = "provides"
 provides = "lib:stdc++:shared"
-offered_at = ["zQmYVCzGaPWo71fCGjMi5nVU8VZoqAYQYEt7Z7U4YGHAnEz"]
+offered_at = ["zQmcj2PCsUQDPcBmV6wA5FL4RP2jWj9Mp2Wi39P1iPk8ni6"]
 
 [[dependencies]]
 kind = "provides"
 provides = "lib:gcc:shared"
-offered_at = ["zQmYVCzGaPWo71fCGjMi5nVU8VZoqAYQYEt7Z7U4YGHAnEz"]
+offered_at = ["zQmcj2PCsUQDPcBmV6wA5FL4RP2jWj9Mp2Wi39P1iPk8ni6"]
 
 [[dependencies]]
 kind = "provides"
 provides = "lib:atomic:shared"
-offered_at = ["zQmYVCzGaPWo71fCGjMi5nVU8VZoqAYQYEt7Z7U4YGHAnEz"]
+offered_at = ["zQmcj2PCsUQDPcBmV6wA5FL4RP2jWj9Mp2Wi39P1iPk8ni6"]
 
 
 # The C library and the kernel's headers.
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:headers"
-offered_at = ["zQmb9UZU2t3fvtnaVcbFHxtNfTi6r4iav2bGJo1YF3Ag48K"]
+offered_at = ["zQmX3oDoV8HupHBRQ5pika9BbLHYMS4LpzZWrBqdaoGPh3p"]
 
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:shared"
-offered_at = ["zQmb9UZU2t3fvtnaVcbFHxtNfTi6r4iav2bGJo1YF3Ag48K"]
+offered_at = ["zQmX3oDoV8HupHBRQ5pika9BbLHYMS4LpzZWrBqdaoGPh3p"]
 
 [[dependencies]]
 kind = "provides"
 provides = "lib:musl:static"
-offered_at = ["zQmb9UZU2t3fvtnaVcbFHxtNfTi6r4iav2bGJo1YF3Ag48K"]
+offered_at = ["zQmX3oDoV8HupHBRQ5pika9BbLHYMS4LpzZWrBqdaoGPh3p"]
 
 [[dependencies]]
 kind = "provides"
 provides = "lib:linux:headers"
-offered_at = ["zQmcxGqyVc4rCxrU9cJav82wX7vosmqPxhYQRAWcus6ZWRF"]
+offered_at = ["zQmQFvpdi1ygQQ8TpYKBvCiUSxovQdSECFAEiLxadaGmkMq"]

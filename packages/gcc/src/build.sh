@@ -53,6 +53,9 @@ cd "$BUILD/gcc"
     --disable-libsanitizer --disable-multiarch
 make -j"$JOBS" MAKEINFO=true
 make install DESTDIR="$COMPILER" MAKEINFO=true
+# cc, the name POSIX and make's default rules give the C compiler, is a
+# link to gcc, as Alpine's and Debian's are; gcc installs c++ itself.
+ln -s gcc "$COMPILER/usr/bin/cc"
 # libgcc puts libgcc_s in the versioned directory's multilib directory
 # for the OS, where that isn't the directory itself, which no version
 # names: it is moved into the versioned directory.
@@ -93,6 +96,8 @@ fi
 cp -a --remove-destination "$COMPILER/." /
 cd "$BUILD"
 [ "$(gcc -dumpfullversion)" = $VERSION ] || { echo "build.sh: gcc is $(gcc -dumpfullversion)" >&2; exit 1; }
+[ "$(cc -dumpfullversion)" = $VERSION ] || { echo "build.sh: cc is $(cc -dumpfullversion)" >&2; exit 1; }
+[ "$(c++ -dumpfullversion)" = $VERSION ] || { echo "build.sh: c++ is $(c++ -dumpfullversion)" >&2; exit 1; }
 [ -z "$(gcc -print-multiarch)" ] || { echo "build.sh: gcc reports multiarch $(gcc -print-multiarch)" >&2; exit 1; }
 printf '#include <stdio.h>\nint main(void) { puts("hello"); return 0; }\n' >hello.c
 printf '#include <iostream>\nint main() { std::cout << "hello" << std::endl; }\n' >hello.cc

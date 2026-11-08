@@ -1,9 +1,9 @@
 # GNU bash, the shell, with `/usr/bin/sh` a link to it, as a package of
 # its own (specs/DECISIONS.md §55, §59): one object for every release,
 # each a version tag on its history, and a target for each environment
-# it is built for. This revision is 5.2.15, its third round, released as
-# 5.2.15+3: built with data:base-round 2 (../base-round/), the base's
-# second round, each package at its snapshot, so the base builds with
+# it is built for. This revision is 5.2.15, its fourth round, released as
+# 5.2.15+4: built with data:base-round 3 (../base-round/), the base's
+# third round, each package at its snapshot, so the base builds with
 # the round before it, never with itself (§64). Its libraries, if any,
 # go in the environment's directory for musl's (§60).
 [kairo]
@@ -38,7 +38,7 @@ provides = "environment:linux/x86"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:base-round"
-version = "^2"
+version = "^3"
 
 [[build.targets.children]]
 name = "bash-5.2.15"
@@ -65,7 +65,7 @@ provides = "environment:linux/x86-64"
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "data:base-round"
-version = "^2"
+version = "^3"
 
 [[build.targets.children]]
 name = "bash-5.2.15"

@@ -5,12 +5,12 @@ The C library, the version the bootstraps build, in the environment's library di
 One object for every release of musl, each a version tag on its
 history (`specs/DECISIONS.md` §59), with a target for each environment
 it is built for, `x86` and `x86-64`, and no environment of its own
-(§55). This revision is 1.2.5, its third round, tagged `1.2.5+3`; its earlier rounds are tagged `1.2.5+2` and `1.2.5`.
+(§55). This revision is 1.2.5, its fourth round, tagged `1.2.5+4`; its earlier rounds are tagged `1.2.5+3`, `1.2.5+2`, and `1.2.5`.
 
-**Its third round.** It builds with `data:base-round` 2
+**Its fourth round.** It builds with `data:base-round` 3
 (`../base-round/`), which brings what `build-base` does, each label
-offered only at the snapshot of the base's round 2 (§64). Round 2 was
-built with round 1, and round 1, tagged without build metadata, with
+offered only at the snapshot of the base's round 3 (§64). Round 3 was
+built with round 2, round 2 with round 1, and round 1, tagged without build metadata, with
 `../bootstrap-base/`, the bootstraps' packages. Built with the other
 packages of its own round, through `build-base`, it would be a cycle;
 built with the round before, it never builds with itself. Everything
@@ -32,7 +32,7 @@ over what it was built with, a program compiled against it, static and dynamic, 
 
 ## Running it
 
-Import `../base-round/` and the base's round 2 it names. Then:
+Import `../base-round/` and the base's round 3 it names. Then:
 
 ```sh
 packages/musl/import.sh <your actor id>
