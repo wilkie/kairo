@@ -1,0 +1,81 @@
+# mrustc, a Rust compiler written in C++, and the rustc 1.90.0 and cargo
+# it bootstraps, as a package of its own (specs/DECISIONS.md §55, §65):
+# built for x86-64 alone, with data:build-base (../build-base/), with
+# packages alone, no bootstrap's object taking part (§61). Its toolchain
+# is for the rust package's first release to build with, and offers no
+# label anything else asks for.
+[kairo]
+schema = 1
+kind = "software"
+name = "mrustc"
+summary = "mrustc 0.12.0, and the rustc 1.90.0 and cargo it bootstraps, for x86-64, to build Rust from source with."
+tags = ["mrustc", "rust", "bootstrap", "compiler"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "c1ba35f5fc5c4ca2952d9f5526e900dcb6632ea7fd4d71fa58029b3bb563ae56"
+path = "distfiles/mrustc-0.12.0.tar.gz"
+
+[[dependencies]]
+kind = "file"
+sha256 = "6bfeaddd90ffda2f063492b092bfed925c4b8c701579baf4b1316e021470daac"
+path = "distfiles/rustc-1.90.0-src.tar.xz"
+
+# The target's artifact is its child, and the whole is nobody's to
+# install. What the child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86-64, built and run in the x86-64 environment; there is no x86
+# target (§65 sub-decision 5).
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+# LLVM 20, the major rustc 1.90.0 bundles (§65 sub-decision 4), which
+# its rustc links statically, as llvm-config gives it.
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:llvm"
+version = "^20"
+
+# What cargo links, found by pkg-config.
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:pkgconf"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ssl"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:curl"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:ssh2"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:zlib"
+
+[[build.targets.children]]
+name = "rust-bootstrap-1.90.0"
+root = "rust-bootstrap-1.90.0"
+summary = "rustc 1.90.0 and cargo, bootstrapped by mrustc 0.12.0, under /usr/lib/rust-bootstrap-1.90.0, for x86-64."
+tags = ["rust", "bootstrap"]
+version = "1.90.0"
+requires = [{ provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:curl" }, { provides = "lib:ssh2" }, { provides = "lib:zlib" }, { provides = "lib:zstd" }, { provides = "lib:stdc++:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "tool:rustc-bootstrap" }, { provides = "tool:cargo-bootstrap" }]

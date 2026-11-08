@@ -18,6 +18,18 @@ rather than per-commit.
 
 ### Added
 
+- **Rust, built from source, and LLVM as a package (`DECISIONS.md`
+  §65).** `llvm` 20.1.8 and 21.1.8, each under `/usr/lib/llvm-<major>/`
+  with `libLLVM` a child of its own in the library directory. `mrustc`
+  0.12.0 builds rustc 1.90.0 and cargo from rustc's source, by mrustc's
+  own route, with an upstream fix made after 0.12.0 and a preloaded
+  table of pthread keys for the rustc it compiles, which needs more
+  than musl's 128. `rust` 1.91.1, rustc and cargo, is built by that
+  toolchain with Rust's own `x.py`, against LLVM 21, linking
+  dynamically against musl by default; rebuilt by itself as `1.91.1+2`,
+  its artifact is the same, byte for byte. x86-64 alone. A package's
+  import now commits every file of its `src/`.
+
 - **The base's round 4, with `cc` (`DECISIONS.md` §64).** gcc links
   `cc` to `gcc`, so recipes no longer have to pass `CC=gcc`.
   `base-round` 3.0.0 names round 3's snapshots, and the base's packages'

@@ -6198,3 +6198,69 @@ Affected specs:
 - `BUILD.md` §3; `schemas/canonical/object-manifest-v1.md`,
   `resolved-manifest-v1.md`.
 - `packages/base-round/`, and the base's packages.
+
+## 65. Rust Is Bootstrapped from mrustc, Each Release Built by the One Before
+
+Decision: Rust is built from source, with no compiler downloaded. A
+package, `mrustc`, builds mrustc, a Rust compiler written in C++ that
+compiles Rust to C, and with it rustc 1.90.0, its standard library, and
+cargo, from rustc's source, by mrustc's own route; one object, `rust`,
+holds every later release of rustc and cargo as a version tag, each
+built by the release before it (§59), from 1.91.1, built by mrustc's
+1.90.0, to the newest. LLVM is a package of its own, which each builds
+against.
+
+1. **mrustc's toolchain is for the next step alone.** mrustc compiles
+   rustc 1.90.0; that rustc builds the standard library, then rustc and
+   cargo again, optimised, and the standard library with them, as
+   mrustc's `run_rustc` does. The result offers `tool:rustc-bootstrap`,
+   not `tool:rustc`, so the only build that takes it is `rust` 1.91.1's,
+   the release mrustc's authors build with it and compare with the
+   official one.
+
+2. **Each release builds with Rust's own build, `x.py`,** given the
+   release before as its compiler. Each source tarball, signed by the
+   Rust project, carries every crate the release builds with, so
+   nothing is fetched (§37).
+
+3. **A double compile checks mrustc's step.** `rust` 1.91.1 is built
+   again by itself and released as `1.91.1+2`; its artifacts must be
+   the first build's, byte for byte. Two unrelated compilers, mrustc's
+   chain and rustc, then built the same rustc from the same source,
+   which a compiler that inserted something into what it compiles would
+   not survive. It holds: in the archive's canonical store, `1.91.1+2`'s
+   artifact is `1.91.1`'s.
+
+4. **LLVM is a package, one object with a version tag per release.**
+   Each rustc accepts an external LLVM from a minimum major up to the
+   one it bundles. 1.90.0 bundles LLVM 20; every release from 1.91 to
+   1.99 accepts 21. mrustc's step builds with LLVM 20.1.8, and `rust`'s
+   releases with 21.1.8, each asking for its major. LLVM is installed
+   under `/usr/lib/llvm-<major>/`, so two majors sit side by side as
+   Debian has them, and its shared library is a child of its own in
+   the library directory (§60), as gcc's runtime libraries are (§56).
+
+5. **x86-64 alone.** Rust and LLVM have no x86 target: mrustc has no
+   32-bit musl target, and few modern tools are wanted on 32-bit
+   machines. A build in `linux/x86` that asks for `tool:rustc` finds
+   no offer.
+
+6. **Rust links as a distribution's does.** Its host is
+   `x86_64-unknown-linux-musl`, its programs and proc-macros linked
+   dynamically against the musl package, not statically against the
+   copy of musl Rust ships for its musl targets, as Alpine builds it;
+   its linker is `cc` (§64 sub-decision 6); its libraries are in the
+   library directory.
+
+Rationale: a compiler that builds only from its own binaries can't be
+built from source without a first compiler from elsewhere; mrustc is
+that compiler, small enough to read and itself built by the base's gcc.
+The generation rule already says how a compiler builds its successors,
+so Rust needs no new mechanism, only a first step. A separate LLVM is
+built once per major, not once per release, and is there for what else
+needs it.
+
+Affected specs:
+
+- `DECISIONS.md` §56, §59, §60.
+- `packages/llvm/`, `packages/mrustc/`, `packages/rust/`.

@@ -1,6 +1,6 @@
 # Sourced by a package's import.sh (packages/common/README.md): archive
-# its sources, commit its manifest and recipe, with recipe.sh beside the
-# recipe, as its object or that object's next revision, and tag the
+# its sources, commit its manifest and its recipe, every file of src/
+# with recipe.sh beside them, as its object or that object's next revision, and tag the
 # revision with the release's version (DECISIONS.md §59, §61).
 #
 # The package's import.sh sets DISTFILES ("<sha256> <name> <url>..."
@@ -30,7 +30,8 @@ import_package() {
     trap 'rm -rf "$WORK"' EXIT
     cp -r "$HERE/kairo.toml" "$HERE/src" "$WORK/"
     cp "$HERE/../common/recipe.sh" "$WORK/src/"
-    commit_wrapper "$message" kairo.toml src/build.sh src/recipe.sh
+    # shellcheck disable=SC2046 # one path per line, none with spaces
+    commit_wrapper "$message" kairo.toml $(cd "$WORK" && find src -type f | LC_ALL=C sort)
     tag_release "$release"
     cat <<OUT
 object = $WRAPPER

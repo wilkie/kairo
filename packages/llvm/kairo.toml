@@ -1,0 +1,79 @@
+# LLVM, as a package of its own (specs/DECISIONS.md §55, §59, §65): one
+# object for every release, each a version tag on its history, built for
+# x86-64 alone. This revision is 21.1.8, its release after 20.1.8, which
+# stays tagged at the revision before; built with
+# data:build-base (../build-base/): with packages alone, no bootstrap's
+# object taking part (§61). All of it is under /usr/lib/llvm-21/, so
+# that each major sits beside the others; its shared library is a child
+# of its own in the environment's directory for musl's (§60).
+[kairo]
+schema = 1
+kind = "software"
+name = "llvm"
+summary = "LLVM, built for x86-64, each release a version tag; this one 21.1.8."
+tags = ["llvm", "toolchain", "compiler"]
+
+[[dependencies]]
+kind = "file"
+sha256 = "4633a23617fa31a3ea51242586ea7fb1da7140e426bd62fc164261fe036aa142"
+path = "distfiles/llvm-project-21.1.8.src.tar.xz"
+
+# The target's artifact is its children, and the whole is nobody's to
+# install. What each child requires is what its programs and libraries
+# load, as build.sh reports it (§56).
+
+# For x86-64, built and run in the x86-64 environment; there is no x86
+# target (§65 sub-decision 5).
+[[build.targets]]
+name = "x86-64"
+tree = "src"
+command = ["/usr/bin/bash", "build.sh", "x86_64-pc-linux-musl"]
+
+[build.targets.artifact]
+install = false
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "environment:linux/x86-64"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "data:build-base"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:cmake"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:ninja"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "tool:python"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:zlib"
+
+[[build.targets.dependencies]]
+kind = "provides"
+provides = "lib:zstd"
+
+[[build.targets.children]]
+name = "llvm-21.1.8"
+root = "llvm-21.1.8"
+summary = "LLVM 21.1.8 for x86-64, under /usr/lib/llvm-21."
+tags = ["llvm"]
+version = "21.1.8"
+requires = [{ provides = "lib:llvm:shared", version = "~21.1" }, { provides = "lib:zlib" }, { provides = "lib:zstd" }, { provides = "lib:stdc++:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:llvm" }, { provides = "tool:llvm" }]
+
+[[build.targets.children]]
+name = "libllvm-21.1.8"
+root = "libllvm-21.1.8"
+summary = "LLVM 21.1.8's shared library, libLLVM.so.21.1, for x86-64."
+tags = ["llvm"]
+version = "21.1.8"
+requires = [{ provides = "lib:zlib" }, { provides = "lib:zstd" }, { provides = "lib:stdc++:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
+provides = [{ provides = "lib:llvm:shared" }]
