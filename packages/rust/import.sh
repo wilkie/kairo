@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Archive rustc's source, make Rust's object or its next revision, and
-# tag it 1.91.1+2 (packages/rust/README.md, packages/common/import.sh).
+# tag it 1.99.1 (packages/rust/README.md, packages/common/import.sh).
 #
 # Usage:
 #   import.sh <actor id> [--wrapper <object id>] [kairo args...]
@@ -13,11 +13,11 @@ shopt -s inherit_errexit
 
 # sha256 name url...
 DISTFILES=(
-    "66401bb815e236cc6b2aacbbe23b61b286c1fe27a67902e7c0222cfe77b3dbab rustc-1.91.1-src.tar.xz
-     https://static.rust-lang.org/dist/rustc-1.91.1-src.tar.xz"
+    "6451598a99e77f07571960f6b21d577399d3a30f33e80cbd2e3a4aae6535d265 rustc-1.99.1-src.tar.xz
+     https://static.rust-lang.org/dist/rustc-1.99.1-src.tar.xz"
 )
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../common/import.sh
 . "$HERE/../common/import.sh"
-import_package "$@" "rust 1.91.1 for x86-64, the double compile, built by 1.91.1" 1.91.1+2
+import_package "$@" "rust 1.99.1 for x86-64, built by 1.98.1" 1.99.1

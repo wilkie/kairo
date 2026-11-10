@@ -27,8 +27,10 @@ rather than per-commit.
   than musl's 128. `rust` 1.91.1, rustc and cargo, is built by that
   toolchain with Rust's own `x.py`, against LLVM 21, linking
   dynamically against musl by default; rebuilt by itself as `1.91.1+2`,
-  its artifact is the same, byte for byte. x86-64 alone. A package's
-  import now commits every file of its `src/`.
+  its artifact is the same, byte for byte. Each release from 1.92.0 to
+  1.99.1 is built by the one before, each a version tag of `rust`.
+  x86-64 alone. A package's import now commits every file of its
+  `src/`.
 
 - **The base's round 4, with `cc` (`DECISIONS.md` §64).** gcc links
   `cc` to `gcc`, so recipes no longer have to pass `CC=gcc`.

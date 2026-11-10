@@ -1,23 +1,21 @@
 # Rust, rustc and cargo, as a package of its own (specs/DECISIONS.md §55,
 # §59, §65): one object for every release, each a version tag on its
 # history, built for x86-64 alone, each by the release before it. This
-# revision is 1.91.1 again, released as 1.91.1+2: the double compile
-# (§65 sub-decision 3), built by this object's own 1.91.1, which
-# mrustc's rustc 1.90.0 built (../mrustc/); its artifacts must be
-# 1.91.1's, byte for byte. With data:build-base (../build-base/): with packages
-# alone, no bootstrap's object taking part (§61). Its libraries go in
-# the environment's directory for musl's (§60).
+# revision is 1.99.1, built by this object's own 1.98.1. With
+# data:build-base (../build-base/): with packages alone, no bootstrap's
+# object taking part (§61). Its libraries go in the environment's
+# directory for musl's (§60).
 [kairo]
 schema = 1
 kind = "software"
 name = "rust"
-summary = "Rust, rustc and cargo, built for x86-64 from source, each release a version tag built by the one before; this one 1.91.1."
+summary = "Rust, rustc and cargo, built for x86-64 from source, each release a version tag built by the one before; this one 1.99.1."
 tags = ["rust", "toolchain", "compiler"]
 
 [[dependencies]]
 kind = "file"
-sha256 = "66401bb815e236cc6b2aacbbe23b61b286c1fe27a67902e7c0222cfe77b3dbab"
-path = "distfiles/rustc-1.91.1-src.tar.xz"
+sha256 = "6451598a99e77f07571960f6b21d577399d3a30f33e80cbd2e3a4aae6535d265"
+path = "distfiles/rustc-1.99.1-src.tar.xz"
 
 # The target's artifact is its child, and the whole is nobody's to
 # install. What the child requires is what its programs and libraries
@@ -41,12 +39,11 @@ provides = "environment:linux/x86-64"
 kind = "provides"
 provides = "data:build-base"
 
-# The release before: for the double compile, 1.91.1 itself, an
-# older generation of this object (§59).
+# The release before, an older generation of this object (§59).
 [[build.targets.dependencies]]
 kind = "provides"
 provides = "tool:rustc"
-version = "=1.91.1"
+version = "~1.98"
 
 # LLVM 21, which every release from 1.91 to 1.99 accepts (§65
 # sub-decision 4), linked shared.
@@ -86,10 +83,10 @@ kind = "provides"
 provides = "lib:zlib"
 
 [[build.targets.children]]
-name = "rust-1.91.1"
-root = "rust-1.91.1"
-summary = "Rust 1.91.1, rustc and cargo, for x86-64."
+name = "rust-1.99.1"
+root = "rust-1.99.1"
+summary = "Rust 1.99.1, rustc and cargo, for x86-64."
 tags = ["rust"]
-version = "1.91.1"
+version = "1.99.1"
 requires = [{ provides = "lib:llvm:shared", version = "~21.1" }, { provides = "lib:ssl" }, { provides = "lib:crypto" }, { provides = "lib:curl" }, { provides = "lib:ssh2" }, { provides = "lib:zlib" }, { provides = "lib:stdc++:shared" }, { provides = "lib:gcc:shared" }, { provides = "lib:musl:shared" }]
 provides = [{ provides = "tool:rustc" }, { provides = "tool:cargo" }, { provides = "tool:rustdoc" }]

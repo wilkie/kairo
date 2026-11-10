@@ -4,17 +4,16 @@
 # one child, rust-<version>.
 . ./recipe.sh "$1"
 NAME=rust
-VERSION=1.91.1
+VERSION=1.99.1
 CHILD=rust-$VERSION
 RUST_TARGET=x86_64-unknown-linux-musl
 LLVM_CONFIG=/usr/lib/llvm-21/bin/llvm-config
-# The release before, which builds this one (§59): for 1.91.1+2, the
-# double compile, 1.91.1 itself, built by mrustc's 1.90.0 (§65
-# sub-decision 3), installed under /usr.
+# The release before, which builds this one (§59): 1.98.1, this
+# object's own, installed under /usr.
 STAGE0=/usr
 # Whether the release before is this one's own version, as for a
 # double compile.
-LOCAL_REBUILD=true
+LOCAL_REBUILD=false
 
 unpack "rustc-$VERSION-src"
 cd "$BUILD/rustc-$VERSION-src"

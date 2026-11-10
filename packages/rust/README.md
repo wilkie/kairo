@@ -9,8 +9,16 @@ with a target for x86-64 and no environment of its own (§55).
 |---|---|---|
 | Rust 1.91.1 | `1.91.1` | mrustc's rustc 1.90.0 and cargo (`../mrustc/`), the first Rust built from source |
 | Rust 1.91.1, again | `1.91.1+2` | 1.91.1 itself: the double compile (§65 sub-decision 3), whose artifacts must be 1.91.1's, byte for byte |
+| Rust 1.92.0 | `1.92.0` | 1.91.1 |
+| Rust 1.93.1 | `1.93.1` | 1.92.0 |
+| Rust 1.94.1 | `1.94.1` | 1.93.1 |
+| Rust 1.95.0 | `1.95.0` | 1.94.1 |
+| Rust 1.96.1 | `1.96.1` | 1.95.0 |
+| Rust 1.97.1 | `1.97.1` | 1.96.1 |
+| Rust 1.98.1 | `1.98.1` | 1.97.1 |
+| Rust 1.99.1 | `1.99.1` | 1.98.1 |
 
-This revision is 1.91.1+2; the object's revision at each other tag is
+This revision is 1.99.1; the object's revision at each other tag is
 this directory as it was for that release, its stage 0 and tag the
 difference.
 
